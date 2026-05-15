@@ -71,7 +71,7 @@ describe("CodexAppServer", () => {
         thread: { id: "thread-start" }
       });
       const guestCodexConfig = parse(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")) as TomlTable;
-      expect((guestCodexConfig.projects as TomlTable)[workspace]).toEqual({ trust_level: "untrusted" });
+      expect((guestCodexConfig.projects as TomlTable)[workspace]).toEqual({ trust_level: "trusted" });
       await expect(server.resumeThread("thread-existing", workspace)).resolves.toMatchObject({
         thread: { id: "thread-existing" }
       });

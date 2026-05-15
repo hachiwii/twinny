@@ -5,7 +5,7 @@ import { parse, stringify, type TomlTable } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createGuestCodexConfigDocument,
-  ensureGuestWorkspaceProjectUntrusted,
+  ensureGuestWorkspaceProjectTrusted,
   renderGuestAgents,
   resolveRoleForSender,
   validateGuestCodexConfigDocument
@@ -33,7 +33,7 @@ describe("role helpers", () => {
     expect(agents).toContain("approval_policy = \"never\"");
   });
 
-  it("pre-seeds guest workspace projects as untrusted without dropping existing config", async () => {
+  it("pre-seeds guest cwd projects as trusted without dropping existing config", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "twinny-roles-"));
     tempDirs.push(tempDir);
     const codexHome = path.join(tempDir, "codex");
@@ -45,19 +45,19 @@ describe("role helpers", () => {
       stringify({
         ...createGuestCodexConfigDocument(),
         projects: {
-          [workspace]: { trust_level: "trusted", marker: "keep" },
-          "/tmp/other": { trust_level: "trusted" }
+          [workspace]: { trust_level: "untrusted", marker: "keep" },
+          "/tmp/other": { trust_level: "untrusted" }
         }
       }) + "\n"
     );
 
-    await expect(ensureGuestWorkspaceProjectUntrusted(codexHome, workspace)).resolves.toBe(true);
-    await expect(ensureGuestWorkspaceProjectUntrusted(codexHome, workspace)).resolves.toBe(false);
+    await expect(ensureGuestWorkspaceProjectTrusted(codexHome, workspace)).resolves.toBe(true);
+    await expect(ensureGuestWorkspaceProjectTrusted(codexHome, workspace)).resolves.toBe(false);
 
     const document = parse(await fs.readFile(configPath, "utf8")) as TomlTable;
     const projects = document.projects as TomlTable;
-    expect(projects[workspace]).toEqual({ trust_level: "untrusted", marker: "keep" });
-    expect(projects["/tmp/other"]).toEqual({ trust_level: "trusted" });
+    expect(projects[workspace]).toEqual({ trust_level: "trusted", marker: "keep" });
+    expect(projects["/tmp/other"]).toEqual({ trust_level: "untrusted" });
     expect(validateGuestCodexConfigDocument(document)).toEqual({ ok: true, issues: [] });
   });
 });

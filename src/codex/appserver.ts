@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import path from "node:path";
-import { ensureGuestWorkspaceProjectUntrusted } from "../roles/index.js";
+import { ensureGuestWorkspaceProjectTrusted } from "../roles/index.js";
 import type { RoleName } from "../types.js";
 import { CodexProtocolClient, createInitializeParams, type InitializeResponse } from "./protocol.js";
 import { resumeCodexThread, startCodexThread, type ThreadResumeResponse, type ThreadStartResponse } from "./thread.js";
@@ -152,7 +152,7 @@ export class CodexAppServer extends EventEmitter {
     if (this.options.role !== "guest") {
       return;
     }
-    await ensureGuestWorkspaceProjectUntrusted(this.options.codexHome, cwd);
+    await ensureGuestWorkspaceProjectTrusted(this.options.codexHome, cwd);
   }
 }
 

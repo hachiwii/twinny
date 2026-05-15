@@ -12,7 +12,7 @@ export { defaultOwnerCodexTarget } from "./owner.js";
 export {
   createGuestCodexConfigDocument,
   DEFAULT_GUEST_CODEX_MODEL,
-  ensureGuestWorkspaceProjectUntrusted,
+  ensureGuestWorkspaceProjectTrusted,
   renderGuestAgents,
   serializeGuestCodexConfig,
   validateGuestCodexConfigDocument,

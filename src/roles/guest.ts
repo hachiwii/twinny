@@ -53,20 +53,20 @@ export function serializeGuestCodexConfig(options: GuestCodexConfigOptions = {})
   return stringify(createGuestCodexConfigDocument(options)) + "\n";
 }
 
-export async function ensureGuestWorkspaceProjectUntrusted(codexHome: string, workspace: string): Promise<boolean> {
+export async function ensureGuestWorkspaceProjectTrusted(codexHome: string, cwd: string): Promise<boolean> {
   const configPath = path.join(codexHome, "config.toml");
   return withGuestConfigWriteLock(configPath, async () => {
     const document = await readGuestCodexConfigDocument(configPath);
     const projects = ensureTomlTable(document, "projects");
-    const workspacePath = path.resolve(workspace);
-    const existingProject = projects[workspacePath];
+    const cwdPath = path.resolve(cwd);
+    const existingProject = projects[cwdPath];
     const project = isTomlTable(existingProject) ? existingProject : {};
-    if (project.trust_level === "untrusted") {
+    if (project.trust_level === "trusted") {
       return false;
     }
 
-    project.trust_level = "untrusted";
-    projects[workspacePath] = project;
+    project.trust_level = "trusted";
+    projects[cwdPath] = project;
     return writeGuestCodexConfigIfChanged(configPath, document);
   });
 }
