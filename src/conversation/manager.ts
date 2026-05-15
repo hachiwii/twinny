@@ -130,10 +130,18 @@ type ParsedCommand =
   | { kind: "message"; text: string }
   | { kind: "queue"; text: string }
   | { kind: "stop" }
-  | { kind: "new" };
+  | { kind: "new" }
+  | { kind: "help" };
 
 export class ConversationManager {
   private static readonly shutdownLostMessage = "服务重启之前的消息丢失";
+  private static readonly helpText = [
+    "可用指令：",
+    "/help - 查看可用指令和使用说明",
+    "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
+    "/stop - 停止当前任务并清空待处理消息",
+    "/queue <message> - 将消息加入下一轮队列，不注入当前任务"
+  ].join("\n");
 
   private readonly states = new Map<string, ConversationState>();
   private readonly shutdownNotifiedMessageIds = new Set<string>();
@@ -263,6 +271,10 @@ export class ConversationManager {
     message: IncomingLarkMessage
   ): Promise<void> {
     const parsed = parseSlashCommand(message.text);
+    if (parsed.kind === "help") {
+      await this.handleHelpCommand(message);
+      return;
+    }
     if (parsed.kind === "stop") {
       await this.handleStopCommand(state, message);
       return;
@@ -317,6 +329,10 @@ export class ConversationManager {
     if (!state.active) {
       await this.startPendingBatch(state, conversationKey);
     }
+  }
+
+  private async handleHelpCommand(message: IncomingLarkMessage): Promise<void> {
+    await this.replyControlBestEffort(message.messageId, ConversationManager.helpText);
   }
 
   private async handleStopCommand(state: ConversationState, message: IncomingLarkMessage): Promise<void> {
@@ -804,6 +820,9 @@ function parseSlashCommand(text: string): ParsedCommand {
   }
   if (command === "new") {
     return { kind: "new" };
+  }
+  if (command === "help") {
+    return { kind: "help" };
   }
   if (command === "queue") {
     return { kind: "queue", text: rest };

@@ -72,6 +72,24 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_1", "turn_2"));
   });
 
+  it("replies to /help with available slash command usage", async () => {
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark });
+
+    manager.submitIncoming(message("m1", "/help"));
+
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledTimes(1));
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "m1",
+      expect.stringContaining("/help - 查看可用指令和使用说明")
+    );
+    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/new -"));
+    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/stop -"));
+    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/queue <message> -"));
+    expect(codex.startTurn).not.toHaveBeenCalled();
+  });
+
   it("interrupts active turns and clears pending messages on /stop", async () => {
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();
