@@ -186,7 +186,8 @@ function adaptConversationRepository(repository: ConversationRepository) {
   return {
     findByConversationKey: (conversationKey: string) => repository.getByConversationKey(conversationKey) ?? null,
     create: repository.create.bind(repository),
-    updateThreadBinding: repository.updateThreadBinding.bind(repository)
+    updateThreadBinding: repository.updateThreadBinding.bind(repository),
+    markThreadHasRollout: repository.markThreadHasRollout.bind(repository)
   };
 }
 

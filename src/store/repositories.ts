@@ -14,6 +14,7 @@ interface ConversationRow {
   name: string;
   role: RoleName;
   codex_thread_id: string;
+  codex_thread_has_rollout: 0 | 1;
   workspace: string;
   role_codex_home: string;
   created_at: number;
@@ -27,6 +28,7 @@ interface InsertConversationParams {
   name: string;
   role: RoleName;
   codexThreadId: string;
+  codexThreadHasRollout: 0 | 1;
   workspace: string;
   roleCodexHome: string;
   createdAt: number;
@@ -35,6 +37,7 @@ interface InsertConversationParams {
 
 export interface UpdateConversationThreadBinding {
   codexThreadId: string;
+  codexThreadHasRollout?: boolean;
   role?: RoleName;
   roleCodexHome?: string;
   workspace?: string;
@@ -54,12 +57,14 @@ export class ConversationRepository {
   private readonly selectAll: Database.Statement<[], ConversationRow>;
   private readonly updateThread: Database.Statement<[
     string,
+    0 | 1,
     RoleName,
     string,
     string,
     number,
     string
   ]>;
+  private readonly markRollout: Database.Statement<[number, string, string]>;
   private readonly deleteByKey: Database.Statement<[string]>;
 
   constructor(
@@ -75,6 +80,7 @@ export class ConversationRepository {
         name,
         role,
         codex_thread_id,
+        codex_thread_has_rollout,
         workspace,
         role_codex_home,
         created_at,
@@ -86,6 +92,7 @@ export class ConversationRepository {
         @name,
         @role,
         @codexThreadId,
+        @codexThreadHasRollout,
         @workspace,
         @roleCodexHome,
         @createdAt,
@@ -107,11 +114,19 @@ export class ConversationRepository {
     this.updateThread = this.db.prepare(`
       UPDATE conversations
       SET codex_thread_id = ?,
+          codex_thread_has_rollout = ?,
           role = ?,
           role_codex_home = ?,
           workspace = ?,
           updated_at = ?
       WHERE conversation_key = ?
+    `);
+    this.markRollout = this.db.prepare(`
+      UPDATE conversations
+      SET codex_thread_has_rollout = 1,
+          updated_at = ?
+      WHERE conversation_key = ?
+        AND codex_thread_id = ?
     `);
     this.deleteByKey = this.db.prepare(`
       DELETE FROM conversations WHERE conversation_key = ?
@@ -178,11 +193,26 @@ export class ConversationRepository {
       const role = update.role ?? existing.role;
       const roleCodexHome = update.roleCodexHome ?? existing.roleCodexHome;
       const workspace = update.workspace ?? existing.workspace;
-      this.updateThread.run(update.codexThreadId, role, roleCodexHome, workspace, this.now(), conversationKey);
+      const codexThreadHasRollout = update.codexThreadHasRollout ?? existing.codexThreadHasRollout;
+      this.updateThread.run(
+        update.codexThreadId,
+        codexThreadHasRollout ? 1 : 0,
+        role,
+        roleCodexHome,
+        workspace,
+        this.now(),
+        conversationKey
+      );
       return this.requireByConversationKey(conversationKey);
     });
 
     return updateBinding();
+  }
+
+  markThreadHasRollout(conversationKey: string, codexThreadId: string): void {
+    assertValidConversationKey(conversationKey);
+    assertNonEmpty(codexThreadId, "codexThreadId");
+    this.markRollout.run(this.now(), conversationKey, codexThreadId);
   }
 
   deleteByConversationKey(conversationKey: string): boolean {
@@ -209,6 +239,7 @@ export class ConversationRepository {
       name: input.name,
       role: input.role,
       codexThreadId: input.codexThreadId,
+      codexThreadHasRollout: input.codexThreadHasRollout === false ? 0 : 1,
       workspace: input.workspace,
       roleCodexHome: input.roleCodexHome,
       createdAt: now,
@@ -241,6 +272,7 @@ function mapRequiredConversationRow(row: ConversationRow): ConversationRecord {
     name: row.name,
     role: row.role,
     codexThreadId: row.codex_thread_id,
+    codexThreadHasRollout: row.codex_thread_has_rollout === 1,
     workspace: row.workspace,
     roleCodexHome: row.role_codex_home,
     createdAt: row.created_at,

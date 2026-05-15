@@ -48,6 +48,7 @@ describe("ConversationRepository", () => {
       name: "Guest User",
       role: "guest",
       codexThreadId: "thread-1",
+      codexThreadHasRollout: true,
       workspace,
       roleCodexHome,
       createdAt: 1000,
@@ -77,13 +78,23 @@ describe("ConversationRepository", () => {
 
     now = 2000;
     const updated = repo.updateThreadBinding("p2p:ou_456", {
-      codexThreadId: "thread-new"
+      codexThreadId: "thread-new",
+      codexThreadHasRollout: false
     });
 
     expect(updated.codexThreadId).toBe("thread-new");
+    expect(updated.codexThreadHasRollout).toBe(false);
     expect(updated.updatedAt).toBe(2000);
     expect(updated.workspace).toBe(workspace);
     expect(updated.roleCodexHome).toBe(roleCodexHome);
+
+    now = 3000;
+    repo.markThreadHasRollout("p2p:ou_456", "thread-new");
+    expect(repo.getByConversationKey("p2p:ou_456")).toMatchObject({
+      codexThreadId: "thread-new",
+      codexThreadHasRollout: true,
+      updatedAt: 3000
+    });
 
     const tables = db
       .prepare<[], { name: string }>(

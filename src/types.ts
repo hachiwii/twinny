@@ -59,6 +59,7 @@ export interface ConversationRecord {
   name: string;
   role: RoleName;
   codexThreadId: string;
+  codexThreadHasRollout: boolean;
   workspace: string;
   roleCodexHome: string;
   createdAt: number;
@@ -72,6 +73,7 @@ export interface NewConversationRecord {
   name: string;
   role: RoleName;
   codexThreadId: string;
+  codexThreadHasRollout?: boolean;
   workspace: string;
   roleCodexHome: string;
 }

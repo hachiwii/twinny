@@ -19,8 +19,15 @@ export interface ConversationRepository {
   create(record: NewConversationRecord): Promise<ConversationRecord> | ConversationRecord;
   updateThreadBinding(
     conversationKey: string,
-    update: { codexThreadId: string; role?: RoleName; roleCodexHome?: string; workspace?: string }
+    update: {
+      codexThreadId: string;
+      codexThreadHasRollout?: boolean;
+      role?: RoleName;
+      roleCodexHome?: string;
+      workspace?: string;
+    }
   ): Promise<ConversationRecord> | ConversationRecord;
+  markThreadHasRollout(conversationKey: string, codexThreadId: string): Promise<void> | void;
 }
 
 export interface WorkspaceManagerLike {
@@ -102,6 +109,7 @@ interface ActiveTurn {
   role: RoleName;
   threadId: string;
   workspace: string;
+  conversationKey: string;
   replyMessageId: string;
   turnId?: string;
   reaction?: LarkReactionHandle | null;
@@ -255,6 +263,7 @@ export class ConversationManager {
     if (existing) {
       await this.options.repository.updateThreadBinding(conversationKey, {
         codexThreadId: thread.threadId,
+        codexThreadHasRollout: false,
         role,
         roleCodexHome: this.options.roles.codexHomeFor(role),
         workspace
@@ -267,6 +276,7 @@ export class ConversationManager {
         name: conversationNameForMessage(this.options.config, role, message),
         role,
         codexThreadId: thread.threadId,
+        codexThreadHasRollout: false,
         workspace,
         roleCodexHome: this.options.roles.codexHomeFor(role)
       });
@@ -329,7 +339,9 @@ export class ConversationManager {
     const binding = await this.getOrCreateConversation({ conversationKey, role, workspace, message: anchor.original });
     const activeThread = binding.created
       ? { threadId: binding.conversation.codexThreadId, replacedMissingThread: false }
-      : await this.resumeExistingThread(binding.conversation, { role, workspace, conversationKey });
+      : binding.conversation.codexThreadHasRollout
+        ? await this.resumeExistingThread(binding.conversation, { role, workspace, conversationKey })
+        : { threadId: binding.conversation.codexThreadId, replacedMissingThread: false };
     if (activeThread.replacedMissingThread) {
       await this.notifyThreadReplacementBestEffort(anchor.messageId, activeThread.previousThreadId, activeThread.threadId);
     }
@@ -339,6 +351,7 @@ export class ConversationManager {
       role,
       threadId: activeThread.threadId,
       workspace,
+      conversationKey,
       replyMessageId: anchor.messageId,
       reaction: await this.addReactionBestEffort(anchor.messageId),
       pendingSteers: [],
@@ -398,6 +411,7 @@ export class ConversationManager {
       if (state.active !== active) {
         return;
       }
+      await this.options.repository.markThreadHasRollout(active.conversationKey, active.threadId);
       await this.flushPendingSteers(state, active);
     });
   }
@@ -510,6 +524,7 @@ export class ConversationManager {
       name: conversationNameForMessage(this.options.config, params.role, params.message),
       role: params.role,
       codexThreadId: thread.threadId,
+      codexThreadHasRollout: false,
       workspace: params.workspace,
       roleCodexHome: this.options.roles.codexHomeFor(params.role)
     });
@@ -530,6 +545,7 @@ export class ConversationManager {
       if (resumed.threadId !== conversation.codexThreadId) {
         await this.options.repository.updateThreadBinding(params.conversationKey, {
           codexThreadId: resumed.threadId,
+          codexThreadHasRollout: true,
           role: params.role,
           roleCodexHome: this.options.roles.codexHomeFor(params.role),
           workspace: params.workspace
@@ -555,6 +571,7 @@ export class ConversationManager {
       });
       await this.options.repository.updateThreadBinding(params.conversationKey, {
         codexThreadId: replacement.threadId,
+        codexThreadHasRollout: false,
         role: params.role,
         roleCodexHome: this.options.roles.codexHomeFor(params.role),
         workspace: params.workspace

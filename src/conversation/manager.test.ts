@@ -89,6 +89,15 @@ describe("ConversationManager", () => {
     const { repository } = createRepository(row);
     const { codex, turns } = createDeferredCodex();
     vi.mocked(codex.startThread).mockResolvedValueOnce({ threadId: "thread_new" });
+    vi.mocked(codex.resumeThread).mockImplementation(async ({ threadId }) => {
+      if (threadId === "thread_new") {
+        throw new TwinnyError("no rollout found for thread id thread_new", "CODEX_REQUEST_FAILED", {
+          code: -32600,
+          message: "no rollout found for thread id thread_new"
+        });
+      }
+      return { threadId };
+    });
     const lark = createLarkResponder();
     const manager = createManager({ repository, codex, lark });
 
@@ -107,6 +116,10 @@ describe("ConversationManager", () => {
       2,
       expect.objectContaining({ threadId: "thread_new", input: "after new" })
     );
+    expect(codex.resumeThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_old" }));
+    expect(codex.resumeThread).not.toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_new" }));
+    expect(lark.replyText).not.toHaveBeenCalledWith("m4", expect.stringMatching(/^WARN:/));
+    await waitForExpect(() => expect(row.codexThreadHasRollout).toBe(true));
 
     turns[0]!.resolve(completed("thread_old", "turn_1", "interrupted"));
     turns[1]!.resolve(completed("thread_new", "turn_2"));
@@ -249,7 +262,8 @@ function createRepository(initial?: ConversationRecord): {
           id: 1,
           createdAt: Date.now(),
           updatedAt: Date.now(),
-          ...record
+          ...record,
+          codexThreadHasRollout: record.codexThreadHasRollout ?? true
         };
         return row;
       },
@@ -259,6 +273,12 @@ function createRepository(initial?: ConversationRecord): {
         }
         Object.assign(row, update, { updatedAt: Date.now() });
         return row;
+      },
+      markThreadHasRollout: (_key, codexThreadId) => {
+        if (row?.codexThreadId === codexThreadId) {
+          row.codexThreadHasRollout = true;
+          row.updatedAt = Date.now();
+        }
       }
     }
   };
@@ -273,6 +293,7 @@ function conversationRecord(overrides: Partial<ConversationRecord> = {}): Conver
     name: "Guest User",
     role: "guest",
     codexThreadId: "thread_1",
+    codexThreadHasRollout: true,
     workspace: "/tmp/twinny/workspaces/p2p:ou_guest",
     roleCodexHome: "/tmp/twinny/roles/guest/codex",
     createdAt: 100,

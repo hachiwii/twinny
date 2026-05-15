@@ -15,9 +15,10 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 1;
+export const currentStoreSchemaVersion = 2;
 
 const initialMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
+const threadRolloutMigrationFile = fileURLToPath(new URL("../../migrations/0002_codex_thread_rollout.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -25,6 +26,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 1,
       name: "0001_initial",
       sql: fs.readFileSync(initialMigrationFile, "utf8")
+    },
+    {
+      version: 2,
+      name: "0002_codex_thread_rollout",
+      sql: fs.readFileSync(threadRolloutMigrationFile, "utf8")
     }
   ];
 }

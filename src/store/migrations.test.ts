@@ -46,7 +46,8 @@ describe("store migrations", () => {
         { name: "workspace", type: "TEXT", notnull: 1, pk: 0 },
         { name: "role_codex_home", type: "TEXT", notnull: 1, pk: 0 },
         { name: "created_at", type: "INTEGER", notnull: 1, pk: 0 },
-        { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 }
+        { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "codex_thread_has_rollout", type: "INTEGER", notnull: 1, pk: 0 }
       ]);
 
       const indexes = db
