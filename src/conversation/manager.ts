@@ -405,7 +405,7 @@ export class ConversationManager {
         role: active.role,
         threadId: active.threadId,
         turnId: active.turnId,
-        input: message.text,
+        input: formatPendingMessageForCodex(message),
         cwd: active.workspace,
         approvalPolicy: "never"
       });
@@ -462,7 +462,7 @@ export class ConversationManager {
       cancelRequested: false
     };
     state.active = active;
-    const input = messages.map((message) => message.text).join("\n");
+    const input = messages.map(formatPendingMessageForCodex).join("\n");
     const startedAt = Date.now();
 
     void this.options.codex
@@ -538,7 +538,7 @@ export class ConversationManager {
           role: active.role,
           threadId: active.threadId,
           turnId: active.turnId,
-          input: message.text,
+          input: formatPendingMessageForCodex(message),
           cwd: active.workspace,
           approvalPolicy: "never"
         });
@@ -860,6 +860,26 @@ function toPendingMessage(message: IncomingLarkMessage, text: string): PendingMe
     text,
     original: message
   };
+}
+
+function formatPendingMessageForCodex(message: PendingMessage): string {
+  const timestamp = message.original.createTime === undefined ? "" : String(message.original.createTime);
+  const attributes = [
+    ["timestamp", timestamp],
+    ["sender_ouid", message.original.senderOpenId],
+    ["sender_name", message.original.senderName ?? ""]
+  ]
+    .map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`)
+    .join(" ");
+  return `<lark_message ${attributes}>\n${escapeXmlText(message.text)}\n</lark_message>`;
+}
+
+function escapeXmlText(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function escapeXmlAttribute(value: string): string {
+  return escapeXmlText(value).replace(/"/g, "&quot;");
 }
 
 function isMissingRolloutError(error: unknown): boolean {

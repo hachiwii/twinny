@@ -4,6 +4,7 @@ export type ConversationType = "p2p";
 
 export const DEFAULT_LARK_WORKING_REACTION = "Typing";
 export const DEFAULT_LARK_COMPLETED_REACTION = "DONE";
+export const DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS = 60;
 
 export interface OwnerConfig {
   openId: string;
@@ -20,6 +21,7 @@ export interface LarkConfig {
   identity: "bot";
   workingReaction: string;
   completedReaction: string;
+  maxMessageAgeSeconds: number;
 }
 
 export interface CodexConfig {

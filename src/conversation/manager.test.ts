@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { TwinnyError } from "../errors.js";
-import type { CodexTurnResult, ConversationRecord, TwinnyConfig } from "../types.js";
+import type { CodexTurnResult, ConversationRecord, IncomingLarkMessage, TwinnyConfig } from "../types.js";
 import { ConversationManager, type CodexBridge, type ConversationRepository, type LarkResponder } from "./manager.js";
 
 const config: TwinnyConfig = {
@@ -12,7 +12,8 @@ const config: TwinnyConfig = {
     eventKey: "im.message.receive_v1",
     identity: "bot",
     workingReaction: "Typing",
-    completedReaction: "DONE"
+    completedReaction: "DONE",
+    maxMessageAgeSeconds: 60
   },
   owner: { openId: "ou_owner", displayName: "Owner" },
   roles: {
@@ -32,13 +33,13 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m2", "second"));
     await waitForExpect(() =>
       expect(codex.steerTurn).toHaveBeenCalledWith(
-        expect.objectContaining({ threadId: "thread_1", turnId: "turn_1", input: "second" })
+        expect.objectContaining({ threadId: "thread_1", turnId: "turn_1", input: wrappedMessage("second") })
       )
     );
 
     expect(codex.startTurn).toHaveBeenCalledTimes(1);
     expect(codex.steerTurn).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: "thread_1", turnId: "turn_1", input: "second" })
+      expect.objectContaining({ threadId: "thread_1", turnId: "turn_1", input: wrappedMessage("second") })
     );
     expect(lark.addTypingReaction).toHaveBeenNthCalledWith(1, "m1");
     expect(lark.addTypingReaction).toHaveBeenNthCalledWith(2, "m2");
@@ -67,7 +68,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ input: "queued\nsecond queued" })
+      expect.objectContaining({ input: `${wrappedMessage("queued")}\n${wrappedMessage("second queued")}` })
     );
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
@@ -151,7 +152,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ threadId: "thread_new", input: "after new" })
+      expect.objectContaining({ threadId: "thread_new", input: wrappedMessage("after new") })
     );
     expect(codex.resumeThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_old" }));
     expect(codex.resumeThread).not.toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_new" }));
@@ -172,6 +173,28 @@ describe("ConversationManager", () => {
     await waitForDelay();
 
     expect(codex.startTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("wraps Lark metadata and escaped text before submitting to Codex", async () => {
+    const codex = createCodex();
+    const manager = createManager({ codex });
+
+    manager.submitIncoming(
+      message("m1", 'hello <codex> & "friend"', {
+        createTime: 1700000000123,
+        senderName: 'Guest "User"'
+      })
+    );
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input:
+          '<lark_message timestamp="1700000000123" sender_ouid="ou_guest" sender_name="Guest &quot;User&quot;">\n' +
+          'hello &lt;codex&gt; &amp; "friend"\n' +
+          "</lark_message>"
+      })
+    );
   });
 
   it("replaces a persisted thread when Codex no longer has the rollout", async () => {
@@ -366,7 +389,7 @@ function conversationRecord(overrides: Partial<ConversationRecord> = {}): Conver
   };
 }
 
-function message(messageId: string, text: string) {
+function message(messageId: string, text: string, overrides: Partial<IncomingLarkMessage> = {}): IncomingLarkMessage {
   return {
     eventId: `e_${messageId}`,
     messageId,
@@ -376,8 +399,14 @@ function message(messageId: string, text: string) {
     senderOpenId: "ou_guest",
     senderName: "Guest User",
     text,
-    raw: {}
+    createTime: 1234,
+    raw: {},
+    ...overrides
   };
+}
+
+function wrappedMessage(text: string): string {
+  return `<lark_message timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n${text}\n</lark_message>`;
 }
 
 function completed(

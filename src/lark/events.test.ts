@@ -68,6 +68,51 @@ describe("LarkEventConsumer", () => {
 
     await expect(registered["im.message.receive_v1"](receiveEvent())).rejects.toThrow("submit rejected");
   });
+
+  it("drops messages older than the configured age and logs them", async () => {
+    const registered: Record<string, (data: unknown) => unknown> = {};
+    const dispatcher: EventDispatcherLike = {
+      register(handles) {
+        Object.assign(registered, handles);
+        return this;
+      }
+    };
+    const wsClient: WsClientLike = {
+      start: vi.fn(),
+      close: vi.fn()
+    };
+    const logger = { warn: vi.fn() };
+    const onMessage = vi.fn();
+    const onIgnored = vi.fn();
+    const consumer = new LarkEventConsumer({
+      appId: "cli_1234567890abcdef",
+      appSecret: "secret",
+      warmTenantToken: false,
+      maxMessageAgeMs: 60_000,
+      now: () => 120_000,
+      logger,
+      onMessage,
+      onIgnored,
+      eventDispatcherFactory: () => dispatcher,
+      wsClientFactory: () => wsClient
+    });
+
+    await consumer.start();
+    await registered["im.message.receive_v1"](receiveEvent({ message: { create_time: "59000" } }));
+    await registered["im.message.receive_v1"](receiveEvent({ message: { create_time: "60000" } }));
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ messageId: "om_1", createTime: 60000 }));
+    expect(onIgnored).toHaveBeenCalledWith("stale_message", expect.anything());
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "om_1",
+        ageMs: 61_000,
+        maxAgeMs: 60_000
+      }),
+      "dropped stale Lark message event"
+    );
+  });
 });
 
 function receiveEvent(overrides: { sender?: Record<string, unknown>; message?: Record<string, unknown> } = {}) {
@@ -82,7 +127,7 @@ function receiveEvent(overrides: { sender?: Record<string, unknown>; message?: R
     },
     message: {
       message_id: "om_1",
-      create_time: "1234",
+      create_time: String(Date.now()),
       chat_id: "oc_raw",
       chat_type: "p2p",
       message_type: "text",

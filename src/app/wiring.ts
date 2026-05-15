@@ -98,6 +98,7 @@ export class TwinnyRuntime {
       appId: this.config.lark.appId,
       appSecret,
       logger: this.log,
+      maxMessageAgeMs: this.config.lark.maxMessageAgeSeconds * 1000,
       onMessage: (message) => {
         conversation.submitIncoming(message);
       },

@@ -4,6 +4,7 @@ import { parse, stringify, type TomlTable } from "smol-toml";
 import { z } from "zod";
 import {
   DEFAULT_LARK_COMPLETED_REACTION,
+  DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
   DEFAULT_LARK_WORKING_REACTION,
   type RoleName,
   type TwinnyConfig
@@ -26,7 +27,8 @@ const rawConfigSchema = z.object({
       event_key: z.literal("im.message.receive_v1").optional(),
       secret_ref: z.string().optional(),
       working_reaction: z.string().optional(),
-      completed_reaction: z.string().optional()
+      completed_reaction: z.string().optional(),
+      max_message_age_seconds: z.number().optional()
     })
     .optional(),
   owner: z
@@ -53,6 +55,7 @@ export interface CreateTwinnyConfigInput {
     appSecretRef?: string;
     workingReaction?: string;
     completedReaction?: string;
+    maxMessageAgeSeconds?: number;
   };
   owner: {
     openId: string;
@@ -96,7 +99,8 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
       eventKey: "im.message.receive_v1",
       identity: "bot",
       workingReaction: normalizeOptionalString(input.lark.workingReaction) ?? DEFAULT_LARK_WORKING_REACTION,
-      completedReaction: normalizeOptionalString(input.lark.completedReaction) ?? DEFAULT_LARK_COMPLETED_REACTION
+      completedReaction: normalizeOptionalString(input.lark.completedReaction) ?? DEFAULT_LARK_COMPLETED_REACTION,
+      maxMessageAgeSeconds: input.lark.maxMessageAgeSeconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS
     },
     owner: {
       openId: input.owner.openId,
@@ -172,7 +176,8 @@ export function parseTwinnyConfig(rawToml: string, options: LoadConfigOptions = 
       eventKey: parsed.lark?.event_key ?? "im.message.receive_v1",
       identity: parsed.lark?.identity ?? "bot",
       workingReaction: normalizeOptionalString(parsed.lark?.working_reaction) ?? DEFAULT_LARK_WORKING_REACTION,
-      completedReaction: normalizeOptionalString(parsed.lark?.completed_reaction) ?? DEFAULT_LARK_COMPLETED_REACTION
+      completedReaction: normalizeOptionalString(parsed.lark?.completed_reaction) ?? DEFAULT_LARK_COMPLETED_REACTION,
+      maxMessageAgeSeconds: parsed.lark?.max_message_age_seconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS
     },
     owner: {
       openId: parsed.owner?.open_id ?? "",
@@ -208,6 +213,9 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   if (config.lark.eventKey !== "im.message.receive_v1") issues.push("lark.event_key must be im.message.receive_v1");
   if (!config.lark.workingReaction) issues.push("lark.working_reaction is required");
   if (!config.lark.completedReaction) issues.push("lark.completed_reaction is required");
+  if (!Number.isFinite(config.lark.maxMessageAgeSeconds) || config.lark.maxMessageAgeSeconds <= 0) {
+    issues.push("lark.max_message_age_seconds must be a positive number");
+  }
   if (!config.owner.openId) issues.push("owner.open_id is required");
   if (!config.owner.displayName) issues.push("owner.display_name is required");
   if (!config.owner.tokenRef) issues.push("owner.token_ref is required");
@@ -251,7 +259,8 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
       event_key: config.lark.eventKey,
       secret_ref: config.lark.appSecretRef,
       working_reaction: config.lark.workingReaction,
-      completed_reaction: config.lark.completedReaction
+      completed_reaction: config.lark.completedReaction,
+      max_message_age_seconds: config.lark.maxMessageAgeSeconds
     },
     owner,
     roles: {
