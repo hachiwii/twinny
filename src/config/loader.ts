@@ -1,0 +1,258 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { parse, stringify, type TomlTable } from "smol-toml";
+import { z } from "zod";
+import type { RoleName, TwinnyConfig } from "../types.js";
+import { createRuntimePaths, expandHomePath, resolveTwinnyHome, type ResolveHomeOptions } from "./paths.js";
+import { SECRET_REFS } from "./secrets.js";
+
+const rawConfigSchema = z.object({
+  home: z.object({ path: z.string().optional() }).optional(),
+  codex: z
+    .object({
+      binary: z.string().optional(),
+      app_server_listen: z.literal("stdio://").optional()
+    })
+    .optional(),
+  lark: z
+    .object({
+      identity: z.literal("bot").optional(),
+      app_id: z.string().optional(),
+      event_key: z.literal("im.message.receive_v1").optional(),
+      secret_ref: z.string().optional()
+    })
+    .optional(),
+  owner: z
+    .object({
+      open_id: z.string().optional(),
+      user_id: z.string().optional(),
+      display_name: z.string().optional(),
+      token_ref: z.string().optional(),
+      refresh_token_ref: z.string().optional()
+    })
+    .optional(),
+  roles: z
+    .object({
+      owner: z.object({ codex_home: z.string().optional() }).optional(),
+      guest: z.object({ codex_home: z.string().optional() }).optional()
+    })
+    .optional()
+});
+
+export interface CreateTwinnyConfigInput {
+  home: string;
+  lark: {
+    appId: string;
+    appSecretRef?: string;
+  };
+  owner: {
+    openId: string;
+    userId?: string;
+    displayName: string;
+    tokenRef?: string;
+    refreshTokenRef?: string;
+  };
+  codex?: {
+    binary?: string;
+    appServerListen?: "stdio://";
+  };
+  roles?: Partial<Record<RoleName, { codexHome: string }>>;
+}
+
+export interface ConfigStatus {
+  paths: ReturnType<typeof createRuntimePaths>;
+  exists: boolean;
+  complete: boolean;
+  issues: string[];
+  config?: TwinnyConfig;
+}
+
+export type LoadConfigOptions = ResolveHomeOptions & {
+  home?: string;
+};
+
+export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig {
+  const home = path.resolve(expandHomePath(input.home));
+  const paths = createRuntimePaths(home);
+
+  return {
+    home,
+    codex: {
+      binary: input.codex?.binary ?? "codex",
+      appServerListen: input.codex?.appServerListen ?? "stdio://"
+    },
+    lark: {
+      appId: input.lark.appId,
+      appSecretRef: input.lark.appSecretRef ?? SECRET_REFS.larkAppSecret,
+      eventKey: "im.message.receive_v1",
+      identity: "bot"
+    },
+    owner: {
+      openId: input.owner.openId,
+      userId: input.owner.userId,
+      displayName: input.owner.displayName,
+      tokenRef: input.owner.tokenRef ?? SECRET_REFS.ownerUserToken,
+      refreshTokenRef: input.owner.refreshTokenRef
+    },
+    roles: {
+      owner: { codexHome: input.roles?.owner?.codexHome ?? paths.ownerCodexHome },
+      guest: { codexHome: input.roles?.guest?.codexHome ?? paths.guestCodexHome }
+    }
+  };
+}
+
+export async function loadTwinnyConfig(options: LoadConfigOptions = {}): Promise<TwinnyConfig> {
+  const status = await readConfigStatus(options);
+  if (!status.exists) {
+    throw new Error(`Twinny config not found at ${status.paths.configFile}`);
+  }
+  if (!status.config) {
+    throw new Error(`Twinny config could not be parsed at ${status.paths.configFile}`);
+  }
+  if (!status.complete) {
+    throw new Error(`Twinny config is incomplete: ${status.issues.join("; ")}`);
+  }
+  return status.config;
+}
+
+export async function readConfigStatus(options: LoadConfigOptions = {}): Promise<ConfigStatus> {
+  const home = path.resolve(expandHomePath(options.home ?? resolveTwinnyHome(options), options.homeDir));
+  const paths = createRuntimePaths(home);
+
+  let rawToml: string;
+  try {
+    rawToml = await fs.readFile(paths.configFile, "utf8");
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) {
+      return { paths, exists: false, complete: false, issues: ["config.toml does not exist"] };
+    }
+    throw error;
+  }
+
+  const config = parseTwinnyConfig(rawToml, { ...options, home });
+  applyEnvironmentOverrides(config, options.env ?? process.env);
+  const issues = validateTwinnyConfig(config);
+
+  return {
+    paths,
+    exists: true,
+    complete: issues.length === 0,
+    issues,
+    config
+  };
+}
+
+export function parseTwinnyConfig(rawToml: string, options: LoadConfigOptions = {}): TwinnyConfig {
+  const parsed = rawConfigSchema.parse(parse(rawToml));
+  const home = path.resolve(
+    expandHomePath(parsed.home?.path ?? options.home ?? resolveTwinnyHome(options), options.homeDir)
+  );
+  const paths = createRuntimePaths(home);
+
+  return {
+    home,
+    codex: {
+      binary: parsed.codex?.binary ?? "codex",
+      appServerListen: parsed.codex?.app_server_listen ?? "stdio://"
+    },
+    lark: {
+      appId: parsed.lark?.app_id ?? "",
+      appSecretRef: parsed.lark?.secret_ref ?? SECRET_REFS.larkAppSecret,
+      eventKey: parsed.lark?.event_key ?? "im.message.receive_v1",
+      identity: parsed.lark?.identity ?? "bot"
+    },
+    owner: {
+      openId: parsed.owner?.open_id ?? "",
+      userId: parsed.owner?.user_id,
+      displayName: parsed.owner?.display_name ?? "",
+      tokenRef: parsed.owner?.token_ref ?? SECRET_REFS.ownerUserToken,
+      refreshTokenRef: parsed.owner?.refresh_token_ref
+    },
+    roles: {
+      owner: { codexHome: resolveConfigPath(parsed.roles?.owner?.codex_home ?? paths.ownerCodexHome, home) },
+      guest: { codexHome: resolveConfigPath(parsed.roles?.guest?.codex_home ?? paths.guestCodexHome, home) }
+    }
+  };
+}
+
+export async function writeTwinnyConfig(config: TwinnyConfig, configFile = createRuntimePaths(config.home).configFile): Promise<void> {
+  await fs.mkdir(path.dirname(configFile), { recursive: true });
+  await fs.writeFile(configFile, serializeTwinnyConfig(config), { encoding: "utf8", mode: 0o600 });
+}
+
+export function serializeTwinnyConfig(config: TwinnyConfig): string {
+  return stringify(toTomlDocument(config)) + "\n";
+}
+
+export function validateTwinnyConfig(config: TwinnyConfig): string[] {
+  const issues: string[] = [];
+  if (!config.home) issues.push("home.path is required");
+  if (!config.codex.binary) issues.push("codex.binary is required");
+  if (config.codex.appServerListen !== "stdio://") issues.push("codex.app_server_listen must be stdio://");
+  if (!config.lark.appId) issues.push("lark.app_id is required");
+  if (!config.lark.appSecretRef) issues.push("lark.secret_ref is required");
+  if (config.lark.identity !== "bot") issues.push("lark.identity must be bot");
+  if (config.lark.eventKey !== "im.message.receive_v1") issues.push("lark.event_key must be im.message.receive_v1");
+  if (!config.owner.openId) issues.push("owner.open_id is required");
+  if (!config.owner.displayName) issues.push("owner.display_name is required");
+  if (!config.owner.tokenRef) issues.push("owner.token_ref is required");
+  if (!config.roles.owner.codexHome) issues.push("roles.owner.codex_home is required");
+  if (!config.roles.guest.codexHome) issues.push("roles.guest.codex_home is required");
+  return issues;
+}
+
+function applyEnvironmentOverrides(config: TwinnyConfig, env: NodeJS.ProcessEnv): void {
+  if (env.TWINNY_LARK_APP_ID) {
+    config.lark.appId = env.TWINNY_LARK_APP_ID;
+  }
+}
+
+function toTomlDocument(config: TwinnyConfig): TomlTable {
+  const owner: TomlTable = {
+    open_id: config.owner.openId,
+    display_name: config.owner.displayName
+  };
+  if (config.owner.tokenRef) {
+    owner.token_ref = config.owner.tokenRef;
+  }
+  if (config.owner.userId) {
+    owner.user_id = config.owner.userId;
+  }
+  if (config.owner.refreshTokenRef) {
+    owner.refresh_token_ref = config.owner.refreshTokenRef;
+  }
+
+  return {
+    home: {
+      path: config.home
+    },
+    codex: {
+      binary: config.codex.binary,
+      app_server_listen: config.codex.appServerListen
+    },
+    lark: {
+      identity: config.lark.identity,
+      app_id: config.lark.appId,
+      event_key: config.lark.eventKey,
+      secret_ref: config.lark.appSecretRef
+    },
+    owner,
+    roles: {
+      owner: {
+        codex_home: config.roles.owner.codexHome
+      },
+      guest: {
+        codex_home: config.roles.guest.codexHome
+      }
+    }
+  };
+}
+
+function resolveConfigPath(value: string, home: string): string {
+  const expanded = expandHomePath(value);
+  return path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(home, expanded);
+}
+
+function isNodeError(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === code;
+}
