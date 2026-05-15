@@ -88,6 +88,14 @@ describe("CodexAppServer", () => {
         status: "completed",
         durationMs: 7
       });
+      await expect(
+        server.steerTurn({
+          threadId: "thread-existing",
+          turnId: "turn-1",
+          text: "steer from lark"
+        })
+      ).resolves.toBeUndefined();
+      await expect(server.interruptTurn({ threadId: "thread-existing", turnId: "turn-1" })).resolves.toBeUndefined();
 
       const sent = readCapturedMessages(captureFile);
       expect(sent[0]).toMatchObject({
@@ -119,6 +127,19 @@ describe("CodexAppServer", () => {
           input: [{ type: "text", text: "hello from lark", text_elements: [] }],
           cwd: workspace,
           approvalPolicy: "never"
+        }
+      });
+      expect(sent.find((message) => message.method === "turn/steer")).toMatchObject({
+        params: {
+          threadId: "thread-existing",
+          input: [{ type: "text", text: "steer from lark", text_elements: [] }],
+          expectedTurnId: "turn-1"
+        }
+      });
+      expect(sent.find((message) => message.method === "turn/interrupt")).toMatchObject({
+        params: {
+          threadId: "thread-existing",
+          turnId: "turn-1"
         }
       });
     } finally {
@@ -202,6 +223,15 @@ rl.on("line", (line) => {
         }
       }
     });
+    return;
+  }
+  if (message.method === "turn/steer") {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === "turn/interrupt") {
+    send({ id: message.id, result: {} });
+    return;
   }
 });
 `,

@@ -11,8 +11,8 @@ import type {
   RoleName,
   TwinnyConfig
 } from "../types.js";
-import { conversationKeyForP2p, conversationTypeForChat, roleForSender } from "./routing.js";
 import { SerialQueue } from "./queue.js";
+import { conversationKeyForP2p, conversationTypeForChat, roleForSender } from "./routing.js";
 
 export interface ConversationRepository {
   findByConversationKey(conversationKey: string): Promise<ConversationRecord | null> | ConversationRecord | null;
@@ -45,8 +45,22 @@ export interface CodexBridge {
     input: string;
     cwd: string;
     approvalPolicy: "never";
+    onTurnStarted?: (turnId: string) => Promise<void> | void;
     onAgentMessage?: (message: { id: string; text: string }) => Promise<void> | void;
   }): Promise<CodexTurnResult>;
+  steerTurn(params: {
+    role: RoleName;
+    threadId: string;
+    turnId: string;
+    input: string;
+    cwd: string;
+    approvalPolicy: "never";
+  }): Promise<void>;
+  interruptTurn(params: {
+    role: RoleName;
+    threadId: string;
+    turnId: string;
+  }): Promise<void>;
 }
 
 export interface LarkResponder {
@@ -77,8 +91,39 @@ interface ActiveThreadResolution {
   previousThreadId?: string;
 }
 
+interface PendingMessage {
+  messageId: string;
+  text: string;
+  original: IncomingLarkMessage;
+}
+
+interface ActiveTurn {
+  runId: number;
+  role: RoleName;
+  threadId: string;
+  workspace: string;
+  replyMessageId: string;
+  turnId?: string;
+  reaction?: LarkReactionHandle | null;
+  pendingSteers: PendingMessage[];
+  cancelRequested: boolean;
+}
+
+interface ConversationState {
+  controlQueue: SerialQueue;
+  active?: ActiveTurn;
+  pendingBatch: PendingMessage[];
+  nextRunId: number;
+}
+
+type ParsedCommand =
+  | { kind: "message"; text: string }
+  | { kind: "queue"; text: string }
+  | { kind: "stop" }
+  | { kind: "new" };
+
 export class ConversationManager {
-  private readonly queues = new Map<string, SerialQueue>();
+  private readonly states = new Map<string, ConversationState>();
   private readonly dedupe: LRUCache<string, true>;
   private readonly log: Logger;
 
@@ -108,57 +153,338 @@ export class ConversationManager {
     }
 
     const conversationKey = conversationKeyForP2p(message.senderOpenId);
-    const queue = this.getQueue(conversationKey);
-    await queue.enqueue(() => this.processMessage(conversationKey, message));
+    const state = this.getState(conversationKey);
+    await state.controlQueue.enqueue(() => this.routeMessage(state, conversationKey, message));
   }
 
   queueDepth(conversationKey: string): number {
-    return this.queues.get(conversationKey)?.depth ?? 0;
+    const state = this.states.get(conversationKey);
+    if (!state) {
+      return 0;
+    }
+    return state.controlQueue.depth + state.pendingBatch.length + (state.active?.pendingSteers.length ?? 0);
   }
 
-  private async processMessage(conversationKey: string, message: IncomingLarkMessage): Promise<void> {
-    let reaction: LarkReactionHandle | null = null;
-    const startedAt = Date.now();
-    try {
-      reaction = await this.addReactionBestEffort(message.messageId);
-      const role = roleForSender(this.options.config, message.senderOpenId);
-      const workspace = await this.options.workspaces.ensureWorkspace(conversationKey);
-      const binding = await this.getOrCreateConversation({ conversationKey, role, workspace, message });
-      const activeThread = binding.created
-        ? { threadId: binding.conversation.codexThreadId, replacedMissingThread: false }
-        : await this.resumeExistingThread(binding.conversation, { role, workspace, conversationKey });
-      if (activeThread.replacedMissingThread) {
-        await this.notifyThreadReplacementBestEffort(
-          message.messageId,
-          activeThread.previousThreadId,
-          activeThread.threadId
-        );
+  private async routeMessage(
+    state: ConversationState,
+    conversationKey: string,
+    message: IncomingLarkMessage
+  ): Promise<void> {
+    const parsed = parseSlashCommand(message.text);
+    if (parsed.kind === "stop") {
+      await this.handleStopCommand(state, message);
+      return;
+    }
+    if (parsed.kind === "new") {
+      await this.handleNewCommand(state, conversationKey, message);
+      return;
+    }
+    if (parsed.kind === "queue") {
+      await this.handleQueueCommand(state, conversationKey, message, parsed.text);
+      return;
+    }
+    await this.handleUserMessage(state, conversationKey, message, parsed.text);
+  }
+
+  private async handleUserMessage(
+    state: ConversationState,
+    conversationKey: string,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    const pending = toPendingMessage(message, text);
+    const active = state.active;
+    if (state.pendingBatch.length > 0 || active?.cancelRequested) {
+      state.pendingBatch.push(pending);
+      if (!active) {
+        await this.startPendingBatch(state, conversationKey);
       }
-      const result = await this.options.codex.startTurn({
+      return;
+    }
+
+    if (active) {
+      await this.steerOrDefer(state, active, pending);
+      return;
+    }
+
+    await this.startTurnForMessages(state, conversationKey, [pending]);
+  }
+
+  private async handleQueueCommand(
+    state: ConversationState,
+    conversationKey: string,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    if (!text) {
+      await this.replyControlBestEffort(message.messageId, "用法：/queue <message>");
+      return;
+    }
+
+    state.pendingBatch.push(toPendingMessage(message, text));
+    if (!state.active) {
+      await this.startPendingBatch(state, conversationKey);
+    }
+  }
+
+  private async handleStopCommand(state: ConversationState, message: IncomingLarkMessage): Promise<void> {
+    const cleared = this.clearPendingMessages(state);
+    const interrupted = await this.cancelActiveTurn(state);
+    const summary = interrupted
+      ? `已停止当前任务，清空 ${cleared} 条待处理消息。`
+      : `当前没有正在运行的任务，清空 ${cleared} 条待处理消息。`;
+    await this.replyControlBestEffort(message.messageId, summary);
+  }
+
+  private async handleNewCommand(
+    state: ConversationState,
+    conversationKey: string,
+    message: IncomingLarkMessage
+  ): Promise<void> {
+    this.clearPendingMessages(state);
+    await this.cancelActiveTurn(state);
+    const role = roleForSender(this.options.config, message.senderOpenId);
+    const workspace = await this.options.workspaces.ensureWorkspace(conversationKey);
+    const thread = await this.options.codex.startThread({
+      role,
+      cwd: workspace,
+      approvalPolicy: "never"
+    });
+
+    const existing = await this.options.repository.findByConversationKey(conversationKey);
+    if (existing) {
+      await this.options.repository.updateThreadBinding(conversationKey, {
+        codexThreadId: thread.threadId,
         role,
-        threadId: activeThread.threadId,
+        roleCodexHome: this.options.roles.codexHomeFor(role),
+        workspace
+      });
+    } else {
+      await this.options.repository.create({
+        conversationKey,
+        type: "p2p",
+        chatId: message.senderOpenId,
+        name: conversationNameForMessage(this.options.config, role, message),
+        role,
+        codexThreadId: thread.threadId,
+        workspace,
+        roleCodexHome: this.options.roles.codexHomeFor(role)
+      });
+    }
+    await this.replyControlBestEffort(message.messageId, `已新开 Codex thread：${thread.threadId}`);
+  }
+
+  private async steerOrDefer(
+    state: ConversationState,
+    active: ActiveTurn,
+    message: PendingMessage
+  ): Promise<void> {
+    if (!active.turnId) {
+      active.pendingSteers.push(message);
+      active.replyMessageId = message.messageId;
+      await this.moveReactionBestEffort(active, message.messageId);
+      return;
+    }
+
+    try {
+      await this.options.codex.steerTurn({
+        role: active.role,
+        threadId: active.threadId,
+        turnId: active.turnId,
         input: message.text,
+        cwd: active.workspace,
+        approvalPolicy: "never"
+      });
+      active.replyMessageId = message.messageId;
+      await this.moveReactionBestEffort(active, message.messageId);
+    } catch (error) {
+      this.log.warn(
+        { error, threadId: active.threadId, turnId: active.turnId, messageId: message.messageId },
+        "failed to steer active codex turn; queueing message for next turn"
+      );
+      state.pendingBatch.push(message);
+      await this.replyControlBestEffort(message.messageId, "当前任务已不可打断注入，已加入下一轮队列。");
+    }
+  }
+
+  private async startPendingBatch(state: ConversationState, conversationKey: string): Promise<void> {
+    if (state.active || state.pendingBatch.length === 0) {
+      return;
+    }
+    const messages = state.pendingBatch.splice(0);
+    await this.startTurnForMessages(state, conversationKey, messages);
+  }
+
+  private async startTurnForMessages(
+    state: ConversationState,
+    conversationKey: string,
+    messages: PendingMessage[]
+  ): Promise<void> {
+    if (messages.length === 0) {
+      return;
+    }
+    const anchor = messages[messages.length - 1]!;
+    const role = roleForSender(this.options.config, anchor.original.senderOpenId);
+    const workspace = await this.options.workspaces.ensureWorkspace(conversationKey);
+    const binding = await this.getOrCreateConversation({ conversationKey, role, workspace, message: anchor.original });
+    const activeThread = binding.created
+      ? { threadId: binding.conversation.codexThreadId, replacedMissingThread: false }
+      : await this.resumeExistingThread(binding.conversation, { role, workspace, conversationKey });
+    if (activeThread.replacedMissingThread) {
+      await this.notifyThreadReplacementBestEffort(anchor.messageId, activeThread.previousThreadId, activeThread.threadId);
+    }
+
+    const active: ActiveTurn = {
+      runId: ++state.nextRunId,
+      role,
+      threadId: activeThread.threadId,
+      workspace,
+      replyMessageId: anchor.messageId,
+      reaction: await this.addReactionBestEffort(anchor.messageId),
+      pendingSteers: [],
+      cancelRequested: false
+    };
+    state.active = active;
+    const input = messages.map((message) => message.text).join("\n");
+    const startedAt = Date.now();
+
+    void this.options.codex
+      .startTurn({
+        role,
+        threadId: active.threadId,
+        input,
         cwd: workspace,
         approvalPolicy: "never",
-        onAgentMessage: (agentMessage) => this.replyAgentMessageBestEffort(message.messageId, agentMessage)
+        onTurnStarted: (turnId) => this.handleTurnStarted(state, active, turnId),
+        onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage)
+      })
+      .then((result) => {
+        this.log.info(
+          {
+            messageId: anchor.messageId,
+            conversationKey,
+            role,
+            codexThreadId: active.threadId,
+            turnId: result.turnId,
+            status: result.status,
+            durationMs: Date.now() - startedAt
+          },
+          "conversation turn completed"
+        );
+      })
+      .catch(async (error) => {
+        if (state.active === active && !active.cancelRequested) {
+          this.log.error({ error, messageId: active.replyMessageId, conversationKey }, "conversation turn failed");
+          await this.replyErrorBestEffort(active.replyMessageId, error);
+        } else {
+          this.log.debug({ error, conversationKey, threadId: active.threadId }, "ignored stale codex turn failure");
+        }
+      })
+      .finally(() => {
+        void state.controlQueue.enqueue(() => this.finishActiveTurn(state, conversationKey, active));
       });
-      this.log.info(
-        {
-          messageId: message.messageId,
-          conversationKey,
-          role,
-          codexThreadId: activeThread.threadId,
-          durationMs: Date.now() - startedAt
-        },
-        "conversation turn completed"
-      );
-    } catch (error) {
-      this.log.error({ error, messageId: message.messageId, conversationKey }, "conversation turn failed");
-      await this.replyErrorBestEffort(message.messageId, error);
-    } finally {
-      if (reaction) {
-        await this.removeReactionBestEffort(reaction);
+  }
+
+  private async handleTurnStarted(state: ConversationState, active: ActiveTurn, turnId: string): Promise<void> {
+    await state.controlQueue.enqueue(async () => {
+      if (active.turnId && active.turnId !== turnId) {
+        return;
       }
+      active.turnId = turnId;
+      if (active.cancelRequested) {
+        await this.interruptActiveTurnBestEffort(active);
+        return;
+      }
+      if (state.active !== active) {
+        return;
+      }
+      await this.flushPendingSteers(state, active);
+    });
+  }
+
+  private async flushPendingSteers(state: ConversationState, active: ActiveTurn): Promise<void> {
+    if (!active.turnId || active.pendingSteers.length === 0) {
+      return;
+    }
+
+    const pending = active.pendingSteers.splice(0);
+    for (let index = 0; index < pending.length; index += 1) {
+      if (state.active !== active || active.cancelRequested || !active.turnId) {
+        state.pendingBatch.unshift(...pending.slice(index));
+        return;
+      }
+      const message = pending[index]!;
+      try {
+        await this.options.codex.steerTurn({
+          role: active.role,
+          threadId: active.threadId,
+          turnId: active.turnId,
+          input: message.text,
+          cwd: active.workspace,
+          approvalPolicy: "never"
+        });
+      } catch (error) {
+        this.log.warn(
+          { error, threadId: active.threadId, turnId: active.turnId, messageId: message.messageId },
+          "failed to flush pending steer messages; queueing remaining messages"
+        );
+        state.pendingBatch.unshift(...pending.slice(index));
+        return;
+      }
+    }
+  }
+
+  private async finishActiveTurn(
+    state: ConversationState,
+    conversationKey: string,
+    active: ActiveTurn
+  ): Promise<void> {
+    if (state.active !== active) {
+      await this.clearReactionBestEffort(active);
+      return;
+    }
+    state.active = undefined;
+    await this.clearReactionBestEffort(active);
+    await this.startPendingBatch(state, conversationKey);
+  }
+
+  private clearPendingMessages(state: ConversationState): number {
+    const activePending = state.active?.pendingSteers.length ?? 0;
+    if (state.active) {
+      state.active.pendingSteers = [];
+    }
+    const batchPending = state.pendingBatch.length;
+    state.pendingBatch = [];
+    return activePending + batchPending;
+  }
+
+  private async cancelActiveTurn(state: ConversationState): Promise<boolean> {
+    const active = state.active;
+    if (!active) {
+      return false;
+    }
+    state.active = undefined;
+    active.cancelRequested = true;
+    active.pendingSteers = [];
+    await this.clearReactionBestEffort(active);
+    if (active.turnId) {
+      await this.interruptActiveTurnBestEffort(active);
+    }
+    return true;
+  }
+
+  private async interruptActiveTurnBestEffort(active: ActiveTurn): Promise<void> {
+    if (!active.turnId) {
+      return;
+    }
+    try {
+      await this.options.codex.interruptTurn({
+        role: active.role,
+        threadId: active.threadId,
+        turnId: active.turnId
+      });
+    } catch (error) {
+      this.log.warn({ error, threadId: active.threadId, turnId: active.turnId }, "failed to interrupt codex turn");
     }
   }
 
@@ -241,14 +567,18 @@ export class ConversationManager {
     }
   }
 
-  private getQueue(conversationKey: string): SerialQueue {
-    const existing = this.queues.get(conversationKey);
+  private getState(conversationKey: string): ConversationState {
+    const existing = this.states.get(conversationKey);
     if (existing) {
       return existing;
     }
-    const queue = new SerialQueue();
-    this.queues.set(conversationKey, queue);
-    return queue;
+    const state: ConversationState = {
+      controlQueue: new SerialQueue(),
+      pendingBatch: [],
+      nextRunId: 0
+    };
+    this.states.set(conversationKey, state);
+    return state;
   }
 
   private async addReactionBestEffort(messageId: string): Promise<LarkReactionHandle | null> {
@@ -257,6 +587,28 @@ export class ConversationManager {
     } catch (error) {
       this.log.warn({ error, messageId }, "failed to add typing reaction");
       return null;
+    }
+  }
+
+  private async moveReactionBestEffort(active: ActiveTurn, messageId: string): Promise<void> {
+    if (active.reaction?.messageId === messageId) {
+      return;
+    }
+    const previous = active.reaction;
+    const next = await this.addReactionBestEffort(messageId);
+    if (next) {
+      active.reaction = next;
+      if (previous) {
+        await this.removeReactionBestEffort(previous);
+      }
+    }
+  }
+
+  private async clearReactionBestEffort(active: ActiveTurn): Promise<void> {
+    const reaction = active.reaction;
+    active.reaction = null;
+    if (reaction) {
+      await this.removeReactionBestEffort(reaction);
     }
   }
 
@@ -286,12 +638,31 @@ export class ConversationManager {
     }
   }
 
+  private async replyControlBestEffort(messageId: string, text: string): Promise<void> {
+    try {
+      await this.options.lark.replyText(messageId, text);
+    } catch (error) {
+      this.log.warn({ error, messageId }, "failed to send lark control reply");
+    }
+  }
+
   private async replyErrorBestEffort(messageId: string, error: unknown): Promise<void> {
     try {
       await this.options.lark.replyText(messageId, `处理失败：${toErrorMessage(error)}`);
     } catch (replyError) {
       this.log.error({ error: replyError, messageId }, "failed to send error reply");
     }
+  }
+
+  private async replyAgentMessageForActiveBestEffort(
+    state: ConversationState,
+    active: ActiveTurn,
+    agentMessage: { id: string; text: string }
+  ): Promise<void> {
+    if (state.active !== active || active.cancelRequested) {
+      return;
+    }
+    await this.replyAgentMessageBestEffort(active.replyMessageId, agentMessage);
   }
 
   private async replyAgentMessageBestEffort(
@@ -308,6 +679,35 @@ export class ConversationManager {
       this.log.warn({ error, messageId, agentMessageId: agentMessage.id }, "failed to send agent message item to lark");
     }
   }
+}
+
+function parseSlashCommand(text: string): ParsedCommand {
+  const trimmed = text.trim();
+  const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(trimmed);
+  if (!match) {
+    return { kind: "message", text };
+  }
+
+  const command = match[1]!.toLowerCase();
+  const rest = match[2]?.trim() ?? "";
+  if (command === "stop") {
+    return { kind: "stop" };
+  }
+  if (command === "new") {
+    return { kind: "new" };
+  }
+  if (command === "queue") {
+    return { kind: "queue", text: rest };
+  }
+  return { kind: "message", text };
+}
+
+function toPendingMessage(message: IncomingLarkMessage, text: string): PendingMessage {
+  return {
+    messageId: message.messageId,
+    text,
+    original: message
+  };
 }
 
 function isMissingRolloutError(error: unknown): boolean {

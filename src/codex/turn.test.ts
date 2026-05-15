@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { buildTurnStartParams, TurnOutputAccumulator } from "./turn.js";
+import { describe, expect, it, vi } from "vitest";
+import { buildTurnInterruptParams, buildTurnStartParams, buildTurnSteerParams, TurnOutputAccumulator } from "./turn.js";
 
 describe("codex turn payloads", () => {
   it("builds turn/start text input with minimal Twinny runtime overrides", () => {
@@ -14,6 +14,27 @@ describe("codex turn payloads", () => {
       input: [{ type: "text", text: "hello", text_elements: [] }],
       cwd: "/tmp/twinny/workspaces/p2p:ou_1",
       approvalPolicy: "never"
+    });
+  });
+
+  it("builds turn/steer text input with the active turn precondition", () => {
+    expect(
+      buildTurnSteerParams({
+        threadId: "thread_123",
+        turnId: "turn_1",
+        text: "steer this turn"
+      })
+    ).toEqual({
+      threadId: "thread_123",
+      input: [{ type: "text", text: "steer this turn", text_elements: [] }],
+      expectedTurnId: "turn_1"
+    });
+  });
+
+  it("builds turn/interrupt params", () => {
+    expect(buildTurnInterruptParams({ threadId: "thread_123", turnId: "turn_1" })).toEqual({
+      threadId: "thread_123",
+      turnId: "turn_1"
     });
   });
 });
@@ -104,5 +125,40 @@ describe("TurnOutputAccumulator", () => {
     await accumulator.wait();
 
     expect(messages).toEqual([{ id: "msg_1", text: "first" }]);
+  });
+
+  it("reports interrupted turn status and emits turn-started once", async () => {
+    const turnStarted = vi.fn();
+    const accumulator = new TurnOutputAccumulator("thread_123", undefined, {
+      onTurnStarted: turnStarted
+    });
+
+    accumulator.record({
+      method: "turn/started",
+      params: {
+        threadId: "thread_123",
+        turn: { id: "turn_1" }
+      }
+    });
+    accumulator.setTurnId("turn_1");
+    accumulator.record({
+      method: "turn/completed",
+      params: {
+        threadId: "thread_123",
+        turn: {
+          id: "turn_1",
+          status: "interrupted",
+          items: []
+        }
+      }
+    });
+
+    await expect(accumulator.wait()).resolves.toMatchObject({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      status: "interrupted"
+    });
+    expect(turnStarted).toHaveBeenCalledTimes(1);
+    expect(turnStarted).toHaveBeenCalledWith("turn_1");
   });
 });

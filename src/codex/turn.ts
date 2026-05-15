@@ -19,6 +19,7 @@ export interface TurnStartOptions {
   threadId: string;
   text: string;
   cwd: string;
+  onTurnStarted?: (turnId: string) => Promise<void> | void;
   onAgentMessage?: (message: CompletedAgentMessage) => Promise<void> | void;
 }
 
@@ -52,6 +53,28 @@ export interface CompletedAgentMessage {
   text: string;
 }
 
+export interface TurnSteerOptions {
+  threadId: string;
+  turnId: string;
+  text: string;
+}
+
+export interface TurnSteerParams {
+  threadId: string;
+  input: TextTurnInput[];
+  expectedTurnId: string;
+}
+
+export interface TurnInterruptOptions {
+  threadId: string;
+  turnId: string;
+}
+
+export interface TurnInterruptParams {
+  threadId: string;
+  turnId: string;
+}
+
 export function buildTextTurnInput(text: string): TextTurnInput {
   return {
     type: "text",
@@ -69,12 +92,28 @@ export function buildTurnStartParams(options: TurnStartOptions): TurnStartParams
   };
 }
 
+export function buildTurnSteerParams(options: TurnSteerOptions): TurnSteerParams {
+  return {
+    threadId: options.threadId,
+    input: [buildTextTurnInput(options.text)],
+    expectedTurnId: options.turnId
+  };
+}
+
+export function buildTurnInterruptParams(options: TurnInterruptOptions): TurnInterruptParams {
+  return {
+    threadId: options.threadId,
+    turnId: options.turnId
+  };
+}
+
 export async function startCodexTurn(
   protocol: CodexProtocolClient,
   options: TurnStartOptions,
   requestOptions: { timeoutMs?: number } = {}
 ): Promise<CodexTurnResult> {
   const accumulator = new TurnOutputAccumulator(options.threadId, undefined, {
+    onTurnStarted: options.onTurnStarted,
     onAgentMessage: options.onAgentMessage
   });
   const onNotification = (notification: CodexNotificationMessage): void => {
@@ -101,12 +140,24 @@ export async function startCodexTurn(
   }
 }
 
+export async function steerCodexTurn(protocol: CodexProtocolClient, options: TurnSteerOptions): Promise<void> {
+  await protocol.request<Record<string, never>, TurnSteerParams>("turn/steer", buildTurnSteerParams(options));
+}
+
+export async function interruptCodexTurn(protocol: CodexProtocolClient, options: TurnInterruptOptions): Promise<void> {
+  await protocol.request<Record<string, never>, TurnInterruptParams>(
+    "turn/interrupt",
+    buildTurnInterruptParams(options)
+  );
+}
+
 export class TurnOutputAccumulator {
   private readonly assistantMessages = new Map<string, string>();
   private readonly pendingAgentMessageCallbacks: Promise<void>[] = [];
   private agentMessageCallbackChain = Promise.resolve();
   private readonly startedAt = Date.now();
   private turnId: string | undefined;
+  private emittedTurnStarted = false;
   private completed: TurnCompletedParams | undefined;
   private completionError: Error | undefined;
   private resolveWait: ((result: CodexTurnResult) => void) | undefined;
@@ -115,7 +166,10 @@ export class TurnOutputAccumulator {
   constructor(
     private readonly threadId: string,
     turnId?: string,
-    private readonly callbacks: { onAgentMessage?: (message: CompletedAgentMessage) => Promise<void> | void } = {}
+    private readonly callbacks: {
+      onTurnStarted?: (turnId: string) => Promise<void> | void;
+      onAgentMessage?: (message: CompletedAgentMessage) => Promise<void> | void;
+    } = {}
   ) {
     this.turnId = turnId;
   }
@@ -123,6 +177,15 @@ export class TurnOutputAccumulator {
   setTurnId(turnId: string): void {
     if (!this.turnId) {
       this.turnId = turnId;
+    }
+    if (!this.emittedTurnStarted) {
+      this.emittedTurnStarted = true;
+      void Promise.resolve(this.callbacks.onTurnStarted?.(this.turnId)).catch((error: unknown) => {
+        const parsedError =
+          error instanceof Error ? error : new TwinnyError(toErrorMessage(error), "CODEX_TURN_STARTED_CALLBACK_FAILED");
+        this.completionError = parsedError;
+        this.rejectWait?.(parsedError);
+      });
     }
   }
 
@@ -253,7 +316,7 @@ export class TurnOutputAccumulator {
 
   private toResult(): CodexTurnResult {
     const turn = this.completed?.turn;
-    const status = turn?.status === "failed" ? "failed" : "completed";
+    const status = turn?.status === "failed" ? "failed" : turn?.status === "interrupted" ? "interrupted" : "completed";
     return {
       threadId: this.threadId,
       turnId: this.turnId,

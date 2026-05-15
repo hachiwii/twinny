@@ -105,7 +105,7 @@ export interface CodexTurnResult {
   threadId: string;
   turnId?: string;
   text: string;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "interrupted";
   error?: string;
   durationMs?: number;
 }

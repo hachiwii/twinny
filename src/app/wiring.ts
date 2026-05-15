@@ -205,20 +205,47 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       threadId,
       input,
       cwd,
+      onTurnStarted,
       onAgentMessage
     }: {
       role: RoleName;
       threadId: string;
       input: string;
       cwd: string;
+      onTurnStarted?: (turnId: string) => Promise<void> | void;
       onAgentMessage?: (message: { id: string; text: string }) => Promise<void> | void;
     }) =>
       pool.get(role).startTurn({
         threadId,
         text: input,
         cwd,
+        onTurnStarted,
         onAgentMessage
-      })
+      }),
+    steerTurn: async ({
+      role,
+      threadId,
+      turnId,
+      input
+    }: {
+      role: RoleName;
+      threadId: string;
+      turnId: string;
+      input: string;
+    }): Promise<void> => {
+      await pool.get(role).steerTurn({ threadId, turnId, text: input });
+    },
+    interruptTurn: async ({
+      role,
+      threadId,
+      turnId
+    }: {
+      role: RoleName;
+      threadId: string;
+      turnId: string;
+    }): Promise<void> => {
+      await pool.get(role).interruptTurn({ threadId, turnId });
+    }
   };
 }
 

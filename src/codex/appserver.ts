@@ -5,7 +5,7 @@ import { ensureGuestWorkspaceProjectTrusted } from "../roles/index.js";
 import type { RoleName } from "../types.js";
 import { CodexProtocolClient, createInitializeParams, type InitializeResponse } from "./protocol.js";
 import { resumeCodexThread, startCodexThread, type ThreadResumeResponse, type ThreadStartResponse } from "./thread.js";
-import { startCodexTurn, type TurnStartOptions } from "./turn.js";
+import { interruptCodexTurn, startCodexTurn, steerCodexTurn, type TurnStartOptions } from "./turn.js";
 
 export interface CodexAppServerOptions {
   role: RoleName;
@@ -121,6 +121,14 @@ export class CodexAppServer extends EventEmitter {
 
   async startTurn(options: TurnStartOptions): Promise<import("../types.js").CodexTurnResult> {
     return startCodexTurn(this.protocol, options, { timeoutMs: this.options.requestTimeoutMs });
+  }
+
+  async steerTurn(options: { threadId: string; turnId: string; text: string }): Promise<void> {
+    await steerCodexTurn(this.protocol, options);
+  }
+
+  async interruptTurn(options: { threadId: string; turnId: string }): Promise<void> {
+    await interruptCodexTurn(this.protocol, options);
   }
 
   async stop(signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
