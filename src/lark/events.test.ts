@@ -40,6 +40,34 @@ describe("LarkEventConsumer", () => {
     expect(wsClient.close).toHaveBeenCalledWith({ force: true });
     expect(consumer.isRunning).toBe(false);
   });
+
+  it("propagates onMessage errors so the websocket layer can respond with failure", async () => {
+    const registered: Record<string, (data: unknown) => unknown> = {};
+    const dispatcher: EventDispatcherLike = {
+      register(handles) {
+        Object.assign(registered, handles);
+        return this;
+      }
+    };
+    const wsClient: WsClientLike = {
+      start: vi.fn(),
+      close: vi.fn()
+    };
+    const consumer = new LarkEventConsumer({
+      appId: "cli_1234567890abcdef",
+      appSecret: "secret",
+      warmTenantToken: false,
+      onMessage: () => {
+        throw new Error("submit rejected");
+      },
+      eventDispatcherFactory: () => dispatcher,
+      wsClientFactory: () => wsClient
+    });
+
+    await consumer.start();
+
+    await expect(registered["im.message.receive_v1"](receiveEvent())).rejects.toThrow("submit rejected");
+  });
 });
 
 function receiveEvent(overrides: { sender?: Record<string, unknown>; message?: Record<string, unknown> } = {}) {

@@ -26,8 +26,14 @@ describe("ConversationManager", () => {
     const lark = createLarkResponder();
     const manager = createManager({ codex, lark });
 
-    await manager.handleIncoming(message("m1", "first"));
-    await manager.handleIncoming(message("m2", "second"));
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "second"));
+    await waitForExpect(() =>
+      expect(codex.steerTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ threadId: "thread_1", turnId: "turn_1", input: "second" })
+      )
+    );
 
     expect(codex.startTurn).toHaveBeenCalledTimes(1);
     expect(codex.steerTurn).toHaveBeenCalledWith(
@@ -47,9 +53,11 @@ describe("ConversationManager", () => {
     const { codex, turns } = createDeferredCodex();
     const manager = createManager({ codex });
 
-    await manager.handleIncoming(message("m1", "first"));
-    await manager.handleIncoming(message("m2", "/queue queued"));
-    await manager.handleIncoming(message("m3", "second queued"));
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue queued"));
+    manager.submitIncoming(message("m3", "second queued"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(2));
 
     expect(codex.startTurn).toHaveBeenCalledTimes(1);
     expect(codex.steerTurn).not.toHaveBeenCalled();
@@ -69,9 +77,16 @@ describe("ConversationManager", () => {
     const lark = createLarkResponder();
     const manager = createManager({ codex, lark });
 
-    await manager.handleIncoming(message("m1", "first"));
-    await manager.handleIncoming(message("m2", "/queue queued"));
-    await manager.handleIncoming(message("m3", "/stop"));
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue queued"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
+    manager.submitIncoming(message("m3", "/stop"));
+    await waitForExpect(() =>
+      expect(codex.interruptTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ role: "guest", threadId: "thread_1", turnId: "turn_1" })
+      )
+    );
 
     expect(codex.interruptTurn).toHaveBeenCalledWith(
       expect.objectContaining({ role: "guest", threadId: "thread_1", turnId: "turn_1" })
@@ -101,10 +116,13 @@ describe("ConversationManager", () => {
     const lark = createLarkResponder();
     const manager = createManager({ repository, codex, lark });
 
-    await manager.handleIncoming(message("m1", "first"));
-    await manager.handleIncoming(message("m2", "/queue stale"));
-    await manager.handleIncoming(message("m3", "/new"));
-    await manager.handleIncoming(message("m4", "after new"));
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue stale"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
+    manager.submitIncoming(message("m3", "/new"));
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("m3", "已新开 Codex thread：thread_new"));
+    manager.submitIncoming(message("m4", "after new"));
 
     expect(codex.interruptTurn).toHaveBeenCalledWith(
       expect.objectContaining({ role: "guest", threadId: "thread_old", turnId: "turn_1" })
@@ -129,8 +147,10 @@ describe("ConversationManager", () => {
     const codex = createCodex();
     const manager = createManager({ codex });
 
-    await manager.handleIncoming(message("m1", "first"));
-    await manager.handleIncoming(message("m1", "first again"));
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m1", "first again"));
+    await waitForDelay();
 
     expect(codex.startTurn).toHaveBeenCalledTimes(1);
   });
@@ -155,7 +175,7 @@ describe("ConversationManager", () => {
     const lark = createLarkResponder();
     const manager = createManager({ repository, codex, lark });
 
-    await manager.handleIncoming(message("m1", "first"));
+    manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("m1", "reply"));
 
     expect(row.codexThreadId).toBe("thread_replacement");
@@ -180,12 +200,32 @@ describe("ConversationManager", () => {
     const lark = createLarkResponder();
     const manager = createManager({ codex, lark });
 
-    await manager.handleIncoming(message("m1", "first"));
+    manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledTimes(2));
 
     expect(lark.replyText).toHaveBeenNthCalledWith(1, "m1", "first item");
     expect(lark.replyText).toHaveBeenNthCalledWith(2, "m1", "second item");
     expect(lark.replyText).not.toHaveBeenCalledWith("m1", "final aggregate should not be sent");
+  });
+
+  it("rejects new submissions during shutdown and notifies in-flight queued messages", async () => {
+    const { codex } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue queued"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
+
+    await manager.shutdown();
+
+    expect(() => manager.submitIncoming(message("m3", "after shutdown"))).toThrow(/shutting down/);
+    expect(codex.interruptTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "guest", threadId: "thread_1", turnId: "turn_1" })
+    );
+    expect(lark.replyText).toHaveBeenCalledWith("m1", "服务重启之前的消息丢失");
+    expect(lark.replyText).toHaveBeenCalledWith("m2", "服务重启之前的消息丢失");
   });
 });
 

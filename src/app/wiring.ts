@@ -29,6 +29,7 @@ export class TwinnyRuntime {
   private db?: TwinnyDatabase;
   private codexPool?: RoleCodexAppServerPool;
   private larkConsumer?: LarkEventConsumer;
+  private conversation?: ConversationManager;
   private systemNotifier?: TwinnySystemNotifier;
   private stopped = false;
   private stopPromise: Promise<void>;
@@ -91,12 +92,15 @@ export class TwinnyRuntime {
       roles: { codexHomeFor: (role) => getRoleCodexHome(this.config, role) },
       logger: this.log
     });
+    this.conversation = conversation;
 
     this.larkConsumer = new LarkEventConsumer({
       appId: this.config.lark.appId,
       appSecret,
       logger: this.log,
-      onMessage: (message) => conversation.handleIncoming(message),
+      onMessage: (message) => {
+        conversation.submitIncoming(message);
+      },
       onIgnored: (reason) => this.log.debug({ reason }, "lark event ignored")
     });
     await this.larkConsumer.start();
@@ -111,6 +115,7 @@ export class TwinnyRuntime {
     this.stopped = true;
     this.log.info({ signal }, "stopping twinny daemon");
     try {
+      await this.shutdownConversation();
       await this.systemNotifier?.notifyGracefulExit({ signal });
       await this.stopLarkConsumer();
       await this.stopCodexPool(signal);
@@ -123,6 +128,19 @@ export class TwinnyRuntime {
 
   async wait(): Promise<void> {
     await this.stopPromise;
+  }
+
+  private async shutdownConversation(): Promise<void> {
+    if (!this.conversation) {
+      return;
+    }
+    const conversation = this.conversation;
+    this.conversation = undefined;
+    try {
+      await conversation.shutdown();
+    } catch (error) {
+      this.log.warn({ error }, "failed to shutdown conversation manager cleanly");
+    }
   }
 
   private async stopLarkConsumer(): Promise<void> {

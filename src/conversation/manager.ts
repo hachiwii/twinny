@@ -1,6 +1,6 @@
 import { LRUCache } from "lru-cache";
 import type { Logger } from "pino";
-import { toErrorMessage } from "../errors.js";
+import { TwinnyError, toErrorMessage } from "../errors.js";
 import { logger as defaultLogger } from "../observability/logs.js";
 import type {
   CodexTurnResult,
@@ -119,6 +119,8 @@ interface ActiveTurn {
 
 interface ConversationState {
   controlQueue: SerialQueue;
+  submittedMessages: Map<string, IncomingLarkMessage>;
+  processingMessage?: IncomingLarkMessage;
   active?: ActiveTurn;
   pendingBatch: PendingMessage[];
   nextRunId: number;
@@ -131,9 +133,13 @@ type ParsedCommand =
   | { kind: "new" };
 
 export class ConversationManager {
+  private static readonly shutdownLostMessage = "服务重启之前的消息丢失";
+
   private readonly states = new Map<string, ConversationState>();
+  private readonly shutdownNotifiedMessageIds = new Set<string>();
   private readonly dedupe: LRUCache<string, true>;
   private readonly log: Logger;
+  private shuttingDown = false;
 
   constructor(private readonly options: ConversationManagerOptions) {
     this.log = options.logger ?? defaultLogger;
@@ -143,7 +149,10 @@ export class ConversationManager {
     });
   }
 
-  async handleIncoming(message: IncomingLarkMessage): Promise<void> {
+  submitIncoming(message: IncomingLarkMessage): void {
+    if (this.shuttingDown) {
+      throw new TwinnyError("Conversation manager is shutting down", "CONVERSATION_MANAGER_SHUTTING_DOWN");
+    }
     if (this.dedupe.has(message.messageId)) {
       this.log.debug({ messageId: message.messageId }, "duplicate lark message ignored");
       return;
@@ -162,7 +171,44 @@ export class ConversationManager {
 
     const conversationKey = conversationKeyForP2p(message.senderOpenId);
     const state = this.getState(conversationKey);
-    await state.controlQueue.enqueue(() => this.routeMessage(state, conversationKey, message));
+    state.submittedMessages.set(message.messageId, message);
+    void state.controlQueue
+      .enqueue(() => this.processSubmittedMessage(state, conversationKey, message))
+      .catch((error) => {
+        void this.handleSubmittedMessageFailure(message, error);
+      });
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.shuttingDown) {
+      return;
+    }
+    this.shuttingDown = true;
+
+    const replyPromises: Promise<void>[] = [];
+    const cancelPromises: Promise<boolean>[] = [];
+    for (const state of this.states.values()) {
+      const messageIds = new Set<string>();
+      for (const submitted of state.submittedMessages.values()) {
+        messageIds.add(submitted.messageId);
+      }
+      state.submittedMessages.clear();
+      if (state.processingMessage) {
+        messageIds.add(state.processingMessage.messageId);
+      }
+      for (const pending of this.clearPendingMessages(state)) {
+        messageIds.add(pending.messageId);
+      }
+      if (state.active) {
+        messageIds.add(state.active.replyMessageId);
+        cancelPromises.push(this.cancelActiveTurn(state));
+      }
+      for (const messageId of messageIds) {
+        replyPromises.push(this.replyShutdownLossBestEffort(messageId));
+      }
+    }
+
+    await Promise.all([...replyPromises, ...cancelPromises]);
   }
 
   queueDepth(conversationKey: string): number {
@@ -170,7 +216,45 @@ export class ConversationManager {
     if (!state) {
       return 0;
     }
-    return state.controlQueue.depth + state.pendingBatch.length + (state.active?.pendingSteers.length ?? 0);
+    return (
+      state.controlQueue.depth +
+      state.pendingBatch.length +
+      (state.active?.pendingSteers.length ?? 0)
+    );
+  }
+
+  private async processSubmittedMessage(
+    state: ConversationState,
+    conversationKey: string,
+    message: IncomingLarkMessage
+  ): Promise<void> {
+    const submitted = state.submittedMessages.get(message.messageId);
+    if (!submitted) {
+      return;
+    }
+    state.submittedMessages.delete(message.messageId);
+    if (this.shuttingDown) {
+      await this.replyShutdownLossBestEffort(message.messageId);
+      return;
+    }
+
+    state.processingMessage = message;
+    try {
+      await this.routeMessage(state, conversationKey, message);
+    } finally {
+      if (state.processingMessage?.messageId === message.messageId) {
+        state.processingMessage = undefined;
+      }
+    }
+  }
+
+  private async handleSubmittedMessageFailure(message: IncomingLarkMessage, error: unknown): Promise<void> {
+    this.log.error({ error, messageId: message.messageId }, "conversation submitted message failed");
+    if (this.shuttingDown) {
+      await this.replyShutdownLossBestEffort(message.messageId);
+      return;
+    }
+    await this.replyErrorBestEffort(message.messageId, error);
   }
 
   private async routeMessage(
@@ -236,7 +320,7 @@ export class ConversationManager {
   }
 
   private async handleStopCommand(state: ConversationState, message: IncomingLarkMessage): Promise<void> {
-    const cleared = this.clearPendingMessages(state);
+    const cleared = this.clearPendingMessages(state).length;
     const interrupted = await this.cancelActiveTurn(state);
     const summary = interrupted
       ? `已停止当前任务，清空 ${cleared} 条待处理消息。`
@@ -462,14 +546,13 @@ export class ConversationManager {
     await this.startPendingBatch(state, conversationKey);
   }
 
-  private clearPendingMessages(state: ConversationState): number {
-    const activePending = state.active?.pendingSteers.length ?? 0;
+  private clearPendingMessages(state: ConversationState): PendingMessage[] {
+    const activePending = state.active?.pendingSteers.splice(0) ?? [];
     if (state.active) {
       state.active.pendingSteers = [];
     }
-    const batchPending = state.pendingBatch.length;
-    state.pendingBatch = [];
-    return activePending + batchPending;
+    const batchPending = state.pendingBatch.splice(0);
+    return [...activePending, ...batchPending];
   }
 
   private async cancelActiveTurn(state: ConversationState): Promise<boolean> {
@@ -591,6 +674,7 @@ export class ConversationManager {
     }
     const state: ConversationState = {
       controlQueue: new SerialQueue(),
+      submittedMessages: new Map(),
       pendingBatch: [],
       nextRunId: 0
     };
@@ -661,6 +745,14 @@ export class ConversationManager {
     } catch (error) {
       this.log.warn({ error, messageId }, "failed to send lark control reply");
     }
+  }
+
+  private async replyShutdownLossBestEffort(messageId: string): Promise<void> {
+    if (this.shutdownNotifiedMessageIds.has(messageId)) {
+      return;
+    }
+    this.shutdownNotifiedMessageIds.add(messageId);
+    await this.replyControlBestEffort(messageId, ConversationManager.shutdownLostMessage);
   }
 
   private async replyErrorBestEffort(messageId: string, error: unknown): Promise<void> {
