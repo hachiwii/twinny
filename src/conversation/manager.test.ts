@@ -194,7 +194,7 @@ describe("ConversationManager", () => {
     const manager = createManager({ repository, codex, lark });
 
     manager.submitIncoming(message("m1", "first"));
-    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("m1", "reply"));
+    await waitForExpect(() => expect(lark.replyMarkdown).toHaveBeenCalledWith("m1", "reply"));
 
     expect(row.codexThreadId).toBe("thread_replacement");
     expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_replacement" }));
@@ -219,11 +219,11 @@ describe("ConversationManager", () => {
     const manager = createManager({ codex, lark });
 
     manager.submitIncoming(message("m1", "first"));
-    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledTimes(2));
+    await waitForExpect(() => expect(lark.replyMarkdown).toHaveBeenCalledTimes(2));
 
-    expect(lark.replyText).toHaveBeenNthCalledWith(1, "m1", "first item");
-    expect(lark.replyText).toHaveBeenNthCalledWith(2, "m1", "second item");
-    expect(lark.replyText).not.toHaveBeenCalledWith("m1", "final aggregate should not be sent");
+    expect(lark.replyMarkdown).toHaveBeenNthCalledWith(1, "m1", "first item");
+    expect(lark.replyMarkdown).toHaveBeenNthCalledWith(2, "m1", "second item");
+    expect(lark.replyMarkdown).not.toHaveBeenCalledWith("m1", "final aggregate should not be sent");
   });
 
   it("rejects new submissions during shutdown and notifies in-flight queued messages", async () => {
@@ -300,7 +300,8 @@ function createLarkResponder(): LarkResponder {
   return {
     addTypingReaction: vi.fn(async (messageId) => ({ messageId, reactionId: `r_${messageId}` })),
     removeReaction: vi.fn(async () => undefined),
-    replyText: vi.fn(async () => undefined)
+    replyText: vi.fn(async () => undefined),
+    replyMarkdown: vi.fn(async () => undefined)
   };
 }
 

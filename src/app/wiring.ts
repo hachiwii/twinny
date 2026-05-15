@@ -274,6 +274,9 @@ function adaptLarkSender(sender: LarkMessageSender, workingReaction: string) {
     removeReaction: (handle: LarkReactionHandle): Promise<void> => sender.deleteReaction(handle),
     replyText: async (messageId: string, text: string): Promise<void> => {
       await sender.replyText(messageId, text);
+    },
+    replyMarkdown: async (messageId: string, markdown: string): Promise<void> => {
+      await sender.replyMarkdown(messageId, markdown);
     }
   };
 }

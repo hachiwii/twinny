@@ -31,6 +31,36 @@ describe("LarkMessageSender", () => {
     });
   });
 
+  it("replies with a markdown post through OpenAPI", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { message_id: "om_reply" } }
+    ]);
+    const sender = createSender(fetch);
+
+    await expect(sender.replyMarkdown("om_source", "## hello\n\n- item", { uuid: "uuid-1" })).resolves.toMatchObject({
+      messageId: "om_reply"
+    });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/messages/om_source/reply", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        content: JSON.stringify({
+          zh_cn: {
+            content: [[{ tag: "md", text: "## hello\n\n- item" }]]
+          }
+        }),
+        msg_type: "post",
+        uuid: "uuid-1"
+      }),
+      signal: undefined
+    });
+  });
+
   it("optionally sends p2p text to open_id", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },

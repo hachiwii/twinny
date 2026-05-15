@@ -74,6 +74,7 @@ export interface LarkResponder {
   addTypingReaction(messageId: string): Promise<LarkReactionHandle | null>;
   removeReaction(handle: LarkReactionHandle): Promise<void>;
   replyText(messageId: string, text: string): Promise<void>;
+  replyMarkdown(messageId: string, markdown: string): Promise<void>;
 }
 
 export interface RoleHomeResolver {
@@ -799,7 +800,7 @@ export class ConversationManager {
       return;
     }
     try {
-      await this.options.lark.replyText(messageId, text);
+      await this.options.lark.replyMarkdown(messageId, text);
     } catch (error) {
       this.log.warn({ error, messageId, agentMessageId: agentMessage.id }, "failed to send agent message item to lark");
     }

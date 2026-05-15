@@ -42,6 +42,26 @@ export class LarkMessageSender {
     };
   }
 
+  async replyMarkdown(
+    messageId: string,
+    markdown: string,
+    options: TextMessageOptions = {}
+  ): Promise<LarkSendMessageResult> {
+    const raw = await this.openApiClient.request(`/im/v1/messages/${encodePathSegment(messageId)}/reply`, {
+      method: "POST",
+      signal: options.signal,
+      body: {
+        content: JSON.stringify(createMarkdownPostContent(markdown)),
+        msg_type: "post",
+        ...(options.uuid ? { uuid: options.uuid } : {})
+      }
+    });
+    return {
+      messageId: extractMessageId(raw),
+      raw
+    };
+  }
+
   async sendTextToOpenId(openId: string, text: string, options: TextMessageOptions = {}): Promise<LarkSendMessageResult> {
     const raw = await this.openApiClient.request("/im/v1/messages", {
       method: "POST",
@@ -132,6 +152,14 @@ function extractMessageId(raw: unknown): string | undefined {
   const data = getData(raw);
   const messageId = data.message_id;
   return typeof messageId === "string" ? messageId : undefined;
+}
+
+function createMarkdownPostContent(markdown: string) {
+  return {
+    zh_cn: {
+      content: [[{ tag: "md", text: markdown }]]
+    }
+  };
 }
 
 function extractReactionId(raw: unknown): string | undefined {
