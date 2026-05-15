@@ -72,9 +72,10 @@ export interface CodexBridge {
 
 export interface LarkResponder {
   addTypingReaction(messageId: string): Promise<LarkReactionHandle | null>;
+  addCompletedReaction(messageId: string): Promise<LarkReactionHandle | null>;
   removeReaction(handle: LarkReactionHandle): Promise<void>;
   replyText(messageId: string, text: string): Promise<void>;
-  replyMarkdown(messageId: string, markdown: string): Promise<void>;
+  replyMarkdown(messageId: string, markdown: string): Promise<{ messageId?: string } | void>;
 }
 
 export interface RoleHomeResolver {
@@ -114,6 +115,8 @@ interface ActiveTurn {
   replyMessageId: string;
   turnId?: string;
   reaction?: LarkReactionHandle | null;
+  lastAgentReplyMessageId?: string;
+  completedStatus?: CodexTurnResult["status"];
   pendingSteers: PendingMessage[];
   cancelRequested: boolean;
 }
@@ -473,6 +476,7 @@ export class ConversationManager {
         onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage)
       })
       .then((result) => {
+        active.completedStatus = result.status;
         this.log.info(
           {
             messageId: anchor.messageId,
@@ -560,6 +564,7 @@ export class ConversationManager {
     }
     state.active = undefined;
     await this.clearReactionBestEffort(active);
+    await this.addCompletedReactionBestEffort(active);
     await this.startPendingBatch(state, conversationKey);
   }
 
@@ -738,6 +743,20 @@ export class ConversationManager {
     }
   }
 
+  private async addCompletedReactionBestEffort(active: ActiveTurn): Promise<void> {
+    if (active.completedStatus !== "completed" || active.cancelRequested || !active.lastAgentReplyMessageId) {
+      return;
+    }
+    try {
+      await this.options.lark.addCompletedReaction(active.lastAgentReplyMessageId);
+    } catch (error) {
+      this.log.warn(
+        { error, messageId: active.lastAgentReplyMessageId },
+        "failed to add completed reaction to final lark reply"
+      );
+    }
+  }
+
   private async notifyThreadReplacementBestEffort(
     messageId: string,
     previousThreadId: string | undefined,
@@ -788,10 +807,11 @@ export class ConversationManager {
     if (state.active !== active || active.cancelRequested) {
       return;
     }
-    await this.replyAgentMessageBestEffort(active.replyMessageId, agentMessage);
+    await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
   }
 
   private async replyAgentMessageBestEffort(
+    active: ActiveTurn,
     messageId: string,
     agentMessage: { id: string; text: string }
   ): Promise<void> {
@@ -800,7 +820,10 @@ export class ConversationManager {
       return;
     }
     try {
-      await this.options.lark.replyMarkdown(messageId, text);
+      const result = await this.options.lark.replyMarkdown(messageId, text);
+      if (result?.messageId) {
+        active.lastAgentReplyMessageId = result.messageId;
+      }
     } catch (error) {
       this.log.warn({ error, messageId, agentMessageId: agentMessage.id }, "failed to send agent message item to lark");
     }

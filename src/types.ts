@@ -3,6 +3,7 @@ export type RoleName = "owner" | "guest";
 export type ConversationType = "p2p";
 
 export const DEFAULT_LARK_WORKING_REACTION = "Typing";
+export const DEFAULT_LARK_COMPLETED_REACTION = "DONE";
 
 export interface OwnerConfig {
   openId: string;
@@ -18,6 +19,7 @@ export interface LarkConfig {
   eventKey: "im.message.receive_v1";
   identity: "bot";
   workingReaction: string;
+  completedReaction: string;
 }
 
 export interface CodexConfig {

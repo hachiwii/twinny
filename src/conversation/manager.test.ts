@@ -11,7 +11,8 @@ const config: TwinnyConfig = {
     appSecretRef: "keychain:twinny/lark/app_secret",
     eventKey: "im.message.receive_v1",
     identity: "bot",
-    workingReaction: "Typing"
+    workingReaction: "Typing",
+    completedReaction: "DONE"
   },
   owner: { openId: "ou_owner", displayName: "Owner" },
   roles: {
@@ -220,10 +221,12 @@ describe("ConversationManager", () => {
 
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(lark.replyMarkdown).toHaveBeenCalledTimes(2));
+    await waitForExpect(() => expect(lark.addCompletedReaction).toHaveBeenCalledWith("reply_m1_2"));
 
     expect(lark.replyMarkdown).toHaveBeenNthCalledWith(1, "m1", "first item");
     expect(lark.replyMarkdown).toHaveBeenNthCalledWith(2, "m1", "second item");
     expect(lark.replyMarkdown).not.toHaveBeenCalledWith("m1", "final aggregate should not be sent");
+    expect(lark.addCompletedReaction).toHaveBeenCalledTimes(1);
   });
 
   it("rejects new submissions during shutdown and notifies in-flight queued messages", async () => {
@@ -297,11 +300,13 @@ function createDeferredCodex(): {
 }
 
 function createLarkResponder(): LarkResponder {
+  let markdownReplyCount = 0;
   return {
     addTypingReaction: vi.fn(async (messageId) => ({ messageId, reactionId: `r_${messageId}` })),
+    addCompletedReaction: vi.fn(async (messageId) => ({ messageId, reactionId: `done_${messageId}` })),
     removeReaction: vi.fn(async () => undefined),
     replyText: vi.fn(async () => undefined),
-    replyMarkdown: vi.fn(async () => undefined)
+    replyMarkdown: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` }))
   };
 }
 
