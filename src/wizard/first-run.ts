@@ -46,7 +46,7 @@ export type WizardMode = "status" | "authorized";
 export const wizardProjectName = "🐰 Twinny";
 export const wizardProjectDescription = "Connect Feishu/Lark p2p messages to local Codex app-server threads.";
 export const wizardDivider = "────────────────────────────────────────";
-export const wizardOwnerAuthScope = "offline_access";
+export const wizardOwnerAuthScope = "approval:task:read approval:instance:read approval:task:write offline_access";
 
 export interface WizardResult {
   mode: WizardMode;

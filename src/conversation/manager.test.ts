@@ -12,6 +12,7 @@ const config: TwinnyConfig = {
     eventKey: "im.message.receive_v1",
     identity: "bot"
   },
+  autoApproval: { enabled: false, pollIntervalMs: 60_000 },
   owner: { openId: "ou_owner", displayName: "Owner" },
   roles: {
     owner: { codexHome: "/tmp/twinny/roles/owner/codex" },

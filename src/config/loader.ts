@@ -6,6 +6,9 @@ import type { RoleName, TwinnyConfig } from "../types.js";
 import { createRuntimePaths, expandHomePath, resolveTwinnyHome, type ResolveHomeOptions } from "./paths.js";
 import { SECRET_REFS } from "./secrets.js";
 
+export const DEFAULT_AUTO_APPROVAL_POLL_INTERVAL_MS = 60_000;
+export const MIN_AUTO_APPROVAL_POLL_INTERVAL_MS = 10_000;
+
 const rawConfigSchema = z.object({
   home: z.object({ path: z.string().optional() }).optional(),
   codex: z
@@ -20,6 +23,13 @@ const rawConfigSchema = z.object({
       app_id: z.string().optional(),
       event_key: z.literal("im.message.receive_v1").optional(),
       secret_ref: z.string().optional()
+    })
+    .optional(),
+  auto_approval: z
+    .object({
+      enabled: z.boolean().optional(),
+      poll_interval_ms: z.number().optional(),
+      definition_code: z.string().optional()
     })
     .optional(),
   owner: z
@@ -56,6 +66,11 @@ export interface CreateTwinnyConfigInput {
     binary?: string;
     appServerListen?: "stdio://";
   };
+  autoApproval?: {
+    enabled?: boolean;
+    pollIntervalMs?: number;
+    definitionCode?: string;
+  };
   roles?: Partial<Record<RoleName, { codexHome: string }>>;
 }
 
@@ -86,6 +101,11 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
       appSecretRef: input.lark.appSecretRef ?? SECRET_REFS.larkAppSecret,
       eventKey: "im.message.receive_v1",
       identity: "bot"
+    },
+    autoApproval: {
+      enabled: input.autoApproval?.enabled ?? false,
+      pollIntervalMs: input.autoApproval?.pollIntervalMs ?? DEFAULT_AUTO_APPROVAL_POLL_INTERVAL_MS,
+      definitionCode: normalizeOptionalString(input.autoApproval?.definitionCode)
     },
     owner: {
       openId: input.owner.openId,
@@ -161,6 +181,11 @@ export function parseTwinnyConfig(rawToml: string, options: LoadConfigOptions = 
       eventKey: parsed.lark?.event_key ?? "im.message.receive_v1",
       identity: parsed.lark?.identity ?? "bot"
     },
+    autoApproval: {
+      enabled: parsed.auto_approval?.enabled ?? false,
+      pollIntervalMs: parsed.auto_approval?.poll_interval_ms ?? DEFAULT_AUTO_APPROVAL_POLL_INTERVAL_MS,
+      definitionCode: normalizeOptionalString(parsed.auto_approval?.definition_code)
+    },
     owner: {
       openId: parsed.owner?.open_id ?? "",
       userId: parsed.owner?.user_id,
@@ -198,6 +223,14 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   if (!config.owner.tokenRef) issues.push("owner.token_ref is required");
   if (!config.roles.owner.codexHome) issues.push("roles.owner.codex_home is required");
   if (!config.roles.guest.codexHome) issues.push("roles.guest.codex_home is required");
+  if (!Number.isInteger(config.autoApproval.pollIntervalMs)) {
+    issues.push("auto_approval.poll_interval_ms must be an integer");
+  } else if (config.autoApproval.pollIntervalMs < MIN_AUTO_APPROVAL_POLL_INTERVAL_MS) {
+    issues.push(`auto_approval.poll_interval_ms must be at least ${MIN_AUTO_APPROVAL_POLL_INTERVAL_MS}`);
+  }
+  if (config.autoApproval.enabled && !config.autoApproval.definitionCode) {
+    issues.push("auto_approval.definition_code is required when auto_approval.enabled is true");
+  }
   return issues;
 }
 
@@ -236,6 +269,11 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
       event_key: config.lark.eventKey,
       secret_ref: config.lark.appSecretRef
     },
+    auto_approval: {
+      enabled: config.autoApproval.enabled,
+      poll_interval_ms: config.autoApproval.pollIntervalMs,
+      ...(config.autoApproval.definitionCode ? { definition_code: config.autoApproval.definitionCode } : {})
+    },
     owner,
     roles: {
       owner: {
@@ -251,6 +289,11 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
 function resolveConfigPath(value: string, home: string): string {
   const expanded = expandHomePath(value);
   return path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(home, expanded);
+}
+
+function normalizeOptionalString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function isNodeError(error: unknown, code: string): boolean {

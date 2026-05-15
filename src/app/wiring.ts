@@ -1,8 +1,17 @@
 import type { Logger } from "pino";
-import { createRuntimePaths, resolveSecretRef, SecurityCliSecretStore } from "../config/index.js";
+import { createRuntimePaths, resolveSecretRef, secretAccountFromRef, SecurityCliSecretStore } from "../config/index.js";
 import { RoleCodexAppServerPool } from "../codex/index.js";
 import { ConversationManager } from "../conversation/manager.js";
-import { TenantAccessTokenManager, LarkOpenApiClient, LarkMessageSender, LarkEventConsumer } from "../lark/index.js";
+import {
+  LarkApprovalClient,
+  LarkAutoApprovalWorker,
+  LarkEventConsumer,
+  LarkMessageSender,
+  LarkOpenApiClient,
+  TenantAccessTokenManager,
+  UserAccessTokenManager,
+  type UserAccessTokenResult
+} from "../lark/index.js";
 import { acquireTwinnyLock, type TwinnyRuntimeLock } from "../lock/index.js";
 import { logger as defaultLogger } from "../observability/logs.js";
 import { getRoleCodexHome } from "../roles/index.js";
@@ -23,6 +32,7 @@ export class TwinnyRuntime {
   private db?: TwinnyDatabase;
   private codexPool?: RoleCodexAppServerPool;
   private larkConsumer?: LarkEventConsumer;
+  private autoApprovalWorker?: LarkAutoApprovalWorker;
   private stopped = false;
   private stopPromise: Promise<void>;
   private resolveStopped!: () => void;
@@ -46,6 +56,7 @@ export class TwinnyRuntime {
     if (!appSecret) {
       throw new Error(`Lark app secret is missing: ${this.config.lark.appSecretRef}`);
     }
+    const autoApprovalWorker = await this.createAutoApprovalWorker(appSecret);
 
     this.codexPool = new RoleCodexAppServerPool({
       binary: this.config.codex.binary,
@@ -88,6 +99,8 @@ export class TwinnyRuntime {
       onIgnored: (reason) => this.log.debug({ reason }, "lark event ignored")
     });
     await this.larkConsumer.start();
+    this.autoApprovalWorker = autoApprovalWorker;
+    this.autoApprovalWorker?.start();
     this.log.info({ home: this.config.home }, "twinny daemon started");
   }
 
@@ -98,6 +111,7 @@ export class TwinnyRuntime {
     this.stopped = true;
     this.log.info({ signal }, "stopping twinny daemon");
     try {
+      await this.stopAutoApprovalWorker();
       await this.stopLarkConsumer();
       await this.stopCodexPool(signal);
       this.closeDatabase();
@@ -109,6 +123,76 @@ export class TwinnyRuntime {
 
   async wait(): Promise<void> {
     await this.stopPromise;
+  }
+
+  private async createAutoApprovalWorker(appSecret: string): Promise<LarkAutoApprovalWorker | undefined> {
+    if (!this.config.autoApproval.enabled) {
+      return undefined;
+    }
+    const definitionCode = this.config.autoApproval.definitionCode;
+    if (!definitionCode) {
+      throw new Error("auto_approval.definition_code is required when auto approval is enabled");
+    }
+    if (!this.config.owner.tokenRef) {
+      throw new Error("owner.token_ref is required when auto approval is enabled");
+    }
+    if (!this.config.owner.refreshTokenRef) {
+      throw new Error("owner.refresh_token_ref is required when auto approval is enabled");
+    }
+
+    const [ownerAccessToken, ownerRefreshToken] = await Promise.all([
+      resolveSecretRef(this.config.owner.tokenRef, this.secretStore),
+      resolveSecretRef(this.config.owner.refreshTokenRef, this.secretStore)
+    ]);
+    if (!ownerAccessToken) {
+      throw new Error(`Lark owner user token is missing: ${this.config.owner.tokenRef}`);
+    }
+    if (!ownerRefreshToken) {
+      throw new Error(`Lark owner refresh token is missing: ${this.config.owner.refreshTokenRef}`);
+    }
+
+    let refreshedToken: UserAccessTokenResult | undefined;
+    const userTokenManager = new UserAccessTokenManager({
+      appId: this.config.lark.appId,
+      appSecret,
+      accessToken: ownerAccessToken,
+      refreshToken: ownerRefreshToken,
+      onTokenRefresh: async (token) => {
+        refreshedToken = token;
+        await this.secretStore.set(secretAccountFromRef(this.config.owner.tokenRef!), token.accessToken);
+        if (token.refreshToken && this.config.owner.refreshTokenRef) {
+          await this.secretStore.set(secretAccountFromRef(this.config.owner.refreshTokenRef), token.refreshToken);
+        }
+      }
+    });
+    await userTokenManager.getAccessToken({ forceRefresh: true });
+    assertAutoApprovalScopes(refreshedToken?.scope ?? "");
+
+    const userOpenApiClient = new LarkOpenApiClient({
+      accessTokenProvider: {
+        getAccessToken: () => userTokenManager.getAccessToken()
+      }
+    });
+    return new LarkAutoApprovalWorker({
+      approvalClient: new LarkApprovalClient({ openApiClient: userOpenApiClient, logger: this.log }),
+      appId: this.config.lark.appId,
+      definitionCode,
+      pollIntervalMs: this.config.autoApproval.pollIntervalMs,
+      logger: this.log
+    });
+  }
+
+  private async stopAutoApprovalWorker(): Promise<void> {
+    if (!this.autoApprovalWorker) {
+      return;
+    }
+    const worker = this.autoApprovalWorker;
+    this.autoApprovalWorker = undefined;
+    try {
+      await worker.stop();
+    } catch (error) {
+      this.log.warn({ error }, "failed to stop Lark auto-approval worker cleanly");
+    }
   }
 
   private async stopLarkConsumer(): Promise<void> {
@@ -166,6 +250,29 @@ export class TwinnyRuntime {
 
 export async function createRuntime(config: TwinnyConfig, options: TwinnyRuntimeOptions = {}): Promise<TwinnyRuntime> {
   return new TwinnyRuntime(config, options);
+}
+
+function assertAutoApprovalScopes(scope: string): void {
+  const scopes = new Set(scope.split(/\s+/).filter(Boolean));
+  const missing: string[] = [];
+  if (!hasAnyScope(scopes, ["approval:task:read", "approval:approval:readonly", "approval:approval"])) {
+    missing.push("approval:task:read");
+  }
+  if (!hasAnyScope(scopes, ["approval:instance:read", "approval:approval:readonly", "approval:approval", "approval:instance"])) {
+    missing.push("approval:instance:read");
+  }
+  if (!hasAnyScope(scopes, ["approval:task:write", "approval:task", "approval:approval"])) {
+    missing.push("approval:task:write");
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Lark owner authorization is missing approval scopes: ${missing.join(", ")}. Re-authorize the owner with approval scopes.`
+    );
+  }
+}
+
+function hasAnyScope(actual: Set<string>, allowed: string[]): boolean {
+  return allowed.some((scope) => actual.has(scope));
 }
 
 function adaptConversationRepository(repository: ConversationRepository) {

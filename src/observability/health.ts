@@ -50,6 +50,22 @@ export async function runDoctorChecks(): Promise<HealthSnapshot> {
     }
   });
 
+  if (config.autoApproval.enabled) {
+    await checkAsync(checks, "auto approval config", async () => {
+      if (!config.autoApproval.definitionCode) {
+        throw new Error("auto_approval.definition_code missing");
+      }
+      if (!config.owner.refreshTokenRef) {
+        throw new Error("owner.refresh_token_ref missing");
+      }
+      const refreshToken = await resolveSecretRef(config.owner.refreshTokenRef, secretStore);
+      if (!refreshToken) {
+        throw new Error(`missing ${config.owner.refreshTokenRef}`);
+      }
+      return `poll ${config.autoApproval.pollIntervalMs}ms`;
+    });
+  }
+
   await checkAsync(checks, "codex binary", async () => {
     const result = await execa(config.codex.binary, ["--version"], { reject: false });
     if (result.exitCode !== 0) {

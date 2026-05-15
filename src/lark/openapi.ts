@@ -2,8 +2,13 @@ import { TwinnyError, toErrorMessage } from "../errors.js";
 import { DEFAULT_LARK_OPENAPI_BASE_URL, normalizeBaseUrl, TenantAccessTokenManager } from "./auth.js";
 import type { FetchLike } from "./types.js";
 
+export interface LarkAccessTokenProvider {
+  getAccessToken(): Promise<string>;
+}
+
 export interface LarkOpenApiClientOptions {
-  tokenManager: TenantAccessTokenManager;
+  tokenManager?: TenantAccessTokenManager;
+  accessTokenProvider?: LarkAccessTokenProvider;
   baseUrl?: string;
   fetch?: FetchLike;
   maxRetries?: number;
@@ -31,14 +36,20 @@ export class LarkOpenApiError extends TwinnyError {
 }
 
 export class LarkOpenApiClient {
-  private readonly tokenManager: TenantAccessTokenManager;
+  private readonly accessTokenProvider: LarkAccessTokenProvider;
   private readonly baseUrl: string;
   private readonly fetch: FetchLike;
   private readonly maxRetries: number;
   private readonly retryBaseDelayMs: number;
 
   constructor(options: LarkOpenApiClientOptions) {
-    this.tokenManager = options.tokenManager;
+    if (!options.accessTokenProvider && !options.tokenManager) {
+      throw new TwinnyError("LarkOpenApiClient requires an access token provider", "LARK_OPENAPI_TOKEN_PROVIDER_MISSING");
+    }
+    this.accessTokenProvider =
+      options.accessTokenProvider ?? {
+        getAccessToken: () => options.tokenManager!.getTenantAccessToken()
+      };
     this.baseUrl = normalizeBaseUrl(options.baseUrl ?? DEFAULT_LARK_OPENAPI_BASE_URL);
     this.fetch = options.fetch ?? globalFetch;
     this.maxRetries = options.maxRetries ?? 2;
@@ -66,7 +77,7 @@ export class LarkOpenApiClient {
   }
 
   private async requestOnce(pathname: string, options: LarkOpenApiRequestOptions): Promise<unknown> {
-    const token = await this.tokenManager.getTenantAccessToken();
+    const token = await this.accessTokenProvider.getAccessToken();
     const response = await this.fetch(this.buildUrl(pathname, options.query), {
       method: options.method ?? "GET",
       headers: {

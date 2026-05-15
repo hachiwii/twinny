@@ -14,6 +14,13 @@ export interface TenantAccessTokenManagerOptions extends LarkCredentialOptions {
   refreshSkewMs?: number;
 }
 
+export interface UserAccessTokenManagerOptions extends LarkCredentialOptions {
+  accessToken?: string;
+  refreshToken?: string;
+  refreshSkewMs?: number;
+  onTokenRefresh?: (token: UserAccessTokenResult) => Promise<void> | void;
+}
+
 export interface TenantAccessTokenSnapshot {
   token: string;
   expiresAtMs: number;
@@ -148,6 +155,122 @@ export class TenantAccessTokenManager {
       expiresAtMs: this.now() + Math.max(0, expireSeconds) * 1000
     };
     return token;
+  }
+}
+
+export class UserAccessTokenManager {
+  private readonly appId: string;
+  private readonly appSecret: string;
+  private readonly baseUrl: string;
+  private readonly fetch: FetchLike;
+  private readonly now: () => number;
+  private readonly refreshSkewMs: number;
+  private readonly onTokenRefresh?: (token: UserAccessTokenResult) => Promise<void> | void;
+  private cachedToken?: TenantAccessTokenSnapshot;
+  private refreshToken?: string;
+  private inFlight?: Promise<string>;
+
+  constructor(options: UserAccessTokenManagerOptions) {
+    this.appId = options.appId;
+    this.appSecret = options.appSecret;
+    this.baseUrl = normalizeBaseUrl(options.baseUrl ?? DEFAULT_LARK_OPENAPI_BASE_URL);
+    this.fetch = options.fetch ?? globalFetch;
+    this.now = options.now ?? Date.now;
+    this.refreshSkewMs = options.refreshSkewMs ?? DEFAULT_REFRESH_SKEW_MS;
+    this.onTokenRefresh = options.onTokenRefresh;
+    this.refreshToken = normalizeOptionalString(options.refreshToken);
+    if (options.accessToken) {
+      this.cachedToken = {
+        token: options.accessToken,
+        expiresAtMs: this.refreshToken ? 0 : Number.POSITIVE_INFINITY
+      };
+    }
+  }
+
+  get snapshot(): TenantAccessTokenSnapshot | undefined {
+    return this.cachedToken;
+  }
+
+  clear(): void {
+    this.cachedToken = undefined;
+    this.inFlight = undefined;
+  }
+
+  async getAccessToken(options: { forceRefresh?: boolean } = {}): Promise<string> {
+    if (!options.forceRefresh && this.cachedToken && this.isUsable(this.cachedToken)) {
+      return this.cachedToken.token;
+    }
+
+    if (!this.refreshToken) {
+      if (!options.forceRefresh && this.cachedToken) {
+        return this.cachedToken.token;
+      }
+      throw new TwinnyError("Lark owner refresh token is missing; rerun owner authorization with approval scopes", "LARK_OWNER_REFRESH_TOKEN_MISSING");
+    }
+
+    if (!options.forceRefresh && this.inFlight) {
+      return this.inFlight;
+    }
+
+    const refresh = this.refreshUserAccessToken().finally(() => {
+      if (this.inFlight === refresh) {
+        this.inFlight = undefined;
+      }
+    });
+    this.inFlight = refresh;
+    return refresh;
+  }
+
+  private isUsable(token: TenantAccessTokenSnapshot): boolean {
+    return this.now() + this.refreshSkewMs < token.expiresAtMs;
+  }
+
+  private async refreshUserAccessToken(): Promise<string> {
+    const response = await this.fetch(`${this.baseUrl}/authen/v2/oauth/token`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        client_id: this.appId,
+        client_secret: this.appSecret,
+        refresh_token: this.refreshToken
+      })
+    });
+
+    const record = toRecord(await readJsonBody(response));
+    const code = Number(record.code ?? 0);
+    if (!response.ok || code !== 0 || stringField(record, "error")) {
+      throw new TwinnyError(
+        `failed to refresh Lark owner user token: ${oauthErrorMessage(record) || formatOpenApiFailure(response, record)}`,
+        "LARK_OWNER_TOKEN_REFRESH_FAILED"
+      );
+    }
+
+    const accessToken = requireStringField(record, "access_token", "LARK_OWNER_TOKEN_REFRESH_MISSING_ACCESS_TOKEN");
+    const refreshToken = stringField(record, "refresh_token") || undefined;
+    const token: UserAccessTokenResult = {
+      accessToken,
+      refreshToken,
+      expiresIn: numberField(record, "expires_in", DEFAULT_USER_TOKEN_EXPIRE_SECONDS),
+      refreshTokenExpiresIn: numberField(
+        record,
+        "refresh_token_expires_in",
+        refreshToken ? DEFAULT_REFRESH_TOKEN_EXPIRE_SECONDS : DEFAULT_USER_TOKEN_EXPIRE_SECONDS
+      ),
+      scope: stringField(record, "scope")
+    };
+
+    this.cachedToken = {
+      token: token.accessToken,
+      expiresAtMs: this.now() + Math.max(0, token.expiresIn) * 1000
+    };
+    if (token.refreshToken) {
+      this.refreshToken = token.refreshToken;
+    }
+    await this.onTokenRefresh?.(token);
+    return token.accessToken;
   }
 }
 
@@ -340,6 +463,11 @@ function ensureOfflineAccess(scope: string): string {
   const scopes = new Set(scope.split(/\s+/).filter(Boolean));
   scopes.add("offline_access");
   return [...scopes].sort().join(" ");
+}
+
+function normalizeOptionalString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function stringField(record: Record<string, unknown>, key: string): string {
