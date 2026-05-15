@@ -13,7 +13,6 @@ const config: TwinnyConfig = {
     identity: "bot",
     workingReaction: "Typing"
   },
-  autoApproval: { enabled: false, pollIntervalMs: 60_000 },
   owner: { openId: "ou_owner", displayName: "Owner" },
   roles: {
     owner: { codexHome: "/tmp/twinny/roles/owner/codex" },

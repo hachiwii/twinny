@@ -20,12 +20,6 @@ export interface LarkConfig {
   workingReaction: string;
 }
 
-export interface AutoApprovalConfig {
-  enabled: boolean;
-  pollIntervalMs: number;
-  definitionCode?: string;
-}
-
 export interface CodexConfig {
   binary: string;
   appServerListen: "stdio://";
@@ -39,7 +33,6 @@ export interface TwinnyConfig {
   home: string;
   codex: CodexConfig;
   lark: LarkConfig;
-  autoApproval: AutoApprovalConfig;
   owner: OwnerConfig;
   roles: Record<RoleName, RoleConfig>;
 }

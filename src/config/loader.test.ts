@@ -43,7 +43,6 @@ describe("Twinny config loading and bootstrap", () => {
 
     expect(loaded.lark.appId).toBe("cli_test");
     expect(loaded.lark.workingReaction).toBe("JubilantRabbit");
-    expect(loaded.autoApproval).toEqual({ enabled: false, pollIntervalMs: 60_000, definitionCode: undefined });
     expect(loaded.owner.openId).toBe("ou_owner");
     expect(loaded.roles.owner.codexHome).toBe(path.join(home, "roles", "owner", "codex"));
     expect(loaded.roles.guest.codexHome).toBe(path.join(home, "roles", "guest", "codex"));
@@ -110,48 +109,6 @@ describe("Twinny config loading and bootstrap", () => {
     expect(status.complete).toBe(false);
     expect(status.config?.lark.workingReaction).toBe("Typing");
     expect(status.issues).toContain("owner.open_id is required");
-  });
-
-  it("validates auto approval definition code and poll interval only when enabled", async () => {
-    const home = await tempHome();
-    await fs.mkdir(home, { recursive: true });
-    await fs.writeFile(
-      path.join(home, "config.toml"),
-      `
-[home]
-path = "${home}"
-
-[codex]
-binary = "codex"
-app_server_listen = "stdio://"
-
-[lark]
-identity = "bot"
-app_id = "cli_test"
-event_key = "im.message.receive_v1"
-secret_ref = "keychain:twinny/lark/app_secret"
-
-[auto_approval]
-enabled = true
-poll_interval_ms = 5000
-
-[owner]
-open_id = "ou_owner"
-display_name = "Owner"
-token_ref = "keychain:twinny/lark/owner_user_token"
-
-[roles.owner]
-codex_home = "roles/owner/codex"
-
-[roles.guest]
-codex_home = "roles/guest/codex"
-`
-    );
-
-    const status = await readConfigStatus({ home, env: {} });
-
-    expect(status.issues).toContain("auto_approval.definition_code is required when auto_approval.enabled is true");
-    expect(status.issues).toContain("auto_approval.poll_interval_ms must be at least 10000");
   });
 });
 

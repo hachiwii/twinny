@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { LarkUserOAuthDeviceFlow, TenantAccessTokenManager, UserAccessTokenManager } from "./auth.js";
+import { LarkUserOAuthDeviceFlow, TenantAccessTokenManager } from "./auth.js";
 import type { FetchLike } from "./types.js";
 
 describe("TenantAccessTokenManager", () => {
@@ -53,73 +53,6 @@ describe("TenantAccessTokenManager", () => {
 
     await expect(Promise.all([first, second])).resolves.toEqual(["token-1", "token-1"]);
     expect(fetch).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("UserAccessTokenManager", () => {
-  it("refreshes user tokens and reports the rotated refresh token", async () => {
-    const onTokenRefresh = vi.fn(async () => undefined);
-    const fetch = vi.fn(async () =>
-      jsonResponse({
-        code: 0,
-        access_token: "new-user-token",
-        refresh_token: "new-refresh-token",
-        expires_in: 3600,
-        refresh_token_expires_in: 86400,
-        scope: "offline_access approval:task:read"
-      })
-    ) satisfies FetchLike;
-    const manager = new UserAccessTokenManager({
-      appId: "cli_123",
-      appSecret: "secret",
-      accessToken: "old-user-token",
-      refreshToken: "old-refresh-token",
-      fetch
-    });
-
-    await expect(manager.getAccessToken()).resolves.toBe("new-user-token");
-    await expect(manager.getAccessToken()).resolves.toBe("new-user-token");
-
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(fetch).toHaveBeenCalledWith("https://open.feishu.cn/open-apis/authen/v2/oauth/token", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        grant_type: "refresh_token",
-        client_id: "cli_123",
-        client_secret: "secret",
-        refresh_token: "old-refresh-token"
-      })
-    });
-
-    const managerWithCallback = new UserAccessTokenManager({
-      appId: "cli_123",
-      appSecret: "secret",
-      refreshToken: "old-refresh-token",
-      fetch,
-      onTokenRefresh
-    });
-    await managerWithCallback.getAccessToken();
-    expect(onTokenRefresh).toHaveBeenCalledWith(
-      expect.objectContaining({
-        accessToken: "new-user-token",
-        refreshToken: "new-refresh-token",
-        scope: "offline_access approval:task:read"
-      })
-    );
-  });
-
-  it("uses a non-refreshable user token as-is but rejects forced refresh without refresh token", async () => {
-    const manager = new UserAccessTokenManager({
-      appId: "cli_123",
-      appSecret: "secret",
-      accessToken: "user-token"
-    });
-
-    await expect(manager.getAccessToken()).resolves.toBe("user-token");
-    await expect(manager.getAccessToken({ forceRefresh: true })).rejects.toThrow(/refresh token is missing/);
   });
 });
 
