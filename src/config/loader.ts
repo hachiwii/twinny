@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { parse, stringify, type TomlTable } from "smol-toml";
 import { z } from "zod";
-import type { RoleName, TwinnyConfig } from "../types.js";
+import { DEFAULT_LARK_WORKING_REACTION, type RoleName, type TwinnyConfig } from "../types.js";
 import { createRuntimePaths, expandHomePath, resolveTwinnyHome, type ResolveHomeOptions } from "./paths.js";
 import { SECRET_REFS } from "./secrets.js";
 
@@ -22,7 +22,8 @@ const rawConfigSchema = z.object({
       identity: z.literal("bot").optional(),
       app_id: z.string().optional(),
       event_key: z.literal("im.message.receive_v1").optional(),
-      secret_ref: z.string().optional()
+      secret_ref: z.string().optional(),
+      working_reaction: z.string().optional()
     })
     .optional(),
   auto_approval: z
@@ -54,6 +55,7 @@ export interface CreateTwinnyConfigInput {
   lark: {
     appId: string;
     appSecretRef?: string;
+    workingReaction?: string;
   };
   owner: {
     openId: string;
@@ -100,7 +102,8 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
       appId: input.lark.appId,
       appSecretRef: input.lark.appSecretRef ?? SECRET_REFS.larkAppSecret,
       eventKey: "im.message.receive_v1",
-      identity: "bot"
+      identity: "bot",
+      workingReaction: normalizeOptionalString(input.lark.workingReaction) ?? DEFAULT_LARK_WORKING_REACTION
     },
     autoApproval: {
       enabled: input.autoApproval?.enabled ?? false,
@@ -179,7 +182,8 @@ export function parseTwinnyConfig(rawToml: string, options: LoadConfigOptions = 
       appId: parsed.lark?.app_id ?? "",
       appSecretRef: parsed.lark?.secret_ref ?? SECRET_REFS.larkAppSecret,
       eventKey: parsed.lark?.event_key ?? "im.message.receive_v1",
-      identity: parsed.lark?.identity ?? "bot"
+      identity: parsed.lark?.identity ?? "bot",
+      workingReaction: normalizeOptionalString(parsed.lark?.working_reaction) ?? DEFAULT_LARK_WORKING_REACTION
     },
     autoApproval: {
       enabled: parsed.auto_approval?.enabled ?? false,
@@ -218,6 +222,7 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   if (!config.lark.appSecretRef) issues.push("lark.secret_ref is required");
   if (config.lark.identity !== "bot") issues.push("lark.identity must be bot");
   if (config.lark.eventKey !== "im.message.receive_v1") issues.push("lark.event_key must be im.message.receive_v1");
+  if (!config.lark.workingReaction) issues.push("lark.working_reaction is required");
   if (!config.owner.openId) issues.push("owner.open_id is required");
   if (!config.owner.displayName) issues.push("owner.display_name is required");
   if (!config.owner.tokenRef) issues.push("owner.token_ref is required");
@@ -267,7 +272,8 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
       identity: config.lark.identity,
       app_id: config.lark.appId,
       event_key: config.lark.eventKey,
-      secret_ref: config.lark.appSecretRef
+      secret_ref: config.lark.appSecretRef,
+      working_reaction: config.lark.workingReaction
     },
     auto_approval: {
       enabled: config.autoApproval.enabled,

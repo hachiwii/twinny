@@ -10,7 +10,8 @@ const config: TwinnyConfig = {
     appId: "cli_xxx",
     appSecretRef: "keychain:twinny/lark/app_secret",
     eventKey: "im.message.receive_v1",
-    identity: "bot"
+    identity: "bot",
+    workingReaction: "Typing"
   },
   autoApproval: { enabled: false, pollIntervalMs: 60_000 },
   owner: { openId: "ou_owner", displayName: "Owner" },

@@ -2,6 +2,8 @@ export type RoleName = "owner" | "guest";
 
 export type ConversationType = "p2p";
 
+export const DEFAULT_LARK_WORKING_REACTION = "Typing";
+
 export interface OwnerConfig {
   openId: string;
   userId?: string;
@@ -15,6 +17,7 @@ export interface LarkConfig {
   appSecretRef: string;
   eventKey: "im.message.receive_v1";
   identity: "bot";
+  workingReaction: string;
 }
 
 export interface AutoApprovalConfig {

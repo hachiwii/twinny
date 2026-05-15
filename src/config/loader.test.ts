@@ -29,7 +29,7 @@ describe("Twinny config loading and bootstrap", () => {
     const home = await tempHome();
     const config = createTwinnyConfig({
       home,
-      lark: { appId: "cli_test" },
+      lark: { appId: "cli_test", workingReaction: "JubilantRabbit" },
       owner: {
         openId: "ou_owner",
         userId: "user_owner",
@@ -42,6 +42,7 @@ describe("Twinny config loading and bootstrap", () => {
     const loaded = await loadTwinnyConfig({ home, env: {} });
 
     expect(loaded.lark.appId).toBe("cli_test");
+    expect(loaded.lark.workingReaction).toBe("JubilantRabbit");
     expect(loaded.autoApproval).toEqual({ enabled: false, pollIntervalMs: 60_000, definitionCode: undefined });
     expect(loaded.owner.openId).toBe("ou_owner");
     expect(loaded.roles.owner.codexHome).toBe(path.join(home, "roles", "owner", "codex"));
@@ -107,6 +108,7 @@ describe("Twinny config loading and bootstrap", () => {
 
     expect(status.exists).toBe(true);
     expect(status.complete).toBe(false);
+    expect(status.config?.lark.workingReaction).toBe("Typing");
     expect(status.issues).toContain("owner.open_id is required");
   });
 

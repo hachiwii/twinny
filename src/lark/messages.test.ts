@@ -97,6 +97,31 @@ describe("LarkMessageSender", () => {
     );
   });
 
+  it("creates configured working reactions", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { reaction_id: "reaction-1" } }
+    ]);
+    const sender = createSender(fetch);
+
+    const handle = await sender.createReaction("om_source", "JubilantRabbit");
+
+    expect(handle).toEqual({ messageId: "om_source", reactionId: "reaction-1" });
+    expect(fetch).toHaveBeenNthCalledWith(2, "https://open.feishu.cn/open-apis/im/v1/messages/om_source/reactions", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        reaction_type: {
+          emoji_type: "JubilantRabbit"
+        }
+      }),
+      signal: undefined
+    });
+  });
+
   it("treats Typing reaction failures as non-fatal", async () => {
     const logger = { warn: vi.fn() } satisfies LarkLogger;
     const fetch = sequenceFetch([

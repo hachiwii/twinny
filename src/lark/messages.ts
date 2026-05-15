@@ -1,5 +1,5 @@
 import { toErrorMessage } from "../errors.js";
-import type { LarkReactionHandle } from "../types.js";
+import { DEFAULT_LARK_WORKING_REACTION, type LarkReactionHandle } from "../types.js";
 import { LarkOpenApiClient } from "./openapi.js";
 import type { LarkLogger, LarkSendMessageResult } from "./types.js";
 
@@ -10,6 +10,10 @@ export interface LarkMessageSenderOptions {
 
 export interface TextMessageOptions {
   uuid?: string;
+  signal?: AbortSignal;
+}
+
+export interface ReactionOptions {
   signal?: AbortSignal;
 }
 
@@ -58,33 +62,47 @@ export class LarkMessageSender {
     };
   }
 
-  async createTypingReaction(messageId: string, options: { signal?: AbortSignal } = {}): Promise<LarkReactionHandle | null> {
+  async createReaction(
+    messageId: string,
+    emojiType = DEFAULT_LARK_WORKING_REACTION,
+    options: ReactionOptions = {}
+  ): Promise<LarkReactionHandle | null> {
+    const normalizedEmojiType = emojiType.trim();
+    if (!normalizedEmojiType) {
+      this.logger?.warn?.({ messageId }, "Lark reaction emoji_type is empty; continuing without reaction");
+      return null;
+    }
+
     try {
       const raw = await this.openApiClient.request(`/im/v1/messages/${encodePathSegment(messageId)}/reactions`, {
         method: "POST",
         signal: options.signal,
         body: {
           reaction_type: {
-            emoji_type: "Typing"
+            emoji_type: normalizedEmojiType
           }
         }
       });
       const reactionId = extractReactionId(raw);
       if (!reactionId) {
-        this.logger?.warn?.({ messageId, raw }, "Lark Typing reaction response did not include reaction_id");
+        this.logger?.warn?.({ messageId, emojiType: normalizedEmojiType, raw }, "Lark reaction response did not include reaction_id");
         return null;
       }
       return { messageId, reactionId };
     } catch (error) {
       this.logger?.warn?.(
-        { messageId, error: toErrorMessage(error) },
-        "failed to create Lark Typing reaction; continuing without reaction"
+        { messageId, emojiType: normalizedEmojiType, error: toErrorMessage(error) },
+        "failed to create Lark reaction; continuing without reaction"
       );
       return null;
     }
   }
 
-  async deleteTypingReaction(handle: LarkReactionHandle | null | undefined, options: { signal?: AbortSignal } = {}): Promise<void> {
+  async createTypingReaction(messageId: string, options: ReactionOptions = {}): Promise<LarkReactionHandle | null> {
+    return this.createReaction(messageId, DEFAULT_LARK_WORKING_REACTION, options);
+  }
+
+  async deleteReaction(handle: LarkReactionHandle | null | undefined, options: ReactionOptions = {}): Promise<void> {
     if (!handle) {
       return;
     }
@@ -100,9 +118,13 @@ export class LarkMessageSender {
     } catch (error) {
       this.logger?.warn?.(
         { messageId: handle.messageId, reactionId: handle.reactionId, error: toErrorMessage(error) },
-        "failed to delete Lark Typing reaction; continuing"
+        "failed to delete Lark reaction; continuing"
       );
     }
+  }
+
+  async deleteTypingReaction(handle: LarkReactionHandle | null | undefined, options: ReactionOptions = {}): Promise<void> {
+    await this.deleteReaction(handle, options);
   }
 }
 
