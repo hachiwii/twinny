@@ -194,6 +194,28 @@ describe("ConversationRepository", () => {
       updatedAt: 1500
     });
 
+    repo.insertLarkMessage({
+      larkMessageId: "om_2",
+      eventId: "event_2",
+      larkUserId: "ou_456",
+      conversationKey: "p2p:ou_456",
+      routeKind: "message",
+      status: "processing",
+      text: "processing",
+      rawEventJson: "{}"
+    });
+    repo.insertLarkMessage({
+      larkMessageId: "om_3",
+      eventId: "event_3",
+      larkUserId: "ou_456",
+      conversationKey: "p2p:ou_456",
+      routeKind: "queued_message",
+      status: "queued",
+      text: "queued",
+      rawEventJson: "{}"
+    });
+    expect(repo.listUnfinishedLarkMessages().map((row) => row.larkMessageId)).toEqual(["om_2", "om_3"]);
+
     now = 1600;
     repo.updateCodexThreadTokenUsage({
       codexThreadId: "thread-1",

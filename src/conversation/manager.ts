@@ -2,14 +2,16 @@ import path from "node:path";
 import { LRUCache } from "lru-cache";
 import type { Logger } from "pino";
 import { TwinnyError, toErrorMessage } from "../errors.js";
+import { normalizeIncomingLarkMessage } from "../lark/filters.js";
 import { logger as defaultLogger } from "../observability/logs.js";
 import type {
   CodexThreadTokenUsageUpdate,
   CodexTurnResult,
   ConversationRecord,
   IncomingLarkMessage,
-  LarkReactionHandle,
+  LarkMessageRecord,
   LarkMessageRouteKind,
+  LarkReactionHandle,
   NewConversationRecord,
   RoleName,
   UserRecord,
@@ -34,6 +36,7 @@ export interface ConversationRepository {
   markThreadHasRollout(conversationKey: string, codexThreadId: string): Promise<void> | void;
   getUserByLarkUserId(larkUserId: string): Promise<UserRecord | undefined> | UserRecord | undefined;
   getLarkMessageById(larkMessageId: string): Promise<unknown | undefined> | unknown | undefined;
+  listUnfinishedLarkMessages(): Promise<LarkMessageRecord[]> | LarkMessageRecord[];
   upsertUser(input: {
     larkUserId: string;
     name?: string;
@@ -205,7 +208,7 @@ type ParsedCommand =
   | { kind: "help" };
 
 export class ConversationManager {
-  private static readonly shutdownLostMessage = "服务重启之前的消息丢失";
+  private static readonly recoveryPrompt = "continue to process previous message";
   private static readonly helpText = [
     "可用指令：",
     "/help - 查看可用指令和使用说明",
@@ -215,7 +218,6 @@ export class ConversationManager {
   ].join("\n");
 
   private readonly states = new Map<string, ConversationState>();
-  private readonly shutdownNotifiedMessageIds = new Set<string>();
   private readonly dedupe: LRUCache<string, true>;
   private readonly nameLookupFailureCache = new Map<string, number>();
   private readonly log: Logger;
@@ -265,32 +267,141 @@ export class ConversationManager {
     }
     this.shuttingDown = true;
 
-    const replyPromises: Promise<void>[] = [];
     const cancelPromises: Promise<boolean>[] = [];
     for (const state of this.states.values()) {
-      const messageIds = new Set<string>();
-      for (const submitted of state.submittedMessages.values()) {
-        messageIds.add(submitted.messageId);
-      }
       state.submittedMessages.clear();
-      if (state.processingMessage) {
-        messageIds.add(state.processingMessage.messageId);
-      }
-      const pendingMessages = this.clearPendingMessages(state);
-      await this.markPendingMessagesClearedBestEffort(pendingMessages);
-      for (const pending of pendingMessages) {
-        messageIds.add(pending.messageId);
-      }
-      if (state.active) {
-        messageIds.add(state.active.replyMessageId);
-        cancelPromises.push(this.cancelActiveTurn(state));
-      }
-      for (const messageId of messageIds) {
-        replyPromises.push(this.replyShutdownLossBestEffort(messageId));
+      state.processingMessage = undefined;
+      this.clearPendingMessages(state);
+      cancelPromises.push(this.suspendActiveTurnForShutdown(state));
+    }
+
+    await Promise.all(cancelPromises);
+  }
+
+  async recoverUnfinishedMessages(): Promise<void> {
+    const records = await this.options.repository.listUnfinishedLarkMessages();
+    if (records.length === 0) {
+      return;
+    }
+
+    const processingGroups = new Map<
+      string,
+      { state: ConversationState; records: LarkMessageRecord[]; messages: PendingMessage[] }
+    >();
+    const recoverableStates = new Map<string, ConversationState>();
+
+    for (const record of records) {
+      const conversationKey = record.conversationKey ?? conversationKeyForP2p(record.larkUserId);
+      const state = this.getState(conversationKey);
+      recoverableStates.set(conversationKey, state);
+      this.dedupe.set(record.larkMessageId, true);
+      const message = await this.toRecoveredPendingMessage(record);
+      if (record.status === "processing") {
+        const group = processingGroups.get(conversationKey) ?? { state, records: [], messages: [] };
+        group.records.push(record);
+        group.messages.push(message);
+        processingGroups.set(conversationKey, group);
+      } else if (record.status === "queued") {
+        state.pendingBatch.push(message);
       }
     }
 
-    await Promise.all([...replyPromises, ...cancelPromises]);
+    for (const [conversationKey, group] of processingGroups) {
+      await group.state.controlQueue.enqueue(() =>
+        this.startRecoveredProcessingMessages(group.state, conversationKey, group.records, group.messages)
+      );
+    }
+    for (const [conversationKey, state] of recoverableStates) {
+      await state.controlQueue.enqueue(() => this.startPendingBatch(state, conversationKey));
+    }
+  }
+
+  private async toRecoveredPendingMessage(record: LarkMessageRecord): Promise<PendingMessage> {
+    const raw = parseStoredRawEvent(record.rawEventJson);
+    const normalized = normalizeIncomingLarkMessage(raw);
+    if (!normalized) {
+      throw new TwinnyError(
+        `Cannot recover Lark message ${record.larkMessageId} from raw event JSON`,
+        "LARK_MESSAGE_RECOVERY_FAILED"
+      );
+    }
+    normalized.senderName = await this.resolveSenderName(
+      normalized,
+      roleForSender(this.options.config, normalized.senderOpenId)
+    );
+    if (record.status === "queued") {
+      await this.prepareMessageResources(record.conversationKey ?? conversationKeyForP2p(record.larkUserId), normalized);
+    }
+    const text = (record.status === "queued" && (normalized.resources?.length ?? 0) > 0) ? normalized.text : record.text;
+    return toPendingMessage(normalized, text);
+  }
+
+  private async startRecoveredProcessingMessages(
+    state: ConversationState,
+    conversationKey: string,
+    records: LarkMessageRecord[],
+    messages: PendingMessage[]
+  ): Promise<void> {
+    if (state.active || messages.length === 0) {
+      return;
+    }
+    const anchor = messages[messages.length - 1]!;
+    const conversation = await this.getOrCreateRecoveryConversation(conversationKey, records, anchor.original);
+    const role = conversation.role;
+    const workspace = conversation.workspace;
+    const activeThread = conversation.codexThreadHasRollout
+      ? await this.resumeExistingThread(conversation, { role, workspace, conversationKey })
+      : { threadId: conversation.codexThreadId, replacedMissingThread: false };
+    if (activeThread.replacedMissingThread) {
+      await this.notifyThreadReplacementBestEffort(anchor.messageId, activeThread.previousThreadId, activeThread.threadId);
+    }
+    await this.recordCodexThreadBestEffort({
+      conversationKey,
+      codexThreadId: activeThread.threadId,
+      role,
+      larkThreadId: anchor.original.larkThreadId
+    });
+    await this.beginActiveTurn(state, conversationKey, {
+      messages,
+      role,
+      threadId: activeThread.threadId,
+      workspace,
+      input: ConversationManager.recoveryPrompt
+    });
+  }
+
+  private async getOrCreateRecoveryConversation(
+    conversationKey: string,
+    records: LarkMessageRecord[],
+    message: IncomingLarkMessage
+  ): Promise<ConversationRecord> {
+    const existing = await this.options.repository.findByConversationKey(conversationKey);
+    if (existing) {
+      return existing;
+    }
+    const role = roleForSender(this.options.config, message.senderOpenId);
+    const workspace = await this.options.workspaces.ensureWorkspace(conversationKey);
+    const recoveredThreadId = lastDefined(records.map((record) => record.codexThreadId));
+    const threadId =
+      recoveredThreadId ??
+      (
+        await this.options.codex.startThread({
+          role,
+          cwd: workspace,
+          approvalPolicy: "never"
+        })
+      ).threadId;
+    return await this.options.repository.create({
+      conversationKey,
+      type: "p2p",
+      chatId: message.senderOpenId,
+      name: conversationNameForMessage(this.options.config, role, message),
+      role,
+      codexThreadId: threadId,
+      codexThreadHasRollout: recoveredThreadId !== undefined,
+      workspace,
+      roleCodexHome: this.options.roles.codexHomeFor(role)
+    });
   }
 
   queueDepth(conversationKey: string): number {
@@ -316,7 +427,6 @@ export class ConversationManager {
     }
     state.submittedMessages.delete(message.messageId);
     if (this.shuttingDown) {
-      await this.replyShutdownLossBestEffort(message.messageId);
       return;
     }
 
@@ -339,7 +449,6 @@ export class ConversationManager {
   private async handleSubmittedMessageFailure(message: IncomingLarkMessage, error: unknown): Promise<void> {
     this.log.error({ error, messageId: message.messageId }, "conversation submitted message failed");
     if (this.shuttingDown) {
-      await this.replyShutdownLossBestEffort(message.messageId);
       return;
     }
     await this.replyErrorBestEffort(message.messageId, error);
@@ -658,33 +767,55 @@ export class ConversationManager {
       role,
       larkThreadId: anchor.original.larkThreadId
     });
-    await this.markPendingMessagesProcessingBestEffort(messages, {
-      conversationKey,
-      codexThreadId: activeThread.threadId
-    });
-
-    const active: ActiveTurn = {
-      runId: ++state.nextRunId,
+    await this.beginActiveTurn(state, conversationKey, {
+      messages,
       role,
       threadId: activeThread.threadId,
       workspace,
+      input: messages.map(formatPendingMessageForCodex).join("\n")
+    });
+  }
+
+  private async beginActiveTurn(
+    state: ConversationState,
+    conversationKey: string,
+    params: {
+      messages: PendingMessage[];
+      role: RoleName;
+      threadId: string;
+      workspace: string;
+      input: string;
+    }
+  ): Promise<void> {
+    if (params.messages.length === 0) {
+      return;
+    }
+    const anchor = params.messages[params.messages.length - 1]!;
+    await this.markPendingMessagesProcessingBestEffort(params.messages, {
+      conversationKey,
+      codexThreadId: params.threadId
+    });
+    const active: ActiveTurn = {
+      runId: ++state.nextRunId,
+      role: params.role,
+      threadId: params.threadId,
+      workspace: params.workspace,
       conversationKey,
       replyMessageId: anchor.messageId,
       reaction: await this.addReactionBestEffort(anchor.messageId),
       pendingSteers: [],
-      messageIds: new Set(messages.map((message) => message.messageId)),
+      messageIds: new Set(params.messages.map((message) => message.messageId)),
       cancelRequested: false
     };
     state.active = active;
-    const input = messages.map(formatPendingMessageForCodex).join("\n");
     const startedAt = Date.now();
 
     void this.options.codex
       .startTurn({
-        role,
+        role: params.role,
         threadId: active.threadId,
-        input,
-        cwd: workspace,
+        input: params.input,
+        cwd: params.workspace,
         approvalPolicy: "never",
         onTurnStarted: (turnId) => this.handleTurnStarted(state, active, turnId),
         onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
@@ -696,7 +827,7 @@ export class ConversationManager {
           {
             messageId: anchor.messageId,
             conversationKey,
-            role,
+            role: params.role,
             codexThreadId: active.threadId,
             turnId: result.turnId,
             status: result.status,
@@ -706,8 +837,8 @@ export class ConversationManager {
         );
       })
       .catch(async (error) => {
-        await this.markMessagesFailedBestEffort([...active.messageIds]);
         if (state.active === active && !active.cancelRequested) {
+          await this.markMessagesFailedBestEffort([...active.messageIds]);
           this.log.error({ error, messageId: active.replyMessageId, conversationKey }, "conversation turn failed");
           await this.replyErrorBestEffort(active.replyMessageId, error);
         } else {
@@ -831,6 +962,21 @@ export class ConversationManager {
     active.pendingSteers = [];
     await this.clearReactionBestEffort(active);
     await this.markMessagesFailedBestEffort([...active.messageIds]);
+    if (active.turnId) {
+      await this.interruptActiveTurnBestEffort(active);
+    }
+    return true;
+  }
+
+  private async suspendActiveTurnForShutdown(state: ConversationState): Promise<boolean> {
+    const active = state.active;
+    if (!active) {
+      return false;
+    }
+    state.active = undefined;
+    active.cancelRequested = true;
+    active.pendingSteers = [];
+    await this.clearReactionBestEffort(active);
     if (active.turnId) {
       await this.interruptActiveTurnBestEffort(active);
     }
@@ -1123,14 +1269,6 @@ export class ConversationManager {
     }
   }
 
-  private async replyShutdownLossBestEffort(messageId: string): Promise<void> {
-    if (this.shutdownNotifiedMessageIds.has(messageId)) {
-      return;
-    }
-    this.shutdownNotifiedMessageIds.add(messageId);
-    await this.replyControlBestEffort(messageId, ConversationManager.shutdownLostMessage);
-  }
-
   private async replyErrorBestEffort(messageId: string, error: unknown): Promise<void> {
     try {
       await this.options.lark.replyText(messageId, `处理失败：${toErrorMessage(error)}`);
@@ -1253,6 +1391,27 @@ function safeJsonStringify(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function parseStoredRawEvent(value: string | undefined): unknown {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function lastDefined<T>(values: Array<T | undefined>): T | undefined {
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const value = values[index];
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 function formatDownloadedFileForCodex(

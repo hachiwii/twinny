@@ -99,6 +99,7 @@ export class TwinnyRuntime {
       logger: this.log
     });
     this.conversation = conversation;
+    await conversation.recoverUnfinishedMessages();
 
     this.larkConsumer = new LarkEventConsumer({
       appId: this.config.lark.appId,
@@ -215,6 +216,7 @@ function adaptConversationRepository(repository: ConversationRepository) {
     markThreadHasRollout: repository.markThreadHasRollout.bind(repository),
     getUserByLarkUserId: repository.getUserByLarkUserId.bind(repository),
     getLarkMessageById: repository.getLarkMessageById.bind(repository),
+    listUnfinishedLarkMessages: repository.listUnfinishedLarkMessages.bind(repository),
     upsertUser: repository.upsertUser.bind(repository),
     upsertCodexThread: repository.upsertCodexThread.bind(repository),
     updateCodexThreadTokenUsage: repository.updateCodexThreadTokenUsage.bind(repository),

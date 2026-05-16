@@ -170,6 +170,7 @@ export class ConversationRepository {
   private readonly updateCodexThreadUsageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly insertLarkMessageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly selectLarkMessageById: Database.Statement<[string], LarkMessageRow>;
+  private readonly selectUnfinishedLarkMessages: Database.Statement<[], LarkMessageRow>;
   private readonly updateLarkMessageProcessingStatement: Database.Statement<[
     string | null,
     string | null,
@@ -374,6 +375,11 @@ export class ConversationRepository {
     `);
     this.selectLarkMessageById = this.db.prepare(`
       SELECT * FROM lark_messages WHERE lark_message_id = ?
+    `);
+    this.selectUnfinishedLarkMessages = this.db.prepare(`
+      SELECT * FROM lark_messages
+      WHERE status IN ('processing', 'queued')
+      ORDER BY received_at ASC, id ASC
     `);
     this.updateLarkMessageProcessingStatement = this.db.prepare(`
       UPDATE lark_messages
@@ -598,6 +604,10 @@ export class ConversationRepository {
     return mapLarkMessageRow(this.selectLarkMessageById.get(larkMessageId));
   }
 
+  listUnfinishedLarkMessages(): LarkMessageRecord[] {
+    return this.selectUnfinishedLarkMessages.all().map((row) => mapRequiredLarkMessageRow(row));
+  }
+
   markLarkMessageQueued(larkMessageId: string): void {
     assertNonEmpty(larkMessageId, "larkMessageId");
     this.updateLarkMessageQueuedStatement.run(this.now(), larkMessageId);
@@ -784,6 +794,10 @@ function mapLarkMessageRow(row: LarkMessageRow | undefined): LarkMessageRecord |
   if (!row) {
     return undefined;
   }
+  return mapRequiredLarkMessageRow(row);
+}
+
+function mapRequiredLarkMessageRow(row: LarkMessageRow): LarkMessageRecord {
   return {
     id: row.id,
     larkMessageId: row.lark_message_id,

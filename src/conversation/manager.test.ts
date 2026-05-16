@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { TwinnyError } from "../errors.js";
-import type { CodexTurnResult, ConversationRecord, IncomingLarkMessage, TwinnyConfig, UserRecord } from "../types.js";
+import type {
+  CodexTurnResult,
+  ConversationRecord,
+  IncomingLarkMessage,
+  LarkMessageRecord,
+  TwinnyConfig,
+  UserRecord
+} from "../types.js";
 import {
   ConversationManager,
   type CodexBridge,
@@ -579,10 +586,113 @@ describe("ConversationManager", () => {
     expect(lark.addCompletedReaction).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects new submissions during shutdown and notifies in-flight queued messages", async () => {
+  it("recovers processing messages by continuing their stored Codex thread", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_recovered" });
+    const record = larkMessageRecord({
+      larkMessageId: "m1",
+      codexThreadId: "thread_recovered",
+      status: "processing",
+      rawEventJson: JSON.stringify(rawReceiveEvent("m1", "original message"))
+    });
+    const { repository } = createRepository(row, { larkMessages: [record] });
+    const codex = createCodex();
+    const manager = createManager({ repository, codex });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    expect(codex.resumeThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_recovered" }));
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_recovered",
+        input: "continue to process previous message"
+      })
+    );
+    expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m1"], {
+      conversationKey: "p2p:ou_guest",
+      codexThreadId: "thread_recovered"
+    });
+  });
+
+  it("recovers queued messages from raw Lark event JSON", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_recovered" });
+    const record = larkMessageRecord({
+      larkMessageId: "m2",
+      routeKind: "queued_message",
+      status: "queued",
+      text: "queued from command",
+      rawEventJson: JSON.stringify(rawReceiveEvent("m2", "/queue queued from command"))
+    });
+    const { repository } = createRepository(row, { larkMessages: [record] });
+    const codex = createCodex();
+    const manager = createManager({ repository, codex });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_recovered",
+        input:
+          '<lark_message lark_message_id="m2" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+          "queued from command\n" +
+          "</lark_message>"
+      })
+    );
+  });
+
+  it("recovers queued file messages from raw Lark event JSON and downloads resources", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_recovered" });
+    const record = larkMessageRecord({
+      larkMessageId: "m2",
+      routeKind: "queued_message",
+      status: "queued",
+      text: "stale stored text",
+      rawEventJson: JSON.stringify(
+        rawReceiveEvent("m2", "", {
+          message_type: "image",
+          content: JSON.stringify({ image_key: "img_1" })
+        })
+      )
+    });
+    const { repository } = createRepository(row, { larkMessages: [record] });
+    const codex = createCodex();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(async ({ outputDir }) => ({
+        path: `${outputDir}/img_1.png`,
+        resourceType: "image" as const,
+        fileKey: "img_1",
+        fileName: "img_1.png",
+        contentType: "image/png"
+      }))
+    };
+    const manager = createManager({ repository, codex, larkFiles });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    expect(larkFiles.downloadMessageResource).toHaveBeenCalledWith({
+      messageId: "m2",
+      resourceType: "image",
+      fileKey: "img_1",
+      fileName: undefined,
+      outputDir: "/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m2"
+    });
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input:
+          '<lark_message lark_message_id="m2" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+          "<image>/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m2/img_1.png</image>\n" +
+          "</lark_message>"
+      })
+    );
+  });
+
+  it("rejects new submissions during shutdown without clearing unfinished message state", async () => {
     const { codex } = createDeferredCodex();
     const lark = createLarkResponder();
-    const manager = createManager({ codex, lark });
+    const { repository } = createRepository();
+    const manager = createManager({ repository, codex, lark });
 
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
@@ -595,8 +705,10 @@ describe("ConversationManager", () => {
     expect(codex.interruptTurn).toHaveBeenCalledWith(
       expect.objectContaining({ role: "guest", threadId: "thread_1", turnId: "turn_1" })
     );
-    expect(lark.replyText).toHaveBeenCalledWith("m1", "服务重启之前的消息丢失");
-    expect(lark.replyText).toHaveBeenCalledWith("m2", "服务重启之前的消息丢失");
+    expect(lark.replyText).not.toHaveBeenCalledWith("m1", expect.any(String));
+    expect(lark.replyText).not.toHaveBeenCalledWith("m2", expect.any(String));
+    expect(repository.markLarkMessagesFailed).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCleared).not.toHaveBeenCalled();
   });
 });
 
@@ -674,6 +786,7 @@ function createLarkResponder(): LarkResponder {
 function createRepository(initial?: ConversationRecord, options: {
   users?: Array<{ larkUserId: string; name?: string; role?: "owner" | "guest" }>;
   larkMessageIds?: string[];
+  larkMessages?: LarkMessageRecord[];
 } = {}): {
   repository: ConversationRepository;
   row: ConversationRecord | undefined;
@@ -681,6 +794,11 @@ function createRepository(initial?: ConversationRecord, options: {
   let row = initial;
   const users = new Map<string, UserRecord>();
   const larkMessageIds = new Set(options.larkMessageIds ?? []);
+  const larkMessages = new Map<string, LarkMessageRecord>();
+  for (const record of options.larkMessages ?? []) {
+    larkMessageIds.add(record.larkMessageId);
+    larkMessages.set(record.larkMessageId, record);
+  }
   for (const user of options.users ?? []) {
     users.set(user.larkUserId, {
       id: users.size + 1,
@@ -700,8 +818,11 @@ function createRepository(initial?: ConversationRecord, options: {
       findByConversationKey: () => row ?? null,
       getUserByLarkUserId: (larkUserId) => users.get(larkUserId),
       getLarkMessageById: vi.fn((larkMessageId) =>
-        larkMessageIds.has(larkMessageId) ? { larkMessageId } : undefined
+        larkMessages.get(larkMessageId) ?? (larkMessageIds.has(larkMessageId) ? { larkMessageId } : undefined)
       ),
+      listUnfinishedLarkMessages: vi.fn(() => [...larkMessages.values()].filter((message) =>
+        message.status === "processing" || message.status === "queued"
+      )),
       create: (record) => {
         row = {
           id: 1,
@@ -769,6 +890,25 @@ function conversationRecord(overrides: Partial<ConversationRecord> = {}): Conver
   };
 }
 
+function larkMessageRecord(overrides: Partial<LarkMessageRecord> = {}): LarkMessageRecord {
+  const larkMessageId = overrides.larkMessageId ?? "m1";
+  return {
+    id: 1,
+    larkMessageId,
+    eventId: `e_${larkMessageId}`,
+    larkUserId: "ou_guest",
+    conversationKey: "p2p:ou_guest",
+    routeKind: "message",
+    status: "processing",
+    text: "hello",
+    larkCreateTime: 1234,
+    receivedAt: 100,
+    updatedAt: 100,
+    rawEventJson: JSON.stringify(rawReceiveEvent(larkMessageId, "hello")),
+    ...overrides
+  };
+}
+
 function message(messageId: string, text: string, overrides: Partial<IncomingLarkMessage> = {}): IncomingLarkMessage {
   return {
     eventId: `e_${messageId}`,
@@ -782,6 +922,27 @@ function message(messageId: string, text: string, overrides: Partial<IncomingLar
     createTime: 1234,
     raw: {},
     ...overrides
+  };
+}
+
+function rawReceiveEvent(messageId: string, text: string, messageOverrides: Record<string, unknown> = {}) {
+  return {
+    event_id: `e_${messageId}`,
+    sender: {
+      sender_id: {
+        open_id: "ou_guest"
+      },
+      sender_type: "user"
+    },
+    message: {
+      message_id: messageId,
+      create_time: "1234",
+      chat_id: "oc_ignored",
+      chat_type: "p2p",
+      message_type: "text",
+      content: JSON.stringify({ text }),
+      ...messageOverrides
+    }
   };
 }
 
