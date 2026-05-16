@@ -871,7 +871,7 @@ function formatPendingMessageForCodex(message: PendingMessage): string {
   ]
     .map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`)
     .join(" ");
-  return `<lark_message ${attributes}>\n${escapeXmlText(message.text)}\n</lark_message>`;
+  return `<lark_message ${attributes}>\n${message.text}\n</lark_message>`;
 }
 
 function escapeXmlText(value: string): string {

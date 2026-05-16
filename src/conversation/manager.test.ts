@@ -175,7 +175,7 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenCalledTimes(1);
   });
 
-  it("wraps Lark metadata and escaped text before submitting to Codex", async () => {
+  it("wraps Lark metadata and raw text before submitting to Codex", async () => {
     const codex = createCodex();
     const manager = createManager({ codex });
 
@@ -191,7 +191,7 @@ describe("ConversationManager", () => {
       expect.objectContaining({
         input:
           '<lark_message timestamp="1700000000123" sender_ouid="ou_guest" sender_name="Guest &quot;User&quot;">\n' +
-          'hello &lt;codex&gt; &amp; "friend"\n' +
+          'hello <codex> & "friend"\n' +
           "</lark_message>"
       })
     );
