@@ -120,7 +120,7 @@ export class CodexAppServer extends EventEmitter {
   }
 
   async startTurn(options: TurnStartOptions): Promise<import("../types.js").CodexTurnResult> {
-    return startCodexTurn(this.protocol, options, { timeoutMs: this.options.requestTimeoutMs });
+    return startCodexTurn(this.protocol, options, { requestTimeoutMs: this.options.requestTimeoutMs });
   }
 
   async steerTurn(options: { threadId: string; turnId: string; text: string }): Promise<void> {

@@ -24,6 +24,11 @@ export interface TurnStartOptions {
   onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
 }
 
+export interface TurnRequestOptions {
+  requestTimeoutMs?: number;
+  completionTimeoutMs?: number;
+}
+
 export interface TurnStartResponse {
   turn?: {
     id?: string;
@@ -111,7 +116,7 @@ export function buildTurnInterruptParams(options: TurnInterruptOptions): TurnInt
 export async function startCodexTurn(
   protocol: CodexProtocolClient,
   options: TurnStartOptions,
-  requestOptions: { timeoutMs?: number } = {}
+  requestOptions: TurnRequestOptions = {}
 ): Promise<CodexTurnResult> {
   const accumulator = new TurnOutputAccumulator(options.threadId, undefined, {
     onTurnStarted: options.onTurnStarted,
@@ -127,12 +132,12 @@ export async function startCodexTurn(
     const response = await protocol.request<TurnStartResponse, TurnStartParams>(
       "turn/start",
       buildTurnStartParams(options),
-      requestOptions
+      { timeoutMs: requestOptions.requestTimeoutMs }
     );
     if (response.turn?.id) {
       accumulator.setTurnId(response.turn.id);
     }
-    return await accumulator.wait(requestOptions.timeoutMs);
+    return await accumulator.wait(requestOptions.completionTimeoutMs);
   } catch (error) {
     throw error instanceof Error
       ? error

@@ -1,5 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
-import { buildTurnInterruptParams, buildTurnStartParams, buildTurnSteerParams, TurnOutputAccumulator } from "./turn.js";
+import { EventEmitter } from "node:events";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CodexProtocolClient } from "./protocol.js";
+import {
+  buildTurnInterruptParams,
+  buildTurnStartParams,
+  buildTurnSteerParams,
+  startCodexTurn,
+  TurnOutputAccumulator
+} from "./turn.js";
 
 describe("codex turn payloads", () => {
   it("builds turn/start text input with minimal Twinny runtime overrides", () => {
@@ -197,3 +205,62 @@ describe("TurnOutputAccumulator", () => {
     });
   });
 });
+
+describe("startCodexTurn", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("uses request timeout for turn/start without timing out normal long-running turns", async () => {
+    vi.useFakeTimers();
+    const protocol = new FakeProtocol();
+    protocol.requestMock.mockImplementationOnce(async () => {
+      setTimeout(() => {
+        protocol.emit("notification", {
+          method: "turn/completed",
+          params: {
+            threadId: "thread_123",
+            turn: {
+              id: "turn_1",
+              status: "completed",
+              items: [{ type: "agentMessage", id: "msg_1", text: "done" }]
+            }
+          }
+        });
+      }, 10);
+      return { turn: { id: "turn_1" } };
+    });
+
+    const result = startCodexTurn(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work longer than the request timeout",
+        cwd: "/tmp/twinny/workspaces/p2p:ou_1"
+      },
+      { requestTimeoutMs: 5 }
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    await expect(result).resolves.toMatchObject({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      text: "done",
+      status: "completed"
+    });
+    expect(protocol.requestMock).toHaveBeenCalledWith(
+      "turn/start",
+      expect.any(Object),
+      { timeoutMs: 5 }
+    );
+  });
+});
+
+class FakeProtocol extends EventEmitter {
+  readonly requestMock = vi.fn();
+
+  request<TResult = unknown>(...args: unknown[]): Promise<TResult> {
+    return this.requestMock(...args) as Promise<TResult>;
+  }
+}
