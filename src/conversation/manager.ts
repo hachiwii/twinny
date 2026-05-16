@@ -432,11 +432,6 @@ export class ConversationManager {
       return existingName;
     }
 
-    const eventName = nonEmptyString(message.senderName);
-    if (eventName) {
-      return eventName;
-    }
-
     const failureUntil = this.nameLookupFailureCache.get(message.senderOpenId) ?? 0;
     if (failureUntil > Date.now()) {
       return undefined;
@@ -453,12 +448,6 @@ export class ConversationManager {
         this.cacheNameLookupFailure(message.senderOpenId);
         return undefined;
       }
-      await this.options.repository.upsertUser({
-        larkUserId: message.senderOpenId,
-        name: resolvedName,
-        role,
-        seenAt: message.createTime
-      });
       return resolvedName;
     } catch (error) {
       this.cacheNameLookupFailure(message.senderOpenId);

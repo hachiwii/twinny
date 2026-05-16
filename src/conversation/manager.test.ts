@@ -307,7 +307,10 @@ describe("ConversationManager", () => {
 
   it("wraps Lark metadata and raw text before submitting to Codex", async () => {
     const codex = createCodex();
-    const manager = createManager({ codex });
+    const larkUsers: LarkUserDirectory = {
+      getUserNameByOpenId: vi.fn(async () => 'Guest "User"')
+    };
+    const manager = createManager({ codex, larkUsers });
 
     manager.submitIncoming(
       message("m1", 'hello <codex> & "friend"', {
@@ -327,7 +330,7 @@ describe("ConversationManager", () => {
     );
   });
 
-  it("resolves missing Lark sender names and includes them in Codex input", async () => {
+  it("resolves empty stored Lark sender names from the directory and includes them in Codex input", async () => {
     const codex = createCodex();
     const larkUsers: LarkUserDirectory = {
       getUserNameByOpenId: vi.fn(async () => "Resolved User")
@@ -336,7 +339,7 @@ describe("ConversationManager", () => {
 
     manager.submitIncoming(
       message("m1", "hello", {
-        senderName: undefined
+        senderName: "Event Name"
       })
     );
 
@@ -345,6 +348,27 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         input: '<lark_message timestamp="1234" sender_ouid="ou_guest" sender_name="Resolved User">\nhello\n</lark_message>'
+      })
+    );
+  });
+
+  it("reuses stored Lark sender names without calling the directory", async () => {
+    const codex = createCodex();
+    const { repository } = createRepository(undefined, {
+      users: [{ larkUserId: "ou_guest", name: "Stored User", role: "guest" }]
+    });
+    const larkUsers: LarkUserDirectory = {
+      getUserNameByOpenId: vi.fn(async () => "Directory User")
+    };
+    const manager = createManager({ repository, codex, larkUsers });
+
+    manager.submitIncoming(message("m1", "hello", { senderName: "Event User" }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(larkUsers.getUserNameByOpenId).not.toHaveBeenCalled();
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: '<lark_message timestamp="1234" sender_ouid="ou_guest" sender_name="Stored User">\nhello\n</lark_message>'
       })
     );
   });
@@ -358,9 +382,9 @@ describe("ConversationManager", () => {
     };
     const manager = createManager({ codex, larkUsers });
 
-    manager.submitIncoming(message("m1", "first", { senderName: undefined }));
+    manager.submitIncoming(message("m1", "first", { senderName: "Event User" }));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
-    manager.submitIncoming(message("m2", "second", { senderName: undefined }));
+    manager.submitIncoming(message("m2", "second", { senderName: "Event User" }));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
 
     expect(larkUsers.getUserNameByOpenId).toHaveBeenCalledTimes(1);
@@ -510,10 +534,16 @@ function createManager(options: {
     },
     codex: options.codex ?? createCodex(),
     lark: options.lark ?? createLarkResponder(),
-    larkUsers: options.larkUsers,
+    larkUsers: options.larkUsers ?? createLarkUserDirectory(),
     larkFiles: options.larkFiles,
     nameLookupFailureTtlMs: 60_000
   });
+}
+
+function createLarkUserDirectory(): LarkUserDirectory {
+  return {
+    getUserNameByOpenId: vi.fn(async () => "Guest User")
+  };
 }
 
 function createCodex(overrides: Partial<CodexBridge> = {}): CodexBridge {
@@ -557,12 +587,25 @@ function createLarkResponder(): LarkResponder {
   };
 }
 
-function createRepository(initial?: ConversationRecord): {
+function createRepository(initial?: ConversationRecord, options: {
+  users?: Array<{ larkUserId: string; name?: string; role?: "owner" | "guest" }>;
+} = {}): {
   repository: ConversationRepository;
   row: ConversationRecord | undefined;
 } {
   let row = initial;
   const users = new Map<string, UserRecord>();
+  for (const user of options.users ?? []) {
+    users.set(user.larkUserId, {
+      id: users.size + 1,
+      larkUserId: user.larkUserId,
+      name: user.name ?? "",
+      role: user.role ?? "guest",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      lastSeenAt: Date.now()
+    });
+  }
   return {
     get row() {
       return row;
