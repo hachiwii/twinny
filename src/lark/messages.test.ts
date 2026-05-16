@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { TenantAccessTokenManager } from "./auth.js";
-import { LarkMessageReader, LarkMessageSender } from "./messages.js";
+import { LarkMessageReader, LarkMessageSender, LarkMessageUnavailableError } from "./messages.js";
 import { LarkOpenApiClient } from "./openapi.js";
 import type { FetchLike, LarkLogger } from "./types.js";
 
@@ -182,6 +182,23 @@ describe("LarkMessageSender", () => {
         signal: undefined
       }
     );
+  });
+
+  it("reports omitted or deleted mget messages as unavailable", async () => {
+    const omittedFetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { items: [] } }
+    ]);
+    await expect(createReader(omittedFetch).getMessage("om_missing")).rejects.toBeInstanceOf(LarkMessageUnavailableError);
+
+    const deletedFetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { items: [{ message_id: "om_deleted", deleted: true }] } }
+    ]);
+    await expect(createReader(deletedFetch).getMessage("om_deleted")).rejects.toMatchObject({
+      code: "LARK_MESSAGE_UNAVAILABLE",
+      messageId: "om_deleted"
+    });
   });
 
   it("creates and deletes Typing reactions", async () => {

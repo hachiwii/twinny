@@ -4,6 +4,7 @@ import { LRUCache } from "lru-cache";
 import type { Logger } from "pino";
 import { TwinnyError, toErrorMessage } from "../errors.js";
 import { normalizeIncomingLarkMessage } from "../lark/filters.js";
+import { isLarkMessageUnavailableError } from "../lark/messages.js";
 import { logger as defaultLogger } from "../observability/logs.js";
 import type {
   CodexThreadTokenUsageUpdate,
@@ -1315,40 +1316,52 @@ export class ConversationManager {
   }
 
   private async startPendingBatch(state: ConversationState, context: MessageContext): Promise<void> {
-    if (state.active || state.pendingBatch.length === 0) {
+    while (!state.active && state.pendingBatch.length > 0) {
+      const count = countNextPendingBatch(state);
+      const messages = state.pendingBatch.splice(0, count);
+      const refreshedMessages = await this.refreshPendingMessagesBeforeStart(context, messages);
+      if (refreshedMessages.length === 0) {
+        continue;
+      }
+      await this.startTurnForMessages(state, context, refreshedMessages);
       return;
     }
-    const count = countNextPendingBatch(state);
-    const messages = state.pendingBatch.splice(0, count);
-    await this.refreshPendingMessagesBeforeStart(context, messages);
-    await this.startTurnForMessages(state, context, messages);
   }
 
-  private async refreshPendingMessagesBeforeStart(context: MessageContext, messages: PendingMessage[]): Promise<void> {
+  private async refreshPendingMessagesBeforeStart(context: MessageContext, messages: PendingMessage[]): Promise<PendingMessage[]> {
     if (!this.options.larkMessages || messages.length === 0) {
-      return;
+      return messages;
     }
-    await Promise.all(messages.map((message) => this.refreshPendingMessageBeforeStart(context, message)));
+    const refreshed = await Promise.all(messages.map((message) => this.refreshPendingMessageBeforeStart(context, message)));
+    return refreshed.filter((message): message is PendingMessage => message !== undefined);
   }
 
-  private async refreshPendingMessageBeforeStart(context: MessageContext, pending: PendingMessage): Promise<void> {
+  private async refreshPendingMessageBeforeStart(
+    context: MessageContext,
+    pending: PendingMessage
+  ): Promise<PendingMessage | undefined> {
     const reader = this.options.larkMessages;
     if (!reader) {
-      return;
+      return pending;
     }
 
     let fetchedRaw: unknown;
     try {
       fetchedRaw = await reader.getMessage(pending.messageId);
     } catch (error) {
+      if (isLarkMessageUnavailableError(error)) {
+        this.log.info({ messageId: pending.messageId }, "queued Lark message unavailable before processing; marking recalled");
+        await this.markMessageRecalledBestEffort(pending.messageId);
+        return undefined;
+      }
       this.log.warn({ error, messageId: pending.messageId }, "failed to refresh queued Lark message; using stored content");
-      return;
+      return pending;
     }
 
     try {
       const latestRaw = patchLarkMessageRawEvent(pending.original.raw, fetchedRaw);
       if (!larkMessageContentChanged(pending.original.raw, latestRaw)) {
-        return;
+        return pending;
       }
 
       const normalized = normalizeIncomingLarkMessage(latestRaw, { botOpenId: this.options.botOpenId });
@@ -1357,7 +1370,7 @@ export class ConversationManager {
           { messageId: pending.messageId },
           "refreshed queued Lark message could not be normalized; using stored content"
         );
-        return;
+        return pending;
       }
 
       normalized.senderName = await this.resolveSenderName(
@@ -1377,6 +1390,7 @@ export class ConversationManager {
     } catch (error) {
       this.log.warn({ error, messageId: pending.messageId }, "failed to apply refreshed Lark message; using stored content");
     }
+    return pending;
   }
 
   private async startTurnForMessages(

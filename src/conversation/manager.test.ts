@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
 import { TwinnyError } from "../errors.js";
+import { LarkMessageUnavailableError } from "../lark/messages.js";
 import type {
   CodexThreadRecord,
   CodexTurnResult,
@@ -293,6 +294,60 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ input: `${wrappedMessage("edited", "m2")}\n${wrappedMessage("steer edited", "m3")}` })
+    );
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("marks unavailable queued messages recalled before processing and skips them", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const larkMessages = createLarkMessageReader({
+      m2: new LarkMessageUnavailableError("m2"),
+      m3: fetchedLarkMessage("m3", "text", JSON.stringify({ text: "steer stored" }))
+    });
+    const manager = createManager({ repository, codex, larkMessages });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue queued", { raw: rawReceiveEvent("m2", "/queue queued") }));
+    manager.submitIncoming(message("m3", "steer stored", { raw: rawReceiveEvent("m3", "steer stored") }));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(2));
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(larkMessages.getMessage).toHaveBeenCalledWith("m2");
+    expect(larkMessages.getMessage).toHaveBeenCalledWith("m3");
+    expect(repository.markLarkMessageRecalled).toHaveBeenCalledWith("m2");
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ input: wrappedMessage("steer stored", "m3") })
+    );
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("continues to the next queued batch when the whole refreshed batch was recalled", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const larkMessages = createLarkMessageReader({
+      m2: new LarkMessageUnavailableError("m2"),
+      m3: fetchedLarkMessage("m3", "text", JSON.stringify({ text: "/queue next" }))
+    });
+    const manager = createManager({ repository, codex, larkMessages });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue recalled", { raw: rawReceiveEvent("m2", "/queue recalled") }));
+    manager.submitIncoming(message("m3", "/queue next", { raw: rawReceiveEvent("m3", "/queue next") }));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(2));
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(repository.markLarkMessageRecalled).toHaveBeenCalledWith("m2");
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ input: wrappedMessage("next", "m3") })
     );
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
@@ -1613,7 +1668,7 @@ function createLarkUserDirectory(): LarkUserDirectory {
   };
 }
 
-function createLarkMessageReader(messages: Record<string, unknown> | Error): LarkMessageReader {
+function createLarkMessageReader(messages: Record<string, unknown | Error> | Error): LarkMessageReader {
   return {
     getMessage: vi.fn(async (messageId: string) => {
       if (messages instanceof Error) {
@@ -1622,6 +1677,9 @@ function createLarkMessageReader(messages: Record<string, unknown> | Error): Lar
       const message = messages[messageId];
       if (!message) {
         throw new Error(`missing test message ${messageId}`);
+      }
+      if (message instanceof Error) {
+        throw message;
       }
       return message;
     })

@@ -12,6 +12,24 @@ export interface LarkMessageReaderOptions {
   openApiClient: LarkOpenApiClient;
 }
 
+export class LarkMessageUnavailableError extends Error {
+  readonly code = "LARK_MESSAGE_UNAVAILABLE";
+
+  constructor(readonly messageId: string) {
+    super(`Lark message is unavailable: ${messageId}`);
+    this.name = "LarkMessageUnavailableError";
+  }
+}
+
+export function isLarkMessageUnavailableError(error: unknown): error is LarkMessageUnavailableError {
+  return error instanceof LarkMessageUnavailableError ||
+    (
+      !!error &&
+      typeof error === "object" &&
+      (error as Record<string, unknown>).code === "LARK_MESSAGE_UNAVAILABLE"
+    );
+}
+
 export interface TextMessageOptions {
   uuid?: string;
   signal?: AbortSignal;
@@ -195,8 +213,8 @@ export class LarkMessageReader {
       }
     });
     const message = extractFetchedMessage(raw, messageId);
-    if (!message) {
-      throw new Error(`Lark message response did not include ${messageId}`);
+    if (!message || isFetchedMessageDeleted(message)) {
+      throw new LarkMessageUnavailableError(messageId);
     }
     return message;
   }
@@ -254,6 +272,14 @@ function extractFetchedMessage(raw: unknown, messageId: string): unknown {
     }
   }
   return undefined;
+}
+
+function isFetchedMessageDeleted(message: unknown): boolean {
+  if (!message || typeof message !== "object" || Array.isArray(message)) {
+    return false;
+  }
+  const deleted = (message as Record<string, unknown>).deleted;
+  return deleted === true || deleted === "true";
 }
 
 function encodePathSegment(value: string): string {
