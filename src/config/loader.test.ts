@@ -100,6 +100,9 @@ describe("Twinny config loading and bootstrap", () => {
     ).toBe(path.join(ownerCodexTarget, "sessions"));
     expect(guestConfig).toContain('sandbox_mode = "workspace-write"');
     expect(guestConfig).toContain('approval_policy = "never"');
+    expect(guestConfig).toContain('default_permissions = "twinny_guest"');
+    expect(guestConfig).toContain('":tmpdir" = "write"');
+    expect(guestConfig).toContain("allow_local_binding = true");
     expect(guestConfig).toContain('inherit = "none"');
     expect(guestAgents).toContain("Owner");
     expect(guestAgents).toContain("ou_owner");

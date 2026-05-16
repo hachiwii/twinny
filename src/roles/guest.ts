@@ -29,6 +29,19 @@ export function createGuestCodexConfigDocument(options: GuestCodexConfigOptions 
     sandbox_workspace_write: {
       network_access: true
     },
+    default_permissions: "twinny_guest",
+    permissions: {
+      twinny_guest: {
+        filesystem: {
+          ":tmpdir": "write"
+        },
+        network: {
+          enabled: true,
+          mode: "full",
+          allow_local_binding: true
+        }
+      }
+    },
     shell_environment_policy: {
       inherit: "none"
     }
@@ -57,16 +70,18 @@ export async function ensureGuestWorkspaceProjectTrusted(codexHome: string, cwd:
   const configPath = path.join(codexHome, "config.toml");
   return withGuestConfigWriteLock(configPath, async () => {
     const document = await readGuestCodexConfigDocument(configPath);
+    let changed = ensureGuestPermissions(document);
     const projects = ensureTomlTable(document, "projects");
     const cwdPath = path.resolve(cwd);
     const existingProject = projects[cwdPath];
     const project = isTomlTable(existingProject) ? existingProject : {};
     if (project.trust_level === "trusted") {
-      return false;
+      return changed ? writeGuestCodexConfigIfChanged(configPath, document) : false;
     }
 
     project.trust_level = "trusted";
     projects[cwdPath] = project;
+    changed = true;
     return writeGuestCodexConfigIfChanged(configPath, document);
   });
 }
@@ -100,6 +115,29 @@ export function validateGuestCodexConfigDocument(document: TomlTable): GuestSafe
   if (document.web_search !== "disabled") {
     issues.push("guest web_search must be disabled");
   }
+  if (document.default_permissions !== "twinny_guest") {
+    issues.push("guest default_permissions must be twinny_guest");
+  }
+  const networkPermissions = getGuestNetworkPermissions(document);
+  if (!networkPermissions) {
+    issues.push("guest twinny_guest network permissions are required");
+  } else {
+    if (networkPermissions.enabled !== true) {
+      issues.push("guest twinny_guest network.enabled must be true");
+    }
+    if (networkPermissions.mode !== "full") {
+      issues.push("guest twinny_guest network.mode must be full");
+    }
+    if (networkPermissions.allow_local_binding !== true) {
+      issues.push("guest twinny_guest network.allow_local_binding must be true");
+    }
+  }
+  const filesystemPermissions = getGuestFilesystemPermissions(document);
+  if (!filesystemPermissions) {
+    issues.push("guest twinny_guest filesystem permissions are required");
+  } else if (filesystemPermissions[":tmpdir"] !== "write") {
+    issues.push("guest twinny_guest filesystem.:tmpdir must be write");
+  }
   const shellPolicy = document.shell_environment_policy;
   if (typeof shellPolicy !== "object" || shellPolicy === null || Array.isArray(shellPolicy)) {
     issues.push("guest shell_environment_policy is required");
@@ -107,6 +145,62 @@ export function validateGuestCodexConfigDocument(document: TomlTable): GuestSafe
     issues.push("guest shell_environment_policy.inherit must be none");
   }
   return { ok: issues.length === 0, issues };
+}
+
+function ensureGuestPermissions(document: TomlTable): boolean {
+  let changed = false;
+  if (document.default_permissions !== "twinny_guest") {
+    document.default_permissions = "twinny_guest";
+    changed = true;
+  }
+
+  const permissions = ensureTomlTable(document, "permissions");
+  const profile = ensureTomlTable(permissions, "twinny_guest");
+  const filesystem = ensureTomlTable(profile, "filesystem");
+  if (filesystem[":tmpdir"] !== "write") {
+    filesystem[":tmpdir"] = "write";
+    changed = true;
+  }
+  const network = ensureTomlTable(profile, "network");
+  if (network.enabled !== true) {
+    network.enabled = true;
+    changed = true;
+  }
+  if (network.mode !== "full") {
+    network.mode = "full";
+    changed = true;
+  }
+  if (network.allow_local_binding !== true) {
+    network.allow_local_binding = true;
+    changed = true;
+  }
+  return changed;
+}
+
+function getGuestNetworkPermissions(document: TomlTable): TomlTable | undefined {
+  const permissions = document.permissions;
+  if (!isTomlTable(permissions)) {
+    return undefined;
+  }
+  const profile = permissions.twinny_guest;
+  if (!isTomlTable(profile)) {
+    return undefined;
+  }
+  const network = profile.network;
+  return isTomlTable(network) ? network : undefined;
+}
+
+function getGuestFilesystemPermissions(document: TomlTable): TomlTable | undefined {
+  const permissions = document.permissions;
+  if (!isTomlTable(permissions)) {
+    return undefined;
+  }
+  const profile = permissions.twinny_guest;
+  if (!isTomlTable(profile)) {
+    return undefined;
+  }
+  const filesystem = profile.filesystem;
+  return isTomlTable(filesystem) ? filesystem : undefined;
 }
 
 async function readGuestCodexConfigDocument(configPath: string): Promise<TomlTable> {
