@@ -4,6 +4,7 @@ export const LARK_MESSAGE_RECEIVE_EVENT = "im.message.receive_v1" as const;
 
 export const LARK_REQUIRED_SCOPES = [
   "im:message.p2p_msg:readonly",
+  "im:message.group_msg",
   "im:message:readonly",
   "im:message.reactions:write_only",
   "im:resource"

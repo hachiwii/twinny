@@ -1,4 +1,4 @@
-import type { IncomingLarkMessage, IncomingLarkMessageResource } from "../types.js";
+import type { IncomingLarkMention, IncomingLarkMessage, IncomingLarkMessageResource } from "../types.js";
 
 export interface RawLarkMessageReceiveEvent {
   event_id?: string;
@@ -19,10 +19,14 @@ export interface RawLarkMessageReceiveEvent {
   };
   message?: {
     message_id?: string;
+    root_id?: string;
+    parent_id?: string;
+    thread_id?: string;
     create_time?: string;
     chat_id?: string;
     chat_type?: string;
     message_type?: string;
+    mentions?: unknown;
     content?: unknown;
   };
 }
@@ -31,7 +35,7 @@ export type LarkMessageIgnoreReason =
   | "malformed_event"
   | "missing_sender_open_id"
   | "bot_self_message"
-  | "non_p2p_message"
+  | "unsupported_chat_type"
   | "missing_message_id";
 
 export interface NormalizeLarkMessageOptions {
@@ -54,11 +58,12 @@ export function normalizeIncomingLarkMessageWithReason(
   raw: unknown,
   options: NormalizeLarkMessageOptions = {}
 ): NormalizeLarkMessageResult {
-  if (!isRecord(raw) || !isRecord(raw.sender) || !isRecord(raw.message)) {
+  const event = unwrapReceiveEvent(raw);
+  if (!isRecord(event) || !isRecord(event.sender) || !isRecord(event.message)) {
     return ignored("malformed_event", raw);
   }
 
-  const sender = raw.sender;
+  const sender = event.sender;
   const senderId = isRecord(sender.sender_id) ? sender.sender_id : {};
   const senderOpenId = stringValue(senderId.open_id);
   if (!senderOpenId) {
@@ -76,15 +81,20 @@ export function normalizeIncomingLarkMessageWithReason(
     sender.sender_display_name
   );
 
-  const message = raw.message;
-  if (!isP2pChatType(stringValue(message.chat_type))) {
-    return ignored("non_p2p_message", raw);
+  const message = event.message;
+  const chatType = normalizeChatType(stringValue(message.chat_type));
+  if (!chatType) {
+    return ignored("unsupported_chat_type", raw);
   }
 
   const messageType = stringValue(message.message_type) ?? "unknown";
   const messageId = stringValue(message.message_id);
   if (!messageId) {
     return ignored("missing_message_id", raw);
+  }
+  const chatId = chatType === "p2p" ? senderOpenId : stringValue(message.chat_id);
+  if (!chatId) {
+    return ignored("malformed_event", raw);
   }
 
   const content = normalizeMessageContent(messageType, message.content);
@@ -96,17 +106,24 @@ export function normalizeIncomingLarkMessageWithReason(
   return {
     kind: "message",
     message: {
-      eventId: stringValue(raw.event_id) ?? stringValue(raw.uuid) ?? messageId,
+      eventId:
+        stringValue(event.event_id) ??
+        stringValue(event.uuid) ??
+        stringValue(isRecord(raw) && isRecord(raw.header) ? raw.header.event_id : undefined) ??
+        messageId,
       messageId,
-      chatId: senderOpenId,
-      chatType: "p2p",
+      chatId,
+      chatType,
       messageType,
       senderOpenId,
       senderName,
+      larkGroupId: chatType === "p2p" ? undefined : chatId,
+      larkThreadId: chatType === "topic_group" ? larkThreadIdForMessage(message, messageId) : undefined,
+      mentions: normalizeMentions(message.mentions),
       resources: resources.length > 0 ? resources : undefined,
       rawForCodex: rawForCodex ? true : undefined,
       text,
-      createTime: parseEpochMs(message.create_time ?? raw.create_time),
+      createTime: parseEpochMs(message.create_time ?? event.create_time),
       raw
     }
   };
@@ -382,11 +399,68 @@ export function normalizeTextContent(content: unknown): string | null {
   return content;
 }
 
-function isP2pChatType(chatType: string | undefined): boolean {
-  if (!chatType) {
-    return false;
+function unwrapReceiveEvent(raw: unknown): unknown {
+  if (isRecord(raw) && isRecord(raw.event)) {
+    return raw.event;
   }
-  return ["p2p", "p2p_chat", "private", "private_chat"].includes(chatType.toLowerCase());
+  return raw;
+}
+
+function normalizeChatType(chatType: string | undefined): "p2p" | "group" | "topic_group" | undefined {
+  if (!chatType) {
+    return undefined;
+  }
+  switch (chatType.toLowerCase()) {
+    case "p2p":
+    case "p2p_chat":
+    case "private":
+    case "private_chat":
+      return "p2p";
+    case "group":
+    case "group_chat":
+      return "group";
+    case "topic_group":
+    case "topic":
+      return "topic_group";
+    default:
+      return undefined;
+  }
+}
+
+function larkThreadIdForMessage(message: Record<string, unknown>, messageId: string): string {
+  return (
+    firstStringValue(message.thread_id, message.root_id, message.parent_id, messageId) ??
+    messageId
+  );
+}
+
+function normalizeMentions(value: unknown): IncomingLarkMention[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const mentions: IncomingLarkMention[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    const key = stringValue(item.key);
+    const id = isRecord(item.id) ? item.id : {};
+    const openId = stringValue(id.open_id) ?? stringValue(item.open_id);
+    const userId = stringValue(id.user_id) ?? stringValue(item.user_id);
+    const unionId = stringValue(id.union_id) ?? stringValue(item.union_id);
+    const name = stringValue(item.name);
+    if (!key && !openId && !userId && !unionId) {
+      continue;
+    }
+    mentions.push({
+      key: key ?? "",
+      openId,
+      userId,
+      unionId,
+      name
+    });
+  }
+  return mentions.length > 0 ? mentions : undefined;
 }
 
 function parseEpochMs(value: unknown): number | undefined {

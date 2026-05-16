@@ -157,10 +157,84 @@ describe("normalizeIncomingLarkMessage", () => {
     });
   });
 
-  it("ignores group and bot-self messages", () => {
-    expect(normalizeIncomingLarkMessageWithReason(receiveEvent({ message: { chat_type: "group" } }))).toMatchObject({
+  it("normalizes group messages with chat id and mentions", () => {
+    const result = normalizeIncomingLarkMessage(
+      receiveEvent({
+        message: {
+          chat_id: "oc_group",
+          chat_type: "group",
+          mentions: [
+            {
+              key: "@_user_1",
+              id: { open_id: "ou_bot", user_id: "u_bot" },
+              name: "Twinny"
+            }
+          ]
+        }
+      })
+    );
+
+    expect(result).toMatchObject({
+      chatId: "oc_group",
+      chatType: "group",
+      larkGroupId: "oc_group",
+      mentions: [{ key: "@_user_1", openId: "ou_bot", userId: "u_bot", name: "Twinny" }]
+    });
+  });
+
+  it("normalizes topic-group thread ids by thread, root, parent, then message id", () => {
+    expect(
+      normalizeIncomingLarkMessage(
+        receiveEvent({
+          message: {
+            chat_id: "oc_group",
+            chat_type: "topic_group",
+            thread_id: "omt_thread",
+            root_id: "om_root",
+            parent_id: "om_parent"
+          }
+        })
+      )
+    ).toMatchObject({ chatId: "oc_group", chatType: "topic_group", larkThreadId: "omt_thread" });
+    expect(
+      normalizeIncomingLarkMessage(
+        receiveEvent({
+          message: {
+            chat_id: "oc_group",
+            chat_type: "topic_group",
+            root_id: "om_root",
+            parent_id: "om_parent"
+          }
+        })
+      )
+    ).toMatchObject({ larkThreadId: "om_root" });
+    expect(
+      normalizeIncomingLarkMessage(
+        receiveEvent({
+          message: {
+            chat_id: "oc_group",
+            chat_type: "topic_group",
+            parent_id: "om_parent"
+          }
+        })
+      )
+    ).toMatchObject({ larkThreadId: "om_parent" });
+    expect(
+      normalizeIncomingLarkMessage(
+        receiveEvent({
+          message: {
+            chat_id: "oc_group",
+            chat_type: "topic_group"
+          }
+        })
+      )
+    ).toMatchObject({ larkThreadId: "om_1" });
+  });
+
+  it("ignores unsupported chat and bot-self messages", () => {
+    expect(normalizeIncomingLarkMessageWithReason(receiveEvent({ message: { chat_type: "meeting" } }))).toMatchObject({
       kind: "ignored",
-      reason: "non_p2p_message"
+      reason: "unsupported_chat_type"
     });
     expect(normalizeIncomingLarkMessageWithReason(receiveEvent({ sender: { sender_type: "app" } }))).toMatchObject({
       kind: "ignored",

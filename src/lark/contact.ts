@@ -18,10 +18,47 @@ export class LarkUserDirectory {
   }
 }
 
+export class LarkChatDirectory {
+  constructor(private readonly options: LarkUserDirectoryOptions) {}
+
+  async getChatName(chatId: string): Promise<string | undefined> {
+    const raw = await this.options.openApiClient.request(`/im/v1/chats/${encodePathSegment(chatId)}`, {
+      method: "GET",
+      query: {
+        user_id_type: "open_id"
+      }
+    });
+    return extractChatName(raw);
+  }
+}
+
+export class LarkBotDirectory {
+  constructor(private readonly options: LarkUserDirectoryOptions) {}
+
+  async getBotOpenId(): Promise<string | undefined> {
+    const raw = await this.options.openApiClient.request("/bot/v3/info", {
+      method: "GET"
+    });
+    return extractBotOpenId(raw);
+  }
+}
+
 function extractUserName(raw: unknown): string | undefined {
   const data = getRecord(raw, "data");
   const user = getRecord(data, "user");
   return firstNonEmptyString(user.name, user.en_name, user.nickname);
+}
+
+function extractChatName(raw: unknown): string | undefined {
+  const data = getRecord(raw, "data");
+  const chat = getRecord(data, "chat");
+  return firstNonEmptyString(chat.name, chat.chat_name, chat.title);
+}
+
+function extractBotOpenId(raw: unknown): string | undefined {
+  const data = getRecord(raw, "data");
+  const bot = Object.keys(data).length > 0 ? getRecord(data, "bot") : getRecord(raw, "bot");
+  return firstNonEmptyString(bot.open_id, data.open_id);
 }
 
 function getRecord(source: unknown, key: string): Record<string, unknown> {

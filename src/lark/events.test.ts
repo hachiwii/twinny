@@ -30,10 +30,12 @@ describe("LarkEventConsumer", () => {
 
     await consumer.start();
     await registered["im.message.receive_v1"](receiveEvent());
-    await registered["im.message.receive_v1"](receiveEvent({ message: { chat_type: "group" } }));
+    await registered["im.message.receive_v1"](receiveEvent({ message: { chat_id: "oc_group", chat_type: "group" } }));
+    await registered["im.message.receive_v1"](receiveEvent({ message: { chat_type: "unsupported" } }));
 
     expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "hello", chatId: "ou_user" }));
-    expect(onIgnored).toHaveBeenCalledWith("non_p2p_message", expect.anything());
+    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "hello", chatId: "oc_group", chatType: "group" }));
+    expect(onIgnored).toHaveBeenCalledWith("unsupported_chat_type", expect.anything());
     expect(consumer.isRunning).toBe(true);
 
     await consumer.stop({ force: true });

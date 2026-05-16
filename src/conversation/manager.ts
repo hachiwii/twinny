@@ -8,7 +8,9 @@ import { logger as defaultLogger } from "../observability/logs.js";
 import type {
   CodexThreadTokenUsageUpdate,
   CodexTurnResult,
+  ConversationResponseMode,
   ConversationRecord,
+  ConversationType,
   IncomingLarkMessage,
   LarkMessageRecord,
   LarkMessageRouteKind,
@@ -16,11 +18,10 @@ import type {
   NewConversationRecord,
   RoleName,
   CodexThreadRecord,
-  UserRecord,
   TwinnyConfig
 } from "../types.js";
 import { SerialQueue } from "./queue.js";
-import { conversationKeyForP2p, conversationTypeForChat, roleForSender } from "./routing.js";
+import { conversationKeyForChat, conversationKeyForP2p, conversationTypeForChat, isGroupConversationType, roleForSender } from "./routing.js";
 
 export interface ConversationRepository {
   findByConversationKey(conversationKey: string): Promise<ConversationRecord | null> | ConversationRecord | null;
@@ -35,23 +36,29 @@ export interface ConversationRepository {
       workspace?: string;
     }
   ): Promise<ConversationRecord> | ConversationRecord;
+  updateConversationSettings(
+    conversationKey: string,
+    update: { name?: string; responseMode?: ConversationResponseMode }
+  ): Promise<ConversationRecord> | ConversationRecord;
   markThreadHasRollout(conversationKey: string, codexThreadId: string): Promise<void> | void;
-  getUserByLarkUserId(larkUserId: string): Promise<UserRecord | undefined> | UserRecord | undefined;
   getCodexThreadById(codexThreadId: string): Promise<CodexThreadRecord | undefined> | CodexThreadRecord | undefined;
+  getCodexThreadByConversationAndLarkThread(
+    conversationKey: string,
+    larkThreadId: string
+  ): Promise<CodexThreadRecord | undefined> | CodexThreadRecord | undefined;
   getLarkMessageById(larkMessageId: string): Promise<unknown | undefined> | unknown | undefined;
   listUnfinishedLarkMessages(): Promise<LarkMessageRecord[]> | LarkMessageRecord[];
-  upsertUser(input: {
-    larkUserId: string;
-    name?: string;
-    role?: RoleName;
-    seenAt?: number;
-  }): Promise<unknown> | unknown;
   upsertCodexThread(input: {
     codexThreadId: string;
     conversationKey: string;
     role: RoleName;
     larkThreadId?: string;
   }): Promise<unknown> | unknown;
+  replaceCodexThreadForLarkThread?(
+    conversationKey: string,
+    larkThreadId: string,
+    update: { codexThreadId: string; role: RoleName }
+  ): Promise<CodexThreadRecord> | CodexThreadRecord;
   updateCodexThreadTokenUsage(input: {
     codexThreadId: string;
     conversationKey: string;
@@ -91,6 +98,10 @@ export interface ConversationRepository {
 
 export interface LarkUserDirectory {
   getUserNameByOpenId(openId: string): Promise<string | undefined>;
+}
+
+export interface LarkChatDirectory {
+  getChatName(chatId: string): Promise<string | undefined>;
 }
 
 export interface LarkFileDownloader {
@@ -184,7 +195,9 @@ export interface ConversationManagerOptions {
   codex: CodexBridge;
   lark: LarkResponder;
   larkUsers?: LarkUserDirectory;
+  larkChats?: LarkChatDirectory;
   larkFiles?: LarkFileDownloader;
+  botOpenId?: string;
   roles: RoleHomeResolver;
   logger?: Logger;
   nameLookupFailureTtlMs?: number;
@@ -196,6 +209,14 @@ interface ActiveThreadResolution {
   threadId: string;
   replacedMissingThread: boolean;
   previousThreadId?: string;
+  created?: boolean;
+}
+
+interface MessageContext {
+  type: ConversationType;
+  conversationKey: string;
+  stateKey: string;
+  larkThreadId?: string;
 }
 
 interface PendingMessage {
@@ -211,6 +232,7 @@ interface ActiveTurn {
   threadId: string;
   workspace: string;
   conversationKey: string;
+  context: MessageContext;
   replyMessageId: string;
   turnId?: string;
   reaction?: LarkReactionHandle | null;
@@ -240,20 +262,12 @@ type ParsedCommand =
   | { kind: "steer" }
   | { kind: "status" }
   | { kind: "new" }
+  | { kind: "activate"; text: string }
+  | { kind: "deactivate" }
   | { kind: "help" };
 
 export class ConversationManager {
   private static readonly recoveryPrompt = "Twinny daemon has beed reloaded, continue with the unfinished work.";
-  private static readonly helpText = [
-    "可用指令：",
-    "/help - 查看可用指令和使用说明",
-    "/status - 查看当前会话、Codex thread 和 token 用量",
-    "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
-    "/stop - 停止当前任务并清空待处理消息",
-    "/next - 打断当前任务，并执行队列中的下一条消息",
-    "/steer - 将队列中的下一批消息注入当前任务",
-    "/queue <message> - 将消息加入下一轮队列，不注入当前任务"
-  ].join("\n");
 
   private readonly states = new Map<string, ConversationState>();
   private readonly dedupe: LRUCache<string, true>;
@@ -280,16 +294,16 @@ export class ConversationManager {
     this.dedupe.set(message.messageId, true);
 
     const type = conversationTypeForChat(message.chatType);
-    if (type !== "p2p") {
-      this.log.debug({ messageId: message.messageId, chatType: message.chatType }, "non-p2p lark message ignored");
+    if (!type) {
+      this.log.debug({ messageId: message.messageId, chatType: message.chatType }, "unsupported lark message chat type ignored");
       return;
     }
 
-    const conversationKey = conversationKeyForP2p(message.senderOpenId);
-    const state = this.getState(conversationKey);
+    const context = createMessageContext(type, message);
+    const state = this.getState(context.stateKey);
     state.submittedMessages.set(message.messageId, message);
     void state.controlQueue
-      .enqueue(() => this.processSubmittedMessage(state, conversationKey, message))
+      .enqueue(() => this.processSubmittedMessage(state, context, message))
       .catch((error) => {
         void this.handleSubmittedMessageFailure(message, error);
       });
@@ -320,37 +334,37 @@ export class ConversationManager {
 
     const processingGroups = new Map<
       string,
-      { state: ConversationState; records: LarkMessageRecord[]; messages: PendingMessage[] }
+      { state: ConversationState; context: MessageContext; records: LarkMessageRecord[]; messages: PendingMessage[] }
     >();
-    const recoverableStates = new Map<string, ConversationState>();
+    const recoverableStates = new Map<string, { state: ConversationState; context: MessageContext }>();
 
     for (const record of records) {
-      const conversationKey = record.conversationKey ?? conversationKeyForP2p(record.larkUserId);
-      const state = this.getState(conversationKey);
-      recoverableStates.set(conversationKey, state);
+      const context = contextForRecoveredRecord(record);
+      const state = this.getState(context.stateKey);
+      recoverableStates.set(context.stateKey, { state, context });
       this.dedupe.set(record.larkMessageId, true);
-      const message = await this.toRecoveredPendingMessage(record);
+      const message = await this.toRecoveredPendingMessage(record, context);
       if (record.status === "processing") {
-        const group = processingGroups.get(conversationKey) ?? { state, records: [], messages: [] };
+        const group = processingGroups.get(context.stateKey) ?? { state, context, records: [], messages: [] };
         group.records.push(record);
         group.messages.push(message);
-        processingGroups.set(conversationKey, group);
+        processingGroups.set(context.stateKey, group);
       } else if (record.status === "queued") {
         state.pendingBatch.push(message);
       }
     }
 
-    for (const [conversationKey, group] of processingGroups) {
+    for (const group of processingGroups.values()) {
       await group.state.controlQueue.enqueue(() =>
-        this.startRecoveredProcessingMessages(group.state, conversationKey, group.records, group.messages)
+        this.startRecoveredProcessingMessages(group.state, group.context, group.records, group.messages)
       );
     }
-    for (const [conversationKey, state] of recoverableStates) {
-      await state.controlQueue.enqueue(() => this.startPendingBatch(state, conversationKey));
+    for (const { state, context } of recoverableStates.values()) {
+      await state.controlQueue.enqueue(() => this.startPendingBatch(state, context));
     }
   }
 
-  private async toRecoveredPendingMessage(record: LarkMessageRecord): Promise<PendingMessage> {
+  private async toRecoveredPendingMessage(record: LarkMessageRecord, context: MessageContext): Promise<PendingMessage> {
     const raw = parseStoredRawEvent(record.rawEventJson);
     const normalized = normalizeIncomingLarkMessage(raw);
     if (!normalized) {
@@ -359,12 +373,9 @@ export class ConversationManager {
         "LARK_MESSAGE_RECOVERY_FAILED"
       );
     }
-    normalized.senderName = await this.resolveSenderName(
-      normalized,
-      roleForSender(this.options.config, normalized.senderOpenId)
-    );
+    normalized.senderName = await this.resolveSenderName(context, normalized, roleForSender(this.options.config, normalized.senderOpenId));
     if (record.status === "queued") {
-      await this.prepareMessageResources(record.conversationKey ?? conversationKeyForP2p(record.larkUserId), normalized);
+      await this.prepareMessageResources(context.conversationKey, normalized);
     }
     const text = (record.status === "queued" && (normalized.resources?.length ?? 0) > 0) ? normalized.text : record.text;
     return toPendingMessage(normalized, text, {
@@ -374,7 +385,7 @@ export class ConversationManager {
 
   private async startRecoveredProcessingMessages(
     state: ConversationState,
-    conversationKey: string,
+    context: MessageContext,
     records: LarkMessageRecord[],
     messages: PendingMessage[]
   ): Promise<void> {
@@ -382,22 +393,20 @@ export class ConversationManager {
       return;
     }
     const anchor = messages[messages.length - 1]!;
-    const conversation = await this.getOrCreateRecoveryConversation(conversationKey, records, anchor.original);
+    const conversation = await this.getOrCreateRecoveryConversation(context, records, anchor.original);
     const role = conversation.role;
     const workspace = conversation.workspace;
-    const activeThread = conversation.codexThreadHasRollout
-      ? await this.resumeExistingThread(conversation, { role, workspace, conversationKey })
-      : { threadId: conversation.codexThreadId, replacedMissingThread: false };
+    const activeThread = await this.resolveActiveThread({ conversation, created: false }, { role, workspace, context });
     if (activeThread.replacedMissingThread) {
       await this.notifyThreadReplacementBestEffort(anchor.messageId, activeThread.previousThreadId, activeThread.threadId);
     }
     await this.recordCodexThreadBestEffort({
-      conversationKey,
+      conversationKey: context.conversationKey,
       codexThreadId: activeThread.threadId,
       role,
-      larkThreadId: anchor.original.larkThreadId
+      larkThreadId: context.larkThreadId
     });
-    await this.beginActiveTurn(state, conversationKey, {
+    await this.beginActiveTurn(state, context, {
       messages,
       role,
       threadId: activeThread.threadId,
@@ -407,16 +416,16 @@ export class ConversationManager {
   }
 
   private async getOrCreateRecoveryConversation(
-    conversationKey: string,
+    context: MessageContext,
     records: LarkMessageRecord[],
     message: IncomingLarkMessage
   ): Promise<ConversationRecord> {
-    const existing = await this.options.repository.findByConversationKey(conversationKey);
+    const existing = await this.options.repository.findByConversationKey(context.conversationKey);
     if (existing) {
       return existing;
     }
     const role = roleForSender(this.options.config, message.senderOpenId);
-    const workspace = await this.options.workspaces.ensureWorkspace(conversationKey);
+    const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
     const recoveredThreadId = lastDefined(records.map((record) => record.codexThreadId));
     const threadId =
       recoveredThreadId ??
@@ -428,10 +437,11 @@ export class ConversationManager {
         })
       ).threadId;
     return await this.options.repository.create({
-      conversationKey,
-      type: "p2p",
-      chatId: message.senderOpenId,
+      conversationKey: context.conversationKey,
+      type: context.type,
+      chatId: context.type === "p2p" ? message.senderOpenId : message.chatId,
       name: conversationNameForMessage(this.options.config, role, message),
+      responseMode: context.type === "p2p" ? "all" : "at",
       role,
       codexThreadId: threadId,
       codexThreadHasRollout: recoveredThreadId !== undefined,
@@ -454,7 +464,7 @@ export class ConversationManager {
 
   private async processSubmittedMessage(
     state: ConversationState,
-    conversationKey: string,
+    context: MessageContext,
     message: IncomingLarkMessage
   ): Promise<void> {
     const submitted = state.submittedMessages.get(message.messageId);
@@ -471,7 +481,7 @@ export class ConversationManager {
       if (await this.isPersistedDuplicateMessage(message.messageId)) {
         return;
       }
-      await this.routeMessage(state, conversationKey, message);
+      await this.routeMessage(state, context, message);
     } catch (error) {
       await this.markMessagesFailedBestEffort([message.messageId]);
       throw error;
@@ -501,66 +511,80 @@ export class ConversationManager {
 
   private async routeMessage(
     state: ConversationState,
-    conversationKey: string,
+    context: MessageContext,
     message: IncomingLarkMessage
   ): Promise<void> {
-    await this.prepareMessageResources(conversationKey, message);
-    const parsed = parseSlashCommand(message.text);
-    await this.recordIncomingMessage(state, conversationKey, message, parsed);
-    if (parsed.kind === "help") {
-      await this.handleHelpCommand(message);
+    const routed = await this.applyGroupResponsePolicy(context, message);
+    if (routed.kind === "ignored") {
       return;
     }
-    if (parsed.kind === "status") {
-      await this.handleStatusCommand(state, conversationKey, message);
+    if (routed.kind === "unauthorized") {
+      await this.replyGroupUnauthorizedBestEffort(message.messageId);
       return;
     }
-    if (parsed.kind === "stop") {
+
+    message.text = routed.text;
+    const parsed = routed.parsed;
+    if (parsed.kind === "activate") {
+      await this.handleActivateCommand(state, context, message, parsed.text);
+      return;
+    }
+
+    await this.prepareMessageResources(context.conversationKey, message);
+    const preparedParsed: ParsedCommand = parsed.kind === "message" ? { kind: "message", text: message.text } : parsed;
+    await this.recordIncomingMessage(state, context, message, preparedParsed);
+    if (preparedParsed.kind === "help") {
+      await this.handleHelpCommand(context, message);
+      return;
+    }
+    if (preparedParsed.kind === "status") {
+      await this.handleStatusCommand(state, context, message);
+      return;
+    }
+    if (preparedParsed.kind === "stop") {
       await this.handleStopCommand(state, message);
       return;
     }
-    if (parsed.kind === "next") {
-      await this.handleNextCommand(state, conversationKey, message);
+    if (preparedParsed.kind === "next") {
+      await this.handleNextCommand(state, context, message);
       return;
     }
-    if (parsed.kind === "steer") {
+    if (preparedParsed.kind === "steer") {
       await this.handleSteerCommand(state, message);
       return;
     }
-    if (parsed.kind === "new") {
-      await this.handleNewCommand(state, conversationKey, message);
+    if (preparedParsed.kind === "new") {
+      await this.handleNewCommand(state, context, message);
       return;
     }
-    if (parsed.kind === "queue") {
-      await this.handleQueueCommand(state, conversationKey, message, parsed.text);
+    if (preparedParsed.kind === "deactivate") {
+      await this.handleDeactivateCommand(context, message);
       return;
     }
-    await this.handleUserMessage(state, conversationKey, message, parsed.text);
+    if (preparedParsed.kind === "queue") {
+      await this.handleQueueCommand(state, context, message, preparedParsed.text);
+      return;
+    }
+    await this.handleUserMessage(state, context, message, preparedParsed.text);
   }
 
   private async recordIncomingMessage(
     state: ConversationState,
-    conversationKey: string,
+    context: MessageContext,
     message: IncomingLarkMessage,
     parsed: ParsedCommand
   ): Promise<void> {
     const role = roleForSender(this.options.config, message.senderOpenId);
     const route = classifyInitialRoute(state, parsed, message.text);
-    const senderName = await this.resolveSenderName(message, role);
+    const senderName = await this.resolveSenderName(context, message, role);
     message.senderName = senderName;
-    await this.options.repository.upsertUser({
-      larkUserId: message.senderOpenId,
-      name: senderName,
-      role,
-      seenAt: message.createTime
-    });
     await this.options.repository.insertLarkMessage({
       larkMessageId: message.messageId,
       eventId: message.eventId,
       larkUserId: message.senderOpenId,
       larkGroupId: message.larkGroupId,
       larkThreadId: message.larkThreadId,
-      conversationKey,
+      conversationKey: context.conversationKey,
       routeKind: route.routeKind,
       status: route.status,
       text: route.text,
@@ -598,11 +622,52 @@ export class ConversationManager {
     message.text = formatMessageTextWithDownloadedFiles(message.text, downloadedFiles, message.messageType);
   }
 
-  private async resolveSenderName(message: IncomingLarkMessage, role: RoleName): Promise<string | undefined> {
-    const existing = await this.options.repository.getUserByLarkUserId(message.senderOpenId);
-    const existingName = nonEmptyString(existing?.name);
-    if (existingName) {
-      return existingName;
+  private async applyGroupResponsePolicy(
+    context: MessageContext,
+    message: IncomingLarkMessage
+  ): Promise<
+    | { kind: "allow"; text: string; parsed: ParsedCommand; conversation?: ConversationRecord | null }
+    | { kind: "ignored" }
+    | { kind: "unauthorized" }
+  > {
+    const text = isGroupConversationType(context.type) ? stripBotMention(message.text, message, this.options.botOpenId) : message.text;
+    const parsed = parseSlashCommand(text);
+    if (!isGroupConversationType(context.type)) {
+      return { kind: "allow", text, parsed };
+    }
+
+    const senderRole = roleForSender(this.options.config, message.senderOpenId);
+    const hasBotMention = messageMentionsBot(message, this.options.botOpenId);
+    const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+    if (!conversation || conversation.responseMode === "none") {
+      if (parsed.kind === "activate" && senderRole === "owner") {
+        return { kind: "allow", text, parsed, conversation };
+      }
+      return hasBotMention ? { kind: "unauthorized" } : { kind: "ignored" };
+    }
+
+    if (conversation.responseMode === "at" && !hasBotMention) {
+      return { kind: "ignored" };
+    }
+    return { kind: "allow", text, parsed, conversation };
+  }
+
+  private async resolveSenderName(
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    role: RoleName
+  ): Promise<string | undefined> {
+    if (context.type === "p2p") {
+      const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+      const conversationName = nonEmptyString(conversation?.name);
+      if (conversationName && conversationName !== message.senderOpenId) {
+        return conversationName;
+      }
+    } else {
+      const eventName = nonEmptyString(message.senderName);
+      if (eventName) {
+        return eventName;
+      }
     }
 
     const failureUntil = this.nameLookupFailureCache.get(message.senderOpenId) ?? 0;
@@ -612,7 +677,7 @@ export class ConversationManager {
     this.nameLookupFailureCache.delete(message.senderOpenId);
 
     if (!this.options.larkUsers) {
-      return undefined;
+      return nonEmptyString(message.senderName);
     }
 
     try {
@@ -625,7 +690,7 @@ export class ConversationManager {
     } catch (error) {
       this.cacheNameLookupFailure(message.senderOpenId);
       this.log.warn({ error, larkUserId: message.senderOpenId }, "failed to resolve lark user name");
-      return undefined;
+      return context.type === "p2p" ? undefined : nonEmptyString(message.senderName);
     }
   }
 
@@ -633,9 +698,138 @@ export class ConversationManager {
     this.nameLookupFailureCache.set(larkUserId, Date.now() + (this.options.nameLookupFailureTtlMs ?? 60_000));
   }
 
+  private async handleActivateCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    if (!isGroupConversationType(context.type)) {
+      await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
+      await this.replyControlBestEffort(message.messageId, "activate 只支持群聊。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const senderRole = roleForSender(this.options.config, message.senderOpenId);
+    const existing = await this.options.repository.findByConversationKey(context.conversationKey);
+    if (senderRole !== "owner") {
+      if (existing && existing.responseMode !== "none") {
+        await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
+        await this.replyControlBestEffort(message.messageId, "只有 owner 可以激活群聊。");
+        await this.markMessagesCompletedBestEffort([message.messageId]);
+      } else {
+        await this.replyGroupUnauthorizedBestEffort(message.messageId);
+      }
+      return;
+    }
+
+    const parsed = parseActivateCommand(text);
+    if (parsed.kind === "invalid") {
+      await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
+      await this.replyControlBestEffort(message.messageId, parsed.message);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    if (existing && parsed.role && existing.role !== parsed.role) {
+      await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
+      await this.replyControlBestEffort(
+        message.messageId,
+        `该群已绑定 role=${existing.role}，本期不支持修改为 ${parsed.role}。`
+      );
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const role = parsed.role ?? existing?.role ?? "guest";
+    const name = await this.resolveGroupName(message, existing);
+    if (existing) {
+      await this.options.repository.updateConversationSettings(context.conversationKey, {
+        name,
+        responseMode: parsed.responseMode
+      });
+    } else {
+      const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
+      const thread = await this.options.codex.startThread({
+        role,
+        cwd: workspace,
+        approvalPolicy: "never"
+      });
+      await this.options.repository.create({
+        conversationKey: context.conversationKey,
+        type: context.type,
+        chatId: message.chatId,
+        name,
+        responseMode: parsed.responseMode,
+        role,
+        codexThreadId: thread.threadId,
+        codexThreadHasRollout: false,
+        workspace,
+        roleCodexHome: this.options.roles.codexHomeFor(role)
+      });
+      await this.recordCodexThreadBestEffort({
+        conversationKey: context.conversationKey,
+        codexThreadId: thread.threadId,
+        role
+      });
+    }
+
+    await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
+    await this.replyControlBestEffort(
+      message.messageId,
+      `已激活群聊：${name}\n响应模式：${parsed.responseMode}\nRole：${role}`
+    );
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async resolveGroupName(message: IncomingLarkMessage, existing?: ConversationRecord | null): Promise<string> {
+    try {
+      const resolved = nonEmptyString(await this.options.larkChats?.getChatName(message.chatId));
+      if (resolved) {
+        return resolved;
+      }
+    } catch (error) {
+      this.log.warn({ error, chatId: message.chatId }, "failed to resolve lark chat name");
+    }
+    return nonEmptyString(message.chatName) ?? nonEmptyString(existing?.name) ?? message.chatId;
+  }
+
+  private async handleDeactivateCommand(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
+    if (!isGroupConversationType(context.type)) {
+      await this.replyControlBestEffort(message.messageId, "deactivate 只支持群聊。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (roleForSender(this.options.config, message.senderOpenId) !== "owner") {
+      await this.replyControlBestEffort(message.messageId, "只有 owner 可以停用群聊。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    await this.options.repository.updateConversationSettings(context.conversationKey, { responseMode: "none" });
+    const cleared = await this.cancelConversationStates(context.conversationKey);
+    await this.replyControlBestEffort(message.messageId, `已停用该群，清空 ${cleared} 条待处理消息。`);
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async cancelConversationStates(conversationKey: string): Promise<number> {
+    let cleared = 0;
+    for (const [stateKey, state] of this.states) {
+      if (stateKey !== conversationKey && !stateKey.startsWith(`${conversationKey}:thread:`)) {
+        continue;
+      }
+      const clearedMessages = this.clearPendingMessages(state);
+      cleared += clearedMessages.length;
+      await this.markPendingMessagesClearedBestEffort(clearedMessages);
+      await this.cancelActiveTurn(state);
+    }
+    return cleared;
+  }
+
   private async handleUserMessage(
     state: ConversationState,
-    conversationKey: string,
+    context: MessageContext,
     message: IncomingLarkMessage,
     text: string
   ): Promise<void> {
@@ -644,7 +838,7 @@ export class ConversationManager {
     if (state.pendingBatch.length > 0 || active?.cancelRequested) {
       state.pendingBatch.push(pending);
       if (!active) {
-        await this.startPendingBatch(state, conversationKey);
+        await this.startPendingBatch(state, context);
       }
       return;
     }
@@ -654,12 +848,12 @@ export class ConversationManager {
       return;
     }
 
-    await this.startTurnForMessages(state, conversationKey, [pending]);
+    await this.startTurnForMessages(state, context, [pending]);
   }
 
   private async handleQueueCommand(
     state: ConversationState,
-    conversationKey: string,
+    context: MessageContext,
     message: IncomingLarkMessage,
     text: string
   ): Promise<void> {
@@ -671,30 +865,45 @@ export class ConversationManager {
 
     state.pendingBatch.push(toPendingMessage(message, text, { queueBoundary: true }));
     if (!state.active) {
-      await this.startPendingBatch(state, conversationKey);
+      await this.startPendingBatch(state, context);
     }
   }
 
-  private async handleHelpCommand(message: IncomingLarkMessage): Promise<void> {
-    await this.replyControlBestEffort(message.messageId, ConversationManager.helpText);
+  private async handleHelpCommand(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
+    await this.replyControlBestEffort(message.messageId, helpTextFor(message, context, this.options.config));
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
   private async handleStatusCommand(
     state: ConversationState,
-    conversationKey: string,
+    context: MessageContext,
     message: IncomingLarkMessage
   ): Promise<void> {
     const role = roleForSender(this.options.config, message.senderOpenId);
-    const conversation = await this.options.repository.findByConversationKey(conversationKey);
-    const threadId = state.active?.threadId ?? conversation?.codexThreadId;
+    const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+    const topicThread = context.larkThreadId
+      ? await this.options.repository.getCodexThreadByConversationAndLarkThread(context.conversationKey, context.larkThreadId)
+      : undefined;
+    const threadId = state.active?.threadId ?? topicThread?.codexThreadId ?? conversation?.codexThreadId;
     const thread = threadId ? await this.options.repository.getCodexThreadById(threadId) : undefined;
     const lines = [
       `OUID: ${message.senderOpenId}`,
-      `Conversation Key: ${conversationKey}`,
-      `Codex Thread ID: ${threadId ?? "未创建"}`,
-      ...formatThreadTokenStatus(thread)
+      `Conversation Key: ${context.conversationKey}`
     ];
+
+    if (isGroupConversationType(context.type)) {
+      lines.push(
+        `Chat Name: ${conversation?.name ?? message.chatName ?? message.chatId}`,
+        `Response Mode: ${conversation?.responseMode ?? "none"}`,
+        `Role: ${conversation?.role ?? "未创建"}`,
+        `Workspace: ${conversation?.workspace ?? "未创建"}`
+      );
+      if (context.larkThreadId) {
+        lines.push(`Lark Thread ID: ${context.larkThreadId}`);
+      }
+    }
+
+    lines.push(`Codex Thread ID: ${threadId ?? "未创建"}`, ...formatThreadTokenStatus(thread));
 
     if (role === "owner") {
       lines.push(...(await this.formatOwnerRateLimitStatus(role)));
@@ -731,14 +940,14 @@ export class ConversationManager {
 
   private async handleNextCommand(
     state: ConversationState,
-    conversationKey: string,
+    context: MessageContext,
     message: IncomingLarkMessage
   ): Promise<void> {
     const queued = state.pendingBatch.length;
     const nextBatchSize = countNextPendingBatch(state);
     const interrupted = await this.cancelActiveTurn(state, { waitForCompletion: true });
     if (!interrupted) {
-      await this.startPendingBatch(state, conversationKey);
+      await this.startPendingBatch(state, context);
     }
     const summary = interrupted
       ? queued > 0
@@ -817,22 +1026,30 @@ export class ConversationManager {
 
   private async handleNewCommand(
     state: ConversationState,
-    conversationKey: string,
+    context: MessageContext,
     message: IncomingLarkMessage
   ): Promise<void> {
     await this.markPendingMessagesClearedBestEffort(this.clearPendingMessages(state));
     await this.cancelActiveTurn(state);
-    const role = roleForSender(this.options.config, message.senderOpenId);
-    const workspace = await this.options.workspaces.ensureWorkspace(conversationKey);
+    const existing = await this.options.repository.findByConversationKey(context.conversationKey);
+    const role = existing?.role ?? roleForSender(this.options.config, message.senderOpenId);
+    const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
     const thread = await this.options.codex.startThread({
       role,
       cwd: workspace,
       approvalPolicy: "never"
     });
 
-    const existing = await this.options.repository.findByConversationKey(conversationKey);
-    if (existing) {
-      await this.options.repository.updateThreadBinding(conversationKey, {
+    if (context.larkThreadId) {
+      await this.recordOrReplaceCodexThreadBestEffort({
+        conversationKey: context.conversationKey,
+        codexThreadId: thread.threadId,
+        role,
+        larkThreadId: context.larkThreadId,
+        replaceExistingLarkThread: true
+      });
+    } else if (existing) {
+      await this.options.repository.updateThreadBinding(context.conversationKey, {
         codexThreadId: thread.threadId,
         codexThreadHasRollout: false,
         role,
@@ -841,10 +1058,11 @@ export class ConversationManager {
       });
     } else {
       await this.options.repository.create({
-        conversationKey,
-        type: "p2p",
-        chatId: message.senderOpenId,
+        conversationKey: context.conversationKey,
+        type: context.type,
+        chatId: context.type === "p2p" ? message.senderOpenId : message.chatId,
         name: conversationNameForMessage(this.options.config, role, message),
+        responseMode: context.type === "p2p" ? "all" : "at",
         role,
         codexThreadId: thread.threadId,
         codexThreadHasRollout: false,
@@ -852,12 +1070,13 @@ export class ConversationManager {
         roleCodexHome: this.options.roles.codexHomeFor(role)
       });
     }
-    await this.recordCodexThreadBestEffort({
-      conversationKey,
-      codexThreadId: thread.threadId,
-      role,
-      larkThreadId: message.larkThreadId
-    });
+    if (!context.larkThreadId) {
+      await this.recordCodexThreadBestEffort({
+        conversationKey: context.conversationKey,
+        codexThreadId: thread.threadId,
+        role
+      });
+    }
     await this.replyControlBestEffort(message.messageId, `已新开 Codex thread：${thread.threadId}`);
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
@@ -911,42 +1130,49 @@ export class ConversationManager {
     }
   }
 
-  private async startPendingBatch(state: ConversationState, conversationKey: string): Promise<void> {
+  private async startPendingBatch(state: ConversationState, context: MessageContext): Promise<void> {
     if (state.active || state.pendingBatch.length === 0) {
       return;
     }
     const count = countNextPendingBatch(state);
     const messages = state.pendingBatch.splice(0, count);
-    await this.startTurnForMessages(state, conversationKey, messages);
+    await this.startTurnForMessages(state, context, messages);
   }
 
   private async startTurnForMessages(
     state: ConversationState,
-    conversationKey: string,
+    context: MessageContext,
     messages: PendingMessage[]
   ): Promise<void> {
     if (messages.length === 0) {
       return;
     }
     const anchor = messages[messages.length - 1]!;
-    const role = roleForSender(this.options.config, anchor.original.senderOpenId);
-    const workspace = await this.options.workspaces.ensureWorkspace(conversationKey);
-    const binding = await this.getOrCreateConversation({ conversationKey, role, workspace, message: anchor.original });
-    const activeThread = binding.created
-      ? { threadId: binding.conversation.codexThreadId, replacedMissingThread: false }
-      : binding.conversation.codexThreadHasRollout
-        ? await this.resumeExistingThread(binding.conversation, { role, workspace, conversationKey })
-        : { threadId: binding.conversation.codexThreadId, replacedMissingThread: false };
+    const senderRole = roleForSender(this.options.config, anchor.original.senderOpenId);
+    const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
+    const binding = await this.getOrCreateConversation({
+      conversationKey: context.conversationKey,
+      type: context.type,
+      role: senderRole,
+      workspace,
+      message: anchor.original
+    });
+    const role = binding.conversation.role;
+    const activeThread = await this.resolveActiveThread(binding, {
+      role,
+      workspace,
+      context
+    });
     if (activeThread.replacedMissingThread) {
       await this.notifyThreadReplacementBestEffort(anchor.messageId, activeThread.previousThreadId, activeThread.threadId);
     }
     await this.recordCodexThreadBestEffort({
-      conversationKey,
+      conversationKey: context.conversationKey,
       codexThreadId: activeThread.threadId,
       role,
-      larkThreadId: anchor.original.larkThreadId
+      larkThreadId: context.larkThreadId
     });
-    await this.beginActiveTurn(state, conversationKey, {
+    await this.beginActiveTurn(state, context, {
       messages,
       role,
       threadId: activeThread.threadId,
@@ -957,7 +1183,7 @@ export class ConversationManager {
 
   private async beginActiveTurn(
     state: ConversationState,
-    conversationKey: string,
+    context: MessageContext,
     params: {
       messages: PendingMessage[];
       role: RoleName;
@@ -971,7 +1197,7 @@ export class ConversationManager {
     }
     const anchor = params.messages[params.messages.length - 1]!;
     await this.markPendingMessagesProcessingBestEffort(params.messages, {
-      conversationKey,
+      conversationKey: context.conversationKey,
       codexThreadId: params.threadId
     });
     const active: ActiveTurn = {
@@ -979,7 +1205,8 @@ export class ConversationManager {
       role: params.role,
       threadId: params.threadId,
       workspace: params.workspace,
-      conversationKey,
+      conversationKey: context.conversationKey,
+      context,
       replyMessageId: anchor.messageId,
       reaction: await this.addReactionBestEffort(anchor.messageId),
       pendingSteers: [],
@@ -1007,7 +1234,7 @@ export class ConversationManager {
         this.log.info(
           {
             messageId: anchor.messageId,
-            conversationKey,
+            conversationKey: context.conversationKey,
             role: params.role,
             codexThreadId: active.threadId,
             turnId: result.turnId,
@@ -1020,14 +1247,14 @@ export class ConversationManager {
       .catch(async (error) => {
         if (state.active === active && !active.cancelRequested) {
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
-          this.log.error({ error, messageId: active.replyMessageId, conversationKey }, "conversation turn failed");
+          this.log.error({ error, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation turn failed");
           await this.replyErrorBestEffort(active.replyMessageId, error);
         } else {
-          this.log.debug({ error, conversationKey, threadId: active.threadId }, "ignored stale codex turn failure");
+          this.log.debug({ error, conversationKey: context.conversationKey, threadId: active.threadId }, "ignored stale codex turn failure");
         }
       })
       .finally(() => {
-        void state.controlQueue.enqueue(() => this.finishActiveTurn(state, conversationKey, active));
+        void state.controlQueue.enqueue(() => this.finishActiveTurn(state, context.conversationKey, active));
       });
   }
 
@@ -1127,7 +1354,7 @@ export class ConversationManager {
     state.active = undefined;
     await this.clearReactionBestEffort(active);
     if (active.cancelRequested) {
-      await this.startPendingBatch(state, conversationKey);
+      await this.startPendingBatch(state, active.context);
       return;
     }
     if (active.completedStatus === "completed") {
@@ -1136,7 +1363,7 @@ export class ConversationManager {
       await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
     }
     await this.addCompletedReactionBestEffort(active);
-    await this.startPendingBatch(state, conversationKey);
+    await this.startPendingBatch(state, active.context);
   }
 
   private clearPendingMessages(state: ConversationState): PendingMessage[] {
@@ -1205,6 +1432,30 @@ export class ConversationManager {
       await this.options.repository.upsertCodexThread(params);
     } catch (error) {
       this.log.warn({ error, codexThreadId: params.codexThreadId }, "failed to record codex thread");
+    }
+  }
+
+  private async recordOrReplaceCodexThreadBestEffort(params: {
+    conversationKey: string;
+    codexThreadId: string;
+    role: RoleName;
+    larkThreadId: string;
+    replaceExistingLarkThread?: boolean;
+  }): Promise<void> {
+    try {
+      if (params.replaceExistingLarkThread && this.options.repository.replaceCodexThreadForLarkThread) {
+        await this.options.repository.replaceCodexThreadForLarkThread(params.conversationKey, params.larkThreadId, {
+          codexThreadId: params.codexThreadId,
+          role: params.role
+        });
+        return;
+      }
+      await this.options.repository.upsertCodexThread(params);
+    } catch (error) {
+      this.log.warn(
+        { error, codexThreadId: params.codexThreadId, larkThreadId: params.larkThreadId },
+        "failed to record lark thread codex thread"
+      );
     }
   }
 
@@ -1333,6 +1584,7 @@ export class ConversationManager {
 
   private async getOrCreateConversation(params: {
     conversationKey: string;
+    type: ConversationType;
     role: RoleName;
     workspace: string;
     message: IncomingLarkMessage;
@@ -1348,9 +1600,10 @@ export class ConversationManager {
     });
     const conversation = await this.options.repository.create({
       conversationKey: params.conversationKey,
-      type: "p2p",
-      chatId: params.message.senderOpenId,
+      type: params.type,
+      chatId: params.type === "p2p" ? params.message.senderOpenId : params.message.chatId,
       name: conversationNameForMessage(this.options.config, params.role, params.message),
+      responseMode: params.type === "p2p" ? "all" : "at",
       role: params.role,
       codexThreadId: thread.threadId,
       codexThreadHasRollout: false,
@@ -1358,6 +1611,83 @@ export class ConversationManager {
       roleCodexHome: this.options.roles.codexHomeFor(params.role)
     });
     return { conversation, created: true };
+  }
+
+  private async resolveActiveThread(
+    binding: { conversation: ConversationRecord; created: boolean },
+    params: { role: RoleName; workspace: string; context: MessageContext }
+  ): Promise<ActiveThreadResolution> {
+    const larkThreadId = params.context.larkThreadId;
+    if (!larkThreadId) {
+      return binding.created
+        ? { threadId: binding.conversation.codexThreadId, replacedMissingThread: false, created: true }
+        : binding.conversation.codexThreadHasRollout
+          ? await this.resumeExistingThread(binding.conversation, {
+              role: params.role,
+              workspace: params.workspace,
+              conversationKey: params.context.conversationKey
+            })
+          : { threadId: binding.conversation.codexThreadId, replacedMissingThread: false };
+    }
+
+    const existing = await this.options.repository.getCodexThreadByConversationAndLarkThread(
+      params.context.conversationKey,
+      larkThreadId
+    );
+    if (!existing) {
+      const thread = await this.options.codex.startThread({
+        role: params.role,
+        cwd: params.workspace,
+        approvalPolicy: "never"
+      });
+      await this.recordOrReplaceCodexThreadBestEffort({
+        conversationKey: params.context.conversationKey,
+        codexThreadId: thread.threadId,
+        role: params.role,
+        larkThreadId
+      });
+      return { threadId: thread.threadId, replacedMissingThread: false, created: true };
+    }
+
+    try {
+      const resumed = await this.options.codex.resumeThread({
+        role: params.role,
+        threadId: existing.codexThreadId,
+        cwd: params.workspace,
+        approvalPolicy: "never"
+      });
+      if (resumed.threadId !== existing.codexThreadId) {
+        await this.recordOrReplaceCodexThreadBestEffort({
+          conversationKey: params.context.conversationKey,
+          codexThreadId: resumed.threadId,
+          role: params.role,
+          larkThreadId,
+          replaceExistingLarkThread: true
+        });
+      }
+      return { threadId: resumed.threadId, replacedMissingThread: false };
+    } catch (error) {
+      if (!isMissingRolloutError(error)) {
+        throw error;
+      }
+      const replacement = await this.options.codex.startThread({
+        role: params.role,
+        cwd: params.workspace,
+        approvalPolicy: "never"
+      });
+      await this.recordOrReplaceCodexThreadBestEffort({
+        conversationKey: params.context.conversationKey,
+        codexThreadId: replacement.threadId,
+        role: params.role,
+        larkThreadId,
+        replaceExistingLarkThread: true
+      });
+      return {
+        threadId: replacement.threadId,
+        replacedMissingThread: true,
+        previousThreadId: existing.codexThreadId
+      };
+    }
   }
 
   private async resumeExistingThread(
@@ -1505,6 +1835,10 @@ export class ConversationManager {
     } catch (error) {
       this.log.warn({ error, messageId }, "failed to send lark control reply");
     }
+  }
+
+  private async replyGroupUnauthorizedBestEffort(messageId: string): Promise<void> {
+    await this.replyControlBestEffort(messageId, "群聊未授权，需要 owner 发送 /activate 激活。");
   }
 
   private async replyErrorBestEffort(messageId: string, error: unknown): Promise<void> {
@@ -1787,10 +2121,108 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "help") {
     return { kind: "help" };
   }
+  if (command === "activate") {
+    return { kind: "activate", text: rest };
+  }
+  if (command === "deactivate") {
+    return { kind: "deactivate" };
+  }
   if (command === "queue") {
     return { kind: "queue", text: rest };
   }
   return { kind: "message", text };
+}
+
+function parseActivateCommand(
+  text: string
+): { kind: "valid"; responseMode: Exclude<ConversationResponseMode, "none">; role?: RoleName } | { kind: "invalid"; message: string } {
+  let responseMode: Exclude<ConversationResponseMode, "none"> = "at";
+  let role: RoleName | undefined;
+  const tokens = text.split(/\s+/).map((token) => token.trim().toLowerCase()).filter(Boolean);
+  for (const token of tokens) {
+    if (token === "all" || token === "at") {
+      responseMode = token;
+      continue;
+    }
+    if (token === "guest" || token === "owner") {
+      role = token;
+      continue;
+    }
+    return { kind: "invalid", message: "用法：/activate [all|at] [guest|owner]" };
+  }
+  return { kind: "valid", responseMode, role };
+}
+
+function createMessageContext(type: ConversationType, message: IncomingLarkMessage): MessageContext {
+  const conversationKey = conversationKeyForChat(type, message);
+  const larkThreadId = type === "topic_group" ? (message.larkThreadId ?? message.messageId) : undefined;
+  return {
+    type,
+    conversationKey,
+    stateKey: larkThreadId ? `${conversationKey}:thread:${safePathSegment(larkThreadId)}` : conversationKey,
+    larkThreadId
+  };
+}
+
+function contextForRecoveredRecord(record: LarkMessageRecord): MessageContext {
+  const conversationKey = record.conversationKey ?? conversationKeyForP2p(record.larkUserId);
+  const type: ConversationType = record.larkThreadId
+    ? "topic_group"
+    : conversationKey.startsWith("group:")
+      ? "group"
+      : "p2p";
+  return {
+    type,
+    conversationKey,
+    stateKey: record.larkThreadId ? `${conversationKey}:thread:${safePathSegment(record.larkThreadId)}` : conversationKey,
+    larkThreadId: record.larkThreadId
+  };
+}
+
+function messageMentionsBot(message: IncomingLarkMessage, botOpenId: string | undefined): boolean {
+  if (!botOpenId) {
+    return false;
+  }
+  return (message.mentions ?? []).some((mention) => mention.openId === botOpenId);
+}
+
+function stripBotMention(text: string, message: IncomingLarkMessage, botOpenId: string | undefined): string {
+  if (!botOpenId) {
+    return text;
+  }
+  let stripped = text;
+  for (const mention of message.mentions ?? []) {
+    if (mention.openId !== botOpenId) {
+      continue;
+    }
+    if (mention.key) {
+      stripped = stripped.split(mention.key).join("");
+    }
+    if (mention.name) {
+      stripped = stripped.replace(new RegExp(`^\\s*@${escapeRegExp(mention.name)}\\s*`), "");
+    }
+  }
+  return stripped.trimStart();
+}
+
+function helpTextFor(message: IncomingLarkMessage, context: MessageContext, config: TwinnyConfig): string {
+  const lines = [
+    "可用指令：",
+    "/help - 查看可用指令和使用说明",
+    "/status - 查看当前会话、Codex thread 和 token 用量",
+    "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
+    "/stop - 停止当前任务并清空待处理消息",
+    "/next - 打断当前任务，并执行队列中的下一条消息",
+    "/steer - 将队列中的下一批消息注入当前任务",
+    "/queue <message> - 将消息加入下一轮队列，不注入当前任务"
+  ];
+  if (isGroupConversationType(context.type) && roleForSender(config, message.senderOpenId) === "owner") {
+    lines.push(
+      "/activate [all|at] [guest|owner] - 激活群聊、设置响应模式并刷新群名",
+      "/deactivate - 停用当前群聊"
+    );
+  }
+  return lines.join("\n");
 }
 
 function classifyInitialRoute(
@@ -1808,6 +2240,8 @@ function classifyInitialRoute(
     parsed.kind === "next" ||
     parsed.kind === "steer" ||
     parsed.kind === "new" ||
+    parsed.kind === "activate" ||
+    parsed.kind === "deactivate" ||
     parsed.kind === "queue"
   ) {
     return { routeKind: "control_message", status: "processing", text: originalText };
@@ -2168,6 +2602,10 @@ function escapeXmlAttribute(value: string): string {
   return escapeXmlText(value).replace(/"/g, "&quot;");
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function isMissingRolloutError(error: unknown): boolean {
   if (error instanceof Error && error.message.includes("no rollout found")) {
     return true;
@@ -2181,6 +2619,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function conversationNameForMessage(config: TwinnyConfig, role: RoleName, message: IncomingLarkMessage): string {
+  if (message.chatType === "group" || message.chatType === "topic_group") {
+    return message.chatName?.trim() || message.chatId;
+  }
   if (role === "owner") {
     return config.owner.displayName.trim() || message.senderName?.trim() || message.senderOpenId;
   }

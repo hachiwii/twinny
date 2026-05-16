@@ -5,16 +5,16 @@ import type Database from "better-sqlite3";
 import { TwinnyError } from "../errors.js";
 import type {
   CodexThreadRecord,
+  ConversationResponseMode,
   ConversationRecord,
   ConversationType,
   LarkMessageRecord,
   LarkMessageRouteKind,
   LarkMessageStatus,
   NewConversationRecord,
-  RoleName,
-  UserRecord
+  RoleName
 } from "../types.js";
-import { assertValidConversationKey, createP2PConversationKey } from "../workspace/slug.js";
+import { assertValidConversationKey, createGroupConversationKey, createP2PConversationKey } from "../workspace/slug.js";
 
 interface ConversationRow {
   id: number;
@@ -22,6 +22,7 @@ interface ConversationRow {
   type: ConversationType;
   chat_id: string;
   name: string;
+  response_mode: ConversationResponseMode;
   role: RoleName;
   codex_thread_id: string;
   codex_thread_has_rollout: 0 | 1;
@@ -36,6 +37,7 @@ interface InsertConversationParams {
   type: ConversationType;
   chatId: string;
   name: string;
+  responseMode: ConversationResponseMode;
   role: RoleName;
   codexThreadId: string;
   codexThreadHasRollout: 0 | 1;
@@ -43,16 +45,6 @@ interface InsertConversationParams {
   roleCodexHome: string;
   createdAt: number;
   updatedAt: number;
-}
-
-interface UserRow {
-  id: number;
-  lark_user_id: string;
-  name: string;
-  role: RoleName;
-  created_at: number;
-  updated_at: number;
-  last_seen_at: number;
 }
 
 interface CodexThreadRow {
@@ -92,13 +84,6 @@ interface LarkMessageRow {
   raw_event_json: string | null;
 }
 
-export interface UpsertUserInput {
-  larkUserId: string;
-  name?: string;
-  role?: RoleName;
-  seenAt?: number;
-}
-
 export interface UpsertCodexThreadInput {
   codexThreadId: string;
   conversationKey: string;
@@ -132,12 +117,24 @@ export interface UpdateCodexThreadTokenUsageInput {
   tokenUsageJson: string;
 }
 
+export interface ReplaceCodexThreadForLarkThreadInput {
+  conversationKey: string;
+  larkThreadId: string;
+  codexThreadId: string;
+  role: RoleName;
+}
+
 export interface UpdateConversationThreadBinding {
   codexThreadId: string;
   codexThreadHasRollout?: boolean;
   role?: RoleName;
   roleCodexHome?: string;
   workspace?: string;
+}
+
+export interface UpdateConversationSettingsInput {
+  name?: string;
+  responseMode?: ConversationResponseMode;
 }
 
 export interface ConversationRepositoryOptions {
@@ -152,6 +149,7 @@ export class ConversationRepository {
   private readonly selectByTypeAndChatId: Database.Statement<[ConversationType, string], ConversationRow>;
   private readonly selectByCodexThreadId: Database.Statement<[string], ConversationRow>;
   private readonly selectAll: Database.Statement<[], ConversationRow>;
+  private readonly updateSettings: Database.Statement<[string, string, number, string]>;
   private readonly updateThread: Database.Statement<[
     string,
     0 | 1,
@@ -163,10 +161,10 @@ export class ConversationRepository {
   ]>;
   private readonly markRollout: Database.Statement<[number, string, string]>;
   private readonly deleteByKey: Database.Statement<[string]>;
-  private readonly upsertUserStatement: Database.Statement<[Record<string, unknown>]>;
-  private readonly selectUserByLarkUserId: Database.Statement<[string], UserRow>;
   private readonly upsertCodexThreadStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly selectCodexThreadById: Database.Statement<[string], CodexThreadRow>;
+  private readonly selectCodexThreadByConversationAndLarkThread: Database.Statement<[string, string], CodexThreadRow>;
+  private readonly replaceCodexThreadForLarkThreadStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly updateCodexThreadUsageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly insertLarkMessageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly selectLarkMessageById: Database.Statement<[string], LarkMessageRow>;
@@ -203,6 +201,7 @@ export class ConversationRepository {
         type,
         chat_id,
         name,
+        response_mode,
         role,
         codex_thread_id,
         codex_thread_has_rollout,
@@ -215,6 +214,7 @@ export class ConversationRepository {
         @type,
         @chatId,
         @name,
+        @responseMode,
         @role,
         @codexThreadId,
         @codexThreadHasRollout,
@@ -236,6 +236,13 @@ export class ConversationRepository {
     this.selectAll = this.db.prepare(`
       SELECT * FROM conversations ORDER BY id ASC
     `);
+    this.updateSettings = this.db.prepare(`
+      UPDATE conversations
+      SET name = ?,
+          response_mode = ?,
+          updated_at = ?
+      WHERE conversation_key = ?
+    `);
     this.updateThread = this.db.prepare(`
       UPDATE conversations
       SET codex_thread_id = ?,
@@ -255,34 +262,6 @@ export class ConversationRepository {
     `);
     this.deleteByKey = this.db.prepare(`
       DELETE FROM conversations WHERE conversation_key = ?
-    `);
-    this.upsertUserStatement = this.db.prepare(`
-      INSERT INTO users (
-        lark_user_id,
-        name,
-        role,
-        created_at,
-        updated_at,
-        last_seen_at
-      ) VALUES (
-        @larkUserId,
-        @name,
-        @role,
-        @createdAt,
-        @updatedAt,
-        @lastSeenAt
-      )
-      ON CONFLICT(lark_user_id) DO UPDATE SET
-        name = CASE
-          WHEN excluded.name <> '' THEN excluded.name
-          ELSE users.name
-        END,
-        role = excluded.role,
-        updated_at = excluded.updated_at,
-        last_seen_at = excluded.last_seen_at
-    `);
-    this.selectUserByLarkUserId = this.db.prepare(`
-      SELECT * FROM users WHERE lark_user_id = ?
     `);
     this.upsertCodexThreadStatement = this.db.prepare(`
       INSERT INTO codex_threads (
@@ -318,6 +297,21 @@ export class ConversationRepository {
     `);
     this.selectCodexThreadById = this.db.prepare(`
       SELECT * FROM codex_threads WHERE codex_thread_id = ?
+    `);
+    this.selectCodexThreadByConversationAndLarkThread = this.db.prepare(`
+      SELECT * FROM codex_threads
+      WHERE conversation_key = ?
+        AND lark_thread_id = ?
+    `);
+    this.replaceCodexThreadForLarkThreadStatement = this.db.prepare(`
+      UPDATE codex_threads
+      SET codex_thread_id = @codexThreadId,
+          role = @role,
+          total_tokens = 0,
+          token_usage_json = '{}',
+          updated_at = @updatedAt
+      WHERE conversation_key = @conversationKey
+        AND lark_thread_id = @larkThreadId
     `);
     this.updateCodexThreadUsageStatement = this.db.prepare(`
       INSERT INTO codex_threads (
@@ -476,7 +470,7 @@ export class ConversationRepository {
 
   getByTypeAndChatId(type: ConversationType, chatId: string): ConversationRecord | undefined {
     assertValidConversationType(type);
-    assertExpectedP2PConversationKey(createP2PConversationKey(chatId), type, chatId);
+    assertExpectedConversationKey(conversationKeyForTypeAndChatId(type, chatId), type, chatId);
     return mapConversationRow(this.selectByTypeAndChatId.get(type, chatId));
   }
 
@@ -523,6 +517,26 @@ export class ConversationRepository {
     return updateBinding();
   }
 
+  updateConversationSettings(conversationKey: string, update: UpdateConversationSettingsInput): ConversationRecord {
+    assertValidConversationKey(conversationKey);
+    if (update.name !== undefined) {
+      assertNonEmpty(update.name, "name");
+    }
+    if (update.responseMode !== undefined) {
+      assertValidResponseMode(update.responseMode);
+    }
+
+    const updateSettings = this.db.transaction(() => {
+      const existing = this.requireByConversationKey(conversationKey);
+      const name = update.name ?? existing.name;
+      const responseMode = update.responseMode ?? existing.responseMode;
+      this.updateSettings.run(name, responseMode, this.now(), conversationKey);
+      return this.requireByConversationKey(conversationKey);
+    });
+
+    return updateSettings();
+  }
+
   markThreadHasRollout(conversationKey: string, codexThreadId: string): void {
     assertValidConversationKey(conversationKey);
     assertNonEmpty(codexThreadId, "codexThreadId");
@@ -533,27 +547,6 @@ export class ConversationRepository {
     assertValidConversationKey(conversationKey);
     const remove = this.db.transaction(() => this.deleteByKey.run(conversationKey).changes > 0);
     return remove();
-  }
-
-  upsertUser(input: UpsertUserInput): UserRecord {
-    assertNonEmpty(input.larkUserId, "larkUserId");
-    const role = input.role ?? "guest";
-    assertValidRole(role);
-    const now = this.now();
-    this.upsertUserStatement.run({
-      larkUserId: input.larkUserId,
-      name: input.name ?? "",
-      role,
-      createdAt: now,
-      updatedAt: now,
-      lastSeenAt: input.seenAt ?? now
-    });
-    return this.requireUserByLarkUserId(input.larkUserId);
-  }
-
-  getUserByLarkUserId(larkUserId: string): UserRecord | undefined {
-    assertNonEmpty(larkUserId, "larkUserId");
-    return mapUserRow(this.selectUserByLarkUserId.get(larkUserId));
   }
 
   upsertCodexThread(input: UpsertCodexThreadInput): CodexThreadRecord {
@@ -577,6 +570,52 @@ export class ConversationRepository {
   getCodexThreadById(codexThreadId: string): CodexThreadRecord | undefined {
     assertNonEmpty(codexThreadId, "codexThreadId");
     return mapCodexThreadRow(this.selectCodexThreadById.get(codexThreadId));
+  }
+
+  getCodexThreadByConversationAndLarkThread(
+    conversationKey: string,
+    larkThreadId: string
+  ): CodexThreadRecord | undefined {
+    assertValidConversationKey(conversationKey);
+    assertNonEmpty(larkThreadId, "larkThreadId");
+    return mapCodexThreadRow(this.selectCodexThreadByConversationAndLarkThread.get(conversationKey, larkThreadId));
+  }
+
+  replaceCodexThreadForLarkThread(
+    conversationKey: string,
+    larkThreadId: string,
+    update: { codexThreadId: string; role: RoleName }
+  ): CodexThreadRecord {
+    const input = {
+      conversationKey,
+      larkThreadId,
+      codexThreadId: update.codexThreadId,
+      role: update.role
+    };
+    validateReplaceCodexThreadForLarkThread(input);
+    const now = this.now();
+    const replace = this.db.transaction(() => {
+      const result = this.replaceCodexThreadForLarkThreadStatement.run({
+        ...input,
+        updatedAt: now
+      });
+      if (result.changes === 0) {
+        this.upsertCodexThreadStatement.run({
+          codexThreadId: input.codexThreadId,
+          conversationKey: input.conversationKey,
+          larkThreadId: input.larkThreadId,
+          role: input.role,
+          forkedFromCodexThreadId: null,
+          forkedAt: null,
+          totalTokens: 0,
+          tokenUsageJson: "{}",
+          createdAt: now,
+          updatedAt: now
+        });
+      }
+      return this.requireCodexThreadById(input.codexThreadId);
+    });
+    return replace();
   }
 
   updateCodexThreadTokenUsage(input: UpdateCodexThreadTokenUsageInput): CodexThreadRecord {
@@ -712,6 +751,7 @@ export class ConversationRepository {
       type: input.type,
       chatId: input.chatId,
       name: input.name,
+      responseMode: input.responseMode ?? (input.type === "p2p" ? "all" : "none"),
       role: input.role,
       codexThreadId: input.codexThreadId,
       codexThreadHasRollout: input.codexThreadHasRollout === false ? 0 : 1,
@@ -720,14 +760,6 @@ export class ConversationRepository {
       createdAt: now,
       updatedAt: now
     };
-  }
-
-  private requireUserByLarkUserId(larkUserId: string): UserRecord {
-    const record = this.getUserByLarkUserId(larkUserId);
-    if (!record) {
-      throw new TwinnyError(`User ${larkUserId} was not found`, "USER_NOT_FOUND");
-    }
-    return record;
   }
 
   private requireCodexThreadById(codexThreadId: string): CodexThreadRecord {
@@ -785,6 +817,7 @@ function mapRequiredConversationRow(row: ConversationRow): ConversationRecord {
     type: row.type,
     chatId: row.chat_id,
     name: row.name,
+    responseMode: row.response_mode,
     role: row.role,
     codexThreadId: row.codex_thread_id,
     codexThreadHasRollout: row.codex_thread_has_rollout === 1,
@@ -792,21 +825,6 @@ function mapRequiredConversationRow(row: ConversationRow): ConversationRecord {
     roleCodexHome: row.role_codex_home,
     createdAt: row.created_at,
     updatedAt: row.updated_at
-  };
-}
-
-function mapUserRow(row: UserRow | undefined): UserRecord | undefined {
-  if (!row) {
-    return undefined;
-  }
-  return {
-    id: row.id,
-    larkUserId: row.lark_user_id,
-    name: row.name,
-    role: row.role,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    lastSeenAt: row.last_seen_at
   };
 }
 
@@ -862,8 +880,11 @@ function mapRequiredLarkMessageRow(row: LarkMessageRow): LarkMessageRecord {
 }
 
 function validateNewConversation(input: NewConversationRecord): void {
-  assertExpectedP2PConversationKey(input.conversationKey, input.type, input.chatId);
+  assertExpectedConversationKey(input.conversationKey, input.type, input.chatId);
   assertNonEmpty(input.name, "name");
+  if (input.responseMode !== undefined) {
+    assertValidResponseMode(input.responseMode);
+  }
   assertValidRole(input.role);
   assertNonEmpty(input.codexThreadId, "codexThreadId");
   assertAbsolutePath(input.workspace, "workspace");
@@ -880,6 +901,13 @@ function validateCodexThreadInput(input: UpsertCodexThreadInput): void {
   if (input.forkedFromCodexThreadId !== undefined) {
     assertNonEmpty(input.forkedFromCodexThreadId, "forkedFromCodexThreadId");
   }
+}
+
+function validateReplaceCodexThreadForLarkThread(input: ReplaceCodexThreadForLarkThreadInput): void {
+  assertValidConversationKey(input.conversationKey);
+  assertNonEmpty(input.larkThreadId, "larkThreadId");
+  assertNonEmpty(input.codexThreadId, "codexThreadId");
+  assertValidRole(input.role);
 }
 
 function validateLarkMessageInput(input: InsertLarkMessageInput): void {
@@ -899,20 +927,33 @@ function validateLarkMessageInput(input: InsertLarkMessageInput): void {
   }
 }
 
-function assertExpectedP2PConversationKey(conversationKey: string, type: ConversationType, chatId: string): void {
+function assertExpectedConversationKey(conversationKey: string, type: ConversationType, chatId: string): void {
   assertValidConversationType(type);
-  const expectedKey = createP2PConversationKey(chatId);
+  const expectedKey = conversationKeyForTypeAndChatId(type, chatId);
   if (conversationKey !== expectedKey) {
     throw new TwinnyError(
-      `P2P conversation key must be ${expectedKey}, received ${conversationKey}`,
+      `Conversation key for ${type} must be ${expectedKey}, received ${conversationKey}`,
       "CONVERSATION_KEY_MISMATCH"
     );
   }
 }
 
+function conversationKeyForTypeAndChatId(type: ConversationType, chatId: string): string {
+  if (type === "p2p") {
+    return createP2PConversationKey(chatId);
+  }
+  return createGroupConversationKey(chatId);
+}
+
 function assertValidConversationType(type: ConversationType): void {
-  if (type !== "p2p") {
+  if (type !== "p2p" && type !== "group" && type !== "topic_group") {
     throw new TwinnyError(`Unsupported conversation type: ${type}`, "CONVERSATION_TYPE_INVALID");
+  }
+}
+
+function assertValidResponseMode(responseMode: ConversationResponseMode): void {
+  if (responseMode !== "all" && responseMode !== "at" && responseMode !== "none") {
+    throw new TwinnyError(`Unsupported conversation response mode: ${responseMode}`, "CONVERSATION_RESPONSE_MODE_INVALID");
   }
 }
 

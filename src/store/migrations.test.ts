@@ -27,7 +27,7 @@ describe("store migrations", () => {
         )
         .all()
         .map((row) => row.name);
-      expect(tables).toEqual(["codex_threads", "conversations", "lark_messages", "users"]);
+      expect(tables).toEqual(["codex_threads", "conversations", "lark_messages"]);
 
       const columns = db.prepare<[], TableColumnRow>("PRAGMA table_info(conversations)").all().map((row) => ({
         name: row.name,
@@ -47,7 +47,8 @@ describe("store migrations", () => {
         { name: "role_codex_home", type: "TEXT", notnull: 1, pk: 0 },
         { name: "created_at", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 },
-        { name: "codex_thread_has_rollout", type: "INTEGER", notnull: 1, pk: 0 }
+        { name: "codex_thread_has_rollout", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "response_mode", type: "TEXT", notnull: 1, pk: 0 }
       ]);
 
       const indexes = db
@@ -61,22 +62,6 @@ describe("store migrations", () => {
         "idx_conversations_role",
         "idx_conversations_type_chat_id",
         "sqlite_autoindex_conversations_1"
-      ]);
-
-      const userColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(users)").all().map((row) => ({
-        name: row.name,
-        type: row.type,
-        notnull: row.notnull,
-        pk: row.pk
-      }));
-      expect(userColumns).toEqual([
-        { name: "id", type: "INTEGER", notnull: 0, pk: 1 },
-        { name: "lark_user_id", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "name", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "role", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "created_at", type: "INTEGER", notnull: 1, pk: 0 },
-        { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 },
-        { name: "last_seen_at", type: "INTEGER", notnull: 1, pk: 0 }
       ]);
 
       const threadColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(codex_threads)").all().map((row) => ({
@@ -97,6 +82,16 @@ describe("store migrations", () => {
         { name: "token_usage_json", type: "TEXT", notnull: 1, pk: 0 },
         { name: "created_at", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 }
+      ]);
+      const threadIndexes = db
+        .prepare<[], SqliteNameRow>(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'codex_threads' ORDER BY name"
+        )
+        .all()
+        .map((row) => row.name);
+      expect(threadIndexes).toEqual([
+        "idx_codex_threads_conversation_lark_thread",
+        "sqlite_autoindex_codex_threads_1"
       ]);
 
       const messageColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(lark_messages)").all().map((row) => ({
@@ -144,7 +139,101 @@ describe("store migrations", () => {
         )
         .all()
         .map((row) => row.name);
-      expect(tables).toEqual(["codex_threads", "conversations", "lark_messages", "users"]);
+      expect(tables).toEqual(["codex_threads", "conversations", "lark_messages"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("migrates v3 user names into p2p conversations and drops users", () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec(`
+        CREATE TABLE conversations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          conversation_key TEXT NOT NULL UNIQUE,
+          type TEXT NOT NULL,
+          chat_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          role TEXT NOT NULL,
+          codex_thread_id TEXT NOT NULL,
+          workspace TEXT NOT NULL,
+          role_codex_home TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          codex_thread_has_rollout INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          lark_user_id TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL DEFAULT '',
+          role TEXT NOT NULL DEFAULT 'guest',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          last_seen_at INTEGER NOT NULL
+        );
+        CREATE TABLE codex_threads (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          codex_thread_id TEXT NOT NULL UNIQUE,
+          conversation_key TEXT NOT NULL,
+          lark_thread_id TEXT,
+          role TEXT NOT NULL,
+          forked_from_codex_thread_id TEXT,
+          forked_at INTEGER,
+          total_tokens INTEGER NOT NULL DEFAULT 0,
+          token_usage_json TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE lark_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          lark_message_id TEXT NOT NULL UNIQUE,
+          event_id TEXT NOT NULL,
+          lark_user_id TEXT NOT NULL,
+          lark_group_id TEXT,
+          lark_thread_id TEXT,
+          conversation_key TEXT,
+          codex_thread_id TEXT,
+          codex_turn_id TEXT,
+          route_kind TEXT NOT NULL,
+          status TEXT NOT NULL,
+          text TEXT NOT NULL,
+          lark_create_time INTEGER,
+          received_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          processing_started_at INTEGER,
+          completed_at INTEGER,
+          failed_at INTEGER,
+          cleared_at INTEGER,
+          raw_event_json TEXT
+        );
+        INSERT INTO conversations (
+          conversation_key, type, chat_id, name, role, codex_thread_id,
+          workspace, role_codex_home, created_at, updated_at, codex_thread_has_rollout
+        ) VALUES (
+          'p2p:ou_user', 'p2p', 'ou_user', '', 'guest', 'thread-1',
+          '/tmp/workspaces/p2p:ou_user', '/tmp/roles/guest/codex', 1, 1, 1
+        );
+        INSERT INTO users (
+          lark_user_id, name, role, created_at, updated_at, last_seen_at
+        ) VALUES (
+          'ou_user', 'Stored User', 'guest', 1, 1, 1
+        );
+        PRAGMA user_version = 3;
+      `);
+
+      expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
+
+      expect(
+        db.prepare<[], { name: string; response_mode: string }>(
+          "SELECT name, response_mode FROM conversations WHERE conversation_key = 'p2p:ou_user'"
+        ).get()
+      ).toEqual({ name: "Stored User", response_mode: "all" });
+      expect(
+        db.prepare<[], SqliteNameRow>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+        ).get()
+      ).toBeUndefined();
     } finally {
       db.close();
     }

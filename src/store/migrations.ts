@@ -15,11 +15,12 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 3;
+export const currentStoreSchemaVersion = 4;
 
 const initialMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const threadRolloutMigrationFile = fileURLToPath(new URL("../../migrations/0002_codex_thread_rollout.sql", import.meta.url));
 const runtimeHistoryMigrationFile = fileURLToPath(new URL("../../migrations/0003_runtime_history.sql", import.meta.url));
+const groupConversationsMigrationFile = fileURLToPath(new URL("../../migrations/0004_group_conversations.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -37,6 +38,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 3,
       name: "0003_runtime_history",
       sql: fs.readFileSync(runtimeHistoryMigrationFile, "utf8")
+    },
+    {
+      version: 4,
+      name: "0004_group_conversations",
+      sql: fs.readFileSync(groupConversationsMigrationFile, "utf8")
     }
   ];
 }

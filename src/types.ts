@@ -1,6 +1,8 @@
 export type RoleName = "owner" | "guest";
 
-export type ConversationType = "p2p";
+export type ConversationType = "p2p" | "group" | "topic_group";
+
+export type ConversationResponseMode = "all" | "at" | "none";
 
 export type LarkMessageRouteKind = "message" | "steered_message" | "queued_message" | "control_message";
 
@@ -72,6 +74,7 @@ export interface ConversationRecord {
   type: ConversationType;
   chatId: string;
   name: string;
+  responseMode: ConversationResponseMode;
   role: RoleName;
   codexThreadId: string;
   codexThreadHasRollout: boolean;
@@ -86,21 +89,12 @@ export interface NewConversationRecord {
   type: ConversationType;
   chatId: string;
   name: string;
+  responseMode?: ConversationResponseMode;
   role: RoleName;
   codexThreadId: string;
   codexThreadHasRollout?: boolean;
   workspace: string;
   roleCodexHome: string;
-}
-
-export interface UserRecord {
-  id: number;
-  larkUserId: string;
-  name: string;
-  role: RoleName;
-  createdAt: number;
-  updatedAt: number;
-  lastSeenAt: number;
 }
 
 export interface CodexThreadRecord {
@@ -144,18 +138,28 @@ export interface IncomingLarkMessage {
   eventId: string;
   messageId: string;
   chatId: string;
-  chatType: "p2p" | "group" | string;
+  chatType: "p2p" | "group" | "topic_group" | string;
   messageType: string;
   senderOpenId: string;
   senderName?: string;
+  chatName?: string;
   larkGroupId?: string;
   larkThreadId?: string;
+  mentions?: IncomingLarkMention[];
   resources?: IncomingLarkMessageResource[];
   downloadedFiles?: DownloadedLarkFile[];
   rawForCodex?: boolean;
   text: string;
   createTime?: number;
   raw: unknown;
+}
+
+export interface IncomingLarkMention {
+  key: string;
+  openId?: string;
+  userId?: string;
+  unionId?: string;
+  name?: string;
 }
 
 export interface IncomingLarkMessageResource {

@@ -6,6 +6,8 @@ import {
   LarkEventConsumer,
   LarkFileDownloader,
   LarkMessageSender,
+  LarkBotDirectory,
+  LarkChatDirectory,
   LarkUserDirectory,
   LarkOpenApiClient,
   TenantAccessTokenManager
@@ -78,6 +80,12 @@ export class TwinnyRuntime {
     const openApiClient = new LarkOpenApiClient({ tokenManager });
     const larkSender = new LarkMessageSender({ openApiClient, logger: this.log });
     const larkUsers = new LarkUserDirectory({ openApiClient });
+    const larkChats = new LarkChatDirectory({ openApiClient });
+    const larkBot = new LarkBotDirectory({ openApiClient });
+    const botOpenId = await larkBot.getBotOpenId().catch((error) => {
+      this.log.warn({ error }, "failed to resolve lark bot open_id; group @mention matching will be unavailable");
+      return undefined;
+    });
     const larkFiles = new LarkFileDownloader({ openApiClient });
     const systemNotifier = new TwinnySystemNotifier({
       ownerOpenId: this.config.owner.openId,
@@ -94,7 +102,9 @@ export class TwinnyRuntime {
       codex: adaptCodexPool(this.codexPool),
       lark: adaptLarkSender(larkSender, this.config.lark.workingReaction, this.config.lark.completedReaction),
       larkUsers,
+      larkChats,
       larkFiles,
+      botOpenId,
       roles: { codexHomeFor: (role) => getRoleCodexHome(this.config, role) },
       logger: this.log
     });
@@ -104,6 +114,7 @@ export class TwinnyRuntime {
     this.larkConsumer = new LarkEventConsumer({
       appId: this.config.lark.appId,
       appSecret,
+      botOpenId,
       logger: this.log,
       maxMessageAgeMs: this.config.lark.maxMessageAgeSeconds * 1000,
       onMessage: (message) => {
@@ -213,13 +224,14 @@ function adaptConversationRepository(repository: ConversationRepository) {
     findByConversationKey: (conversationKey: string) => repository.getByConversationKey(conversationKey) ?? null,
     create: repository.create.bind(repository),
     updateThreadBinding: repository.updateThreadBinding.bind(repository),
+    updateConversationSettings: repository.updateConversationSettings.bind(repository),
     markThreadHasRollout: repository.markThreadHasRollout.bind(repository),
-    getUserByLarkUserId: repository.getUserByLarkUserId.bind(repository),
     getCodexThreadById: repository.getCodexThreadById.bind(repository),
+    getCodexThreadByConversationAndLarkThread: repository.getCodexThreadByConversationAndLarkThread.bind(repository),
     getLarkMessageById: repository.getLarkMessageById.bind(repository),
     listUnfinishedLarkMessages: repository.listUnfinishedLarkMessages.bind(repository),
-    upsertUser: repository.upsertUser.bind(repository),
     upsertCodexThread: repository.upsertCodexThread.bind(repository),
+    replaceCodexThreadForLarkThread: repository.replaceCodexThreadForLarkThread.bind(repository),
     updateCodexThreadTokenUsage: repository.updateCodexThreadTokenUsage.bind(repository),
     insertLarkMessage: repository.insertLarkMessage.bind(repository),
     markLarkMessageQueued: repository.markLarkMessageQueued.bind(repository),

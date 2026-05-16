@@ -4,12 +4,12 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { TwinnyError } from "../errors.js";
 import type {
+  CodexThreadRecord,
   CodexTurnResult,
   ConversationRecord,
   IncomingLarkMessage,
   LarkMessageRecord,
-  TwinnyConfig,
-  UserRecord
+  TwinnyConfig
 } from "../types.js";
 import {
   ConversationManager,
@@ -17,6 +17,7 @@ import {
   type ConversationRepository,
   type LarkFileDownloader,
   type LarkResponder,
+  type LarkChatDirectory,
   type LarkUserDirectory
 } from "./manager.js";
 
@@ -91,12 +92,6 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m1", "hello"));
 
     await waitForExpect(() => expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m1"]));
-    expect(repository.upsertUser).toHaveBeenCalledWith({
-      larkUserId: "ou_guest",
-      name: "Guest User",
-      role: "guest",
-      seenAt: 1234
-    });
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         larkMessageId: "m1",
@@ -532,6 +527,266 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_new", "turn_2"));
   });
 
+  it("ignores unactivated group messages and only replies to bot mentions with an authorization hint", async () => {
+    const { repository } = createRepository();
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("g1", "hello"));
+    await waitForDelay();
+
+    expect(repository.insertLarkMessage).not.toHaveBeenCalled();
+    expect(codex.startThread).not.toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(lark.replyText).not.toHaveBeenCalled();
+
+    manager.submitIncoming(groupMessage("g2", "@_bot hello", { mentions: [botMention()] }));
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith("g2", "群聊未授权，需要 owner 发送 /activate 激活。")
+    );
+    expect(repository.insertLarkMessage).not.toHaveBeenCalled();
+    expect(codex.startThread).not.toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+  });
+
+  it("lets the owner activate a group with default at/guest mode and records the control message", async () => {
+    const { repository, row } = createRepository();
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const larkChats: LarkChatDirectory = {
+      getChatName: vi.fn(async () => "Team Room")
+    };
+    const manager = createManager({ repository, codex, lark, larkChats, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("g1", "/activate", { senderOpenId: "ou_owner", senderName: "Owner" }));
+
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g1", "已激活群聊：Team Room\n响应模式：at\nRole：guest"));
+    expect(row).toBeUndefined();
+    expect(repository.findByConversationKey("group:oc_group")).toBeDefined();
+    expect(codex.startThread).toHaveBeenCalledWith({
+      role: "guest",
+      cwd: "/tmp/twinny/workspaces/group:oc_group",
+      approvalPolicy: "never"
+    });
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "g1",
+        larkGroupId: "oc_group",
+        conversationKey: "group:oc_group",
+        routeKind: "control_message",
+        text: "/activate"
+      })
+    );
+    expect(repository.findByConversationKey("group:oc_group")).toMatchObject({
+      conversationKey: "group:oc_group",
+      type: "group",
+      chatId: "oc_group",
+      name: "Team Room",
+      responseMode: "at",
+      role: "guest",
+      workspace: "/tmp/twinny/workspaces/group:oc_group"
+    });
+  });
+
+  it("keeps a group's first activated role immutable while allowing mode and name refreshes", async () => {
+    const { repository } = createRepository();
+    const lark = createLarkResponder();
+    const larkChats: LarkChatDirectory = {
+      getChatName: vi.fn()
+        .mockResolvedValueOnce("Owner Room")
+        .mockResolvedValueOnce("Renamed Room")
+    };
+    const manager = createManager({ repository, lark, larkChats, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("g1", "/activate all owner", { senderOpenId: "ou_owner", senderName: "Owner" }));
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g1", "已激活群聊：Owner Room\n响应模式：all\nRole：owner"));
+    expect(repository.findByConversationKey("group:oc_group")).toMatchObject({
+      name: "Owner Room",
+      responseMode: "all",
+      role: "owner"
+    });
+
+    manager.submitIncoming(groupMessage("g2", "/activate at", { senderOpenId: "ou_owner", senderName: "Owner" }));
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g2", "已激活群聊：Renamed Room\n响应模式：at\nRole：owner"));
+    expect(repository.findByConversationKey("group:oc_group")).toMatchObject({
+      name: "Renamed Room",
+      responseMode: "at",
+      role: "owner"
+    });
+
+    manager.submitIncoming(
+      groupMessage("g3", "@_bot /activate all guest", {
+        senderOpenId: "ou_owner",
+        senderName: "Owner",
+        mentions: [botMention()]
+      })
+    );
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith("g3", "该群已绑定 role=owner，本期不支持修改为 guest。")
+    );
+    expect(repository.findByConversationKey("group:oc_group")).toMatchObject({
+      responseMode: "at",
+      role: "owner"
+    });
+  });
+
+  it("requires bot mentions in at-mode groups and strips the mention before parsing commands", async () => {
+    const row = groupConversationRecord({ responseMode: "at" });
+    const { repository } = createRepository(row);
+    const lark = createLarkResponder();
+    const codex = createCodex();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("g1", "/status"));
+    await waitForDelay();
+    expect(repository.insertLarkMessage).not.toHaveBeenCalled();
+    expect(lark.replyText).not.toHaveBeenCalled();
+
+    manager.submitIncoming(groupMessage("g2", "@_bot /status", { mentions: [botMention()] }));
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g2", expect.stringContaining("Response Mode: at")));
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "g2",
+        routeKind: "control_message",
+        text: "/status"
+      })
+    );
+    expect(codex.startTurn).not.toHaveBeenCalled();
+
+    manager.submitIncoming(
+      groupMessage("g3", "@_bot /help", {
+        senderOpenId: "ou_owner",
+        senderName: "Owner",
+        mentions: [botMention()]
+      })
+    );
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g3", expect.stringContaining("/activate [all|at] [guest|owner]")));
+    expect(lark.replyText).toHaveBeenCalledWith("g3", expect.stringContaining("/deactivate -"));
+  });
+
+  it("uses the shared group role and workspace for all-mode ordinary group messages", async () => {
+    const row = groupConversationRecord({ responseMode: "all", role: "owner", codexThreadId: "thread_group" });
+    const { repository } = createRepository(row);
+    const codex = createCodex();
+    const manager = createManager({ repository, codex, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("g1", "hello group"));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.resumeThread).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "owner", threadId: "thread_group", cwd: "/tmp/twinny/workspaces/group:oc_group" })
+    );
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "owner",
+        threadId: "thread_group",
+        cwd: "/tmp/twinny/workspaces/group:oc_group",
+        input: '<lark_message lark_message_id="g1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\nhello group\n</lark_message>'
+      })
+    );
+  });
+
+  it("treats none-mode groups as inactive until the owner activates them again", async () => {
+    const row = groupConversationRecord({ responseMode: "none" });
+    const { repository } = createRepository(row);
+    const lark = createLarkResponder();
+    const larkChats: LarkChatDirectory = {
+      getChatName: vi.fn(async () => "Reenabled Room")
+    };
+    const manager = createManager({ repository, lark, larkChats, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("g1", "@_bot hello", { mentions: [botMention()] }));
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith("g1", "群聊未授权，需要 owner 发送 /activate 激活。")
+    );
+    expect(repository.insertLarkMessage).not.toHaveBeenCalled();
+
+    manager.submitIncoming(groupMessage("g2", "/activate all", { senderOpenId: "ou_owner", senderName: "Owner" }));
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g2", "已激活群聊：Reenabled Room\n响应模式：all\nRole：guest"));
+    expect(row).toMatchObject({ name: "Reenabled Room", responseMode: "all", role: "guest" });
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ larkMessageId: "g2", routeKind: "control_message" })
+    );
+  });
+
+  it("deactivates a group and stops active or queued work across that group", async () => {
+    const row = groupConversationRecord({ responseMode: "all", codexThreadId: "thread_group" });
+    const { repository } = createRepository(row);
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("g1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("g2", "/queue queued"));
+    await waitForExpect(() => expect(manager.queueDepth("group:oc_group")).toBe(1));
+
+    manager.submitIncoming(groupMessage("g3", "/deactivate", { senderOpenId: "ou_owner", senderName: "Owner" }));
+
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g3", "已停用该群，清空 1 条待处理消息。"));
+    expect(row.responseMode).toBe("none");
+    expect(codex.interruptTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "guest", threadId: "thread_group", turnId: "turn_1" })
+    );
+    expect(repository.markLarkMessagesCleared).toHaveBeenCalledWith(["g2"]);
+    expect(repository.markLarkMessagesInterrupted).toHaveBeenCalledWith(["g1"]);
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g3"]);
+
+    turns[0]!.resolve(completed("thread_group", "turn_1", "interrupted"));
+  });
+
+  it("uses one group conversation and workspace but separate fresh Codex threads for topic threads", async () => {
+    const row = groupConversationRecord({ type: "topic_group", responseMode: "all", codexThreadId: "thread_group" });
+    const { repository } = createRepository(row);
+    const nextThreads = ["thread_topic_a", "thread_topic_b"];
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: nextThreads.shift() ?? "thread_extra" }))
+    });
+    const manager = createManager({ repository, codex, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(topicMessage("t1", "topic a first", "topic_a"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await waitForDelay();
+    manager.submitIncoming(topicMessage("t2", "topic a second", "topic_a"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    await waitForDelay();
+    manager.submitIncoming(topicMessage("t3", "topic b first", "topic_b"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+
+    expect(codex.startThread).toHaveBeenCalledTimes(2);
+    expect(codex.resumeThread).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "thread_topic_a", cwd: "/tmp/twinny/workspaces/group:oc_group" })
+    );
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ threadId: "thread_topic_a", cwd: "/tmp/twinny/workspaces/group:oc_group" })
+    );
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ threadId: "thread_topic_a", cwd: "/tmp/twinny/workspaces/group:oc_group" })
+    );
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ threadId: "thread_topic_b", cwd: "/tmp/twinny/workspaces/group:oc_group" })
+    );
+    expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith("group:oc_group", "topic_a");
+    expect(repository.upsertCodexThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationKey: "group:oc_group",
+        codexThreadId: "thread_topic_a",
+        larkThreadId: "topic_a"
+      })
+    );
+    expect(repository.upsertCodexThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationKey: "group:oc_group",
+        codexThreadId: "thread_topic_b",
+        larkThreadId: "topic_b"
+      })
+    );
+  });
+
   it("ignores duplicate message ids", async () => {
     const codex = createCodex();
     const manager = createManager({ codex });
@@ -637,9 +892,7 @@ describe("ConversationManager", () => {
 
   it("reuses stored Lark sender names without calling the directory", async () => {
     const codex = createCodex();
-    const { repository } = createRepository(undefined, {
-      users: [{ larkUserId: "ou_guest", name: "Stored User", role: "guest" }]
-    });
+    const { repository } = createRepository(conversationRecord({ name: "Stored User" }));
     const larkUsers: LarkUserDirectory = {
       getUserNameByOpenId: vi.fn(async () => "Directory User")
     };
@@ -1125,7 +1378,9 @@ function createManager(options: {
   codex?: CodexBridge;
   lark?: LarkResponder;
   larkUsers?: LarkUserDirectory;
+  larkChats?: LarkChatDirectory;
   larkFiles?: LarkFileDownloader;
+  botOpenId?: string;
   workspaceRoot?: string;
 } = {}): ConversationManager {
   const workspaceRoot = options.workspaceRoot ?? "/tmp/twinny/workspaces";
@@ -1141,7 +1396,9 @@ function createManager(options: {
     codex: options.codex ?? createCodex(),
     lark: options.lark ?? createLarkResponder(),
     larkUsers: options.larkUsers ?? createLarkUserDirectory(),
+    larkChats: options.larkChats,
     larkFiles: options.larkFiles,
+    botOpenId: options.botOpenId,
     nameLookupFailureTtlMs: 60_000
   });
 }
@@ -1203,30 +1460,79 @@ function createLarkResponder(): LarkResponder {
 }
 
 function createRepository(initial?: ConversationRecord, options: {
-  users?: Array<{ larkUserId: string; name?: string; role?: "owner" | "guest" }>;
   larkMessageIds?: string[];
   larkMessages?: LarkMessageRecord[];
+  codexThreads?: CodexThreadRecord[];
 } = {}): {
   repository: ConversationRepository;
   row: ConversationRecord | undefined;
 } {
   let row = initial;
-  const users = new Map<string, UserRecord>();
   const larkMessageIds = new Set(options.larkMessageIds ?? []);
   const larkMessages = new Map<string, LarkMessageRecord>();
+  const codexThreads = new Map<string, CodexThreadRecord>();
+  let nextCodexThreadId = 1;
   for (const record of options.larkMessages ?? []) {
     larkMessageIds.add(record.larkMessageId);
     larkMessages.set(record.larkMessageId, record);
   }
-  for (const user of options.users ?? []) {
-    users.set(user.larkUserId, {
-      id: users.size + 1,
-      larkUserId: user.larkUserId,
-      name: user.name ?? "",
-      role: user.role ?? "guest",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      lastSeenAt: Date.now()
+  for (const thread of options.codexThreads ?? []) {
+    codexThreads.set(thread.codexThreadId, thread);
+    nextCodexThreadId = Math.max(nextCodexThreadId, thread.id + 1);
+  }
+  const getCodexThreadByLarkThread = (conversationKey: string, larkThreadId: string) =>
+    [...codexThreads.values()].find(
+      (thread) => thread.conversationKey === conversationKey && thread.larkThreadId === larkThreadId
+    );
+  const putCodexThread = (input: {
+    codexThreadId: string;
+    conversationKey: string;
+    role: "owner" | "guest";
+    larkThreadId?: string;
+  }): CodexThreadRecord => {
+    const existing = codexThreads.get(input.codexThreadId);
+    const record: CodexThreadRecord = {
+      id: existing?.id ?? nextCodexThreadId++,
+      codexThreadId: input.codexThreadId,
+      conversationKey: input.conversationKey,
+      larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
+      role: input.role,
+      totalTokens: existing?.totalTokens ?? 0,
+      tokenUsageJson: existing?.tokenUsageJson ?? "{}",
+      createdAt: existing?.createdAt ?? Date.now(),
+      updatedAt: Date.now()
+    };
+    codexThreads.set(record.codexThreadId, record);
+    return record;
+  };
+  const replaceCodexThreadForLarkThread = (
+    conversationKey: string,
+    larkThreadId: string,
+    update: { codexThreadId: string; role: "owner" | "guest" }
+  ): CodexThreadRecord => {
+    const existing = getCodexThreadByLarkThread(conversationKey, larkThreadId);
+    if (existing) {
+      codexThreads.delete(existing.codexThreadId);
+    }
+    const record: CodexThreadRecord = {
+      id: existing?.id ?? nextCodexThreadId++,
+      codexThreadId: update.codexThreadId,
+      conversationKey,
+      larkThreadId,
+      role: update.role,
+      totalTokens: 0,
+      tokenUsageJson: "{}",
+      createdAt: existing?.createdAt ?? Date.now(),
+      updatedAt: Date.now()
+    };
+    codexThreads.set(record.codexThreadId, record);
+    return record;
+  };
+  if (row) {
+    putCodexThread({
+      codexThreadId: row.codexThreadId,
+      conversationKey: row.conversationKey,
+      role: row.role
     });
   }
   return {
@@ -1235,17 +1541,19 @@ function createRepository(initial?: ConversationRecord, options: {
     },
     repository: {
       findByConversationKey: () => row ?? null,
-      getUserByLarkUserId: (larkUserId) => users.get(larkUserId),
-      getCodexThreadById: vi.fn((codexThreadId) => ({
-        id: 1,
-        codexThreadId,
-        conversationKey: row?.conversationKey ?? "p2p:ou_guest",
-        role: row?.role ?? "guest",
-        totalTokens: 0,
-        tokenUsageJson: "{}",
-        createdAt: Date.now(),
-        updatedAt: Date.now()
-      })),
+      getCodexThreadById: vi.fn((codexThreadId) =>
+        codexThreads.get(codexThreadId) ?? {
+          id: nextCodexThreadId++,
+          codexThreadId,
+          conversationKey: row?.conversationKey ?? "p2p:ou_guest",
+          role: row?.role ?? "guest",
+          totalTokens: 0,
+          tokenUsageJson: "{}",
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        }
+      ),
+      getCodexThreadByConversationAndLarkThread: vi.fn(getCodexThreadByLarkThread),
       getLarkMessageById: vi.fn((larkMessageId) =>
         larkMessages.get(larkMessageId) ?? (larkMessageIds.has(larkMessageId) ? { larkMessageId } : undefined)
       ),
@@ -1258,11 +1566,19 @@ function createRepository(initial?: ConversationRecord, options: {
           createdAt: Date.now(),
           updatedAt: Date.now(),
           ...record,
+          responseMode: record.responseMode ?? (record.type === "p2p" ? "all" : "none"),
           codexThreadHasRollout: record.codexThreadHasRollout ?? true
         };
         return row;
       },
       updateThreadBinding: (_key, update) => {
+        if (!row) {
+          throw new Error("missing conversation");
+        }
+        Object.assign(row, update, { updatedAt: Date.now() });
+        return row;
+      },
+      updateConversationSettings: (_key, update) => {
         if (!row) {
           throw new Error("missing conversation");
         }
@@ -1275,21 +1591,8 @@ function createRepository(initial?: ConversationRecord, options: {
           row.updatedAt = Date.now();
         }
       },
-      upsertUser: vi.fn((input) => {
-        const existing = users.get(input.larkUserId);
-        const user: UserRecord = {
-          id: existing?.id ?? users.size + 1,
-          larkUserId: input.larkUserId,
-          name: input.name?.trim() || existing?.name || "",
-          role: input.role ?? existing?.role ?? "guest",
-          createdAt: existing?.createdAt ?? Date.now(),
-          updatedAt: Date.now(),
-          lastSeenAt: input.seenAt ?? Date.now()
-        };
-        users.set(input.larkUserId, user);
-        return user;
-      }),
-      upsertCodexThread: vi.fn(),
+      upsertCodexThread: vi.fn(putCodexThread),
+      replaceCodexThreadForLarkThread: vi.fn(replaceCodexThreadForLarkThread),
       updateCodexThreadTokenUsage: vi.fn(),
       insertLarkMessage: vi.fn(),
       markLarkMessageQueued: vi.fn(),
@@ -1310,6 +1613,7 @@ function conversationRecord(overrides: Partial<ConversationRecord> = {}): Conver
     type: "p2p",
     chatId: "ou_guest",
     name: "Guest User",
+    responseMode: "all",
     role: "guest",
     codexThreadId: "thread_1",
     codexThreadHasRollout: true,
@@ -1319,6 +1623,19 @@ function conversationRecord(overrides: Partial<ConversationRecord> = {}): Conver
     updatedAt: 100,
     ...overrides
   };
+}
+
+function groupConversationRecord(overrides: Partial<ConversationRecord> = {}): ConversationRecord {
+  return conversationRecord({
+    conversationKey: "group:oc_group",
+    type: "group",
+    chatId: "oc_group",
+    name: "Team Room",
+    responseMode: "all",
+    codexThreadId: "thread_group",
+    workspace: "/tmp/twinny/workspaces/group:oc_group",
+    ...overrides
+  });
 }
 
 function larkMessageRecord(overrides: Partial<LarkMessageRecord> = {}): LarkMessageRecord {
@@ -1353,6 +1670,36 @@ function message(messageId: string, text: string, overrides: Partial<IncomingLar
     createTime: 1234,
     raw: {},
     ...overrides
+  };
+}
+
+function groupMessage(messageId: string, text: string, overrides: Partial<IncomingLarkMessage> = {}): IncomingLarkMessage {
+  return message(messageId, text, {
+    chatId: "oc_group",
+    chatType: "group",
+    larkGroupId: "oc_group",
+    ...overrides
+  });
+}
+
+function topicMessage(
+  messageId: string,
+  text: string,
+  larkThreadId: string,
+  overrides: Partial<IncomingLarkMessage> = {}
+): IncomingLarkMessage {
+  return groupMessage(messageId, text, {
+    chatType: "topic_group",
+    larkThreadId,
+    ...overrides
+  });
+}
+
+function botMention(): NonNullable<IncomingLarkMessage["mentions"]>[number] {
+  return {
+    key: "@_bot",
+    openId: "ou_bot",
+    name: "Twinny"
   };
 }
 

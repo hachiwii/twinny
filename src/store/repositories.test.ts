@@ -34,6 +34,7 @@ describe("ConversationRepository", () => {
       type: "p2p",
       chatId: "ou_123",
       name: "Guest User",
+      responseMode: "all",
       role: "guest",
       codexThreadId: "thread-1",
       workspace,
@@ -58,6 +59,48 @@ describe("ConversationRepository", () => {
     expect(repo.getByTypeAndChatId("p2p", "ou_123")).toEqual(created);
     expect(repo.getByCodexThreadId("thread-1")).toEqual(created);
     expect(repo.list()).toEqual([created]);
+  });
+
+  it("creates group conversations with response modes and updates group settings", () => {
+    const repo = createConversationRepository(db, { now: () => now });
+    const workspace = path.join(tempDir, "workspaces", "group:oc_group");
+    const roleCodexHome = path.join(tempDir, "roles", "owner", "codex");
+
+    const created = repo.create({
+      conversationKey: "group:oc_group",
+      type: "topic_group",
+      chatId: "oc_group",
+      name: "Topic Group",
+      responseMode: "at",
+      role: "owner",
+      codexThreadId: "thread-group",
+      codexThreadHasRollout: false,
+      workspace,
+      roleCodexHome
+    });
+
+    expect(created).toMatchObject({
+      conversationKey: "group:oc_group",
+      type: "topic_group",
+      chatId: "oc_group",
+      name: "Topic Group",
+      responseMode: "at",
+      role: "owner",
+      codexThreadHasRollout: false
+    });
+    expect(repo.getByTypeAndChatId("topic_group", "oc_group")).toEqual(created);
+
+    now = 2000;
+    const updated = repo.updateConversationSettings("group:oc_group", {
+      name: "Renamed Group",
+      responseMode: "none"
+    });
+    expect(updated).toMatchObject({
+      name: "Renamed Group",
+      responseMode: "none",
+      role: "owner",
+      updatedAt: 2000
+    });
   });
 
   it("updates thread bindings transactionally", () => {
@@ -102,10 +145,10 @@ describe("ConversationRepository", () => {
       )
       .all()
       .map((row) => row.name);
-    expect(tables).toEqual(["codex_threads", "conversations", "lark_messages", "users"]);
+    expect(tables).toEqual(["codex_threads", "conversations", "lark_messages"]);
   });
 
-  it("records runtime users, codex threads, messages, and token usage by business ids", () => {
+  it("records runtime codex threads, messages, and token usage by business ids", () => {
     const repo = createConversationRepository(db, { now: () => now });
     const workspace = path.join(tempDir, "workspaces", "p2p:ou_456");
     const roleCodexHome = path.join(tempDir, "roles", "guest", "codex");
@@ -119,18 +162,6 @@ describe("ConversationRepository", () => {
       codexThreadId: "thread-1",
       workspace,
       roleCodexHome
-    });
-
-    now = 1100;
-    const user = repo.upsertUser({ larkUserId: "ou_456", role: "guest", seenAt: 1001 });
-    expect(user).toMatchObject({
-      id: 1,
-      larkUserId: "ou_456",
-      name: "",
-      role: "guest",
-      createdAt: 1100,
-      updatedAt: 1100,
-      lastSeenAt: 1001
     });
 
     now = 1200;
@@ -251,6 +282,50 @@ describe("ConversationRepository", () => {
       tokenUsageJson: '{"totalTokens":123}',
       updatedAt: 1700
     });
+  });
+
+  it("finds and replaces Codex threads by group conversation and Lark thread id", () => {
+    const repo = createConversationRepository(db, { now: () => now });
+
+    const first = repo.upsertCodexThread({
+      codexThreadId: "thread-topic-1",
+      conversationKey: "group:oc_group",
+      larkThreadId: "om_root",
+      role: "guest"
+    });
+    expect(first).toMatchObject({
+      codexThreadId: "thread-topic-1",
+      conversationKey: "group:oc_group",
+      larkThreadId: "om_root",
+      role: "guest"
+    });
+    expect(repo.getCodexThreadByConversationAndLarkThread("group:oc_group", "om_root")).toEqual(first);
+
+    now = 2000;
+    repo.updateCodexThreadTokenUsage({
+      codexThreadId: "thread-topic-1",
+      conversationKey: "group:oc_group",
+      role: "guest",
+      totalTokens: 321,
+      tokenUsageJson: '{"totalTokens":321}'
+    });
+
+    now = 3000;
+    const replacement = repo.replaceCodexThreadForLarkThread("group:oc_group", "om_root", {
+      codexThreadId: "thread-topic-2",
+      role: "guest"
+    });
+    expect(repo.getCodexThreadById("thread-topic-1")).toBeUndefined();
+    expect(replacement).toMatchObject({
+      id: first.id,
+      codexThreadId: "thread-topic-2",
+      conversationKey: "group:oc_group",
+      larkThreadId: "om_root",
+      totalTokens: 0,
+      tokenUsageJson: "{}",
+      updatedAt: 3000
+    });
+    expect(repo.getCodexThreadByConversationAndLarkThread("group:oc_group", "om_root")).toEqual(replacement);
   });
 
   it("rejects mismatched or unsafe conversation keys", () => {
