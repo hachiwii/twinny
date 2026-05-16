@@ -277,10 +277,6 @@ export class ConversationManager {
     }
     this.dedupe.set(message.messageId, true);
 
-    if (message.messageType !== "text" && (message.resources?.length ?? 0) === 0 && !message.rawForCodex) {
-      this.log.debug({ messageId: message.messageId, messageType: message.messageType }, "unsupported lark message ignored");
-      return;
-    }
     const type = conversationTypeForChat(message.chatType);
     if (type !== "p2p") {
       this.log.debug({ messageId: message.messageId, chatType: message.chatType }, "non-p2p lark message ignored");
@@ -579,18 +575,21 @@ export class ConversationManager {
     const outputDir = path.join(workspace, ".twinny", "lark_files", safePathSegment(message.messageId));
     const downloadedFiles = [];
     for (const resource of message.resources ?? []) {
-      downloadedFiles.push(
-        await this.options.larkFiles.downloadMessageResource({
-          messageId: message.messageId,
-          resourceType: resource.resourceType,
-          fileKey: resource.fileKey,
-          fileName: resource.fileName,
-          outputDir
-        })
-      );
+      const downloaded = await this.options.larkFiles.downloadMessageResource({
+        messageId: message.messageId,
+        resourceType: resource.resourceType,
+        fileKey: resource.fileKey,
+        fileName: resource.fileName,
+        outputDir
+      });
+      downloadedFiles.push({
+        ...downloaded,
+        codexTag: resource.codexTag,
+        textPlaceholder: resource.textPlaceholder
+      });
     }
     message.downloadedFiles = downloadedFiles;
-    message.text = downloadedFiles.map((file) => formatDownloadedFileForCodex(file, message.messageType)).join("\n");
+    message.text = formatMessageTextWithDownloadedFiles(message.text, downloadedFiles, message.messageType);
   }
 
   private async resolveSenderName(message: IncomingLarkMessage, role: RoleName): Promise<string | undefined> {
@@ -1982,10 +1981,10 @@ function finiteNumber(...values: unknown[]): number | undefined {
 }
 
 function formatDownloadedFileForCodex(
-  file: { path: string; resourceType: "image" | "file"; fileKey: string; size: number },
+  file: { path: string; resourceType: "image" | "file"; fileKey: string; size: number; codexTag?: "img" | "video" | "file" },
   messageType: string
 ): string {
-  const tag = codexFileTagForMessage(file.resourceType, messageType);
+  const tag = file.codexTag ?? codexFileTagForMessage(file.resourceType, messageType);
   return (
     `<${tag} path="${escapeXmlAttribute(file.path)}" ` +
     `lark_file_key="${escapeXmlAttribute(file.fileKey)}" size="${escapeXmlAttribute(String(file.size))}">` +
@@ -1998,6 +1997,43 @@ function codexFileTagForMessage(resourceType: "image" | "file", messageType: str
     return "img";
   }
   return messageType === "video" || messageType === "media" ? "video" : "file";
+}
+
+function formatMessageTextWithDownloadedFiles(
+  text: string,
+  files: Array<{
+    path: string;
+    resourceType: "image" | "file";
+    fileKey: string;
+    size: number;
+    codexTag?: "img" | "video" | "file";
+    textPlaceholder?: string;
+  }>,
+  messageType: string
+): string {
+  if (files.length === 0) {
+    return text;
+  }
+
+  if (!files.some((file) => file.textPlaceholder)) {
+    return files.map((file) => formatDownloadedFileForCodex(file, messageType)).join("\n");
+  }
+
+  let rendered = text;
+  const unmatched: string[] = [];
+  for (const file of files) {
+    const xml = formatDownloadedFileForCodex(file, messageType);
+    if (file.textPlaceholder && rendered.includes(file.textPlaceholder)) {
+      rendered = rendered.split(file.textPlaceholder).join(xml);
+    } else {
+      unmatched.push(xml);
+    }
+  }
+
+  if (unmatched.length === 0) {
+    return rendered;
+  }
+  return rendered.trim() ? `${rendered}\n${unmatched.join("\n")}` : unmatched.join("\n");
 }
 
 function contentTypeForFileName(fileName: string): string | undefined {

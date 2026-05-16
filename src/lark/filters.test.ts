@@ -65,6 +65,44 @@ describe("normalizeIncomingLarkMessage", () => {
     }
   );
 
+  it("converts p2p post events into markdown with downloadable media placeholders", () => {
+    const normalized = normalizeIncomingLarkMessage(
+      receiveEvent({
+        message: {
+          message_type: "post",
+          content: JSON.stringify({
+            title: "Status",
+            content: [
+              [
+                { tag: "text", text: "Please inspect " },
+                { tag: "a", text: "the docs", href: "https://open.feishu.cn" },
+                { tag: "at", user_name: "Tom", user_id: "@_user_1" }
+              ],
+              [{ tag: "img", image_key: "img_123" }],
+              [{ tag: "media", file_key: "file_123", image_key: "img_cover" }],
+              [{ tag: "code_block", language: "JSON", text: '{"ok":true}' }]
+            ]
+          })
+        }
+      })
+    );
+
+    expect(normalized).toMatchObject({
+      messageId: "om_1",
+      messageType: "post",
+      text:
+        "# Status\n\n" +
+        "Please inspect [the docs](https://open.feishu.cn)@Tom\n\n" +
+        "{{TWINNY_LARK_RESOURCE_0}}\n\n" +
+        "{{TWINNY_LARK_RESOURCE_1}}\n\n" +
+        '```json\n{"ok":true}\n```',
+      resources: [
+        { resourceType: "image", fileKey: "img_123", codexTag: "img", textPlaceholder: "{{TWINNY_LARK_RESOURCE_0}}" },
+        { resourceType: "file", fileKey: "file_123", codexTag: "video", textPlaceholder: "{{TWINNY_LARK_RESOURCE_1}}" }
+      ]
+    });
+  });
+
   it("normalizes unsupported p2p message types as raw messages for Codex", () => {
     const event = receiveEvent({
       message: {
@@ -78,6 +116,42 @@ describe("normalizeIncomingLarkMessage", () => {
     expect(normalized).toMatchObject({
       messageId: "om_1",
       messageType: "merge_forward",
+      rawForCodex: true,
+      text: JSON.stringify(event.message)
+    });
+  });
+
+  it("forwards malformed known message content as raw message JSON", () => {
+    const event = receiveEvent({
+      message: {
+        message_type: "post",
+        content: JSON.stringify({ title: "No content array" })
+      }
+    });
+
+    const normalized = normalizeIncomingLarkMessage(event);
+
+    expect(normalized).toMatchObject({
+      messageId: "om_1",
+      messageType: "post",
+      rawForCodex: true,
+      text: JSON.stringify(event.message)
+    });
+  });
+
+  it("forwards messages without a message_type as raw message JSON", () => {
+    const event = receiveEvent({
+      message: {
+        message_type: undefined,
+        content: JSON.stringify({ custom: true })
+      }
+    });
+
+    const normalized = normalizeIncomingLarkMessage(event);
+
+    expect(normalized).toMatchObject({
+      messageId: "om_1",
+      messageType: "unknown",
       rawForCodex: true,
       text: JSON.stringify(event.message)
     });

@@ -162,6 +162,8 @@ export interface IncomingLarkMessageResource {
   resourceType: "image" | "file";
   fileKey: string;
   fileName?: string;
+  codexTag?: "img" | "video" | "file";
+  textPlaceholder?: string;
 }
 
 export interface DownloadedLarkFile extends IncomingLarkMessageResource {

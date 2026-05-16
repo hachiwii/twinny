@@ -520,6 +520,23 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("accepts parsed post messages without downloadable resources", async () => {
+    const codex = createCodex();
+    const manager = createManager({ codex });
+
+    manager.submitIncoming(message("m1", "Parsed **post** body", { messageType: "post" }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input:
+          '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+          "Parsed **post** body\n" +
+          "</lark_message>"
+      })
+    );
+  });
+
   it("resolves empty stored Lark sender names from the directory and includes them in Codex input", async () => {
     const codex = createCodex();
     const larkUsers: LarkUserDirectory = {
@@ -658,6 +675,53 @@ describe("ConversationManager", () => {
         input:
           '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
           '<video path="/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/clip.mp4" lark_file_key="file_1" size="456">Saved locally</video>\n' +
+          "</lark_message>"
+      })
+    );
+  });
+
+  it("preserves post markdown while replacing downloaded media placeholders with XML elements", async () => {
+    const codex = createCodex();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(async ({ outputDir, resourceType, fileKey }) => ({
+        path: `${outputDir}/${fileKey}${resourceType === "image" ? ".jpg" : ".mp4"}`,
+        resourceType,
+        fileKey,
+        fileName: `${fileKey}${resourceType === "image" ? ".jpg" : ".mp4"}`,
+        size: resourceType === "image" ? 111 : 222,
+        contentType: resourceType === "image" ? "image/jpeg" : "video/mp4"
+      }))
+    };
+    const manager = createManager({ codex, larkFiles });
+
+    manager.submitIncoming(
+      message("m1", "Please inspect\n\n{{TWINNY_LARK_RESOURCE_0}}\n\n{{TWINNY_LARK_RESOURCE_1}}", {
+        messageType: "post",
+        resources: [
+          {
+            resourceType: "image",
+            fileKey: "img_1",
+            codexTag: "img",
+            textPlaceholder: "{{TWINNY_LARK_RESOURCE_0}}"
+          },
+          {
+            resourceType: "file",
+            fileKey: "file_1",
+            codexTag: "video",
+            textPlaceholder: "{{TWINNY_LARK_RESOURCE_1}}"
+          }
+        ]
+      })
+    );
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input:
+          '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+          "Please inspect\n\n" +
+          '<img path="/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/img_1.jpg" lark_file_key="img_1" size="111">Saved locally</img>\n\n' +
+          '<video path="/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/file_1.mp4" lark_file_key="file_1" size="222">Saved locally</video>\n' +
           "</lark_message>"
       })
     );
