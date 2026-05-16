@@ -2,6 +2,8 @@ export type RoleName = "owner" | "guest";
 
 export type ConversationType = "p2p" | "group" | "topic_group";
 
+export type LarkChatMode = "group" | "topic";
+
 export type ConversationResponseMode = "all" | "at" | "none";
 
 export type AgentMessageMode = "plain" | "card";
@@ -80,6 +82,7 @@ export interface ConversationRecord {
   type: ConversationType;
   chatId: string;
   name: string;
+  chatMode?: LarkChatMode;
   responseMode: ConversationResponseMode;
   role: RoleName;
   codexThreadId: string;
@@ -95,6 +98,7 @@ export interface NewConversationRecord {
   type: ConversationType;
   chatId: string;
   name: string;
+  chatMode?: LarkChatMode;
   responseMode?: ConversationResponseMode;
   role: RoleName;
   codexThreadId: string;

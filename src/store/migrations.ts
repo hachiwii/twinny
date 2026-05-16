@@ -15,13 +15,14 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 5;
+export const currentStoreSchemaVersion = 6;
 
 const initialMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const threadRolloutMigrationFile = fileURLToPath(new URL("../../migrations/0002_codex_thread_rollout.sql", import.meta.url));
 const runtimeHistoryMigrationFile = fileURLToPath(new URL("../../migrations/0003_runtime_history.sql", import.meta.url));
 const groupConversationsMigrationFile = fileURLToPath(new URL("../../migrations/0004_group_conversations.sql", import.meta.url));
 const cardActionsMigrationFile = fileURLToPath(new URL("../../migrations/0005_card_actions.sql", import.meta.url));
+const conversationChatModeMigrationFile = fileURLToPath(new URL("../../migrations/0006_conversation_chat_mode.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -49,6 +50,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 5,
       name: "0005_card_actions",
       sql: fs.readFileSync(cardActionsMigrationFile, "utf8")
+    },
+    {
+      version: 6,
+      name: "0006_conversation_chat_mode",
+      sql: fs.readFileSync(conversationChatModeMigrationFile, "utf8")
     }
   ];
 }

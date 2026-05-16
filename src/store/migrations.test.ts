@@ -48,7 +48,8 @@ describe("store migrations", () => {
         { name: "created_at", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "codex_thread_has_rollout", type: "INTEGER", notnull: 1, pk: 0 },
-        { name: "response_mode", type: "TEXT", notnull: 1, pk: 0 }
+        { name: "response_mode", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "chat_mode", type: "TEXT", notnull: 0, pk: 0 }
       ]);
 
       const indexes = db
@@ -235,10 +236,10 @@ describe("store migrations", () => {
       expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
 
       expect(
-        db.prepare<[], { name: string; response_mode: string }>(
-          "SELECT name, response_mode FROM conversations WHERE conversation_key = 'p2p:ou_user'"
+        db.prepare<[], { name: string; response_mode: string; chat_mode: string | null }>(
+          "SELECT name, response_mode, chat_mode FROM conversations WHERE conversation_key = 'p2p:ou_user'"
         ).get()
-      ).toEqual({ name: "Stored User", response_mode: "all" });
+      ).toEqual({ name: "Stored User", response_mode: "all", chat_mode: null });
       expect(
         db.prepare<[], SqliteNameRow>(
           "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'"

@@ -237,6 +237,41 @@ describe("normalizeIncomingLarkMessage", () => {
     ).toMatchObject({ larkThreadId: "om_1" });
   });
 
+  it("keeps group events as group while exposing a topic thread_id", () => {
+    expect(
+      normalizeIncomingLarkMessage(
+        receiveEvent({
+          message: {
+            chat_id: "oc_group",
+            chat_type: "group",
+            thread_id: "omt_topic"
+          }
+        })
+      )
+    ).toMatchObject({
+      chatId: "oc_group",
+      chatType: "group",
+      larkThreadId: "omt_topic"
+    });
+  });
+
+  it("exposes thread ids even when they arrive on p2p messages", () => {
+    expect(
+      normalizeIncomingLarkMessage(
+        receiveEvent({
+          message: {
+            chat_type: "p2p",
+            thread_id: "omt_dm"
+          }
+        })
+      )
+    ).toMatchObject({
+      chatId: "ou_user",
+      chatType: "p2p",
+      larkThreadId: "omt_dm"
+    });
+  });
+
   it("ignores unsupported chat and bot-self messages", () => {
     expect(normalizeIncomingLarkMessageWithReason(receiveEvent({ message: { chat_type: "meeting" } }))).toMatchObject({
       kind: "ignored",

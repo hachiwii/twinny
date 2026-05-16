@@ -140,7 +140,7 @@ export function normalizeIncomingLarkMessageWithReason(
       senderOpenId,
       senderName,
       larkGroupId: chatType === "p2p" ? undefined : chatId,
-      larkThreadId: chatType === "topic_group" ? larkThreadIdForMessage(message, messageId) : undefined,
+      larkThreadId: larkThreadIdForMessage(message, messageId, chatType),
       mentions: normalizeMentions(message.mentions),
       resources: resources.length > 0 ? resources : undefined,
       rawForCodex: rawForCodex ? true : undefined,
@@ -511,11 +511,19 @@ function normalizeChatType(chatType: string | undefined): "p2p" | "group" | "top
   }
 }
 
-function larkThreadIdForMessage(message: Record<string, unknown>, messageId: string): string {
-  return (
-    firstStringValue(message.thread_id, message.root_id, message.parent_id, messageId) ??
-    messageId
-  );
+function larkThreadIdForMessage(
+  message: Record<string, unknown>,
+  messageId: string,
+  chatType: "p2p" | "group" | "topic_group"
+): string | undefined {
+  const explicitThreadId = firstStringValue(message.thread_id);
+  if (explicitThreadId) {
+    return explicitThreadId;
+  }
+  if (chatType !== "topic_group") {
+    return undefined;
+  }
+  return firstStringValue(message.root_id, message.parent_id, messageId) ?? messageId;
 }
 
 function normalizeMentions(value: unknown): IncomingLarkMention[] | undefined {

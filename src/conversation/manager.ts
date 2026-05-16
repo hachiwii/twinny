@@ -33,7 +33,8 @@ import type {
   NewConversationRecord,
   RoleName,
   CodexThreadRecord,
-  TwinnyConfig
+  TwinnyConfig,
+  LarkChatMode
 } from "../types.js";
 import { SerialQueue } from "./queue.js";
 import { conversationKeyForChat, conversationKeyForP2p, conversationTypeForChat, isGroupConversationType, roleForSender } from "./routing.js";
@@ -53,7 +54,7 @@ export interface ConversationRepository {
   ): Promise<ConversationRecord> | ConversationRecord;
   updateConversationSettings(
     conversationKey: string,
-    update: { name?: string; responseMode?: ConversationResponseMode }
+    update: { name?: string; chatMode?: LarkChatMode; responseMode?: ConversationResponseMode }
   ): Promise<ConversationRecord> | ConversationRecord;
   markThreadHasRollout(conversationKey: string, codexThreadId: string): Promise<void> | void;
   getCodexThreadById(codexThreadId: string): Promise<CodexThreadRecord | undefined> | CodexThreadRecord | undefined;
@@ -122,7 +123,8 @@ export interface LarkUserDirectory {
 }
 
 export interface LarkChatDirectory {
-  getChatName(chatId: string): Promise<string | undefined>;
+  getChatInfo?(chatId: string): Promise<{ name?: string; chatMode?: LarkChatMode } | undefined>;
+  getChatName?(chatId: string): Promise<string | undefined>;
 }
 
 export interface LarkFileDownloader {
@@ -946,10 +948,11 @@ export class ConversationManager {
     }
 
     const role = parsed.role ?? existing?.role ?? "guest";
-    const name = await this.resolveGroupName(message, existing);
+    const groupInfo = await this.resolveGroupInfo(message, existing);
     if (existing) {
       await this.options.repository.updateConversationSettings(context.conversationKey, {
-        name,
+        name: groupInfo.name,
+        chatMode: groupInfo.chatMode,
         responseMode: parsed.responseMode
       });
     } else {
@@ -963,7 +966,8 @@ export class ConversationManager {
         conversationKey: context.conversationKey,
         type: context.type,
         chatId: message.chatId,
-        name,
+        name: groupInfo.name,
+        chatMode: groupInfo.chatMode,
         responseMode: parsed.responseMode,
         role,
         codexThreadId: thread.threadId,
@@ -981,21 +985,42 @@ export class ConversationManager {
     await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
     await this.replyControlBestEffort(
       message.messageId,
-      `已激活群聊：${name}\n响应模式：${parsed.responseMode}\nRole：${role}`
+      `已激活群聊：${groupInfo.name}\n响应模式：${parsed.responseMode}\nRole：${role}`
     );
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
-  private async resolveGroupName(message: IncomingLarkMessage, existing?: ConversationRecord | null): Promise<string> {
-    try {
-      const resolved = nonEmptyString(await this.options.larkChats?.getChatName(message.chatId));
-      if (resolved) {
-        return resolved;
+  private async resolveGroupInfo(
+    message: IncomingLarkMessage,
+    existing?: ConversationRecord | null
+  ): Promise<{ name: string; chatMode?: LarkChatMode }> {
+    let resolvedChatMode: LarkChatMode | undefined;
+    if (this.options.larkChats?.getChatInfo) {
+      try {
+        const info = await this.options.larkChats.getChatInfo(message.chatId);
+        resolvedChatMode = info?.chatMode;
+        const resolvedName = nonEmptyString(info?.name);
+        if (resolvedName) {
+          return { name: resolvedName, chatMode: resolvedChatMode ?? existing?.chatMode };
+        }
+      } catch (error) {
+        this.log.warn({ error, chatId: message.chatId }, "failed to resolve lark chat info");
       }
-    } catch (error) {
-      this.log.warn({ error, chatId: message.chatId }, "failed to resolve lark chat name");
+    } else {
+      try {
+        const resolved = nonEmptyString(await this.options.larkChats?.getChatName?.(message.chatId));
+        if (resolved) {
+          return { name: resolved, chatMode: existing?.chatMode };
+        }
+      } catch (error) {
+        this.log.warn({ error, chatId: message.chatId }, "failed to resolve lark chat name");
+      }
     }
-    return nonEmptyString(message.chatName) ?? nonEmptyString(existing?.name) ?? message.chatId;
+
+    return {
+      name: nonEmptyString(message.chatName) ?? nonEmptyString(existing?.name) ?? message.chatId,
+      chatMode: resolvedChatMode ?? existing?.chatMode
+    };
   }
 
   private async handleDeactivateCommand(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
@@ -2909,7 +2934,7 @@ function parseActivateCommand(
 
 function createMessageContext(type: ConversationType, message: IncomingLarkMessage): MessageContext {
   const conversationKey = conversationKeyForChat(type, message);
-  const larkThreadId = type === "topic_group" ? (message.larkThreadId ?? message.messageId) : undefined;
+  const larkThreadId = message.larkThreadId;
   return {
     type,
     conversationKey,
@@ -2944,11 +2969,7 @@ function messageForBotMenuAction(action: IncomingLarkBotMenuAction): IncomingLar
 
 function contextForRecoveredRecord(record: LarkMessageRecord): MessageContext {
   const conversationKey = record.conversationKey ?? conversationKeyForP2p(record.larkUserId);
-  const type: ConversationType = record.larkThreadId
-    ? "topic_group"
-    : conversationKey.startsWith("group:")
-      ? "group"
-      : "p2p";
+  const type: ConversationType = conversationKey.startsWith("group:") ? "group" : "p2p";
   return {
     type,
     conversationKey,

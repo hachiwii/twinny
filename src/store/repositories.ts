@@ -8,6 +8,7 @@ import type {
   ConversationResponseMode,
   ConversationRecord,
   ConversationType,
+  LarkChatMode,
   LarkMessageRecord,
   LarkMessageRouteKind,
   LarkMessageStatus,
@@ -22,6 +23,7 @@ interface ConversationRow {
   type: ConversationType;
   chat_id: string;
   name: string;
+  chat_mode: LarkChatMode | null;
   response_mode: ConversationResponseMode;
   role: RoleName;
   codex_thread_id: string;
@@ -37,6 +39,7 @@ interface InsertConversationParams {
   type: ConversationType;
   chatId: string;
   name: string;
+  chatMode: LarkChatMode | null;
   responseMode: ConversationResponseMode;
   role: RoleName;
   codexThreadId: string;
@@ -134,6 +137,7 @@ export interface UpdateConversationThreadBinding {
 
 export interface UpdateConversationSettingsInput {
   name?: string;
+  chatMode?: LarkChatMode;
   responseMode?: ConversationResponseMode;
 }
 
@@ -149,7 +153,7 @@ export class ConversationRepository {
   private readonly selectByTypeAndChatId: Database.Statement<[ConversationType, string], ConversationRow>;
   private readonly selectByCodexThreadId: Database.Statement<[string], ConversationRow>;
   private readonly selectAll: Database.Statement<[], ConversationRow>;
-  private readonly updateSettings: Database.Statement<[string, string, number, string]>;
+  private readonly updateSettings: Database.Statement<[string, string | null, string, number, string]>;
   private readonly updateThread: Database.Statement<[
     string,
     0 | 1,
@@ -205,6 +209,7 @@ export class ConversationRepository {
         type,
         chat_id,
         name,
+        chat_mode,
         response_mode,
         role,
         codex_thread_id,
@@ -218,6 +223,7 @@ export class ConversationRepository {
         @type,
         @chatId,
         @name,
+        @chatMode,
         @responseMode,
         @role,
         @codexThreadId,
@@ -243,6 +249,7 @@ export class ConversationRepository {
     this.updateSettings = this.db.prepare(`
       UPDATE conversations
       SET name = ?,
+          chat_mode = ?,
           response_mode = ?,
           updated_at = ?
       WHERE conversation_key = ?
@@ -554,6 +561,9 @@ export class ConversationRepository {
     if (update.name !== undefined) {
       assertNonEmpty(update.name, "name");
     }
+    if (update.chatMode !== undefined) {
+      assertValidLarkChatMode(update.chatMode);
+    }
     if (update.responseMode !== undefined) {
       assertValidResponseMode(update.responseMode);
     }
@@ -561,8 +571,9 @@ export class ConversationRepository {
     const updateSettings = this.db.transaction(() => {
       const existing = this.requireByConversationKey(conversationKey);
       const name = update.name ?? existing.name;
+      const chatMode = update.chatMode ?? existing.chatMode ?? null;
       const responseMode = update.responseMode ?? existing.responseMode;
-      this.updateSettings.run(name, responseMode, this.now(), conversationKey);
+      this.updateSettings.run(name, chatMode, responseMode, this.now(), conversationKey);
       return this.requireByConversationKey(conversationKey);
     });
 
@@ -807,6 +818,7 @@ export class ConversationRepository {
       type: input.type,
       chatId: input.chatId,
       name: input.name,
+      chatMode: input.chatMode ?? null,
       responseMode: input.responseMode ?? (input.type === "p2p" ? "all" : "none"),
       role: input.role,
       codexThreadId: input.codexThreadId,
@@ -881,6 +893,7 @@ function mapRequiredConversationRow(row: ConversationRow): ConversationRecord {
     type: row.type,
     chatId: row.chat_id,
     name: row.name,
+    chatMode: row.chat_mode ?? undefined,
     responseMode: row.response_mode,
     role: row.role,
     codexThreadId: row.codex_thread_id,
@@ -946,6 +959,9 @@ function mapRequiredLarkMessageRow(row: LarkMessageRow): LarkMessageRecord {
 function validateNewConversation(input: NewConversationRecord): void {
   assertExpectedConversationKey(input.conversationKey, input.type, input.chatId);
   assertNonEmpty(input.name, "name");
+  if (input.chatMode !== undefined) {
+    assertValidLarkChatMode(input.chatMode);
+  }
   if (input.responseMode !== undefined) {
     assertValidResponseMode(input.responseMode);
   }
@@ -1027,6 +1043,12 @@ function assertValidConversationType(type: ConversationType): void {
 function assertValidResponseMode(responseMode: ConversationResponseMode): void {
   if (responseMode !== "all" && responseMode !== "at" && responseMode !== "none") {
     throw new TwinnyError(`Unsupported conversation response mode: ${responseMode}`, "CONVERSATION_RESPONSE_MODE_INVALID");
+  }
+}
+
+function assertValidLarkChatMode(chatMode: LarkChatMode): void {
+  if (chatMode !== "group" && chatMode !== "topic") {
+    throw new TwinnyError(`Unsupported Lark chat mode: ${chatMode}`, "LARK_CHAT_MODE_INVALID");
   }
 }
 

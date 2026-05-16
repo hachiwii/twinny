@@ -27,7 +27,27 @@ describe("LarkUserDirectory", () => {
 });
 
 describe("LarkChatDirectory", () => {
-  it("fetches a group's name by chat id", async () => {
+  it("fetches a group's name and chat mode by chat id", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { name: "工程群", chat_mode: "topic" } }
+    ]);
+    const directory = new LarkChatDirectory({ openApiClient: createOpenApiClient(fetch) });
+
+    await expect(directory.getChatInfo("oc_group")).resolves.toEqual({ name: "工程群", chatMode: "topic" });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/chats/oc_group?user_id_type=open_id", {
+      method: "GET",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: undefined,
+      signal: undefined
+    });
+  });
+
+  it("keeps getChatName as a compatibility wrapper", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
       { code: 0, data: { chat: { name: "工程群" } } }

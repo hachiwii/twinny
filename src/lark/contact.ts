@@ -1,7 +1,13 @@
 import { LarkOpenApiClient } from "./openapi.js";
+import type { LarkChatMode } from "../types.js";
 
 export interface LarkUserDirectoryOptions {
   openApiClient: LarkOpenApiClient;
+}
+
+export interface LarkChatInfo {
+  name?: string;
+  chatMode?: LarkChatMode;
 }
 
 export class LarkUserDirectory {
@@ -21,14 +27,18 @@ export class LarkUserDirectory {
 export class LarkChatDirectory {
   constructor(private readonly options: LarkUserDirectoryOptions) {}
 
-  async getChatName(chatId: string): Promise<string | undefined> {
+  async getChatInfo(chatId: string): Promise<LarkChatInfo> {
     const raw = await this.options.openApiClient.request(`/im/v1/chats/${encodePathSegment(chatId)}`, {
       method: "GET",
       query: {
         user_id_type: "open_id"
       }
     });
-    return extractChatName(raw);
+    return extractChatInfo(raw);
+  }
+
+  async getChatName(chatId: string): Promise<string | undefined> {
+    return (await this.getChatInfo(chatId)).name;
   }
 }
 
@@ -49,10 +59,20 @@ function extractUserName(raw: unknown): string | undefined {
   return firstNonEmptyString(user.name, user.en_name, user.nickname);
 }
 
-function extractChatName(raw: unknown): string | undefined {
+function extractChatInfo(raw: unknown): LarkChatInfo {
   const data = getRecord(raw, "data");
   const chat = getRecord(data, "chat");
-  return firstNonEmptyString(chat.name, chat.chat_name, chat.title);
+  return {
+    name: firstNonEmptyString(chat.name, chat.chat_name, chat.title, data.name, data.chat_name, data.title),
+    chatMode: normalizeLarkChatMode(firstNonEmptyString(chat.chat_mode, data.chat_mode))
+  };
+}
+
+function normalizeLarkChatMode(value: string | undefined): LarkChatMode | undefined {
+  if (value === "group" || value === "topic") {
+    return value;
+  }
+  return undefined;
 }
 
 function extractBotOpenId(raw: unknown): string | undefined {
