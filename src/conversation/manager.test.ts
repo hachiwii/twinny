@@ -305,6 +305,32 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenCalledTimes(1);
   });
 
+  it("ignores message ids already persisted in the local message table", async () => {
+    const codex = createCodex();
+    const { repository } = createRepository(undefined, { larkMessageIds: ["m1"] });
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(async ({ outputDir }) => ({
+        path: `${outputDir}/report.txt`,
+        resourceType: "file" as const,
+        fileKey: "file_1"
+      }))
+    };
+    const manager = createManager({ repository, codex, larkFiles });
+
+    manager.submitIncoming(
+      message("m1", "duplicate", {
+        messageType: "file",
+        resources: [{ resourceType: "file", fileKey: "file_1" }]
+      })
+    );
+    await waitForDelay();
+
+    expect(repository.getLarkMessageById).toHaveBeenCalledWith("m1");
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(larkFiles.downloadMessageResource).not.toHaveBeenCalled();
+    expect(repository.insertLarkMessage).not.toHaveBeenCalled();
+  });
+
   it("wraps Lark metadata and raw text before submitting to Codex", async () => {
     const codex = createCodex();
     const larkUsers: LarkUserDirectory = {
@@ -647,12 +673,14 @@ function createLarkResponder(): LarkResponder {
 
 function createRepository(initial?: ConversationRecord, options: {
   users?: Array<{ larkUserId: string; name?: string; role?: "owner" | "guest" }>;
+  larkMessageIds?: string[];
 } = {}): {
   repository: ConversationRepository;
   row: ConversationRecord | undefined;
 } {
   let row = initial;
   const users = new Map<string, UserRecord>();
+  const larkMessageIds = new Set(options.larkMessageIds ?? []);
   for (const user of options.users ?? []) {
     users.set(user.larkUserId, {
       id: users.size + 1,
@@ -671,6 +699,9 @@ function createRepository(initial?: ConversationRecord, options: {
     repository: {
       findByConversationKey: () => row ?? null,
       getUserByLarkUserId: (larkUserId) => users.get(larkUserId),
+      getLarkMessageById: vi.fn((larkMessageId) =>
+        larkMessageIds.has(larkMessageId) ? { larkMessageId } : undefined
+      ),
       create: (record) => {
         row = {
           id: 1,

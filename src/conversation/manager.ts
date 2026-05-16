@@ -33,6 +33,7 @@ export interface ConversationRepository {
   ): Promise<ConversationRecord> | ConversationRecord;
   markThreadHasRollout(conversationKey: string, codexThreadId: string): Promise<void> | void;
   getUserByLarkUserId(larkUserId: string): Promise<UserRecord | undefined> | UserRecord | undefined;
+  getLarkMessageById(larkMessageId: string): Promise<unknown | undefined> | unknown | undefined;
   upsertUser(input: {
     larkUserId: string;
     name?: string;
@@ -321,6 +322,9 @@ export class ConversationManager {
 
     state.processingMessage = message;
     try {
+      if (await this.isPersistedDuplicateMessage(message.messageId)) {
+        return;
+      }
       await this.routeMessage(state, conversationKey, message);
     } catch (error) {
       await this.markMessagesFailedBestEffort([message.messageId]);
@@ -339,6 +343,15 @@ export class ConversationManager {
       return;
     }
     await this.replyErrorBestEffort(message.messageId, error);
+  }
+
+  private async isPersistedDuplicateMessage(larkMessageId: string): Promise<boolean> {
+    const existing = await this.options.repository.getLarkMessageById(larkMessageId);
+    if (!existing) {
+      return false;
+    }
+    this.log.debug({ messageId: larkMessageId }, "persisted duplicate lark message ignored");
+    return true;
   }
 
   private async routeMessage(

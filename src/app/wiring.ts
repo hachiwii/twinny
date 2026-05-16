@@ -214,6 +214,7 @@ function adaptConversationRepository(repository: ConversationRepository) {
     updateThreadBinding: repository.updateThreadBinding.bind(repository),
     markThreadHasRollout: repository.markThreadHasRollout.bind(repository),
     getUserByLarkUserId: repository.getUserByLarkUserId.bind(repository),
+    getLarkMessageById: repository.getLarkMessageById.bind(repository),
     upsertUser: repository.upsertUser.bind(repository),
     upsertCodexThread: repository.upsertCodexThread.bind(repository),
     updateCodexThreadTokenUsage: repository.updateCodexThreadTokenUsage.bind(repository),
