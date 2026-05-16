@@ -783,6 +783,24 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_new", "turn_2"));
   });
 
+  it("rejects /new inside Lark thread contexts", async () => {
+    const row = groupConversationRecord({ responseMode: "all", codexThreadId: "thread_group" });
+    const { repository } = createRepository(row);
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("t_new", "/new", { larkThreadId: "topic_a" }));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith("t_new", "不能在话题内创建新的 Thread。")
+    );
+    expect(codex.startThread).not.toHaveBeenCalled();
+    expect(codex.interruptTurn).not.toHaveBeenCalled();
+    expect(repository.replaceCodexThreadForLarkThread).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["t_new"]);
+  });
+
   it("ignores unactivated group messages and only replies to bot mentions with an authorization hint", async () => {
     const { repository } = createRepository();
     const codex = createCodex();

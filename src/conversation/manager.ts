@@ -1362,6 +1362,12 @@ export class ConversationManager {
     context: MessageContext,
     message: IncomingLarkMessage
   ): Promise<void> {
+    if (context.larkThreadId) {
+      await this.replyControlBestEffort(message.messageId, "不能在话题内创建新的 Thread。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
     const threadId = await this.openNewThreadForMessage(state, context, message);
     await this.replyControlBestEffort(message.messageId, `已新开 Codex thread：${threadId}`);
     await this.markMessagesCompletedBestEffort([message.messageId]);
