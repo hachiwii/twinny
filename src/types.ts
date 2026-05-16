@@ -8,6 +8,7 @@ export type LarkMessageRouteKind = "message" | "steered_message" | "queued_messa
 
 export type LarkMessageStatus =
   | "queued"
+  | "recalled"
   | "processing"
   | "steered"
   | "completed"
@@ -160,6 +161,26 @@ export interface IncomingLarkMention {
   userId?: string;
   unionId?: string;
   name?: string;
+}
+
+export interface IncomingLarkMessageRecall {
+  eventId: string;
+  messageId: string;
+  chatId?: string;
+  recallTime?: number;
+  raw: unknown;
+}
+
+export interface IncomingLarkMessageEdit {
+  eventId: string;
+  messageId: string;
+  chatId?: string;
+  messageType: string;
+  resources?: IncomingLarkMessageResource[];
+  rawForCodex?: boolean;
+  text: string;
+  editTime?: number;
+  raw: unknown;
 }
 
 export interface IncomingLarkMessageResource {

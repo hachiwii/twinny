@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { normalizeIncomingLarkMessage, normalizeIncomingLarkMessageWithReason, normalizeTextContent } from "./filters.js";
+import {
+  normalizeIncomingLarkMessage,
+  normalizeIncomingLarkMessageWithReason,
+  normalizeLarkMessageEditWithReason,
+  normalizeLarkMessageRecallWithReason,
+  normalizeTextContent
+} from "./filters.js";
 
 describe("normalizeTextContent", () => {
   it("accepts raw text and JSON text payloads", () => {
@@ -243,6 +249,59 @@ describe("normalizeIncomingLarkMessage", () => {
     expect(normalizeIncomingLarkMessageWithReason(receiveEvent(), { botOpenId: "ou_user" })).toMatchObject({
       kind: "ignored",
       reason: "bot_self_message"
+    });
+  });
+});
+
+describe("normalizeLarkMessageRecallWithReason", () => {
+  it("normalizes v2 recalled message events", () => {
+    expect(
+      normalizeLarkMessageRecallWithReason({
+        header: { event_id: "event-recall" },
+        event: {
+          message_id: "om_1",
+          chat_id: "oc_1",
+          recall_time: "1615380573411"
+        }
+      })
+    ).toEqual({
+      kind: "recall",
+      recall: {
+        eventId: "event-recall",
+        messageId: "om_1",
+        chatId: "oc_1",
+        recallTime: 1615380573411,
+        raw: expect.anything()
+      }
+    });
+  });
+});
+
+describe("normalizeLarkMessageEditWithReason", () => {
+  it("normalizes v2 edited message events", () => {
+    const result = normalizeLarkMessageEditWithReason({
+      header: { event_id: "event-edit" },
+      event: {
+        message: {
+          message_id: "om_1",
+          chat_id: "oc_1",
+          message_type: "text",
+          content: JSON.stringify({ text: "/queue edited" })
+        },
+        updated_time: "1615380573411"
+      }
+    });
+
+    expect(result).toMatchObject({
+      kind: "edit",
+      edit: {
+        eventId: "event-edit",
+        messageId: "om_1",
+        chatId: "oc_1",
+        messageType: "text",
+        text: "/queue edited",
+        editTime: 1615380573411
+      }
     });
   });
 });

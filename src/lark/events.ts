@@ -1,8 +1,20 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS } from "../types.js";
 import { TenantAccessTokenManager } from "./auth.js";
-import { normalizeIncomingLarkMessageWithReason } from "./filters.js";
-import { LARK_MESSAGE_RECEIVE_EVENT, type IncomingLarkMessage, type LarkLogger } from "./types.js";
+import {
+  normalizeIncomingLarkMessageWithReason,
+  normalizeLarkMessageEditWithReason,
+  normalizeLarkMessageRecallWithReason
+} from "./filters.js";
+import {
+  LARK_MESSAGE_RECEIVE_EVENT,
+  LARK_MESSAGE_RECALLED_EVENT,
+  LARK_MESSAGE_UPDATED_EVENT,
+  type IncomingLarkMessage,
+  type IncomingLarkMessageEdit,
+  type IncomingLarkMessageRecall,
+  type LarkLogger
+} from "./types.js";
 
 export interface EventDispatcherLike {
   register(handles: Record<string, (data: unknown) => unknown>): EventDispatcherLike;
@@ -26,6 +38,8 @@ export interface LarkEventConsumerOptions {
   maxMessageAgeMs?: number;
   now?: () => number;
   onMessage: (message: IncomingLarkMessage) => Promise<void> | void;
+  onMessageEdit?: (edit: IncomingLarkMessageEdit) => Promise<void> | void;
+  onMessageRecall?: (recall: IncomingLarkMessageRecall) => Promise<void> | void;
   onIgnored?: (reason: string, raw: unknown) => void;
   wsClientFactory?: (options: LarkEventConsumerWsFactoryOptions) => WsClientLike;
   eventDispatcherFactory?: () => EventDispatcherLike;
@@ -95,6 +109,30 @@ export class LarkEventConsumer {
           return;
         }
         await this.options.onMessage(result.message);
+      },
+      [LARK_MESSAGE_UPDATED_EVENT]: async (data: unknown) => {
+        if (!this.options.onMessageEdit) {
+          return;
+        }
+        const result = normalizeLarkMessageEditWithReason(data);
+        if (result.kind === "ignored") {
+          this.options.onIgnored?.(result.reason, result.raw);
+          this.options.logger?.debug?.({ reason: result.reason }, "ignored Lark message update event");
+          return;
+        }
+        await this.options.onMessageEdit(result.edit);
+      },
+      [LARK_MESSAGE_RECALLED_EVENT]: async (data: unknown) => {
+        if (!this.options.onMessageRecall) {
+          return;
+        }
+        const result = normalizeLarkMessageRecallWithReason(data);
+        if (result.kind === "ignored") {
+          this.options.onIgnored?.(result.reason, result.raw);
+          this.options.logger?.debug?.({ reason: result.reason }, "ignored Lark message recall event");
+          return;
+        }
+        await this.options.onMessageRecall(result.recall);
       }
     });
 

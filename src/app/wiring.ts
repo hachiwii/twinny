@@ -120,6 +120,12 @@ export class TwinnyRuntime {
       onMessage: (message) => {
         conversation.submitIncoming(message);
       },
+      onMessageEdit: (edit) => {
+        conversation.submitMessageEdit(edit);
+      },
+      onMessageRecall: (recall) => {
+        conversation.submitMessageRecall(recall);
+      },
       onIgnored: (reason) => this.log.debug({ reason }, "lark event ignored")
     });
     await this.larkConsumer.start();
@@ -235,6 +241,8 @@ function adaptConversationRepository(repository: ConversationRepository) {
     updateCodexThreadTokenUsage: repository.updateCodexThreadTokenUsage.bind(repository),
     insertLarkMessage: repository.insertLarkMessage.bind(repository),
     markLarkMessageQueued: repository.markLarkMessageQueued.bind(repository),
+    markLarkMessageRecalled: repository.markLarkMessageRecalled.bind(repository),
+    updateQueuedLarkMessage: repository.updateQueuedLarkMessage.bind(repository),
     markLarkMessagesProcessing: repository.markLarkMessagesProcessing.bind(repository),
     markLarkMessagesSteered: repository.markLarkMessagesSteered.bind(repository),
     markLarkMessagesCompleted: repository.markLarkMessagesCompleted.bind(repository),

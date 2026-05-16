@@ -226,6 +226,106 @@ describe("ConversationManager", () => {
     turns[3]!.resolve(completed("thread_1", "turn_4"));
   });
 
+  it("removes recalled queued messages from memory and marks them recalled", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue queued"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
+    await waitForExpect(() => expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
+      larkMessageId: "m2",
+      status: "queued"
+    })));
+
+    manager.submitMessageRecall({ eventId: "recall_1", messageId: "m2", raw: {} });
+
+    await waitForExpect(() => expect(repository.markLarkMessageRecalled).toHaveBeenCalledWith("m2"));
+    expect(manager.queueDepth("p2p:ou_guest")).toBe(0);
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForDelay();
+    expect(codex.startTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("updates edited queued messages in memory and persisted raw message JSON", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue old", { raw: rawReceiveEvent("m2", "/queue old") }));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
+    await waitForExpect(() => expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
+      larkMessageId: "m2",
+      status: "queued"
+    })));
+
+    manager.submitMessageEdit({
+      eventId: "edit_1",
+      messageId: "m2",
+      messageType: "text",
+      text: "/queue edited",
+      raw: {
+        header: { event_id: "edit_1" },
+        event: {
+          message: {
+            message_id: "m2",
+            message_type: "text",
+            content: JSON.stringify({ text: "/queue edited" })
+          }
+        }
+      }
+    });
+
+    await waitForExpect(() =>
+      expect(repository.updateQueuedLarkMessage).toHaveBeenCalledWith(
+        "m2",
+        expect.objectContaining({
+          text: "edited",
+          rawEventJson: JSON.stringify(rawReceiveEvent("m2", "/queue edited"))
+        })
+      )
+    );
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ input: wrappedMessage("edited", "m2") })
+    );
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("ignores recall and edit notifications for non-queued messages", async () => {
+    const { repository } = createRepository();
+    const codex = createCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
+      larkMessageId: "m1",
+      status: "processing"
+    })));
+
+    manager.submitMessageRecall({ eventId: "recall_1", messageId: "m1", raw: {} });
+    manager.submitMessageEdit({
+      eventId: "edit_1",
+      messageId: "m1",
+      messageType: "text",
+      text: "edited",
+      raw: {}
+    });
+
+    await waitForDelay();
+    expect(repository.markLarkMessageRecalled).not.toHaveBeenCalled();
+    expect(repository.updateQueuedLarkMessage).not.toHaveBeenCalled();
+  });
+
   it("records queued messages as cleared when /stop drains the pending batch", async () => {
     const { repository } = createRepository();
     const { codex } = createDeferredCodex();
@@ -1594,8 +1694,46 @@ function createRepository(initial?: ConversationRecord, options: {
       upsertCodexThread: vi.fn(putCodexThread),
       replaceCodexThreadForLarkThread: vi.fn(replaceCodexThreadForLarkThread),
       updateCodexThreadTokenUsage: vi.fn(),
-      insertLarkMessage: vi.fn(),
+      insertLarkMessage: vi.fn((input) => {
+        const record = larkMessageRecord({
+          larkMessageId: input.larkMessageId,
+          eventId: input.eventId,
+          larkUserId: input.larkUserId,
+          larkGroupId: input.larkGroupId,
+          larkThreadId: input.larkThreadId,
+          conversationKey: input.conversationKey,
+          codexThreadId: input.codexThreadId,
+          codexTurnId: input.codexTurnId,
+          routeKind: input.routeKind,
+          status: input.status,
+          text: input.text,
+          larkCreateTime: input.larkCreateTime,
+          rawEventJson: input.rawEventJson
+        });
+        larkMessageIds.add(input.larkMessageId);
+        larkMessages.set(input.larkMessageId, record);
+        return record;
+      }),
       markLarkMessageQueued: vi.fn(),
+      markLarkMessageRecalled: vi.fn((larkMessageId) => {
+        const existing = larkMessages.get(larkMessageId);
+        if (!existing || existing.status !== "queued") {
+          return false;
+        }
+        existing.status = "recalled";
+        existing.updatedAt = Date.now();
+        return true;
+      }),
+      updateQueuedLarkMessage: vi.fn((larkMessageId, update) => {
+        const existing = larkMessages.get(larkMessageId);
+        if (!existing || existing.status !== "queued") {
+          return false;
+        }
+        existing.text = update.text;
+        existing.rawEventJson = update.rawEventJson ?? existing.rawEventJson;
+        existing.updatedAt = Date.now();
+        return true;
+      }),
       markLarkMessagesProcessing: vi.fn(),
       markLarkMessagesSteered: vi.fn(),
       markLarkMessagesCompleted: vi.fn(),

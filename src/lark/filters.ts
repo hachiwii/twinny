@@ -1,4 +1,10 @@
-import type { IncomingLarkMention, IncomingLarkMessage, IncomingLarkMessageResource } from "../types.js";
+import type {
+  IncomingLarkMention,
+  IncomingLarkMessage,
+  IncomingLarkMessageEdit,
+  IncomingLarkMessageRecall,
+  IncomingLarkMessageResource
+} from "../types.js";
 
 export interface RawLarkMessageReceiveEvent {
   event_id?: string;
@@ -38,6 +44,8 @@ export type LarkMessageIgnoreReason =
   | "unsupported_chat_type"
   | "missing_message_id";
 
+export type LarkMessageChangeIgnoreReason = "malformed_event" | "missing_message_id";
+
 export interface NormalizeLarkMessageOptions {
   botOpenId?: string;
 }
@@ -45,6 +53,14 @@ export interface NormalizeLarkMessageOptions {
 export type NormalizeLarkMessageResult =
   | { kind: "message"; message: IncomingLarkMessage }
   | { kind: "ignored"; reason: LarkMessageIgnoreReason; raw: unknown };
+
+export type NormalizeLarkMessageRecallResult =
+  | { kind: "recall"; recall: IncomingLarkMessageRecall }
+  | { kind: "ignored"; reason: LarkMessageChangeIgnoreReason; raw: unknown };
+
+export type NormalizeLarkMessageEditResult =
+  | { kind: "edit"; edit: IncomingLarkMessageEdit }
+  | { kind: "ignored"; reason: LarkMessageChangeIgnoreReason; raw: unknown };
 
 export function normalizeIncomingLarkMessage(
   raw: unknown,
@@ -124,6 +140,76 @@ export function normalizeIncomingLarkMessageWithReason(
       rawForCodex: rawForCodex ? true : undefined,
       text,
       createTime: parseEpochMs(message.create_time ?? event.create_time),
+      raw
+    }
+  };
+}
+
+export function normalizeLarkMessageRecallWithReason(raw: unknown): NormalizeLarkMessageRecallResult {
+  if (!isRecord(raw)) {
+    return ignoredMessageChange("malformed_event", raw);
+  }
+
+  const header = eventHeader(raw);
+  const event = eventPayload(raw);
+  const messageId = stringValue(event.message_id);
+  if (!messageId) {
+    return ignoredMessageChange("missing_message_id", raw);
+  }
+
+  return {
+    kind: "recall",
+    recall: {
+      eventId: firstStringValue(header.event_id, raw.event_id, raw.uuid, messageId) ?? messageId,
+      messageId,
+      chatId: stringValue(event.chat_id) ?? chatIdFromChatInfo(event.chat_info),
+      recallTime: parseEpochMs(event.recall_time),
+      raw
+    }
+  };
+}
+
+export function normalizeLarkMessageEditWithReason(raw: unknown): NormalizeLarkMessageEditResult {
+  if (!isRecord(raw)) {
+    return ignoredMessageChange("malformed_event", raw);
+  }
+
+  const header = eventHeader(raw);
+  const event = eventPayload(raw);
+  const message = isRecord(event.message) ? event.message : event;
+  const messageId = stringValue(message.message_id) ?? stringValue(event.message_id);
+  if (!messageId) {
+    return ignoredMessageChange("missing_message_id", raw);
+  }
+
+  const messageType = stringValue(message.message_type) ?? stringValue(event.message_type) ?? "unknown";
+  const content = message.content ?? event.content;
+  const normalized = normalizeMessageContent(messageType, content);
+  const resources = normalized.resources;
+  const shouldUseRaw = normalized.text === null || (normalized.text.length === 0 && resources.length === 0);
+  const text = shouldUseRaw ? stringifyRawMessage(message) : (normalized.text ?? "");
+  const rawForCodex = normalized.rawForCodex || shouldUseRaw;
+
+  return {
+    kind: "edit",
+    edit: {
+      eventId: firstStringValue(header.event_id, raw.event_id, raw.uuid, stringValue(event.event_id), messageId) ?? messageId,
+      messageId,
+      chatId: stringValue(message.chat_id) ?? stringValue(event.chat_id) ?? chatIdFromChatInfo(event.chat_info),
+      messageType,
+      resources: resources.length > 0 ? resources : undefined,
+      rawForCodex: rawForCodex ? true : undefined,
+      text,
+      editTime: parseEpochMs(
+        message.update_time ??
+          message.updated_time ??
+          message.edit_time ??
+          event.update_time ??
+          event.updated_time ??
+          event.edit_time ??
+          header.create_time ??
+          raw.create_time
+      ),
       raw
     }
   };
@@ -473,6 +559,28 @@ function parseEpochMs(value: unknown): number | undefined {
 
 function ignored(reason: LarkMessageIgnoreReason, raw: unknown): NormalizeLarkMessageResult {
   return { kind: "ignored", reason, raw };
+}
+
+function ignoredMessageChange(
+  reason: LarkMessageChangeIgnoreReason,
+  raw: unknown
+): { kind: "ignored"; reason: LarkMessageChangeIgnoreReason; raw: unknown } {
+  return { kind: "ignored", reason, raw };
+}
+
+function eventPayload(raw: Record<string, unknown>): Record<string, unknown> {
+  return isRecord(raw.event) ? raw.event : raw;
+}
+
+function eventHeader(raw: Record<string, unknown>): Record<string, unknown> {
+  return isRecord(raw.header) ? raw.header : {};
+}
+
+function chatIdFromChatInfo(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return stringValue(value.chat_id);
 }
 
 function stringValue(value: unknown): string | undefined {

@@ -1,6 +1,13 @@
-import type { IncomingLarkMessage, LarkReactionHandle } from "../types.js";
+import type {
+  IncomingLarkMessage,
+  IncomingLarkMessageEdit,
+  IncomingLarkMessageRecall,
+  LarkReactionHandle
+} from "../types.js";
 
 export const LARK_MESSAGE_RECEIVE_EVENT = "im.message.receive_v1" as const;
+export const LARK_MESSAGE_RECALLED_EVENT = "im.message.recalled_v1" as const;
+export const LARK_MESSAGE_UPDATED_EVENT = "im.message.updated_v1" as const;
 
 export const LARK_REQUIRED_SCOPES = [
   "im:message.p2p_msg:readonly",
@@ -51,4 +58,4 @@ export interface LarkSendMessageResult {
   raw: unknown;
 }
 
-export type { IncomingLarkMessage, LarkReactionHandle };
+export type { IncomingLarkMessage, IncomingLarkMessageEdit, IncomingLarkMessageRecall, LarkReactionHandle };

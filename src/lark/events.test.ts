@@ -33,6 +33,11 @@ describe("LarkEventConsumer", () => {
     await registered["im.message.receive_v1"](receiveEvent({ message: { chat_id: "oc_group", chat_type: "group" } }));
     await registered["im.message.receive_v1"](receiveEvent({ message: { chat_type: "unsupported" } }));
 
+    expect(Object.keys(registered).sort()).toEqual([
+      "im.message.recalled_v1",
+      "im.message.receive_v1",
+      "im.message.updated_v1"
+    ]);
     expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "hello", chatId: "ou_user" }));
     expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "hello", chatId: "oc_group", chatType: "group" }));
     expect(onIgnored).toHaveBeenCalledWith("unsupported_chat_type", expect.anything());
@@ -41,6 +46,55 @@ describe("LarkEventConsumer", () => {
     await consumer.stop({ force: true });
     expect(wsClient.close).toHaveBeenCalledWith({ force: true });
     expect(consumer.isRunning).toBe(false);
+  });
+
+  it("forwards normalized message edit and recall events", async () => {
+    const registered: Record<string, (data: unknown) => unknown> = {};
+    const dispatcher: EventDispatcherLike = {
+      register(handles) {
+        Object.assign(registered, handles);
+        return this;
+      }
+    };
+    const wsClient: WsClientLike = {
+      start: vi.fn(),
+      close: vi.fn()
+    };
+    const onMessageEdit = vi.fn();
+    const onMessageRecall = vi.fn();
+    const consumer = new LarkEventConsumer({
+      appId: "cli_1234567890abcdef",
+      appSecret: "secret",
+      warmTenantToken: false,
+      onMessage: vi.fn(),
+      onMessageEdit,
+      onMessageRecall,
+      eventDispatcherFactory: () => dispatcher,
+      wsClientFactory: () => wsClient
+    });
+
+    await consumer.start();
+    await registered["im.message.updated_v1"]({
+      header: { event_id: "event-edit" },
+      event: {
+        message: {
+          message_id: "om_1",
+          message_type: "text",
+          content: JSON.stringify({ text: "edited" })
+        }
+      }
+    });
+    await registered["im.message.recalled_v1"]({
+      header: { event_id: "event-recall" },
+      event: {
+        message_id: "om_1",
+        chat_id: "oc_1",
+        recall_time: "1234"
+      }
+    });
+
+    expect(onMessageEdit).toHaveBeenCalledWith(expect.objectContaining({ messageId: "om_1", text: "edited" }));
+    expect(onMessageRecall).toHaveBeenCalledWith(expect.objectContaining({ messageId: "om_1", recallTime: 1234 }));
   });
 
   it("propagates onMessage errors so the websocket layer can respond with failure", async () => {

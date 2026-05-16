@@ -203,6 +203,15 @@ describe("ConversationRepository", () => {
       updatedAt: 1300
     });
 
+    now = 1350;
+    expect(repo.updateQueuedLarkMessage("om_1", { text: "edited", rawEventJson: '{"edited":true}' })).toBe(true);
+    expect(repo.getLarkMessageById("om_1")).toMatchObject({
+      status: "queued",
+      text: "edited",
+      rawEventJson: '{"edited":true}',
+      updatedAt: 1350
+    });
+
     now = 1400;
     repo.markLarkMessagesProcessing(["om_1"], {
       conversationKey: "p2p:ou_456",
@@ -237,6 +246,25 @@ describe("ConversationRepository", () => {
       failedAt: 1550,
       updatedAt: 1550
     });
+
+    repo.insertLarkMessage({
+      larkMessageId: "om_recalled",
+      eventId: "event_recalled",
+      larkUserId: "ou_456",
+      conversationKey: "p2p:ou_456",
+      routeKind: "queued_message",
+      status: "queued",
+      text: "recall me",
+      rawEventJson: "{}"
+    });
+    now = 1575;
+    expect(repo.markLarkMessageRecalled("om_recalled")).toBe(true);
+    expect(repo.getLarkMessageById("om_recalled")).toMatchObject({
+      status: "recalled",
+      text: "recall me",
+      updatedAt: 1575
+    });
+    expect(repo.updateQueuedLarkMessage("om_recalled", { text: "ignored" })).toBe(false);
 
     now = 1600;
     repo.markLarkMessagesCompleted(["om_1"]);

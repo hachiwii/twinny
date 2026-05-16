@@ -185,6 +185,8 @@ export class ConversationRepository {
     string
   ]>;
   private readonly updateLarkMessageQueuedStatement: Database.Statement<[number, string]>;
+  private readonly updateQueuedLarkMessageStatement: Database.Statement<[string, string | null, number, string]>;
+  private readonly updateLarkMessageRecalledStatement: Database.Statement<[number, string]>;
   private readonly updateLarkMessageCompletedStatement: Database.Statement<[number, number, string]>;
   private readonly updateLarkMessageFailedStatement: Database.Statement<[number, number, string]>;
   private readonly updateLarkMessageInterruptedStatement: Database.Statement<[number, number, string]>;
@@ -401,6 +403,21 @@ export class ConversationRepository {
           codex_turn_id = NULL,
           updated_at = ?
       WHERE lark_message_id = ?
+    `);
+    this.updateQueuedLarkMessageStatement = this.db.prepare(`
+      UPDATE lark_messages
+      SET text = ?,
+          raw_event_json = COALESCE(?, raw_event_json),
+          updated_at = ?
+      WHERE lark_message_id = ?
+        AND status = 'queued'
+    `);
+    this.updateLarkMessageRecalledStatement = this.db.prepare(`
+      UPDATE lark_messages
+      SET status = 'recalled',
+          updated_at = ?
+      WHERE lark_message_id = ?
+        AND status = 'queued'
     `);
     this.updateLarkMessageSteeredStatement = this.db.prepare(`
       UPDATE lark_messages
@@ -674,6 +691,23 @@ export class ConversationRepository {
   markLarkMessageQueued(larkMessageId: string): void {
     assertNonEmpty(larkMessageId, "larkMessageId");
     this.updateLarkMessageQueuedStatement.run(this.now(), larkMessageId);
+  }
+
+  updateQueuedLarkMessage(larkMessageId: string, update: { text: string; rawEventJson?: string }): boolean {
+    assertNonEmpty(larkMessageId, "larkMessageId");
+    const result = this.updateQueuedLarkMessageStatement.run(
+      update.text,
+      update.rawEventJson ?? null,
+      this.now(),
+      larkMessageId
+    );
+    return result.changes > 0;
+  }
+
+  markLarkMessageRecalled(larkMessageId: string): boolean {
+    assertNonEmpty(larkMessageId, "larkMessageId");
+    const result = this.updateLarkMessageRecalledStatement.run(this.now(), larkMessageId);
+    return result.changes > 0;
   }
 
   markLarkMessagesProcessing(
@@ -977,6 +1011,7 @@ function assertValidRouteKind(routeKind: LarkMessageRouteKind): void {
 function assertValidMessageStatus(status: LarkMessageStatus): void {
   if (
     status !== "queued" &&
+    status !== "recalled" &&
     status !== "processing" &&
     status !== "steered" &&
     status !== "completed" &&

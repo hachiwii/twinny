@@ -12,6 +12,8 @@ import type {
   ConversationRecord,
   ConversationType,
   IncomingLarkMessage,
+  IncomingLarkMessageEdit,
+  IncomingLarkMessageRecall,
   LarkMessageRecord,
   LarkMessageRouteKind,
   LarkReactionHandle,
@@ -82,6 +84,11 @@ export interface ConversationRepository {
     rawEventJson?: string;
   }): Promise<unknown> | unknown;
   markLarkMessageQueued(larkMessageId: string): Promise<void> | void;
+  markLarkMessageRecalled(larkMessageId: string): Promise<boolean> | boolean;
+  updateQueuedLarkMessage(
+    larkMessageId: string,
+    update: { text: string; rawEventJson?: string }
+  ): Promise<boolean> | boolean;
   markLarkMessagesProcessing(
     larkMessageIds: string[],
     update?: { conversationKey?: string; codexThreadId?: string; codexTurnId?: string }
@@ -309,6 +316,30 @@ export class ConversationManager {
       });
   }
 
+  submitMessageRecall(recall: IncomingLarkMessageRecall): void {
+    if (this.shuttingDown) {
+      throw new TwinnyError("Conversation manager is shutting down", "CONVERSATION_MANAGER_SHUTTING_DOWN");
+    }
+
+    void this.enqueueQueuedMessageChange(recall.messageId, (state, conversationKey) =>
+      this.processQueuedMessageRecall(state, conversationKey, recall)
+    ).catch((error) => {
+      this.log.error({ error, messageId: recall.messageId }, "conversation message recall failed");
+    });
+  }
+
+  submitMessageEdit(edit: IncomingLarkMessageEdit): void {
+    if (this.shuttingDown) {
+      throw new TwinnyError("Conversation manager is shutting down", "CONVERSATION_MANAGER_SHUTTING_DOWN");
+    }
+
+    void this.enqueueQueuedMessageChange(edit.messageId, (state, conversationKey) =>
+      this.processQueuedMessageEdit(state, conversationKey, edit)
+    ).catch((error) => {
+      this.log.error({ error, messageId: edit.messageId }, "conversation message edit failed");
+    });
+  }
+
   async shutdown(): Promise<void> {
     if (this.shuttingDown) {
       return;
@@ -507,6 +538,74 @@ export class ConversationManager {
     }
     this.log.debug({ messageId: larkMessageId }, "persisted duplicate lark message ignored");
     return true;
+  }
+
+  private async enqueueQueuedMessageChange(
+    larkMessageId: string,
+    handler: (state: ConversationState, conversationKey: string) => Promise<void>
+  ): Promise<void> {
+    const record = queuedLarkMessageRecord(await this.options.repository.getLarkMessageById(larkMessageId));
+    if (!record) {
+      this.log.debug({ messageId: larkMessageId }, "ignored lark message change for non-queued message");
+      return;
+    }
+
+    const conversationKey = record.conversationKey ?? conversationKeyForP2p(record.larkUserId);
+    const state = this.getState(conversationKey);
+    await state.controlQueue.enqueue(() => handler(state, conversationKey));
+  }
+
+  private async processQueuedMessageRecall(
+    state: ConversationState,
+    _conversationKey: string,
+    recall: IncomingLarkMessageRecall
+  ): Promise<void> {
+    const record = queuedLarkMessageRecord(await this.options.repository.getLarkMessageById(recall.messageId));
+    if (!record) {
+      return;
+    }
+
+    removePendingMessageById(state.pendingBatch, recall.messageId);
+    await this.markMessageRecalledBestEffort(recall.messageId);
+  }
+
+  private async processQueuedMessageEdit(
+    state: ConversationState,
+    conversationKey: string,
+    edit: IncomingLarkMessageEdit
+  ): Promise<void> {
+    const record = queuedLarkMessageRecord(await this.options.repository.getLarkMessageById(edit.messageId));
+    if (!record) {
+      return;
+    }
+
+    const pending = findPendingMessageById(state.pendingBatch, edit.messageId);
+    const existingRaw = pending?.original.raw ?? parseStoredRawEvent(record.rawEventJson);
+    const updatedRaw = patchLarkMessageRawEvent(existingRaw, edit.raw);
+    const parsed = parseSlashCommand(edit.text);
+    const text = parsed.kind === "queue" ? parsed.text : edit.text;
+    let storedText = text;
+
+    if (pending) {
+      const updatedMessage: IncomingLarkMessage = {
+        ...pending.original,
+        messageType: edit.messageType,
+        resources: edit.resources,
+        downloadedFiles: undefined,
+        rawForCodex: edit.rawForCodex,
+        text: edit.text,
+        raw: updatedRaw
+      };
+      await this.prepareMessageResources(conversationKey, updatedMessage);
+      pending.original = updatedMessage;
+      pending.text = (updatedMessage.downloadedFiles?.length ?? 0) > 0 ? updatedMessage.text : text;
+      storedText = pending.text;
+    }
+
+    await this.updateQueuedMessageBestEffort(edit.messageId, {
+      text: storedText,
+      rawEventJson: safeJsonStringify(updatedRaw)
+    });
   }
 
   private async routeMessage(
@@ -1537,6 +1636,25 @@ export class ConversationManager {
     }
   }
 
+  private async markMessageRecalledBestEffort(messageId: string): Promise<void> {
+    try {
+      await this.options.repository.markLarkMessageRecalled(messageId);
+    } catch (error) {
+      this.log.warn({ error, messageId }, "failed to mark lark message recalled");
+    }
+  }
+
+  private async updateQueuedMessageBestEffort(
+    messageId: string,
+    update: { text: string; rawEventJson?: string }
+  ): Promise<void> {
+    try {
+      await this.options.repository.updateQueuedLarkMessage(messageId, update);
+    } catch (error) {
+      this.log.warn({ error, messageId }, "failed to update queued lark message");
+    }
+  }
+
   private async markMessagesCompletedBestEffort(messageIds: string[]): Promise<void> {
     if (messageIds.length === 0) {
       return;
@@ -2446,6 +2564,71 @@ function parseStoredRawEvent(value: string | undefined): unknown {
   } catch {
     return undefined;
   }
+}
+
+function queuedLarkMessageRecord(value: unknown): LarkMessageRecord | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  if (value.status !== "queued" || typeof value.larkMessageId !== "string" || typeof value.larkUserId !== "string") {
+    return undefined;
+  }
+  return value as unknown as LarkMessageRecord;
+}
+
+function findPendingMessageById(messages: PendingMessage[], messageId: string): PendingMessage | undefined {
+  return messages.find((message) => message.messageId === messageId);
+}
+
+function removePendingMessageById(messages: PendingMessage[], messageId: string): PendingMessage | undefined {
+  const index = messages.findIndex((message) => message.messageId === messageId);
+  if (index < 0) {
+    return undefined;
+  }
+  return messages.splice(index, 1)[0];
+}
+
+function patchLarkMessageRawEvent(existingRaw: unknown, editRaw: unknown): unknown {
+  const patch = extractEditedMessagePatch(editRaw);
+  if (!patch || !isRecord(existingRaw)) {
+    return existingRaw ?? editRaw;
+  }
+
+  const existingMessage = isRecord(existingRaw.message) ? existingRaw.message : {};
+  return {
+    ...existingRaw,
+    message: {
+      ...existingMessage,
+      ...patch
+    }
+  };
+}
+
+function extractEditedMessagePatch(raw: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(raw)) {
+    return undefined;
+  }
+  const event = isRecord(raw.event) ? raw.event : raw;
+  const message = isRecord(event.message) ? event.message : event;
+  const patch: Record<string, unknown> = {};
+  for (const field of [
+    "message_id",
+    "message_type",
+    "content",
+    "chat_id",
+    "chat_type",
+    "create_time",
+    "update_time",
+    "updated_time",
+    "thread_id",
+    "parent_id"
+  ]) {
+    const value = message[field] ?? event[field];
+    if (value !== undefined) {
+      patch[field] = value;
+    }
+  }
+  return Object.keys(patch).length > 0 ? patch : undefined;
 }
 
 function lastDefined<T>(values: Array<T | undefined>): T | undefined {
