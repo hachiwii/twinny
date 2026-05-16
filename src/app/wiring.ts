@@ -5,6 +5,7 @@ import { ConversationManager } from "../conversation/manager.js";
 import {
   LarkEventConsumer,
   LarkMessageSender,
+  LarkUserDirectory,
   LarkOpenApiClient,
   TenantAccessTokenManager
 } from "../lark/index.js";
@@ -75,6 +76,7 @@ export class TwinnyRuntime {
     });
     const openApiClient = new LarkOpenApiClient({ tokenManager });
     const larkSender = new LarkMessageSender({ openApiClient, logger: this.log });
+    const larkUsers = new LarkUserDirectory({ openApiClient });
     const systemNotifier = new TwinnySystemNotifier({
       ownerOpenId: this.config.owner.openId,
       sender: larkSender,
@@ -89,6 +91,7 @@ export class TwinnyRuntime {
       workspaces: workspaceManager,
       codex: adaptCodexPool(this.codexPool),
       lark: adaptLarkSender(larkSender, this.config.lark.workingReaction, this.config.lark.completedReaction),
+      larkUsers,
       roles: { codexHomeFor: (role) => getRoleCodexHome(this.config, role) },
       logger: this.log
     });
@@ -207,6 +210,7 @@ function adaptConversationRepository(repository: ConversationRepository) {
     create: repository.create.bind(repository),
     updateThreadBinding: repository.updateThreadBinding.bind(repository),
     markThreadHasRollout: repository.markThreadHasRollout.bind(repository),
+    getUserByLarkUserId: repository.getUserByLarkUserId.bind(repository),
     upsertUser: repository.upsertUser.bind(repository),
     upsertCodexThread: repository.upsertCodexThread.bind(repository),
     updateCodexThreadTokenUsage: repository.updateCodexThreadTokenUsage.bind(repository),

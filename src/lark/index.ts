@@ -1,4 +1,5 @@
 export * from "./auth.js";
+export * from "./contact.js";
 export * from "./events.js";
 export * from "./filters.js";
 export * from "./messages.js";

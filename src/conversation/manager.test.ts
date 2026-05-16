@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { TwinnyError } from "../errors.js";
-import type { CodexTurnResult, ConversationRecord, IncomingLarkMessage, TwinnyConfig } from "../types.js";
-import { ConversationManager, type CodexBridge, type ConversationRepository, type LarkResponder } from "./manager.js";
+import type { CodexTurnResult, ConversationRecord, IncomingLarkMessage, TwinnyConfig, UserRecord } from "../types.js";
+import { ConversationManager, type CodexBridge, type ConversationRepository, type LarkResponder, type LarkUserDirectory } from "./manager.js";
 
 const config: TwinnyConfig = {
   home: "/tmp/twinny",
@@ -197,6 +197,57 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("resolves missing Lark sender names and includes them in Codex input", async () => {
+    const codex = createCodex();
+    const larkUsers: LarkUserDirectory = {
+      getUserNameByOpenId: vi.fn(async () => "Resolved User")
+    };
+    const manager = createManager({ codex, larkUsers });
+
+    manager.submitIncoming(
+      message("m1", "hello", {
+        senderName: undefined
+      })
+    );
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(larkUsers.getUserNameByOpenId).toHaveBeenCalledWith("ou_guest");
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: '<lark_message timestamp="1234" sender_ouid="ou_guest" sender_name="Resolved User">\nhello\n</lark_message>'
+      })
+    );
+  });
+
+  it("caches failed Lark sender name lookups and omits sender_name from Codex input", async () => {
+    const codex = createCodex();
+    const larkUsers: LarkUserDirectory = {
+      getUserNameByOpenId: vi.fn(async () => {
+        throw new Error("contact unavailable");
+      })
+    };
+    const manager = createManager({ codex, larkUsers });
+
+    manager.submitIncoming(message("m1", "first", { senderName: undefined }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "second", { senderName: undefined }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    expect(larkUsers.getUserNameByOpenId).toHaveBeenCalledTimes(1);
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        input: '<lark_message timestamp="1234" sender_ouid="ou_guest">\nfirst\n</lark_message>'
+      })
+    );
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        input: '<lark_message timestamp="1234" sender_ouid="ou_guest">\nsecond\n</lark_message>'
+      })
+    );
+  });
+
   it("replaces a persisted thread when Codex no longer has the rollout", async () => {
     const row = conversationRecord({ codexThreadId: "thread_missing" });
     const { repository } = createRepository(row);
@@ -277,6 +328,7 @@ function createManager(options: {
   repository?: ConversationRepository;
   codex?: CodexBridge;
   lark?: LarkResponder;
+  larkUsers?: LarkUserDirectory;
 } = {}): ConversationManager {
   return new ConversationManager({
     config,
@@ -288,7 +340,9 @@ function createManager(options: {
       codexHomeFor: (role) => config.roles[role].codexHome
     },
     codex: options.codex ?? createCodex(),
-    lark: options.lark ?? createLarkResponder()
+    lark: options.lark ?? createLarkResponder(),
+    larkUsers: options.larkUsers,
+    nameLookupFailureTtlMs: 60_000
   });
 }
 
@@ -338,12 +392,14 @@ function createRepository(initial?: ConversationRecord): {
   row: ConversationRecord | undefined;
 } {
   let row = initial;
+  const users = new Map<string, UserRecord>();
   return {
     get row() {
       return row;
     },
     repository: {
       findByConversationKey: () => row ?? null,
+      getUserByLarkUserId: (larkUserId) => users.get(larkUserId),
       create: (record) => {
         row = {
           id: 1,
@@ -367,7 +423,20 @@ function createRepository(initial?: ConversationRecord): {
           row.updatedAt = Date.now();
         }
       },
-      upsertUser: vi.fn(),
+      upsertUser: vi.fn((input) => {
+        const existing = users.get(input.larkUserId);
+        const user: UserRecord = {
+          id: existing?.id ?? users.size + 1,
+          larkUserId: input.larkUserId,
+          name: input.name?.trim() || existing?.name || "",
+          role: input.role ?? existing?.role ?? "guest",
+          createdAt: existing?.createdAt ?? Date.now(),
+          updatedAt: Date.now(),
+          lastSeenAt: input.seenAt ?? Date.now()
+        };
+        users.set(input.larkUserId, user);
+        return user;
+      }),
       upsertCodexThread: vi.fn(),
       updateCodexThreadTokenUsage: vi.fn(),
       insertLarkMessage: vi.fn(),

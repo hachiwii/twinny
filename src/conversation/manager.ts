@@ -11,6 +11,7 @@ import type {
   LarkMessageRouteKind,
   NewConversationRecord,
   RoleName,
+  UserRecord,
   TwinnyConfig
 } from "../types.js";
 import { SerialQueue } from "./queue.js";
@@ -30,6 +31,7 @@ export interface ConversationRepository {
     }
   ): Promise<ConversationRecord> | ConversationRecord;
   markThreadHasRollout(conversationKey: string, codexThreadId: string): Promise<void> | void;
+  getUserByLarkUserId(larkUserId: string): Promise<UserRecord | undefined> | UserRecord | undefined;
   upsertUser(input: {
     larkUserId: string;
     name?: string;
@@ -72,6 +74,10 @@ export interface ConversationRepository {
   markLarkMessagesCompleted(larkMessageIds: string[]): Promise<void> | void;
   markLarkMessagesFailed(larkMessageIds: string[]): Promise<void> | void;
   markLarkMessagesCleared(larkMessageIds: string[]): Promise<void> | void;
+}
+
+export interface LarkUserDirectory {
+  getUserNameByOpenId(openId: string): Promise<string | undefined>;
 }
 
 export interface WorkspaceManagerLike {
@@ -133,8 +139,10 @@ export interface ConversationManagerOptions {
   workspaces: WorkspaceManagerLike;
   codex: CodexBridge;
   lark: LarkResponder;
+  larkUsers?: LarkUserDirectory;
   roles: RoleHomeResolver;
   logger?: Logger;
+  nameLookupFailureTtlMs?: number;
   dedupeTtlMs?: number;
   dedupeMax?: number;
 }
@@ -196,6 +204,7 @@ export class ConversationManager {
   private readonly states = new Map<string, ConversationState>();
   private readonly shutdownNotifiedMessageIds = new Set<string>();
   private readonly dedupe: LRUCache<string, true>;
+  private readonly nameLookupFailureCache = new Map<string, number>();
   private readonly log: Logger;
   private shuttingDown = false;
 
@@ -354,9 +363,11 @@ export class ConversationManager {
   ): Promise<void> {
     const role = roleForSender(this.options.config, message.senderOpenId);
     const route = classifyInitialRoute(state, parsed, message.text);
+    const senderName = await this.resolveSenderName(message, role);
+    message.senderName = senderName;
     await this.options.repository.upsertUser({
       larkUserId: message.senderOpenId,
-      name: message.senderName,
+      name: senderName,
       role,
       seenAt: message.createTime
     });
@@ -373,6 +384,52 @@ export class ConversationManager {
       larkCreateTime: message.createTime,
       rawEventJson: safeJsonStringify(message.raw)
     });
+  }
+
+  private async resolveSenderName(message: IncomingLarkMessage, role: RoleName): Promise<string | undefined> {
+    const existing = await this.options.repository.getUserByLarkUserId(message.senderOpenId);
+    const existingName = nonEmptyString(existing?.name);
+    if (existingName) {
+      return existingName;
+    }
+
+    const eventName = nonEmptyString(message.senderName);
+    if (eventName) {
+      return eventName;
+    }
+
+    const failureUntil = this.nameLookupFailureCache.get(message.senderOpenId) ?? 0;
+    if (failureUntil > Date.now()) {
+      return undefined;
+    }
+    this.nameLookupFailureCache.delete(message.senderOpenId);
+
+    if (!this.options.larkUsers) {
+      return undefined;
+    }
+
+    try {
+      const resolvedName = nonEmptyString(await this.options.larkUsers.getUserNameByOpenId(message.senderOpenId));
+      if (!resolvedName) {
+        this.cacheNameLookupFailure(message.senderOpenId);
+        return undefined;
+      }
+      await this.options.repository.upsertUser({
+        larkUserId: message.senderOpenId,
+        name: resolvedName,
+        role,
+        seenAt: message.createTime
+      });
+      return resolvedName;
+    } catch (error) {
+      this.cacheNameLookupFailure(message.senderOpenId);
+      this.log.warn({ error, larkUserId: message.senderOpenId }, "failed to resolve lark user name");
+      return undefined;
+    }
+  }
+
+  private cacheNameLookupFailure(larkUserId: string): void {
+    this.nameLookupFailureCache.set(larkUserId, Date.now() + (this.options.nameLookupFailureTtlMs ?? 60_000));
   }
 
   private async handleUserMessage(
@@ -1126,14 +1183,23 @@ function toPendingMessage(message: IncomingLarkMessage, text: string): PendingMe
 
 function formatPendingMessageForCodex(message: PendingMessage): string {
   const timestamp = message.original.createTime === undefined ? "" : String(message.original.createTime);
-  const attributes = [
+  const attributes: Array<[string, string]> = [
     ["timestamp", timestamp],
-    ["sender_ouid", message.original.senderOpenId],
-    ["sender_name", message.original.senderName ?? ""]
-  ]
+    ["sender_ouid", message.original.senderOpenId]
+  ];
+  const senderName = nonEmptyString(message.original.senderName);
+  if (senderName) {
+    attributes.push(["sender_name", senderName]);
+  }
+  const renderedAttributes = attributes
     .map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`)
     .join(" ");
-  return `<lark_message ${attributes}>\n${message.text}\n</lark_message>`;
+  return `<lark_message ${renderedAttributes}>\n${message.text}\n</lark_message>`;
+}
+
+function nonEmptyString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function safeJsonStringify(value: unknown): string | undefined {
