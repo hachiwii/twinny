@@ -58,6 +58,103 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("records ordinary message lifecycle and token usage in runtime history", async () => {
+    const { repository } = createRepository();
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onTokenUsage }) => {
+        await onTurnStarted?.("turn_1");
+        await onTokenUsage?.({
+          threadId,
+          turnId: "turn_1",
+          totalTokens: 42,
+          raw: {
+            threadId,
+            turnId: "turn_1",
+            usage: { total: { totalTokens: 42 } }
+          }
+        });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "hello"));
+
+    await waitForExpect(() => expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m1"]));
+    expect(repository.upsertUser).toHaveBeenCalledWith({
+      larkUserId: "ou_guest",
+      name: "Guest User",
+      role: "guest",
+      seenAt: 1234
+    });
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "m1",
+        eventId: "e_m1",
+        larkUserId: "ou_guest",
+        conversationKey: "p2p:ou_guest",
+        routeKind: "message",
+        status: "processing",
+        text: "hello",
+        larkCreateTime: 1234
+      })
+    );
+    expect(repository.upsertCodexThread).toHaveBeenCalledWith({
+      conversationKey: "p2p:ou_guest",
+      codexThreadId: "thread_1",
+      role: "guest",
+      larkThreadId: undefined
+    });
+    expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m1"], {
+      conversationKey: "p2p:ou_guest",
+      codexThreadId: "thread_1"
+    });
+    expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m1"], {
+      conversationKey: "p2p:ou_guest",
+      codexThreadId: "thread_1",
+      codexTurnId: "turn_1"
+    });
+    expect(repository.updateCodexThreadTokenUsage).toHaveBeenCalledWith({
+      codexThreadId: "thread_1",
+      conversationKey: "p2p:ou_guest",
+      role: "guest",
+      totalTokens: 42,
+      tokenUsageJson: JSON.stringify({
+        threadId: "thread_1",
+        turnId: "turn_1",
+        usage: { total: { totalTokens: 42 } }
+      })
+    });
+  });
+
+  it("records steered messages against the active Codex turn", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "second"));
+
+    await waitForExpect(() =>
+      expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m2"], {
+        conversationKey: "p2p:ou_guest",
+        codexThreadId: "thread_1",
+        codexTurnId: "turn_1"
+      })
+    );
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "m2",
+        routeKind: "steered_message",
+        status: "processing",
+        text: "second"
+      })
+    );
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+  });
+
   it("queues /queue and following ordinary messages for the next turn joined by newlines", async () => {
     const { codex, turns } = createDeferredCodex();
     const manager = createManager({ codex });
@@ -79,6 +176,32 @@ describe("ConversationManager", () => {
     );
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("records queued messages as cleared when /stop drains the pending batch", async () => {
+    const { repository } = createRepository();
+    const { codex } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue queued"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
+    manager.submitIncoming(message("m3", "/stop"));
+
+    await waitForExpect(() => expect(repository.markLarkMessagesCleared).toHaveBeenCalledWith(["m2"]));
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "m2",
+        routeKind: "queued_message",
+        status: "queued",
+        text: "queued"
+      })
+    );
+    expect(repository.markLarkMessagesFailed).toHaveBeenCalledWith(["m1"]);
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m3"]);
+    expect(lark.replyText).toHaveBeenCalledWith("m3", "已停止当前任务，清空 1 条待处理消息。");
   });
 
   it("replies to /help with available slash command usage", async () => {
