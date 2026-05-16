@@ -366,7 +366,16 @@ function createRepository(initial?: ConversationRecord): {
           row.codexThreadHasRollout = true;
           row.updatedAt = Date.now();
         }
-      }
+      },
+      upsertUser: vi.fn(),
+      upsertCodexThread: vi.fn(),
+      updateCodexThreadTokenUsage: vi.fn(),
+      insertLarkMessage: vi.fn(),
+      markLarkMessageQueued: vi.fn(),
+      markLarkMessagesProcessing: vi.fn(),
+      markLarkMessagesCompleted: vi.fn(),
+      markLarkMessagesFailed: vi.fn(),
+      markLarkMessagesCleared: vi.fn()
     }
   };
 }

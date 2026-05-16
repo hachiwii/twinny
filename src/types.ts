@@ -2,6 +2,10 @@ export type RoleName = "owner" | "guest";
 
 export type ConversationType = "p2p";
 
+export type LarkMessageRouteKind = "message" | "steered_message" | "queued_message" | "control_message";
+
+export type LarkMessageStatus = "queued" | "processing" | "completed" | "failed" | "cleared";
+
 export const DEFAULT_LARK_WORKING_REACTION = "Typing";
 export const DEFAULT_LARK_COMPLETED_REACTION = "DONE";
 export const DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS = 60;
@@ -82,6 +86,53 @@ export interface NewConversationRecord {
   roleCodexHome: string;
 }
 
+export interface UserRecord {
+  id: number;
+  larkUserId: string;
+  name: string;
+  role: RoleName;
+  createdAt: number;
+  updatedAt: number;
+  lastSeenAt: number;
+}
+
+export interface CodexThreadRecord {
+  id: number;
+  codexThreadId: string;
+  conversationKey: string;
+  larkThreadId?: string;
+  role: RoleName;
+  forkedFromCodexThreadId?: string;
+  forkedAt?: number;
+  totalTokens: number;
+  tokenUsageJson: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LarkMessageRecord {
+  id: number;
+  larkMessageId: string;
+  eventId: string;
+  larkUserId: string;
+  larkGroupId?: string;
+  larkThreadId?: string;
+  conversationKey?: string;
+  codexThreadId?: string;
+  codexTurnId?: string;
+  routeKind: LarkMessageRouteKind;
+  status: LarkMessageStatus;
+  text: string;
+  larkCreateTime?: number;
+  receivedAt: number;
+  updatedAt: number;
+  processingStartedAt?: number;
+  completedAt?: number;
+  failedAt?: number;
+  clearedAt?: number;
+  rawEventJson?: string;
+}
+
 export interface IncomingLarkMessage {
   eventId: string;
   messageId: string;
@@ -90,6 +141,8 @@ export interface IncomingLarkMessage {
   messageType: string;
   senderOpenId: string;
   senderName?: string;
+  larkGroupId?: string;
+  larkThreadId?: string;
   text: string;
   createTime?: number;
   raw: unknown;
@@ -114,6 +167,13 @@ export interface CodexTurnResult {
   status: "completed" | "failed" | "interrupted";
   error?: string;
   durationMs?: number;
+}
+
+export interface CodexThreadTokenUsageUpdate {
+  threadId: string;
+  turnId?: string;
+  totalTokens: number;
+  raw: unknown;
 }
 
 export interface HealthCheck {

@@ -1,5 +1,5 @@
 import { TwinnyError, toErrorMessage } from "../errors.js";
-import type { CodexTurnResult } from "../types.js";
+import type { CodexThreadTokenUsageUpdate, CodexTurnResult } from "../types.js";
 import type { CodexNotificationMessage, CodexProtocolClient } from "./protocol.js";
 
 export interface TextTurnInput {
@@ -21,6 +21,7 @@ export interface TurnStartOptions {
   cwd: string;
   onTurnStarted?: (turnId: string) => Promise<void> | void;
   onAgentMessage?: (message: CompletedAgentMessage) => Promise<void> | void;
+  onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
 }
 
 export interface TurnStartResponse {
@@ -114,7 +115,8 @@ export async function startCodexTurn(
 ): Promise<CodexTurnResult> {
   const accumulator = new TurnOutputAccumulator(options.threadId, undefined, {
     onTurnStarted: options.onTurnStarted,
-    onAgentMessage: options.onAgentMessage
+    onAgentMessage: options.onAgentMessage,
+    onTokenUsage: options.onTokenUsage
   });
   const onNotification = (notification: CodexNotificationMessage): void => {
     accumulator.record(notification);
@@ -169,6 +171,7 @@ export class TurnOutputAccumulator {
     private readonly callbacks: {
       onTurnStarted?: (turnId: string) => Promise<void> | void;
       onAgentMessage?: (message: CompletedAgentMessage) => Promise<void> | void;
+      onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
     } = {}
   ) {
     this.turnId = turnId;
@@ -201,6 +204,10 @@ export class TurnOutputAccumulator {
       }
       if (notification.method === "turn/completed") {
         this.recordTurnCompleted(notification.params);
+        return;
+      }
+      if (notification.method === "thread/tokenUsage/updated") {
+        this.recordTokenUsage(notification.params);
         return;
       }
       if (notification.method === "error") {
@@ -314,6 +321,28 @@ export class TurnOutputAccumulator {
     this.rejectWait?.(this.completionError);
   }
 
+  private recordTokenUsage(params: unknown): void {
+    if (!isRecord(params) || params.threadId !== this.threadId) {
+      return;
+    }
+    const totalTokens = extractTotalTokens(params);
+    if (totalTokens === undefined) {
+      return;
+    }
+    const usage: CodexThreadTokenUsageUpdate = {
+      threadId: this.threadId,
+      turnId: stringValue(params.turnId),
+      totalTokens,
+      raw: params
+    };
+    void Promise.resolve(this.callbacks.onTokenUsage?.(usage)).catch((error: unknown) => {
+      const parsedError =
+        error instanceof Error ? error : new TwinnyError(toErrorMessage(error), "CODEX_TOKEN_USAGE_CALLBACK_FAILED");
+      this.completionError = parsedError;
+      this.rejectWait?.(parsedError);
+    });
+  }
+
   private toResult(): CodexTurnResult {
     const turn = this.completed?.turn;
     const status = turn?.status === "failed" ? "failed" : turn?.status === "interrupted" ? "interrupted" : "completed";
@@ -380,6 +409,49 @@ function extractErrorMessage(error: unknown): string | undefined {
     return error.message;
   }
   return String(error);
+}
+
+function extractTotalTokens(params: Record<string, unknown>): number | undefined {
+  return firstFiniteNumber(
+    params.totalTokens,
+    params.total_tokens,
+    nestedValue(params, ["usage", "totalTokens"]),
+    nestedValue(params, ["usage", "total_tokens"]),
+    nestedValue(params, ["usage", "total", "totalTokens"]),
+    nestedValue(params, ["usage", "total", "total_tokens"]),
+    nestedValue(params, ["total", "totalTokens"]),
+    nestedValue(params, ["total", "total_tokens"]),
+    nestedValue(params, ["tokenUsage", "totalTokens"]),
+    nestedValue(params, ["tokenUsage", "total_tokens"]),
+    nestedValue(params, ["tokenUsage", "total", "totalTokens"]),
+    nestedValue(params, ["tokenUsage", "total", "total_tokens"])
+  );
+}
+
+function nestedValue(record: Record<string, unknown>, path: string[]): unknown {
+  let current: unknown = record;
+  for (const key of path) {
+    if (!isRecord(current)) {
+      return undefined;
+    }
+    current = current[key];
+  }
+  return current;
+}
+
+function firstFiniteNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return undefined;
 }
 
 function isTurnCompletedParams(value: unknown): value is TurnCompletedParams {

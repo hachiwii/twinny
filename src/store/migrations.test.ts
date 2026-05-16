@@ -27,7 +27,7 @@ describe("store migrations", () => {
         )
         .all()
         .map((row) => row.name);
-      expect(tables).toEqual(["conversations"]);
+      expect(tables).toEqual(["codex_threads", "conversations", "lark_messages", "users"]);
 
       const columns = db.prepare<[], TableColumnRow>("PRAGMA table_info(conversations)").all().map((row) => ({
         name: row.name,
@@ -62,6 +62,71 @@ describe("store migrations", () => {
         "idx_conversations_type_chat_id",
         "sqlite_autoindex_conversations_1"
       ]);
+
+      const userColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(users)").all().map((row) => ({
+        name: row.name,
+        type: row.type,
+        notnull: row.notnull,
+        pk: row.pk
+      }));
+      expect(userColumns).toEqual([
+        { name: "id", type: "INTEGER", notnull: 0, pk: 1 },
+        { name: "lark_user_id", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "name", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "role", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "created_at", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "last_seen_at", type: "INTEGER", notnull: 1, pk: 0 }
+      ]);
+
+      const threadColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(codex_threads)").all().map((row) => ({
+        name: row.name,
+        type: row.type,
+        notnull: row.notnull,
+        pk: row.pk
+      }));
+      expect(threadColumns).toEqual([
+        { name: "id", type: "INTEGER", notnull: 0, pk: 1 },
+        { name: "codex_thread_id", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "conversation_key", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "lark_thread_id", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "role", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "forked_from_codex_thread_id", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "forked_at", type: "INTEGER", notnull: 0, pk: 0 },
+        { name: "total_tokens", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "token_usage_json", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "created_at", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 }
+      ]);
+
+      const messageColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(lark_messages)").all().map((row) => ({
+        name: row.name,
+        type: row.type,
+        notnull: row.notnull,
+        pk: row.pk
+      }));
+      expect(messageColumns).toEqual([
+        { name: "id", type: "INTEGER", notnull: 0, pk: 1 },
+        { name: "lark_message_id", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "event_id", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "lark_user_id", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "lark_group_id", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "lark_thread_id", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "conversation_key", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "codex_thread_id", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "codex_turn_id", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "route_kind", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "status", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "text", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "lark_create_time", type: "INTEGER", notnull: 0, pk: 0 },
+        { name: "received_at", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "processing_started_at", type: "INTEGER", notnull: 0, pk: 0 },
+        { name: "completed_at", type: "INTEGER", notnull: 0, pk: 0 },
+        { name: "failed_at", type: "INTEGER", notnull: 0, pk: 0 },
+        { name: "cleared_at", type: "INTEGER", notnull: 0, pk: 0 },
+        { name: "raw_event_json", type: "TEXT", notnull: 0, pk: 0 }
+      ]);
     } finally {
       db.close();
     }
@@ -79,7 +144,7 @@ describe("store migrations", () => {
         )
         .all()
         .map((row) => row.name);
-      expect(tables).toEqual(["conversations"]);
+      expect(tables).toEqual(["codex_threads", "conversations", "lark_messages", "users"]);
     } finally {
       db.close();
     }

@@ -3,10 +3,12 @@ import type { Logger } from "pino";
 import { TwinnyError, toErrorMessage } from "../errors.js";
 import { logger as defaultLogger } from "../observability/logs.js";
 import type {
+  CodexThreadTokenUsageUpdate,
   CodexTurnResult,
   ConversationRecord,
   IncomingLarkMessage,
   LarkReactionHandle,
+  LarkMessageRouteKind,
   NewConversationRecord,
   RoleName,
   TwinnyConfig
@@ -28,6 +30,48 @@ export interface ConversationRepository {
     }
   ): Promise<ConversationRecord> | ConversationRecord;
   markThreadHasRollout(conversationKey: string, codexThreadId: string): Promise<void> | void;
+  upsertUser(input: {
+    larkUserId: string;
+    name?: string;
+    role?: RoleName;
+    seenAt?: number;
+  }): Promise<unknown> | unknown;
+  upsertCodexThread(input: {
+    codexThreadId: string;
+    conversationKey: string;
+    role: RoleName;
+    larkThreadId?: string;
+  }): Promise<unknown> | unknown;
+  updateCodexThreadTokenUsage(input: {
+    codexThreadId: string;
+    conversationKey: string;
+    role: RoleName;
+    totalTokens: number;
+    tokenUsageJson: string;
+  }): Promise<unknown> | unknown;
+  insertLarkMessage(input: {
+    larkMessageId: string;
+    eventId: string;
+    larkUserId: string;
+    larkGroupId?: string;
+    larkThreadId?: string;
+    conversationKey?: string;
+    codexThreadId?: string;
+    codexTurnId?: string;
+    routeKind: LarkMessageRouteKind;
+    status: "queued" | "processing";
+    text: string;
+    larkCreateTime?: number;
+    rawEventJson?: string;
+  }): Promise<unknown> | unknown;
+  markLarkMessageQueued(larkMessageId: string): Promise<void> | void;
+  markLarkMessagesProcessing(
+    larkMessageIds: string[],
+    update?: { conversationKey?: string; codexThreadId?: string; codexTurnId?: string }
+  ): Promise<void> | void;
+  markLarkMessagesCompleted(larkMessageIds: string[]): Promise<void> | void;
+  markLarkMessagesFailed(larkMessageIds: string[]): Promise<void> | void;
+  markLarkMessagesCleared(larkMessageIds: string[]): Promise<void> | void;
 }
 
 export interface WorkspaceManagerLike {
@@ -54,6 +98,7 @@ export interface CodexBridge {
     approvalPolicy: "never";
     onTurnStarted?: (turnId: string) => Promise<void> | void;
     onAgentMessage?: (message: { id: string; text: string }) => Promise<void> | void;
+    onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
   }): Promise<CodexTurnResult>;
   steerTurn(params: {
     role: RoleName;
@@ -118,6 +163,7 @@ interface ActiveTurn {
   lastAgentReplyMessageId?: string;
   completedStatus?: CodexTurnResult["status"];
   pendingSteers: PendingMessage[];
+  messageIds: Set<string>;
   cancelRequested: boolean;
 }
 
@@ -208,7 +254,9 @@ export class ConversationManager {
       if (state.processingMessage) {
         messageIds.add(state.processingMessage.messageId);
       }
-      for (const pending of this.clearPendingMessages(state)) {
+      const pendingMessages = this.clearPendingMessages(state);
+      await this.markPendingMessagesClearedBestEffort(pendingMessages);
+      for (const pending of pendingMessages) {
         messageIds.add(pending.messageId);
       }
       if (state.active) {
@@ -253,6 +301,9 @@ export class ConversationManager {
     state.processingMessage = message;
     try {
       await this.routeMessage(state, conversationKey, message);
+    } catch (error) {
+      await this.markMessagesFailedBestEffort([message.messageId]);
+      throw error;
     } finally {
       if (state.processingMessage?.messageId === message.messageId) {
         state.processingMessage = undefined;
@@ -275,6 +326,7 @@ export class ConversationManager {
     message: IncomingLarkMessage
   ): Promise<void> {
     const parsed = parseSlashCommand(message.text);
+    await this.recordIncomingMessage(state, conversationKey, message, parsed);
     if (parsed.kind === "help") {
       await this.handleHelpCommand(message);
       return;
@@ -292,6 +344,35 @@ export class ConversationManager {
       return;
     }
     await this.handleUserMessage(state, conversationKey, message, parsed.text);
+  }
+
+  private async recordIncomingMessage(
+    state: ConversationState,
+    conversationKey: string,
+    message: IncomingLarkMessage,
+    parsed: ParsedCommand
+  ): Promise<void> {
+    const role = roleForSender(this.options.config, message.senderOpenId);
+    const route = classifyInitialRoute(state, parsed, message.text);
+    await this.options.repository.upsertUser({
+      larkUserId: message.senderOpenId,
+      name: message.senderName,
+      role,
+      seenAt: message.createTime
+    });
+    await this.options.repository.insertLarkMessage({
+      larkMessageId: message.messageId,
+      eventId: message.eventId,
+      larkUserId: message.senderOpenId,
+      larkGroupId: message.larkGroupId,
+      larkThreadId: message.larkThreadId,
+      conversationKey,
+      routeKind: route.routeKind,
+      status: route.status,
+      text: route.text,
+      larkCreateTime: message.createTime,
+      rawEventJson: safeJsonStringify(message.raw)
+    });
   }
 
   private async handleUserMessage(
@@ -326,6 +407,7 @@ export class ConversationManager {
   ): Promise<void> {
     if (!text) {
       await this.replyControlBestEffort(message.messageId, "用法：/queue <message>");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
 
@@ -337,15 +419,19 @@ export class ConversationManager {
 
   private async handleHelpCommand(message: IncomingLarkMessage): Promise<void> {
     await this.replyControlBestEffort(message.messageId, ConversationManager.helpText);
+    await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
   private async handleStopCommand(state: ConversationState, message: IncomingLarkMessage): Promise<void> {
-    const cleared = this.clearPendingMessages(state).length;
+    const clearedMessages = this.clearPendingMessages(state);
+    const cleared = clearedMessages.length;
+    await this.markPendingMessagesClearedBestEffort(clearedMessages);
     const interrupted = await this.cancelActiveTurn(state);
     const summary = interrupted
       ? `已停止当前任务，清空 ${cleared} 条待处理消息。`
       : `当前没有正在运行的任务，清空 ${cleared} 条待处理消息。`;
     await this.replyControlBestEffort(message.messageId, summary);
+    await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
   private async handleNewCommand(
@@ -353,7 +439,7 @@ export class ConversationManager {
     conversationKey: string,
     message: IncomingLarkMessage
   ): Promise<void> {
-    this.clearPendingMessages(state);
+    await this.markPendingMessagesClearedBestEffort(this.clearPendingMessages(state));
     await this.cancelActiveTurn(state);
     const role = roleForSender(this.options.config, message.senderOpenId);
     const workspace = await this.options.workspaces.ensureWorkspace(conversationKey);
@@ -385,7 +471,14 @@ export class ConversationManager {
         roleCodexHome: this.options.roles.codexHomeFor(role)
       });
     }
+    await this.recordCodexThreadBestEffort({
+      conversationKey,
+      codexThreadId: thread.threadId,
+      role,
+      larkThreadId: message.larkThreadId
+    });
     await this.replyControlBestEffort(message.messageId, `已新开 Codex thread：${thread.threadId}`);
+    await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
   private async steerOrDefer(
@@ -395,6 +488,11 @@ export class ConversationManager {
   ): Promise<void> {
     if (!active.turnId) {
       active.pendingSteers.push(message);
+      active.messageIds.add(message.messageId);
+      await this.markMessagesProcessingBestEffort([message.messageId], {
+        conversationKey: active.conversationKey,
+        codexThreadId: active.threadId
+      });
       active.replyMessageId = message.messageId;
       await this.moveReactionBestEffort(active, message.messageId);
       return;
@@ -409,6 +507,12 @@ export class ConversationManager {
         cwd: active.workspace,
         approvalPolicy: "never"
       });
+      active.messageIds.add(message.messageId);
+      await this.markMessagesProcessingBestEffort([message.messageId], {
+        conversationKey: active.conversationKey,
+        codexThreadId: active.threadId,
+        codexTurnId: active.turnId
+      });
       active.replyMessageId = message.messageId;
       await this.moveReactionBestEffort(active, message.messageId);
     } catch (error) {
@@ -417,6 +521,7 @@ export class ConversationManager {
         "failed to steer active codex turn; queueing message for next turn"
       );
       state.pendingBatch.push(message);
+      await this.markPendingMessagesQueuedBestEffort([message]);
       await this.replyControlBestEffort(message.messageId, "当前任务已不可打断注入，已加入下一轮队列。");
     }
   }
@@ -449,6 +554,16 @@ export class ConversationManager {
     if (activeThread.replacedMissingThread) {
       await this.notifyThreadReplacementBestEffort(anchor.messageId, activeThread.previousThreadId, activeThread.threadId);
     }
+    await this.recordCodexThreadBestEffort({
+      conversationKey,
+      codexThreadId: activeThread.threadId,
+      role,
+      larkThreadId: anchor.original.larkThreadId
+    });
+    await this.markPendingMessagesProcessingBestEffort(messages, {
+      conversationKey,
+      codexThreadId: activeThread.threadId
+    });
 
     const active: ActiveTurn = {
       runId: ++state.nextRunId,
@@ -459,6 +574,7 @@ export class ConversationManager {
       replyMessageId: anchor.messageId,
       reaction: await this.addReactionBestEffort(anchor.messageId),
       pendingSteers: [],
+      messageIds: new Set(messages.map((message) => message.messageId)),
       cancelRequested: false
     };
     state.active = active;
@@ -473,7 +589,8 @@ export class ConversationManager {
         cwd: workspace,
         approvalPolicy: "never",
         onTurnStarted: (turnId) => this.handleTurnStarted(state, active, turnId),
-        onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage)
+        onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
+        onTokenUsage: (usage) => this.recordThreadTokenUsageBestEffort(active, usage)
       })
       .then((result) => {
         active.completedStatus = result.status;
@@ -491,6 +608,7 @@ export class ConversationManager {
         );
       })
       .catch(async (error) => {
+        await this.markMessagesFailedBestEffort([...active.messageIds]);
         if (state.active === active && !active.cancelRequested) {
           this.log.error({ error, messageId: active.replyMessageId, conversationKey }, "conversation turn failed");
           await this.replyErrorBestEffort(active.replyMessageId, error);
@@ -517,6 +635,11 @@ export class ConversationManager {
         return;
       }
       await this.options.repository.markThreadHasRollout(active.conversationKey, active.threadId);
+      await this.markMessagesProcessingBestEffort([...active.messageIds], {
+        conversationKey: active.conversationKey,
+        codexThreadId: active.threadId,
+        codexTurnId: turnId
+      });
       await this.flushPendingSteers(state, active);
     });
   }
@@ -529,7 +652,12 @@ export class ConversationManager {
     const pending = active.pendingSteers.splice(0);
     for (let index = 0; index < pending.length; index += 1) {
       if (state.active !== active || active.cancelRequested || !active.turnId) {
-        state.pendingBatch.unshift(...pending.slice(index));
+        const remaining = pending.slice(index);
+        for (const message of remaining) {
+          active.messageIds.delete(message.messageId);
+        }
+        state.pendingBatch.unshift(...remaining);
+        await this.markPendingMessagesQueuedBestEffort(remaining);
         return;
       }
       const message = pending[index]!;
@@ -542,12 +670,22 @@ export class ConversationManager {
           cwd: active.workspace,
           approvalPolicy: "never"
         });
+        await this.markMessagesProcessingBestEffort([message.messageId], {
+          conversationKey: active.conversationKey,
+          codexThreadId: active.threadId,
+          codexTurnId: active.turnId
+        });
       } catch (error) {
         this.log.warn(
           { error, threadId: active.threadId, turnId: active.turnId, messageId: message.messageId },
           "failed to flush pending steer messages; queueing remaining messages"
         );
-        state.pendingBatch.unshift(...pending.slice(index));
+        const remaining = pending.slice(index);
+        for (const queued of remaining) {
+          active.messageIds.delete(queued.messageId);
+        }
+        state.pendingBatch.unshift(...remaining);
+        await this.markPendingMessagesQueuedBestEffort(remaining);
         return;
       }
     }
@@ -564,6 +702,11 @@ export class ConversationManager {
     }
     state.active = undefined;
     await this.clearReactionBestEffort(active);
+    if (active.completedStatus === "completed") {
+      await this.markMessagesCompletedBestEffort([...active.messageIds]);
+    } else {
+      await this.markMessagesFailedBestEffort([...active.messageIds]);
+    }
     await this.addCompletedReactionBestEffort(active);
     await this.startPendingBatch(state, conversationKey);
   }
@@ -572,6 +715,9 @@ export class ConversationManager {
     const activePending = state.active?.pendingSteers.splice(0) ?? [];
     if (state.active) {
       state.active.pendingSteers = [];
+      for (const pending of activePending) {
+        state.active.messageIds.delete(pending.messageId);
+      }
     }
     const batchPending = state.pendingBatch.splice(0);
     return [...activePending, ...batchPending];
@@ -586,6 +732,7 @@ export class ConversationManager {
     active.cancelRequested = true;
     active.pendingSteers = [];
     await this.clearReactionBestEffort(active);
+    await this.markMessagesFailedBestEffort([...active.messageIds]);
     if (active.turnId) {
       await this.interruptActiveTurnBestEffort(active);
     }
@@ -604,6 +751,101 @@ export class ConversationManager {
       });
     } catch (error) {
       this.log.warn({ error, threadId: active.threadId, turnId: active.turnId }, "failed to interrupt codex turn");
+    }
+  }
+
+  private async recordCodexThreadBestEffort(params: {
+    conversationKey: string;
+    codexThreadId: string;
+    role: RoleName;
+    larkThreadId?: string;
+  }): Promise<void> {
+    try {
+      await this.options.repository.upsertCodexThread(params);
+    } catch (error) {
+      this.log.warn({ error, codexThreadId: params.codexThreadId }, "failed to record codex thread");
+    }
+  }
+
+  private async recordThreadTokenUsageBestEffort(
+    active: ActiveTurn,
+    usage: CodexThreadTokenUsageUpdate
+  ): Promise<void> {
+    try {
+      await this.options.repository.updateCodexThreadTokenUsage({
+        codexThreadId: usage.threadId,
+        conversationKey: active.conversationKey,
+        role: active.role,
+        totalTokens: usage.totalTokens,
+        tokenUsageJson: safeJsonStringify(usage.raw) ?? "{}"
+      });
+    } catch (error) {
+      this.log.warn({ error, threadId: usage.threadId, totalTokens: usage.totalTokens }, "failed to record token usage");
+    }
+  }
+
+  private async markPendingMessagesProcessingBestEffort(
+    messages: PendingMessage[],
+    update: { conversationKey?: string; codexThreadId?: string; codexTurnId?: string }
+  ): Promise<void> {
+    await this.markMessagesProcessingBestEffort(messages.map((message) => message.messageId), update);
+  }
+
+  private async markMessagesProcessingBestEffort(
+    messageIds: string[],
+    update: { conversationKey?: string; codexThreadId?: string; codexTurnId?: string } = {}
+  ): Promise<void> {
+    if (messageIds.length === 0) {
+      return;
+    }
+    try {
+      await this.options.repository.markLarkMessagesProcessing(messageIds, update);
+    } catch (error) {
+      this.log.warn({ error, messageIds }, "failed to mark lark messages processing");
+    }
+  }
+
+  private async markPendingMessagesQueuedBestEffort(messages: PendingMessage[]): Promise<void> {
+    for (const message of messages) {
+      try {
+        await this.options.repository.markLarkMessageQueued(message.messageId);
+      } catch (error) {
+        this.log.warn({ error, messageId: message.messageId }, "failed to mark lark message queued");
+      }
+    }
+  }
+
+  private async markMessagesCompletedBestEffort(messageIds: string[]): Promise<void> {
+    if (messageIds.length === 0) {
+      return;
+    }
+    try {
+      await this.options.repository.markLarkMessagesCompleted(messageIds);
+    } catch (error) {
+      this.log.warn({ error, messageIds }, "failed to mark lark messages completed");
+    }
+  }
+
+  private async markMessagesFailedBestEffort(messageIds: string[]): Promise<void> {
+    if (messageIds.length === 0) {
+      return;
+    }
+    try {
+      await this.options.repository.markLarkMessagesFailed(messageIds);
+    } catch (error) {
+      this.log.warn({ error, messageIds }, "failed to mark lark messages failed");
+    }
+  }
+
+  private async markPendingMessagesClearedBestEffort(messages: PendingMessage[]): Promise<void> {
+    const messageIds = messages.map((message) => message.messageId);
+    if (messageIds.length === 0) {
+      return;
+    }
+    try {
+      await this.options.repository.markLarkMessagesCleared(messageIds);
+    } catch (error) {
+      this.log.warn({ error, messageIds }, "failed to mark lark messages cleared");
     }
   }
 
@@ -854,6 +1096,26 @@ function parseSlashCommand(text: string): ParsedCommand {
   return { kind: "message", text };
 }
 
+function classifyInitialRoute(
+  state: ConversationState,
+  parsed: ParsedCommand,
+  originalText: string
+): { routeKind: LarkMessageRouteKind; status: "queued" | "processing"; text: string } {
+  if (parsed.kind === "queue" && parsed.text.length > 0) {
+    return { routeKind: "queued_message", status: "queued", text: parsed.text };
+  }
+  if (parsed.kind === "help" || parsed.kind === "stop" || parsed.kind === "new" || parsed.kind === "queue") {
+    return { routeKind: "control_message", status: "processing", text: originalText };
+  }
+  if (state.pendingBatch.length > 0 || state.active?.cancelRequested) {
+    return { routeKind: "queued_message", status: "queued", text: parsed.text };
+  }
+  if (state.active) {
+    return { routeKind: "steered_message", status: "processing", text: parsed.text };
+  }
+  return { routeKind: "message", status: "processing", text: parsed.text };
+}
+
 function toPendingMessage(message: IncomingLarkMessage, text: string): PendingMessage {
   return {
     messageId: message.messageId,
@@ -872,6 +1134,14 @@ function formatPendingMessageForCodex(message: PendingMessage): string {
     .map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`)
     .join(" ");
   return `<lark_message ${attributes}>\n${message.text}\n</lark_message>`;
+}
+
+function safeJsonStringify(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function escapeXmlText(value: string): string {

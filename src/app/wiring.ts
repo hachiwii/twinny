@@ -13,7 +13,7 @@ import { logger as defaultLogger } from "../observability/logs.js";
 import { TwinnySystemNotifier } from "../observability/system-notifications.js";
 import { getRoleCodexHome } from "../roles/index.js";
 import { createConversationRepository, openRuntimeDatabase, type ConversationRepository, type TwinnyDatabase } from "../store/index.js";
-import type { LarkReactionHandle, RoleName, TwinnyConfig } from "../types.js";
+import type { CodexThreadTokenUsageUpdate, LarkReactionHandle, RoleName, TwinnyConfig } from "../types.js";
 import { WorkspaceManager } from "../workspace/index.js";
 
 export interface TwinnyRuntimeOptions {
@@ -206,7 +206,16 @@ function adaptConversationRepository(repository: ConversationRepository) {
     findByConversationKey: (conversationKey: string) => repository.getByConversationKey(conversationKey) ?? null,
     create: repository.create.bind(repository),
     updateThreadBinding: repository.updateThreadBinding.bind(repository),
-    markThreadHasRollout: repository.markThreadHasRollout.bind(repository)
+    markThreadHasRollout: repository.markThreadHasRollout.bind(repository),
+    upsertUser: repository.upsertUser.bind(repository),
+    upsertCodexThread: repository.upsertCodexThread.bind(repository),
+    updateCodexThreadTokenUsage: repository.updateCodexThreadTokenUsage.bind(repository),
+    insertLarkMessage: repository.insertLarkMessage.bind(repository),
+    markLarkMessageQueued: repository.markLarkMessageQueued.bind(repository),
+    markLarkMessagesProcessing: repository.markLarkMessagesProcessing.bind(repository),
+    markLarkMessagesCompleted: repository.markLarkMessagesCompleted.bind(repository),
+    markLarkMessagesFailed: repository.markLarkMessagesFailed.bind(repository),
+    markLarkMessagesCleared: repository.markLarkMessagesCleared.bind(repository)
   };
 }
 
@@ -226,7 +235,8 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       input,
       cwd,
       onTurnStarted,
-      onAgentMessage
+      onAgentMessage,
+      onTokenUsage
     }: {
       role: RoleName;
       threadId: string;
@@ -234,13 +244,15 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       cwd: string;
       onTurnStarted?: (turnId: string) => Promise<void> | void;
       onAgentMessage?: (message: { id: string; text: string }) => Promise<void> | void;
+      onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
     }) =>
       pool.get(role).startTurn({
         threadId,
         text: input,
         cwd,
         onTurnStarted,
-        onAgentMessage
+        onAgentMessage,
+        onTokenUsage
       }),
     steerTurn: async ({
       role,

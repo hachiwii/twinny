@@ -161,4 +161,39 @@ describe("TurnOutputAccumulator", () => {
     expect(turnStarted).toHaveBeenCalledTimes(1);
     expect(turnStarted).toHaveBeenCalledWith("turn_1");
   });
+
+  it("emits thread token usage updates", async () => {
+    const tokenUsage = vi.fn();
+    const accumulator = new TurnOutputAccumulator("thread_123", undefined, {
+      onTokenUsage: tokenUsage
+    });
+
+    accumulator.record({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread_123",
+        turnId: "turn_1",
+        usage: {
+          total: {
+            totalTokens: 99
+          }
+        }
+      }
+    });
+
+    expect(tokenUsage).toHaveBeenCalledWith({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      totalTokens: 99,
+      raw: {
+        threadId: "thread_123",
+        turnId: "turn_1",
+        usage: {
+          total: {
+            totalTokens: 99
+          }
+        }
+      }
+    });
+  });
 });

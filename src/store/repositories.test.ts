@@ -60,7 +60,7 @@ describe("ConversationRepository", () => {
     expect(repo.list()).toEqual([created]);
   });
 
-  it("updates thread bindings transactionally without adding runtime event tables", () => {
+  it("updates thread bindings transactionally", () => {
     const repo = createConversationRepository(db, { now: () => now });
     const workspace = path.join(tempDir, "workspaces", "p2p:ou_456");
     const roleCodexHome = path.join(tempDir, "roles", "owner", "codex");
@@ -102,7 +102,112 @@ describe("ConversationRepository", () => {
       )
       .all()
       .map((row) => row.name);
-    expect(tables).toEqual(["conversations"]);
+    expect(tables).toEqual(["codex_threads", "conversations", "lark_messages", "users"]);
+  });
+
+  it("records runtime users, codex threads, messages, and token usage by business ids", () => {
+    const repo = createConversationRepository(db, { now: () => now });
+    const workspace = path.join(tempDir, "workspaces", "p2p:ou_456");
+    const roleCodexHome = path.join(tempDir, "roles", "guest", "codex");
+
+    repo.create({
+      conversationKey: "p2p:ou_456",
+      type: "p2p",
+      chatId: "ou_456",
+      name: "Guest User",
+      role: "guest",
+      codexThreadId: "thread-1",
+      workspace,
+      roleCodexHome
+    });
+
+    now = 1100;
+    const user = repo.upsertUser({ larkUserId: "ou_456", role: "guest", seenAt: 1001 });
+    expect(user).toMatchObject({
+      id: 1,
+      larkUserId: "ou_456",
+      name: "",
+      role: "guest",
+      createdAt: 1100,
+      updatedAt: 1100,
+      lastSeenAt: 1001
+    });
+
+    now = 1200;
+    const thread = repo.upsertCodexThread({
+      codexThreadId: "thread-1",
+      conversationKey: "p2p:ou_456",
+      role: "guest"
+    });
+    expect(thread).toMatchObject({
+      id: 1,
+      codexThreadId: "thread-1",
+      conversationKey: "p2p:ou_456",
+      role: "guest",
+      totalTokens: 0,
+      tokenUsageJson: "{}"
+    });
+
+    now = 1300;
+    const message = repo.insertLarkMessage({
+      larkMessageId: "om_1",
+      eventId: "event_1",
+      larkUserId: "ou_456",
+      conversationKey: "p2p:ou_456",
+      routeKind: "queued_message",
+      status: "queued",
+      text: "hello",
+      larkCreateTime: 1001,
+      rawEventJson: "{}"
+    });
+    expect(message).toMatchObject({
+      id: 1,
+      larkMessageId: "om_1",
+      larkUserId: "ou_456",
+      conversationKey: "p2p:ou_456",
+      routeKind: "queued_message",
+      status: "queued",
+      text: "hello",
+      receivedAt: 1300,
+      updatedAt: 1300
+    });
+
+    now = 1400;
+    repo.markLarkMessagesProcessing(["om_1"], {
+      conversationKey: "p2p:ou_456",
+      codexThreadId: "thread-1",
+      codexTurnId: "turn-1"
+    });
+    expect(repo.getLarkMessageById("om_1")).toMatchObject({
+      status: "processing",
+      codexThreadId: "thread-1",
+      codexTurnId: "turn-1",
+      processingStartedAt: 1400,
+      updatedAt: 1400
+    });
+
+    now = 1500;
+    repo.markLarkMessagesCompleted(["om_1"]);
+    expect(repo.getLarkMessageById("om_1")).toMatchObject({
+      status: "completed",
+      completedAt: 1500,
+      updatedAt: 1500
+    });
+
+    now = 1600;
+    repo.updateCodexThreadTokenUsage({
+      codexThreadId: "thread-1",
+      conversationKey: "p2p:ou_456",
+      role: "guest",
+      totalTokens: 123,
+      tokenUsageJson: '{"totalTokens":123}'
+    });
+    expect(repo.getCodexThreadById("thread-1")).toMatchObject({
+      codexThreadId: "thread-1",
+      totalTokens: 123,
+      tokenUsageJson: '{"totalTokens":123}',
+      updatedAt: 1600
+    });
   });
 
   it("rejects mismatched or unsafe conversation keys", () => {
