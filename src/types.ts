@@ -8,6 +8,14 @@ export type ConversationResponseMode = "all" | "at" | "none";
 
 export type AgentMessageMode = "plain" | "card";
 
+export type AgentMessagePhase = "commentary" | "final_answer";
+
+export interface CodexAgentMessage {
+  id: string;
+  text: string;
+  phase?: AgentMessagePhase | null;
+}
+
 export type LarkMessageRouteKind = "message" | "steered_message" | "queued_message" | "control_message" | "card_action";
 
 export type LarkMessageStatus =

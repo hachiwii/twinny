@@ -24,7 +24,7 @@ import { logger as defaultLogger } from "../observability/logs.js";
 import { TwinnySystemNotifier } from "../observability/system-notifications.js";
 import { getRoleCodexHome } from "../roles/index.js";
 import { createConversationRepository, openRuntimeDatabase, type ConversationRepository, type TwinnyDatabase } from "../store/index.js";
-import type { CodexThreadTokenUsageUpdate, LarkReactionHandle, RoleName, TwinnyConfig } from "../types.js";
+import type { CodexAgentMessage, CodexThreadTokenUsageUpdate, LarkReactionHandle, RoleName, TwinnyConfig } from "../types.js";
 import { WorkspaceManager } from "../workspace/index.js";
 
 export interface TwinnyRuntimeOptions {
@@ -316,7 +316,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       input: string;
       cwd: string;
       onTurnStarted?: (turnId: string) => Promise<void> | void;
-      onAgentMessage?: (message: { id: string; text: string }) => Promise<void> | void;
+      onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
       onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
     }) =>
       pool.get(role).startTurn({

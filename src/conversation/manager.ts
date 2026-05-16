@@ -18,6 +18,7 @@ import { logger as defaultLogger } from "../observability/logs.js";
 import type {
   CodexThreadTokenUsageUpdate,
   CodexTurnResult,
+  CodexAgentMessage,
   AgentMessageMode,
   ConversationResponseMode,
   ConversationRecord,
@@ -179,7 +180,7 @@ export interface CodexBridge {
     cwd: string;
     approvalPolicy: "never";
     onTurnStarted?: (turnId: string) => Promise<void> | void;
-    onAgentMessage?: (message: { id: string; text: string }) => Promise<void> | void;
+    onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
     onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
   }): Promise<CodexTurnResult>;
   steerTurn(params: {
@@ -281,6 +282,8 @@ interface ActiveTurn {
   completedStatus?: CodexTurnResult["status"];
   resultText?: string;
   resultError?: string;
+  finalAgentMessageText?: string;
+  sawAgentMessagePhase?: boolean;
   card?: ActiveTurnCardState;
   pendingSteers: PendingMessage[];
   messageIds: Set<string>;
@@ -2328,7 +2331,7 @@ export class ConversationManager {
   private async replyAgentMessageForActiveBestEffort(
     state: ConversationState,
     active: ActiveTurn,
-    agentMessage: { id: string; text: string }
+    agentMessage: CodexAgentMessage
   ): Promise<void> {
     if (state.active !== active || active.cancelRequested) {
       return;
@@ -2348,15 +2351,22 @@ export class ConversationManager {
   private async updateAgentCardWithMessageBestEffort(
     state: ConversationState,
     active: ActiveTurn,
-    agentMessage: { id: string; text: string }
+    agentMessage: CodexAgentMessage
   ): Promise<void> {
     const text = agentMessage.text.trim();
     if (text.length === 0) {
       return;
     }
+    if (agentMessage.phase === "commentary" || agentMessage.phase === "final_answer") {
+      active.sawAgentMessagePhase = true;
+    }
     const card = active.card;
     if (!card || card.fallbackPlain) {
       await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
+      return;
+    }
+    if (agentMessage.phase === "final_answer") {
+      active.finalAgentMessageText = text;
       return;
     }
     card.messages.push({ id: agentMessage.id, text });
@@ -2431,7 +2441,12 @@ export class ConversationManager {
       return;
     }
     try {
-      const final = splitFinalAgentCardMessages(card.messages, active.resultText ?? "");
+      const final = splitFinalAgentCardMessages(
+        card.messages,
+        active.resultText ?? "",
+        active.finalAgentMessageText,
+        active.sawAgentMessagePhase === true
+      );
       const output = await this.prepareAgentFinalCardOutputForLark(final.text, active.workspace);
       const rendered = this.renderAgentCard(state, active, "finished", output.elements, undefined, final.processMessages);
       await this.options.lark.patchCard(card.messageId, rendered);
@@ -2568,7 +2583,7 @@ export class ConversationManager {
   private async replyAgentMessageBestEffort(
     active: ActiveTurn,
     messageId: string,
-    agentMessage: { id: string; text: string }
+    agentMessage: CodexAgentMessage
   ): Promise<void> {
     const text = agentMessage.text.trim();
     if (text.length === 0) {
@@ -3105,8 +3120,16 @@ function countNextPendingBatch(state: ConversationState): number {
 
 function splitFinalAgentCardMessages(
   messages: TwinnyAgentCardMessage[],
-  fallbackFinalText: string
+  fallbackFinalText: string,
+  explicitFinalText?: string,
+  keepAllProcessMessages = false
 ): { text: string; processMessages: TwinnyAgentCardMessage[] } {
+  if (explicitFinalText !== undefined) {
+    return { text: explicitFinalText, processMessages: messages };
+  }
+  if (keepAllProcessMessages) {
+    return { text: fallbackFinalText, processMessages: messages };
+  }
   if (messages.length === 0) {
     return { text: fallbackFinalText, processMessages: [] };
   }

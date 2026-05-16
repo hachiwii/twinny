@@ -1,5 +1,5 @@
 import { TwinnyError, toErrorMessage } from "../errors.js";
-import type { CodexThreadTokenUsageUpdate, CodexTurnResult } from "../types.js";
+import type { AgentMessagePhase, CodexAgentMessage, CodexThreadTokenUsageUpdate, CodexTurnResult } from "../types.js";
 import type { CodexNotificationMessage, CodexProtocolClient } from "./protocol.js";
 
 export interface TextTurnInput {
@@ -54,10 +54,7 @@ interface ItemCompletedParams {
   item?: unknown;
 }
 
-export interface CompletedAgentMessage {
-  id: string;
-  text: string;
-}
+export type CompletedAgentMessage = CodexAgentMessage;
 
 export interface TurnSteerOptions {
   threadId: string;
@@ -163,6 +160,7 @@ export class TurnOutputAccumulator {
   private readonly pendingAgentMessageCallbacks: Promise<void>[] = [];
   private agentMessageCallbackChain = Promise.resolve();
   private readonly startedAt = Date.now();
+  private finalAnswerText: string | undefined;
   private turnId: string | undefined;
   private emittedTurnStarted = false;
   private completed: TurnCompletedParams | undefined;
@@ -287,6 +285,9 @@ export class TurnOutputAccumulator {
     const item = extractAgentMessage(params.item);
     if (item) {
       this.assistantMessages.set(item.id, item.text);
+      if (item.phase === "final_answer") {
+        this.finalAnswerText = item.text;
+      }
       this.emitAgentMessage(item);
     }
   }
@@ -310,6 +311,9 @@ export class TurnOutputAccumulator {
       const message = extractAgentMessage(item);
       if (message) {
         this.assistantMessages.set(message.id, message.text);
+        if (message.phase === "final_answer") {
+          this.finalAnswerText = message.text;
+        }
       }
     }
 
@@ -354,7 +358,7 @@ export class TurnOutputAccumulator {
     return {
       threadId: this.threadId,
       turnId: this.turnId,
-      text: this.text,
+      text: this.finalAnswerText ?? this.text,
       status,
       error: status === "failed" ? extractErrorMessage(turn?.error) : undefined,
       durationMs: typeof turn?.durationMs === "number" ? turn.durationMs : Date.now() - this.startedAt
@@ -400,7 +404,15 @@ function extractAgentMessage(item: unknown): CompletedAgentMessage | undefined {
   if (!id || text === undefined) {
     return undefined;
   }
-  return { id, text };
+  const phase = agentMessagePhaseValue(item.phase);
+  return phase === undefined ? { id, text } : { id, text, phase };
+}
+
+function agentMessagePhaseValue(value: unknown): AgentMessagePhase | null | undefined {
+  if (value === null) {
+    return null;
+  }
+  return value === "commentary" || value === "final_answer" ? value : undefined;
 }
 
 function extractErrorMessage(error: unknown): string | undefined {

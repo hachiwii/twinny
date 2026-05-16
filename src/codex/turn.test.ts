@@ -135,6 +135,53 @@ describe("TurnOutputAccumulator", () => {
     expect(messages).toEqual([{ id: "msg_1", text: "first" }]);
   });
 
+  it("preserves agentMessage phase and prefers final answer text in turn results", async () => {
+    const messages: Array<{ id: string; text: string; phase?: "commentary" | "final_answer" | null }> = [];
+    const accumulator = new TurnOutputAccumulator("thread_123", undefined, {
+      onAgentMessage: (message) => {
+        messages.push(message);
+      }
+    });
+
+    accumulator.record({
+      method: "turn/started",
+      params: {
+        threadId: "thread_123",
+        turn: { id: "turn_1" }
+      }
+    });
+    accumulator.record({
+      method: "item/completed",
+      params: {
+        threadId: "thread_123",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "msg_1", text: "working", phase: "commentary" }
+      }
+    });
+    accumulator.record({
+      method: "turn/completed",
+      params: {
+        threadId: "thread_123",
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          items: [
+            { type: "agentMessage", id: "msg_1", text: "working", phase: "commentary" },
+            { type: "agentMessage", id: "msg_2", text: "final result", phase: "final_answer" }
+          ]
+        }
+      }
+    });
+
+    await expect(accumulator.wait()).resolves.toMatchObject({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      text: "final result",
+      status: "completed"
+    });
+    expect(messages).toEqual([{ id: "msg_1", text: "working", phase: "commentary" }]);
+  });
+
   it("reports interrupted turn status and emits turn-started once", async () => {
     const turnStarted = vi.fn();
     const accumulator = new TurnOutputAccumulator("thread_123", undefined, {

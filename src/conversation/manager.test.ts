@@ -1516,6 +1516,47 @@ describe("ConversationManager", () => {
     expect(lark.addCompletedReaction).not.toHaveBeenCalled();
   });
 
+  it("uses agent message phase to keep commentary in card progress and final_answer as the result", async () => {
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({ id: "agent_1", text: "working notes", phase: "commentary" });
+        await onAgentMessage?.({ id: "agent_2", text: "final answer", phase: "final_answer" });
+        return {
+          threadId,
+          turnId: "turn_1",
+          text: "working notes\n\nfinal answer",
+          status: "completed" as const
+        };
+      })
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith(
+        "card_m1_1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+
+    const finalCard = vi.mocked(lark.patchCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const finalBodyElements = (finalCard.body as { elements: unknown[] }).elements;
+    const processPanel = finalBodyElements[0] as Record<string, unknown>;
+    const finalContent = finalBodyElements.slice(1);
+    expect(JSON.stringify(processPanel)).toContain("working notes");
+    expect(JSON.stringify(processPanel)).not.toContain("final answer");
+    expect(JSON.stringify(finalContent)).toContain("final answer");
+    expect(JSON.stringify(finalContent)).not.toContain("working notes");
+    expect(lark.replyMarkdown).not.toHaveBeenCalled();
+  });
+
   it("records card button actions as control history and dispatches /next", async () => {
     const { repository } = createRepository();
     const { codex, turns } = createDeferredCodex();
