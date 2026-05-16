@@ -4,7 +4,14 @@ export type ConversationType = "p2p";
 
 export type LarkMessageRouteKind = "message" | "steered_message" | "queued_message" | "control_message";
 
-export type LarkMessageStatus = "queued" | "processing" | "completed" | "failed" | "cleared";
+export type LarkMessageStatus =
+  | "queued"
+  | "processing"
+  | "steered"
+  | "completed"
+  | "failed"
+  | "interrupted"
+  | "cleared";
 
 export const DEFAULT_LARK_WORKING_REACTION = "Typing";
 export const DEFAULT_LARK_COMPLETED_REACTION = "DONE";

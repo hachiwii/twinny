@@ -131,6 +131,10 @@ export class CodexAppServer extends EventEmitter {
     await interruptCodexTurn(this.protocol, options);
   }
 
+  async readAccountRateLimits(): Promise<unknown> {
+    return this.protocol.request("account/rateLimits/read");
+  }
+
   async stop(signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
     const child = this.child;
     this.protocolClient?.close();

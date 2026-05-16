@@ -14,6 +14,7 @@ import type {
   LarkReactionHandle,
   NewConversationRecord,
   RoleName,
+  CodexThreadRecord,
   UserRecord,
   TwinnyConfig
 } from "../types.js";
@@ -35,6 +36,7 @@ export interface ConversationRepository {
   ): Promise<ConversationRecord> | ConversationRecord;
   markThreadHasRollout(conversationKey: string, codexThreadId: string): Promise<void> | void;
   getUserByLarkUserId(larkUserId: string): Promise<UserRecord | undefined> | UserRecord | undefined;
+  getCodexThreadById(codexThreadId: string): Promise<CodexThreadRecord | undefined> | CodexThreadRecord | undefined;
   getLarkMessageById(larkMessageId: string): Promise<unknown | undefined> | unknown | undefined;
   listUnfinishedLarkMessages(): Promise<LarkMessageRecord[]> | LarkMessageRecord[];
   upsertUser(input: {
@@ -76,8 +78,13 @@ export interface ConversationRepository {
     larkMessageIds: string[],
     update?: { conversationKey?: string; codexThreadId?: string; codexTurnId?: string }
   ): Promise<void> | void;
+  markLarkMessagesSteered(
+    larkMessageIds: string[],
+    update?: { conversationKey?: string; codexThreadId?: string; codexTurnId?: string }
+  ): Promise<void> | void;
   markLarkMessagesCompleted(larkMessageIds: string[]): Promise<void> | void;
   markLarkMessagesFailed(larkMessageIds: string[]): Promise<void> | void;
+  markLarkMessagesInterrupted(larkMessageIds: string[]): Promise<void> | void;
   markLarkMessagesCleared(larkMessageIds: string[]): Promise<void> | void;
 }
 
@@ -134,6 +141,7 @@ export interface CodexBridge {
     threadId: string;
     turnId: string;
   }): Promise<void>;
+  readAccountRateLimits?(params: { role: RoleName }): Promise<unknown>;
 }
 
 export interface LarkResponder {
@@ -188,6 +196,8 @@ interface ActiveTurn {
   completedStatus?: CodexTurnResult["status"];
   pendingSteers: PendingMessage[];
   messageIds: Set<string>;
+  processingMessageIds: Set<string>;
+  steeredMessageIds: Set<string>;
   cancelRequested: boolean;
 }
 
@@ -204,6 +214,8 @@ type ParsedCommand =
   | { kind: "message"; text: string }
   | { kind: "queue"; text: string }
   | { kind: "stop" }
+  | { kind: "next" }
+  | { kind: "status" }
   | { kind: "new" }
   | { kind: "help" };
 
@@ -212,8 +224,10 @@ export class ConversationManager {
   private static readonly helpText = [
     "可用指令：",
     "/help - 查看可用指令和使用说明",
+    "/status - 查看当前会话、Codex thread 和 token 用量",
     "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
     "/stop - 停止当前任务并清空待处理消息",
+    "/next - 打断当前任务，并执行队列中的下一条消息",
     "/queue <message> - 将消息加入下一轮队列，不注入当前任务"
   ].join("\n");
 
@@ -475,8 +489,16 @@ export class ConversationManager {
       await this.handleHelpCommand(message);
       return;
     }
+    if (parsed.kind === "status") {
+      await this.handleStatusCommand(state, conversationKey, message);
+      return;
+    }
     if (parsed.kind === "stop") {
       await this.handleStopCommand(state, message);
+      return;
+    }
+    if (parsed.kind === "next") {
+      await this.handleNextCommand(state, conversationKey, message);
       return;
     }
     if (parsed.kind === "new") {
@@ -629,6 +651,43 @@ export class ConversationManager {
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
+  private async handleStatusCommand(
+    state: ConversationState,
+    conversationKey: string,
+    message: IncomingLarkMessage
+  ): Promise<void> {
+    const role = roleForSender(this.options.config, message.senderOpenId);
+    const conversation = await this.options.repository.findByConversationKey(conversationKey);
+    const threadId = state.active?.threadId ?? conversation?.codexThreadId;
+    const thread = threadId ? await this.options.repository.getCodexThreadById(threadId) : undefined;
+    const lines = [
+      `OUID: ${message.senderOpenId}`,
+      `Conversation Key: ${conversationKey}`,
+      `Codex Thread ID: ${threadId ?? "未创建"}`,
+      ...formatThreadTokenStatus(thread)
+    ];
+
+    if (role === "owner") {
+      lines.push(...(await this.formatOwnerRateLimitStatus(role)));
+    }
+
+    await this.replyControlBestEffort(message.messageId, lines.join("\n"));
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async formatOwnerRateLimitStatus(role: RoleName): Promise<string[]> {
+    if (!this.options.codex.readAccountRateLimits) {
+      return ["Codex Account Usage: unavailable"];
+    }
+    try {
+      const usage = await this.options.codex.readAccountRateLimits({ role });
+      return formatAccountRateLimitStatus(usage);
+    } catch (error) {
+      this.log.warn({ error, role }, "failed to read codex account rate limits");
+      return ["Codex Account Usage: unavailable"];
+    }
+  }
+
   private async handleStopCommand(state: ConversationState, message: IncomingLarkMessage): Promise<void> {
     const clearedMessages = this.clearPendingMessages(state);
     const cleared = clearedMessages.length;
@@ -637,6 +696,27 @@ export class ConversationManager {
     const summary = interrupted
       ? `已停止当前任务，清空 ${cleared} 条待处理消息。`
       : `当前没有正在运行的任务，清空 ${cleared} 条待处理消息。`;
+    await this.replyControlBestEffort(message.messageId, summary);
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async handleNextCommand(
+    state: ConversationState,
+    conversationKey: string,
+    message: IncomingLarkMessage
+  ): Promise<void> {
+    const queued = state.pendingBatch.length;
+    const interrupted = await this.cancelActiveTurn(state, { waitForCompletion: true });
+    if (!interrupted) {
+      await this.startPendingBatch(state, conversationKey, { limit: 1 });
+    }
+    const summary = interrupted
+      ? queued > 0
+        ? `已打断当前任务，将执行队列中的下一条消息。队列剩余 ${Math.max(queued - 1, 0)} 条。`
+        : "已打断当前任务，但队列为空。"
+      : queued > 0
+        ? `当前没有正在运行的任务，开始执行队列中的下一条消息。队列剩余 ${Math.max(queued - 1, 0)} 条。`
+        : "当前没有正在运行的任务，队列为空。";
     await this.replyControlBestEffort(message.messageId, summary);
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
@@ -694,8 +774,10 @@ export class ConversationManager {
     message: PendingMessage
   ): Promise<void> {
     if (!active.turnId) {
+      await this.markActiveProcessingMessagesSteered(active);
       active.pendingSteers.push(message);
       active.messageIds.add(message.messageId);
+      active.processingMessageIds.add(message.messageId);
       await this.markMessagesProcessingBestEffort([message.messageId], {
         conversationKey: active.conversationKey,
         codexThreadId: active.threadId
@@ -714,7 +796,9 @@ export class ConversationManager {
         cwd: active.workspace,
         approvalPolicy: "never"
       });
+      await this.markActiveProcessingMessagesSteered(active);
       active.messageIds.add(message.messageId);
+      active.processingMessageIds.add(message.messageId);
       await this.markMessagesProcessingBestEffort([message.messageId], {
         conversationKey: active.conversationKey,
         codexThreadId: active.threadId,
@@ -733,11 +817,16 @@ export class ConversationManager {
     }
   }
 
-  private async startPendingBatch(state: ConversationState, conversationKey: string): Promise<void> {
+  private async startPendingBatch(
+    state: ConversationState,
+    conversationKey: string,
+    options: { limit?: number } = {}
+  ): Promise<void> {
     if (state.active || state.pendingBatch.length === 0) {
       return;
     }
-    const messages = state.pendingBatch.splice(0);
+    const count = options.limit === undefined ? state.pendingBatch.length : Math.max(0, Math.min(options.limit, state.pendingBatch.length));
+    const messages = state.pendingBatch.splice(0, count);
     await this.startTurnForMessages(state, conversationKey, messages);
   }
 
@@ -805,6 +894,8 @@ export class ConversationManager {
       reaction: await this.addReactionBestEffort(anchor.messageId),
       pendingSteers: [],
       messageIds: new Set(params.messages.map((message) => message.messageId)),
+      processingMessageIds: new Set(params.messages.map((message) => message.messageId)),
+      steeredMessageIds: new Set(),
       cancelRequested: false
     };
     state.active = active;
@@ -838,7 +929,7 @@ export class ConversationManager {
       })
       .catch(async (error) => {
         if (state.active === active && !active.cancelRequested) {
-          await this.markMessagesFailedBestEffort([...active.messageIds]);
+          await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
           this.log.error({ error, messageId: active.replyMessageId, conversationKey }, "conversation turn failed");
           await this.replyErrorBestEffort(active.replyMessageId, error);
         } else {
@@ -864,7 +955,12 @@ export class ConversationManager {
         return;
       }
       await this.options.repository.markThreadHasRollout(active.conversationKey, active.threadId);
-      await this.markMessagesProcessingBestEffort([...active.messageIds], {
+      await this.markMessagesProcessingBestEffort([...active.processingMessageIds], {
+        conversationKey: active.conversationKey,
+        codexThreadId: active.threadId,
+        codexTurnId: turnId
+      });
+      await this.markMessagesSteeredBestEffort([...active.steeredMessageIds], {
         conversationKey: active.conversationKey,
         codexThreadId: active.threadId,
         codexTurnId: turnId
@@ -884,6 +980,8 @@ export class ConversationManager {
         const remaining = pending.slice(index);
         for (const message of remaining) {
           active.messageIds.delete(message.messageId);
+          active.processingMessageIds.delete(message.messageId);
+          active.steeredMessageIds.delete(message.messageId);
         }
         state.pendingBatch.unshift(...remaining);
         await this.markPendingMessagesQueuedBestEffort(remaining);
@@ -899,11 +997,16 @@ export class ConversationManager {
           cwd: active.workspace,
           approvalPolicy: "never"
         });
-        await this.markMessagesProcessingBestEffort([message.messageId], {
+        const update = {
           conversationKey: active.conversationKey,
           codexThreadId: active.threadId,
           codexTurnId: active.turnId
-        });
+        };
+        if (active.processingMessageIds.has(message.messageId)) {
+          await this.markMessagesProcessingBestEffort([message.messageId], update);
+        } else {
+          await this.markMessagesSteeredBestEffort([message.messageId], update);
+        }
       } catch (error) {
         this.log.warn(
           { error, threadId: active.threadId, turnId: active.turnId, messageId: message.messageId },
@@ -912,6 +1015,8 @@ export class ConversationManager {
         const remaining = pending.slice(index);
         for (const queued of remaining) {
           active.messageIds.delete(queued.messageId);
+          active.processingMessageIds.delete(queued.messageId);
+          active.steeredMessageIds.delete(queued.messageId);
         }
         state.pendingBatch.unshift(...remaining);
         await this.markPendingMessagesQueuedBestEffort(remaining);
@@ -931,37 +1036,39 @@ export class ConversationManager {
     }
     state.active = undefined;
     await this.clearReactionBestEffort(active);
+    if (active.cancelRequested) {
+      await this.startPendingBatch(state, conversationKey, { limit: 1 });
+      return;
+    }
     if (active.completedStatus === "completed") {
-      await this.markMessagesCompletedBestEffort([...active.messageIds]);
+      await this.markMessagesCompletedBestEffort([...active.processingMessageIds]);
     } else {
-      await this.markMessagesFailedBestEffort([...active.messageIds]);
+      await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
     }
     await this.addCompletedReactionBestEffort(active);
     await this.startPendingBatch(state, conversationKey);
   }
 
   private clearPendingMessages(state: ConversationState): PendingMessage[] {
-    const activePending = state.active?.pendingSteers.splice(0) ?? [];
-    if (state.active) {
-      state.active.pendingSteers = [];
-      for (const pending of activePending) {
-        state.active.messageIds.delete(pending.messageId);
-      }
-    }
     const batchPending = state.pendingBatch.splice(0);
-    return [...activePending, ...batchPending];
+    return batchPending;
   }
 
-  private async cancelActiveTurn(state: ConversationState): Promise<boolean> {
+  private async cancelActiveTurn(
+    state: ConversationState,
+    options: { waitForCompletion?: boolean } = {}
+  ): Promise<boolean> {
     const active = state.active;
     if (!active) {
       return false;
     }
-    state.active = undefined;
+    if (!options.waitForCompletion) {
+      state.active = undefined;
+    }
     active.cancelRequested = true;
     active.pendingSteers = [];
     await this.clearReactionBestEffort(active);
-    await this.markMessagesFailedBestEffort([...active.messageIds]);
+    await this.markMessagesInterruptedBestEffort([...active.processingMessageIds]);
     if (active.turnId) {
       await this.interruptActiveTurnBestEffort(active);
     }
@@ -1049,6 +1156,36 @@ export class ConversationManager {
     }
   }
 
+  private async markActiveProcessingMessagesSteered(active: ActiveTurn): Promise<void> {
+    const messageIds = [...active.processingMessageIds];
+    if (messageIds.length === 0) {
+      return;
+    }
+    await this.markMessagesSteeredBestEffort(messageIds, {
+      conversationKey: active.conversationKey,
+      codexThreadId: active.threadId,
+      codexTurnId: active.turnId
+    });
+    for (const messageId of messageIds) {
+      active.steeredMessageIds.add(messageId);
+    }
+    active.processingMessageIds.clear();
+  }
+
+  private async markMessagesSteeredBestEffort(
+    messageIds: string[],
+    update: { conversationKey?: string; codexThreadId?: string; codexTurnId?: string } = {}
+  ): Promise<void> {
+    if (messageIds.length === 0) {
+      return;
+    }
+    try {
+      await this.options.repository.markLarkMessagesSteered(messageIds, update);
+    } catch (error) {
+      this.log.warn({ error, messageIds }, "failed to mark lark messages steered");
+    }
+  }
+
   private async markPendingMessagesQueuedBestEffort(messages: PendingMessage[]): Promise<void> {
     for (const message of messages) {
       try {
@@ -1078,6 +1215,17 @@ export class ConversationManager {
       await this.options.repository.markLarkMessagesFailed(messageIds);
     } catch (error) {
       this.log.warn({ error, messageIds }, "failed to mark lark messages failed");
+    }
+  }
+
+  private async markMessagesInterruptedBestEffort(messageIds: string[]): Promise<void> {
+    if (messageIds.length === 0) {
+      return;
+    }
+    try {
+      await this.options.repository.markLarkMessagesInterrupted(messageIds);
+    } catch (error) {
+      this.log.warn({ error, messageIds }, "failed to mark lark messages interrupted");
     }
   }
 
@@ -1320,6 +1468,12 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "stop") {
     return { kind: "stop" };
   }
+  if (command === "next") {
+    return { kind: "next" };
+  }
+  if (command === "status") {
+    return { kind: "status" };
+  }
   if (command === "new") {
     return { kind: "new" };
   }
@@ -1340,7 +1494,14 @@ function classifyInitialRoute(
   if (parsed.kind === "queue" && parsed.text.length > 0) {
     return { routeKind: "queued_message", status: "queued", text: parsed.text };
   }
-  if (parsed.kind === "help" || parsed.kind === "stop" || parsed.kind === "new" || parsed.kind === "queue") {
+  if (
+    parsed.kind === "help" ||
+    parsed.kind === "status" ||
+    parsed.kind === "stop" ||
+    parsed.kind === "next" ||
+    parsed.kind === "new" ||
+    parsed.kind === "queue"
+  ) {
     return { routeKind: "control_message", status: "processing", text: originalText };
   }
   if (state.pendingBatch.length > 0 || state.active?.cancelRequested) {
@@ -1380,6 +1541,130 @@ function formatPendingMessageForCodex(message: PendingMessage): string {
   return `<lark_message ${renderedAttributes}>\n${message.text}\n</lark_message>`;
 }
 
+interface TokenBreakdown {
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+}
+
+interface RateLimitWindowStatus {
+  usedPercent: number;
+  windowDurationMins?: number;
+  resetsAt?: number;
+}
+
+function formatThreadTokenStatus(thread: CodexThreadRecord | undefined): string[] {
+  const breakdown = extractThreadTokenBreakdown(thread);
+  const cacheHitRate = breakdown.inputTokens > 0 ? breakdown.cachedInputTokens / breakdown.inputTokens : 0;
+  return [
+    "Thread Token Usage:",
+    `- total: ${formatInteger(breakdown.totalTokens)}`,
+    `- input: ${formatInteger(breakdown.inputTokens)}`,
+    `- output: ${formatInteger(breakdown.outputTokens)}`,
+    `- cached input: ${formatInteger(breakdown.cachedInputTokens)}`,
+    `- reasoning output: ${formatInteger(breakdown.reasoningOutputTokens)}`,
+    `- cache hit rate: ${formatPercent(cacheHitRate)}`
+  ];
+}
+
+function extractThreadTokenBreakdown(thread: CodexThreadRecord | undefined): TokenBreakdown {
+  const raw = parseStoredRawEvent(thread?.tokenUsageJson);
+  const total = firstRecord(
+    nestedRecord(raw, ["tokenUsage", "total"]),
+    nestedRecord(raw, ["usage", "total"]),
+    nestedRecord(raw, ["total"])
+  );
+  return {
+    totalTokens: finiteNumber(total?.totalTokens, total?.total_tokens, thread?.totalTokens) ?? 0,
+    inputTokens: finiteNumber(total?.inputTokens, total?.input_tokens) ?? 0,
+    cachedInputTokens: finiteNumber(total?.cachedInputTokens, total?.cached_input_tokens) ?? 0,
+    outputTokens: finiteNumber(total?.outputTokens, total?.output_tokens) ?? 0,
+    reasoningOutputTokens: finiteNumber(total?.reasoningOutputTokens, total?.reasoning_output_tokens) ?? 0
+  };
+}
+
+function formatAccountRateLimitStatus(value: unknown): string[] {
+  const windows = collectRateLimitWindows(value);
+  const fiveHour = findRateLimitWindow(windows, 5 * 60);
+  const sevenDay = findRateLimitWindow(windows, 7 * 24 * 60);
+  return [
+    "Codex Account Usage:",
+    `- 5h: ${fiveHour ? formatRateLimitWindow(fiveHour) : "unavailable"}`,
+    `- 7d: ${sevenDay ? formatRateLimitWindow(sevenDay) : "unavailable"}`
+  ];
+}
+
+function collectRateLimitWindows(value: unknown): RateLimitWindowStatus[] {
+  const snapshots = collectRateLimitSnapshots(value);
+  const windows: RateLimitWindowStatus[] = [];
+  for (const snapshot of snapshots) {
+    for (const key of ["primary", "secondary"] as const) {
+      const window = snapshot[key];
+      if (!isRecord(window)) {
+        continue;
+      }
+      const usedPercent = finiteNumber(window.usedPercent, window.used_percent);
+      if (usedPercent === undefined) {
+        continue;
+      }
+      windows.push({
+        usedPercent,
+        windowDurationMins: finiteNumber(window.windowDurationMins, window.window_duration_mins),
+        resetsAt: finiteNumber(window.resetsAt, window.resets_at)
+      });
+    }
+  }
+  return windows;
+}
+
+function collectRateLimitSnapshots(value: unknown): Record<string, unknown>[] {
+  const snapshots: Record<string, unknown>[] = [];
+  const root = isRecord(value) ? value : undefined;
+  const primary = root?.rateLimits ?? root?.rate_limits;
+  if (isRecord(primary)) {
+    snapshots.push(primary);
+  }
+  const byLimitId = root?.rateLimitsByLimitId ?? root?.rate_limits_by_limit_id;
+  if (isRecord(byLimitId)) {
+    for (const snapshot of Object.values(byLimitId)) {
+      if (isRecord(snapshot)) {
+        snapshots.push(snapshot);
+      }
+    }
+  }
+  return snapshots;
+}
+
+function findRateLimitWindow(
+  windows: RateLimitWindowStatus[],
+  durationMins: number
+): RateLimitWindowStatus | undefined {
+  return windows.find((window) => window.windowDurationMins === durationMins);
+}
+
+function formatRateLimitWindow(window: RateLimitWindowStatus): string {
+  const parts = [`${formatPercent(window.usedPercent / 100)} used`];
+  if (window.resetsAt !== undefined) {
+    parts.push(`resets ${formatUnixTimestamp(window.resetsAt)}`);
+  }
+  return parts.join(", ");
+}
+
+function formatUnixTimestamp(value: number): string {
+  const millis = value > 1_000_000_000_000 ? value : value * 1000;
+  return new Date(millis).toISOString();
+}
+
+function formatInteger(value: number): string {
+  return Math.trunc(value).toLocaleString("en-US");
+}
+
+function formatPercent(value: number): string {
+  return `${(value * 100).toFixed(2)}%`;
+}
+
 function nonEmptyString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -1409,6 +1694,36 @@ function lastDefined<T>(values: Array<T | undefined>): T | undefined {
     const value = values[index];
     if (value !== undefined) {
       return value;
+    }
+  }
+  return undefined;
+}
+
+function firstRecord(...values: Array<Record<string, unknown> | undefined>): Record<string, unknown> | undefined {
+  return values.find((value) => value !== undefined);
+}
+
+function nestedRecord(value: unknown, path: string[]): Record<string, unknown> | undefined {
+  let current: unknown = value;
+  for (const key of path) {
+    if (!isRecord(current)) {
+      return undefined;
+    }
+    current = current[key];
+  }
+  return isRecord(current) ? current : undefined;
+}
+
+function finiteNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
     }
   }
   return undefined;

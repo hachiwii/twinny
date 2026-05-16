@@ -187,11 +187,32 @@ describe("ConversationRepository", () => {
     });
 
     now = 1500;
+    repo.markLarkMessagesSteered(["om_1"], {
+      conversationKey: "p2p:ou_456",
+      codexThreadId: "thread-1",
+      codexTurnId: "turn-1"
+    });
+    expect(repo.getLarkMessageById("om_1")).toMatchObject({
+      status: "steered",
+      codexThreadId: "thread-1",
+      codexTurnId: "turn-1",
+      updatedAt: 1500
+    });
+
+    now = 1550;
+    repo.markLarkMessagesInterrupted(["om_1"]);
+    expect(repo.getLarkMessageById("om_1")).toMatchObject({
+      status: "interrupted",
+      failedAt: 1550,
+      updatedAt: 1550
+    });
+
+    now = 1600;
     repo.markLarkMessagesCompleted(["om_1"]);
     expect(repo.getLarkMessageById("om_1")).toMatchObject({
       status: "completed",
-      completedAt: 1500,
-      updatedAt: 1500
+      completedAt: 1600,
+      updatedAt: 1600
     });
 
     repo.insertLarkMessage({
@@ -216,7 +237,7 @@ describe("ConversationRepository", () => {
     });
     expect(repo.listUnfinishedLarkMessages().map((row) => row.larkMessageId)).toEqual(["om_2", "om_3"]);
 
-    now = 1600;
+    now = 1700;
     repo.updateCodexThreadTokenUsage({
       codexThreadId: "thread-1",
       conversationKey: "p2p:ou_456",
@@ -228,7 +249,7 @@ describe("ConversationRepository", () => {
       codexThreadId: "thread-1",
       totalTokens: 123,
       tokenUsageJson: '{"totalTokens":123}',
-      updatedAt: 1600
+      updatedAt: 1700
     });
   });
 

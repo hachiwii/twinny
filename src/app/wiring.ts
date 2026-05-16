@@ -215,6 +215,7 @@ function adaptConversationRepository(repository: ConversationRepository) {
     updateThreadBinding: repository.updateThreadBinding.bind(repository),
     markThreadHasRollout: repository.markThreadHasRollout.bind(repository),
     getUserByLarkUserId: repository.getUserByLarkUserId.bind(repository),
+    getCodexThreadById: repository.getCodexThreadById.bind(repository),
     getLarkMessageById: repository.getLarkMessageById.bind(repository),
     listUnfinishedLarkMessages: repository.listUnfinishedLarkMessages.bind(repository),
     upsertUser: repository.upsertUser.bind(repository),
@@ -223,8 +224,10 @@ function adaptConversationRepository(repository: ConversationRepository) {
     insertLarkMessage: repository.insertLarkMessage.bind(repository),
     markLarkMessageQueued: repository.markLarkMessageQueued.bind(repository),
     markLarkMessagesProcessing: repository.markLarkMessagesProcessing.bind(repository),
+    markLarkMessagesSteered: repository.markLarkMessagesSteered.bind(repository),
     markLarkMessagesCompleted: repository.markLarkMessagesCompleted.bind(repository),
     markLarkMessagesFailed: repository.markLarkMessagesFailed.bind(repository),
+    markLarkMessagesInterrupted: repository.markLarkMessagesInterrupted.bind(repository),
     markLarkMessagesCleared: repository.markLarkMessagesCleared.bind(repository)
   };
 }
@@ -287,6 +290,9 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       turnId: string;
     }): Promise<void> => {
       await pool.get(role).interruptTurn({ threadId, turnId });
+    },
+    readAccountRateLimits: async ({ role }: { role: RoleName }): Promise<unknown> => {
+      return pool.get(role).readAccountRateLimits();
     }
   };
 }

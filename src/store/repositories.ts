@@ -179,9 +179,17 @@ export class ConversationRepository {
     number,
     string
   ]>;
+  private readonly updateLarkMessageSteeredStatement: Database.Statement<[
+    string | null,
+    string | null,
+    string | null,
+    number,
+    string
+  ]>;
   private readonly updateLarkMessageQueuedStatement: Database.Statement<[number, string]>;
   private readonly updateLarkMessageCompletedStatement: Database.Statement<[number, number, string]>;
   private readonly updateLarkMessageFailedStatement: Database.Statement<[number, number, string]>;
+  private readonly updateLarkMessageInterruptedStatement: Database.Statement<[number, number, string]>;
   private readonly updateLarkMessageClearedStatement: Database.Statement<[number, number, string]>;
 
   constructor(
@@ -400,6 +408,15 @@ export class ConversationRepository {
           updated_at = ?
       WHERE lark_message_id = ?
     `);
+    this.updateLarkMessageSteeredStatement = this.db.prepare(`
+      UPDATE lark_messages
+      SET status = 'steered',
+          conversation_key = COALESCE(?, conversation_key),
+          codex_thread_id = COALESCE(?, codex_thread_id),
+          codex_turn_id = COALESCE(?, codex_turn_id),
+          updated_at = ?
+      WHERE lark_message_id = ?
+    `);
     this.updateLarkMessageCompletedStatement = this.db.prepare(`
       UPDATE lark_messages
       SET status = 'completed',
@@ -410,6 +427,13 @@ export class ConversationRepository {
     this.updateLarkMessageFailedStatement = this.db.prepare(`
       UPDATE lark_messages
       SET status = 'failed',
+          failed_at = COALESCE(failed_at, ?),
+          updated_at = ?
+      WHERE lark_message_id = ?
+    `);
+    this.updateLarkMessageInterruptedStatement = this.db.prepare(`
+      UPDATE lark_messages
+      SET status = 'interrupted',
           failed_at = COALESCE(failed_at, ?),
           updated_at = ?
       WHERE lark_message_id = ?
@@ -617,18 +641,8 @@ export class ConversationRepository {
     larkMessageIds: string[],
     update: { conversationKey?: string; codexThreadId?: string; codexTurnId?: string } = {}
   ): void {
-    for (const messageId of larkMessageIds) {
-      assertNonEmpty(messageId, "larkMessageId");
-    }
-    if (update.conversationKey !== undefined) {
-      assertValidConversationKey(update.conversationKey);
-    }
-    if (update.codexThreadId !== undefined) {
-      assertNonEmpty(update.codexThreadId, "codexThreadId");
-    }
-    if (update.codexTurnId !== undefined) {
-      assertNonEmpty(update.codexTurnId, "codexTurnId");
-    }
+    validateLarkMessageIds(larkMessageIds);
+    validateLarkMessageBindingUpdate(update);
     const now = this.now();
     const mark = this.db.transaction(() => {
       for (const messageId of larkMessageIds) {
@@ -645,12 +659,37 @@ export class ConversationRepository {
     mark();
   }
 
+  markLarkMessagesSteered(
+    larkMessageIds: string[],
+    update: { conversationKey?: string; codexThreadId?: string; codexTurnId?: string } = {}
+  ): void {
+    validateLarkMessageIds(larkMessageIds);
+    validateLarkMessageBindingUpdate(update);
+    const now = this.now();
+    const mark = this.db.transaction(() => {
+      for (const messageId of larkMessageIds) {
+        this.updateLarkMessageSteeredStatement.run(
+          update.conversationKey ?? null,
+          update.codexThreadId ?? null,
+          update.codexTurnId ?? null,
+          now,
+          messageId
+        );
+      }
+    });
+    mark();
+  }
+
   markLarkMessagesCompleted(larkMessageIds: string[]): void {
     this.markLarkMessagesTerminal(larkMessageIds, this.updateLarkMessageCompletedStatement);
   }
 
   markLarkMessagesFailed(larkMessageIds: string[]): void {
     this.markLarkMessagesTerminal(larkMessageIds, this.updateLarkMessageFailedStatement);
+  }
+
+  markLarkMessagesInterrupted(larkMessageIds: string[]): void {
+    this.markLarkMessagesTerminal(larkMessageIds, this.updateLarkMessageInterruptedStatement);
   }
 
   markLarkMessagesCleared(larkMessageIds: string[]): void {
@@ -898,11 +937,35 @@ function assertValidMessageStatus(status: LarkMessageStatus): void {
   if (
     status !== "queued" &&
     status !== "processing" &&
+    status !== "steered" &&
     status !== "completed" &&
     status !== "failed" &&
+    status !== "interrupted" &&
     status !== "cleared"
   ) {
     throw new TwinnyError(`Unsupported Lark message status: ${status}`, "LARK_MESSAGE_STATUS_INVALID");
+  }
+}
+
+function validateLarkMessageIds(larkMessageIds: string[]): void {
+  for (const messageId of larkMessageIds) {
+    assertNonEmpty(messageId, "larkMessageId");
+  }
+}
+
+function validateLarkMessageBindingUpdate(update: {
+  conversationKey?: string;
+  codexThreadId?: string;
+  codexTurnId?: string;
+}): void {
+  if (update.conversationKey !== undefined) {
+    assertValidConversationKey(update.conversationKey);
+  }
+  if (update.codexThreadId !== undefined) {
+    assertNonEmpty(update.codexThreadId, "codexThreadId");
+  }
+  if (update.codexTurnId !== undefined) {
+    assertNonEmpty(update.codexTurnId, "codexTurnId");
   }
 }
 
