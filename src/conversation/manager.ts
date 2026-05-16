@@ -1415,11 +1415,11 @@ function lastDefined<T>(values: Array<T | undefined>): T | undefined {
 }
 
 function formatDownloadedFileForCodex(
-  file: { path: string; resourceType: "image" | "file" },
+  file: { path: string; resourceType: "image" | "file"; fileKey: string },
   messageType: string
 ): string {
   const tag = codexFileTagForMessage(file.resourceType, messageType);
-  return `<${tag}>${escapeXmlText(file.path)}</${tag}>`;
+  return `<${tag} lark_file_key="${escapeXmlAttribute(file.fileKey)}">${escapeXmlText(file.path)}</${tag}>`;
 }
 
 function codexFileTagForMessage(resourceType: "image" | "file", messageType: string): "image" | "video" | "file" {

@@ -467,7 +467,7 @@ describe("ConversationManager", () => {
       expect.objectContaining({
         input:
           '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
-          "<file>/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/report.txt</file>\n" +
+          '<file lark_file_key="file_1">/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/report.txt</file>\n' +
           "</lark_message>"
       })
     );
@@ -498,7 +498,7 @@ describe("ConversationManager", () => {
       expect.objectContaining({
         input:
           '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
-          "<video>/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/clip.mp4</video>\n" +
+          '<video lark_file_key="file_1">/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/clip.mp4</video>\n' +
           "</lark_message>"
       })
     );
@@ -682,7 +682,7 @@ describe("ConversationManager", () => {
       expect.objectContaining({
         input:
           '<lark_message lark_message_id="m2" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
-          "<image>/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m2/img_1.png</image>\n" +
+          '<image lark_file_key="img_1">/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m2/img_1.png</image>\n' +
           "</lark_message>"
       })
     );

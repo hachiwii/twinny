@@ -56,6 +56,34 @@ describe("LarkFileDownloader", () => {
       }
     );
   });
+
+  it("adds numeric suffixes when the resolved local filename already exists", async () => {
+    fs.writeFileSync(path.join(tempDir, "report.txt"), "existing");
+    fs.writeFileSync(path.join(tempDir, "report(2).txt"), "existing 2");
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      binaryResponse("new", {
+        "content-type": "text/plain",
+        "content-disposition": 'attachment; filename="report.txt"'
+      })
+    ]);
+    const downloader = createDownloader(fetch);
+
+    const downloaded = await downloader.downloadMessageResource({
+      messageId: "om_1",
+      resourceType: "file",
+      fileKey: "file_1",
+      outputDir: tempDir
+    });
+
+    expect(downloaded).toMatchObject({
+      path: path.join(tempDir, "report(3).txt"),
+      fileName: "report(3).txt"
+    });
+    expect(fs.readFileSync(downloaded.path, "utf8")).toBe("new");
+    expect(fs.readFileSync(path.join(tempDir, "report.txt"), "utf8")).toBe("existing");
+    expect(fs.readFileSync(path.join(tempDir, "report(2).txt"), "utf8")).toBe("existing 2");
+  });
 });
 
 function createDownloader(fetch: FetchLike) {

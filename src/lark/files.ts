@@ -27,12 +27,12 @@ export class LarkFileDownloader {
     );
     await fs.mkdir(params.outputDir, { recursive: true });
     const fileName = buildFileName(params, response.contentType, response.contentDisposition);
-    const filePath = path.join(params.outputDir, fileName);
+    const { fileName: uniqueFileName, filePath } = await uniqueFileDestination(params.outputDir, fileName);
     await fs.writeFile(filePath, response.body);
     return {
       resourceType: params.resourceType,
       fileKey: params.fileKey,
-      fileName,
+      fileName: uniqueFileName,
       path: filePath,
       contentType: response.contentType
     };
@@ -66,6 +66,27 @@ function filenameFromContentDisposition(contentDisposition: string | undefined):
   }
   const asciiMatch = /filename="?([^";]+)"?/i.exec(contentDisposition);
   return asciiMatch?.[1];
+}
+
+async function uniqueFileDestination(outputDir: string, fileName: string): Promise<{ fileName: string; filePath: string }> {
+  const extension = path.extname(fileName);
+  const stem = extension ? fileName.slice(0, -extension.length) : fileName;
+  for (let suffix = 1; ; suffix += 1) {
+    const candidate = suffix === 1 ? fileName : `${stem}(${suffix})${extension}`;
+    const filePath = path.join(outputDir, candidate);
+    if (!(await pathExists(filePath))) {
+      return { fileName: candidate, filePath };
+    }
+  }
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function sanitizeFileName(value: string): string {
