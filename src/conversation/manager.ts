@@ -1,3 +1,4 @@
+import path from "node:path";
 import { LRUCache } from "lru-cache";
 import type { Logger } from "pino";
 import { TwinnyError, toErrorMessage } from "../errors.js";
@@ -80,6 +81,16 @@ export interface LarkUserDirectory {
   getUserNameByOpenId(openId: string): Promise<string | undefined>;
 }
 
+export interface LarkFileDownloader {
+  downloadMessageResource(params: {
+    messageId: string;
+    resourceType: "image" | "file";
+    fileKey: string;
+    fileName?: string;
+    outputDir: string;
+  }): Promise<{ path: string; resourceType: "image" | "file"; fileKey: string; fileName?: string; contentType?: string }>;
+}
+
 export interface WorkspaceManagerLike {
   ensureWorkspace(conversationKey: string): Promise<string> | string;
 }
@@ -140,6 +151,7 @@ export interface ConversationManagerOptions {
   codex: CodexBridge;
   lark: LarkResponder;
   larkUsers?: LarkUserDirectory;
+  larkFiles?: LarkFileDownloader;
   roles: RoleHomeResolver;
   logger?: Logger;
   nameLookupFailureTtlMs?: number;
@@ -226,8 +238,8 @@ export class ConversationManager {
     }
     this.dedupe.set(message.messageId, true);
 
-    if (message.messageType !== "text") {
-      this.log.debug({ messageId: message.messageId, messageType: message.messageType }, "non-text lark message ignored");
+    if (message.messageType !== "text" && (message.resources?.length ?? 0) === 0) {
+      this.log.debug({ messageId: message.messageId, messageType: message.messageType }, "unsupported lark message ignored");
       return;
     }
     const type = conversationTypeForChat(message.chatType);
@@ -334,6 +346,7 @@ export class ConversationManager {
     conversationKey: string,
     message: IncomingLarkMessage
   ): Promise<void> {
+    await this.prepareMessageResources(conversationKey, message);
     const parsed = parseSlashCommand(message.text);
     await this.recordIncomingMessage(state, conversationKey, message, parsed);
     if (parsed.kind === "help") {
@@ -384,6 +397,32 @@ export class ConversationManager {
       larkCreateTime: message.createTime,
       rawEventJson: safeJsonStringify(message.raw)
     });
+  }
+
+  private async prepareMessageResources(conversationKey: string, message: IncomingLarkMessage): Promise<void> {
+    if ((message.resources?.length ?? 0) === 0) {
+      return;
+    }
+    if (!this.options.larkFiles) {
+      throw new TwinnyError("Lark file downloader is not configured", "LARK_FILE_DOWNLOADER_MISSING");
+    }
+
+    const workspace = await this.options.workspaces.ensureWorkspace(conversationKey);
+    const outputDir = path.join(workspace, ".twinny", "lark_files", safePathSegment(message.messageId));
+    const downloadedFiles = [];
+    for (const resource of message.resources ?? []) {
+      downloadedFiles.push(
+        await this.options.larkFiles.downloadMessageResource({
+          messageId: message.messageId,
+          resourceType: resource.resourceType,
+          fileKey: resource.fileKey,
+          fileName: resource.fileName,
+          outputDir
+        })
+      );
+    }
+    message.downloadedFiles = downloadedFiles;
+    message.text = downloadedFiles.map(formatDownloadedFileForCodex).join("\n");
   }
 
   private async resolveSenderName(message: IncomingLarkMessage, role: RoleName): Promise<string | undefined> {
@@ -1208,6 +1247,16 @@ function safeJsonStringify(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function formatDownloadedFileForCodex(file: { path: string; resourceType: "image" | "file"; fileName?: string }): string {
+  const label = file.resourceType === "image" ? "图片" : "文件";
+  const name = file.fileName ? `，文件名：${file.fileName}` : "";
+  return `收到一个${label}${name}，路径在：${file.path}`;
+}
+
+function safePathSegment(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]/g, "_") || "message";
 }
 
 function escapeXmlText(value: string): string {

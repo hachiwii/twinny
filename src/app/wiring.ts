@@ -4,6 +4,7 @@ import { RoleCodexAppServerPool } from "../codex/index.js";
 import { ConversationManager } from "../conversation/manager.js";
 import {
   LarkEventConsumer,
+  LarkFileDownloader,
   LarkMessageSender,
   LarkUserDirectory,
   LarkOpenApiClient,
@@ -77,6 +78,7 @@ export class TwinnyRuntime {
     const openApiClient = new LarkOpenApiClient({ tokenManager });
     const larkSender = new LarkMessageSender({ openApiClient, logger: this.log });
     const larkUsers = new LarkUserDirectory({ openApiClient });
+    const larkFiles = new LarkFileDownloader({ openApiClient });
     const systemNotifier = new TwinnySystemNotifier({
       ownerOpenId: this.config.owner.openId,
       sender: larkSender,
@@ -92,6 +94,7 @@ export class TwinnyRuntime {
       codex: adaptCodexPool(this.codexPool),
       lark: adaptLarkSender(larkSender, this.config.lark.workingReaction, this.config.lark.completedReaction),
       larkUsers,
+      larkFiles,
       roles: { codexHomeFor: (role) => getRoleCodexHome(this.config, role) },
       logger: this.log
     });

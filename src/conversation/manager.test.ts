@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { TwinnyError } from "../errors.js";
 import type { CodexTurnResult, ConversationRecord, IncomingLarkMessage, TwinnyConfig, UserRecord } from "../types.js";
-import { ConversationManager, type CodexBridge, type ConversationRepository, type LarkResponder, type LarkUserDirectory } from "./manager.js";
+import {
+  ConversationManager,
+  type CodexBridge,
+  type ConversationRepository,
+  type LarkFileDownloader,
+  type LarkResponder,
+  type LarkUserDirectory
+} from "./manager.js";
 
 const config: TwinnyConfig = {
   home: "/tmp/twinny",
@@ -248,6 +255,44 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("downloads Lark file resources into the conversation workspace before submitting to Codex", async () => {
+    const codex = createCodex();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(async ({ outputDir }) => ({
+        path: `${outputDir}/report.txt`,
+        resourceType: "file" as const,
+        fileKey: "file_1",
+        fileName: "report.txt",
+        contentType: "text/plain"
+      }))
+    };
+    const manager = createManager({ codex, larkFiles });
+
+    manager.submitIncoming(
+      message("m1", "placeholder", {
+        messageType: "file",
+        resources: [{ resourceType: "file", fileKey: "file_1", fileName: "report.txt" }]
+      })
+    );
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(larkFiles.downloadMessageResource).toHaveBeenCalledWith({
+      messageId: "m1",
+      resourceType: "file",
+      fileKey: "file_1",
+      fileName: "report.txt",
+      outputDir: "/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1"
+    });
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input:
+          '<lark_message timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+          "收到一个文件，文件名：report.txt，路径在：/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/report.txt\n" +
+          "</lark_message>"
+      })
+    );
+  });
+
   it("replaces a persisted thread when Codex no longer has the rollout", async () => {
     const row = conversationRecord({ codexThreadId: "thread_missing" });
     const { repository } = createRepository(row);
@@ -329,6 +374,7 @@ function createManager(options: {
   codex?: CodexBridge;
   lark?: LarkResponder;
   larkUsers?: LarkUserDirectory;
+  larkFiles?: LarkFileDownloader;
 } = {}): ConversationManager {
   return new ConversationManager({
     config,
@@ -342,6 +388,7 @@ function createManager(options: {
     codex: options.codex ?? createCodex(),
     lark: options.lark ?? createLarkResponder(),
     larkUsers: options.larkUsers,
+    larkFiles: options.larkFiles,
     nameLookupFailureTtlMs: 60_000
   });
 }

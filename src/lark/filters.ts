@@ -1,4 +1,4 @@
-import type { IncomingLarkMessage } from "../types.js";
+import type { IncomingLarkMessage, IncomingLarkMessageResource } from "../types.js";
 
 export interface RawLarkMessageReceiveEvent {
   event_id?: string;
@@ -32,7 +32,7 @@ export type LarkMessageIgnoreReason =
   | "missing_sender_open_id"
   | "bot_self_message"
   | "non_p2p_message"
-  | "non_text_message"
+  | "unsupported_message_type"
   | "missing_message_id"
   | "empty_text";
 
@@ -84,18 +84,18 @@ export function normalizeIncomingLarkMessageWithReason(
   }
 
   const messageType = stringValue(message.message_type);
-  if (messageType !== "text") {
-    return ignored("non_text_message", raw);
+  if (!messageType) {
+    return ignored("unsupported_message_type", raw);
   }
-
   const messageId = stringValue(message.message_id);
   if (!messageId) {
     return ignored("missing_message_id", raw);
   }
 
-  const text = normalizeTextContent(message.content);
+  const resources = extractMessageResources(messageType, message.content);
+  const text = messageType === "text" ? normalizeTextContent(message.content) : fallbackResourceText(resources);
   if (text === null || text.length === 0) {
-    return ignored("empty_text", raw);
+    return resources.length === 0 ? ignored("unsupported_message_type", raw) : ignored("empty_text", raw);
   }
 
   return {
@@ -108,11 +108,60 @@ export function normalizeIncomingLarkMessageWithReason(
       messageType,
       senderOpenId,
       senderName,
+      resources: resources.length > 0 ? resources : undefined,
       text,
       createTime: parseEpochMs(message.create_time ?? raw.create_time),
       raw
     }
   };
+}
+
+function fallbackResourceText(resources: IncomingLarkMessageResource[]): string | null {
+  if (resources.length === 0) {
+    return null;
+  }
+  return resources
+    .map((resource) => `收到一个文件，资源 key：${resource.fileKey}`)
+    .join("\n");
+}
+
+function extractMessageResources(messageType: string | undefined, content: unknown): IncomingLarkMessageResource[] {
+  const parsed = parseContentObject(content);
+  if (!parsed) {
+    return [];
+  }
+  if (messageType === "image") {
+    const imageKey = stringValue(parsed.image_key);
+    return imageKey ? [{ resourceType: "image", fileKey: imageKey }] : [];
+  }
+  if (messageType === "file" || messageType === "audio" || messageType === "media") {
+    const fileKey = stringValue(parsed.file_key);
+    return fileKey
+      ? [
+          {
+            resourceType: "file",
+            fileKey,
+            fileName: stringValue(parsed.file_name)
+          }
+        ]
+      : [];
+  }
+  return [];
+}
+
+function parseContentObject(content: unknown): Record<string, unknown> | null {
+  if (isRecord(content)) {
+    return content;
+  }
+  if (typeof content !== "string") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 export function normalizeTextContent(content: unknown): string | null {

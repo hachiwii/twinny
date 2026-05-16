@@ -143,9 +143,22 @@ export interface IncomingLarkMessage {
   senderName?: string;
   larkGroupId?: string;
   larkThreadId?: string;
+  resources?: IncomingLarkMessageResource[];
+  downloadedFiles?: DownloadedLarkFile[];
   text: string;
   createTime?: number;
   raw: unknown;
+}
+
+export interface IncomingLarkMessageResource {
+  resourceType: "image" | "file";
+  fileKey: string;
+  fileName?: string;
+}
+
+export interface DownloadedLarkFile extends IncomingLarkMessageResource {
+  path: string;
+  contentType?: string;
 }
 
 export interface LarkReactionHandle {

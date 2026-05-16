@@ -19,6 +19,12 @@ export interface LarkOpenApiRequestOptions {
   retry?: boolean;
 }
 
+export interface LarkOpenApiBinaryResponse {
+  body: Buffer;
+  contentType?: string;
+  contentDisposition?: string;
+}
+
 export class LarkOpenApiError extends TwinnyError {
   constructor(
     message: string,
@@ -65,6 +71,26 @@ export class LarkOpenApiClient {
     throw lastError;
   }
 
+  async download(pathname: string, options: LarkOpenApiRequestOptions = {}): Promise<LarkOpenApiBinaryResponse> {
+    const retry = options.retry ?? true;
+    const attempts = retry ? this.maxRetries + 1 : 1;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        return await this.downloadOnce(pathname, options);
+      } catch (error) {
+        lastError = error;
+        if (attempt >= attempts - 1 || !isRetryableError(error)) {
+          break;
+        }
+        await sleep(this.retryBaseDelayMs * 2 ** attempt);
+      }
+    }
+
+    throw lastError;
+  }
+
   private async requestOnce(pathname: string, options: LarkOpenApiRequestOptions): Promise<unknown> {
     const token = await this.tokenManager.getTenantAccessToken();
     const response = await this.fetch(this.buildUrl(pathname, options.query), {
@@ -92,6 +118,37 @@ export class LarkOpenApiClient {
     return body;
   }
 
+  private async downloadOnce(pathname: string, options: LarkOpenApiRequestOptions): Promise<LarkOpenApiBinaryResponse> {
+    const token = await this.tokenManager.getTenantAccessToken();
+    const response = await this.fetch(this.buildUrl(pathname, options.query), {
+      method: options.method ?? "GET",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json"
+      },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: options.signal
+    });
+
+    if (!response.ok) {
+      throw new LarkOpenApiError(
+        `Lark OpenAPI download failed: ${await formatDownloadFailure(response)}`,
+        { status: response.status, retryable: response.status === 429 || response.status >= 500 }
+      );
+    }
+    if (!response.arrayBuffer) {
+      throw new LarkOpenApiError("Lark OpenAPI binary response cannot be read in this runtime", {
+        status: response.status
+      });
+    }
+
+    return {
+      body: Buffer.from(await response.arrayBuffer()),
+      contentType: response.headers?.get("content-type") ?? undefined,
+      contentDisposition: response.headers?.get("content-disposition") ?? undefined
+    };
+  }
+
   private buildUrl(pathname: string, query?: Record<string, string | number | boolean | undefined>): string {
     const path = pathname.startsWith("/") ? pathname : `/${pathname}`;
     const url = new URL(`${this.baseUrl}${path}`);
@@ -114,6 +171,11 @@ function isRetryableError(error: unknown): boolean {
 function formatOpenApiFailure(response: { status: number; statusText: string }, body: Record<string, unknown>): string {
   const msg = typeof body.msg === "string" && body.msg.length > 0 ? body.msg : response.statusText;
   return `status=${response.status} code=${String(body.code ?? "unknown")} msg=${msg}`;
+}
+
+async function formatDownloadFailure(response: { status: number; statusText: string; text?: () => Promise<string> }): Promise<string> {
+  const text = response.text ? await response.text().catch(() => "") : "";
+  return `status=${response.status} msg=${text || response.statusText}`;
 }
 
 async function readJsonBody(response: { json(): Promise<unknown>; text?: () => Promise<string> }): Promise<unknown> {

@@ -26,14 +26,32 @@ describe("normalizeIncomingLarkMessage", () => {
     });
   });
 
-  it("ignores group, non-text, and bot-self messages", () => {
+  it("normalizes p2p image events as downloadable resources", () => {
+    const normalized = normalizeIncomingLarkMessage(
+      receiveEvent({
+        message: {
+          message_type: "image",
+          content: JSON.stringify({ image_key: "img_123" })
+        }
+      })
+    );
+
+    expect(normalized).toMatchObject({
+      messageId: "om_1",
+      messageType: "image",
+      text: "收到一个文件，资源 key：img_123",
+      resources: [{ resourceType: "image", fileKey: "img_123" }]
+    });
+  });
+
+  it("ignores group, unsupported, and bot-self messages", () => {
     expect(normalizeIncomingLarkMessageWithReason(receiveEvent({ message: { chat_type: "group" } }))).toMatchObject({
       kind: "ignored",
       reason: "non_p2p_message"
     });
-    expect(normalizeIncomingLarkMessageWithReason(receiveEvent({ message: { message_type: "image" } }))).toMatchObject({
+    expect(normalizeIncomingLarkMessageWithReason(receiveEvent({ message: { message_type: "sticker" } }))).toMatchObject({
       kind: "ignored",
-      reason: "non_text_message"
+      reason: "unsupported_message_type"
     });
     expect(normalizeIncomingLarkMessageWithReason(receiveEvent({ sender: { sender_type: "app" } }))).toMatchObject({
       kind: "ignored",

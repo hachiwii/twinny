@@ -4,6 +4,7 @@ export const LARK_MESSAGE_RECEIVE_EVENT = "im.message.receive_v1" as const;
 
 export const LARK_REQUIRED_SCOPES = [
   "im:message.p2p_msg:readonly",
+  "im:message:readonly",
   "im:message.reactions:write_only"
 ] as const;
 
@@ -11,8 +12,12 @@ export interface FetchResponseLike {
   readonly ok: boolean;
   readonly status: number;
   readonly statusText: string;
+  readonly headers?: {
+    get(name: string): string | null;
+  };
   json(): Promise<unknown>;
   text?(): Promise<string>;
+  arrayBuffer?(): Promise<ArrayBuffer>;
 }
 
 export interface FetchRequestInitLike {
