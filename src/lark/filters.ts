@@ -134,7 +134,7 @@ function extractMessageResources(messageType: string | undefined, content: unkno
     const imageKey = stringValue(parsed.image_key);
     return imageKey ? [{ resourceType: "image", fileKey: imageKey }] : [];
   }
-  if (messageType === "file" || messageType === "audio" || messageType === "media") {
+  if (messageType === "file" || messageType === "audio" || messageType === "media" || messageType === "video") {
     const fileKey = stringValue(parsed.file_key);
     return fileKey
       ? [

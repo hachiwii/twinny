@@ -44,6 +44,27 @@ describe("normalizeIncomingLarkMessage", () => {
     });
   });
 
+  it.each(["file", "audio", "media", "video"])(
+    "normalizes p2p %s events as downloadable file resources",
+    (messageType) => {
+      const normalized = normalizeIncomingLarkMessage(
+        receiveEvent({
+          message: {
+            message_type: messageType,
+            content: JSON.stringify({ file_key: "file_123", file_name: "clip.mp4" })
+          }
+        })
+      );
+
+      expect(normalized).toMatchObject({
+        messageId: "om_1",
+        messageType,
+        text: "收到一个文件，资源 key：file_123",
+        resources: [{ resourceType: "file", fileKey: "file_123", fileName: "clip.mp4" }]
+      });
+    }
+  );
+
   it("ignores group, unsupported, and bot-self messages", () => {
     expect(normalizeIncomingLarkMessageWithReason(receiveEvent({ message: { chat_type: "group" } }))).toMatchObject({
       kind: "ignored",
