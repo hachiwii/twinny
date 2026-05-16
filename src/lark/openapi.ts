@@ -25,6 +25,13 @@ export interface LarkOpenApiBinaryResponse {
   contentDisposition?: string;
 }
 
+export interface LarkOpenApiMultipartFile {
+  fieldName: string;
+  fileName: string;
+  body: Buffer;
+  contentType?: string;
+}
+
 export class LarkOpenApiError extends TwinnyError {
   constructor(
     message: string,
@@ -79,6 +86,31 @@ export class LarkOpenApiClient {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
         return await this.downloadOnce(pathname, options);
+      } catch (error) {
+        lastError = error;
+        if (attempt >= attempts - 1 || !isRetryableError(error)) {
+          break;
+        }
+        await sleep(this.retryBaseDelayMs * 2 ** attempt);
+      }
+    }
+
+    throw lastError;
+  }
+
+  async uploadMultipart(
+    pathname: string,
+    fields: Record<string, string | number | boolean | undefined>,
+    files: LarkOpenApiMultipartFile[],
+    options: Pick<LarkOpenApiRequestOptions, "query" | "signal" | "retry"> = {}
+  ): Promise<unknown> {
+    const retry = options.retry ?? true;
+    const attempts = retry ? this.maxRetries + 1 : 1;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        return await this.uploadMultipartOnce(pathname, fields, files, options);
       } catch (error) {
         lastError = error;
         if (attempt >= attempts - 1 || !isRetryableError(error)) {
@@ -147,6 +179,47 @@ export class LarkOpenApiClient {
       contentType: response.headers?.get("content-type") ?? undefined,
       contentDisposition: response.headers?.get("content-disposition") ?? undefined
     };
+  }
+
+  private async uploadMultipartOnce(
+    pathname: string,
+    fields: Record<string, string | number | boolean | undefined>,
+    files: LarkOpenApiMultipartFile[],
+    options: Pick<LarkOpenApiRequestOptions, "query" | "signal">
+  ): Promise<unknown> {
+    const token = await this.tokenManager.getTenantAccessToken();
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== undefined) {
+        form.append(key, String(value));
+      }
+    }
+    for (const file of files) {
+      form.append(file.fieldName, new Blob([file.body], { type: file.contentType ?? "application/octet-stream" }), file.fileName);
+    }
+
+    const response = await this.fetch(this.buildUrl(pathname, options.query), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      body: form,
+      signal: options.signal
+    });
+
+    const body = await readJsonBody(response);
+    const record = toRecord(body);
+    const code = typeof record.code === "number" ? record.code : undefined;
+
+    if (!response.ok || (code !== undefined && code !== 0)) {
+      const retryable = response.status === 429 || response.status >= 500;
+      throw new LarkOpenApiError(
+        `Lark OpenAPI request failed: ${formatOpenApiFailure(response, record)}`,
+        { status: response.status, code, responseBody: body, retryable }
+      );
+    }
+
+    return body;
   }
 
   private buildUrl(pathname: string, query?: Record<string, string | number | boolean | undefined>): string {

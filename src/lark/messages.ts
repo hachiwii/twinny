@@ -17,6 +17,13 @@ export interface ReactionOptions {
   signal?: AbortSignal;
 }
 
+export type LarkPostNode =
+  | { tag: "md"; text: string }
+  | { tag: "img"; image_key: string }
+  | { tag: "media"; file_key: string; image_key?: string };
+
+export type LarkPostParagraph = LarkPostNode[];
+
 export class LarkMessageSender {
   private readonly openApiClient: LarkOpenApiClient;
   private readonly logger?: LarkLogger;
@@ -47,12 +54,36 @@ export class LarkMessageSender {
     markdown: string,
     options: TextMessageOptions = {}
   ): Promise<LarkSendMessageResult> {
+    return this.replyPost(messageId, [[{ tag: "md", text: markdown }]], options);
+  }
+
+  async replyPost(
+    messageId: string,
+    content: LarkPostParagraph[],
+    options: TextMessageOptions = {}
+  ): Promise<LarkSendMessageResult> {
     const raw = await this.openApiClient.request(`/im/v1/messages/${encodePathSegment(messageId)}/reply`, {
       method: "POST",
       signal: options.signal,
       body: {
-        content: JSON.stringify(createMarkdownPostContent(markdown)),
+        content: JSON.stringify(createPostContent(content)),
         msg_type: "post",
+        ...(options.uuid ? { uuid: options.uuid } : {})
+      }
+    });
+    return {
+      messageId: extractMessageId(raw),
+      raw
+    };
+  }
+
+  async replyFile(messageId: string, fileKey: string, options: TextMessageOptions = {}): Promise<LarkSendMessageResult> {
+    const raw = await this.openApiClient.request(`/im/v1/messages/${encodePathSegment(messageId)}/reply`, {
+      method: "POST",
+      signal: options.signal,
+      body: {
+        content: JSON.stringify({ file_key: fileKey }),
+        msg_type: "file",
         ...(options.uuid ? { uuid: options.uuid } : {})
       }
     });
@@ -154,10 +185,10 @@ function extractMessageId(raw: unknown): string | undefined {
   return typeof messageId === "string" ? messageId : undefined;
 }
 
-function createMarkdownPostContent(markdown: string) {
+function createPostContent(content: LarkPostParagraph[]) {
   return {
     zh_cn: {
-      content: [[{ tag: "md", text: markdown }]]
+      content
     }
   };
 }

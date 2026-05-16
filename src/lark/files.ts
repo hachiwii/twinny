@@ -12,6 +12,30 @@ export interface DownloadLarkMessageResourceParams extends IncomingLarkMessageRe
   outputDir: string;
 }
 
+export interface UploadLarkImageParams {
+  filePath: string;
+  fileName?: string;
+  contentType?: string;
+}
+
+export interface UploadLarkFileParams {
+  filePath: string;
+  fileName?: string;
+  fileType?: string;
+  contentType?: string;
+  durationMs?: number;
+}
+
+export interface UploadedLarkImage {
+  imageKey: string;
+  raw: unknown;
+}
+
+export interface UploadedLarkFile {
+  fileKey: string;
+  raw: unknown;
+}
+
 export class LarkFileDownloader {
   constructor(private readonly options: LarkFileDownloaderOptions) {}
 
@@ -34,8 +58,57 @@ export class LarkFileDownloader {
       fileKey: params.fileKey,
       fileName: uniqueFileName,
       path: filePath,
+      size: response.body.byteLength,
       contentType: response.contentType
     };
+  }
+
+  async uploadImage(params: UploadLarkImageParams): Promise<UploadedLarkImage> {
+    const fileName = sanitizeFileName(params.fileName ?? path.basename(params.filePath));
+    const body = await fs.readFile(params.filePath);
+    const raw = await this.options.openApiClient.uploadMultipart(
+      "/im/v1/images",
+      { image_type: "message" },
+      [
+        {
+          fieldName: "image",
+          fileName,
+          body,
+          contentType: params.contentType ?? contentTypeForFileName(fileName)
+        }
+      ]
+    );
+    const imageKey = extractNestedString(raw, "data", "image_key");
+    if (!imageKey) {
+      throw new Error("Lark image upload response did not include image_key");
+    }
+    return { imageKey, raw };
+  }
+
+  async uploadFile(params: UploadLarkFileParams): Promise<UploadedLarkFile> {
+    const fileName = sanitizeFileName(params.fileName ?? path.basename(params.filePath));
+    const body = await fs.readFile(params.filePath);
+    const raw = await this.options.openApiClient.uploadMultipart(
+      "/im/v1/files",
+      {
+        file_type: params.fileType ?? larkFileTypeForFileName(fileName),
+        file_name: fileName,
+        duration: params.durationMs
+      },
+      [
+        {
+          fieldName: "file",
+          fileName,
+          body,
+          contentType: params.contentType ?? contentTypeForFileName(fileName)
+        }
+      ]
+    );
+    const fileKey = extractNestedString(raw, "data", "file_key");
+    if (!fileKey) {
+      throw new Error("Lark file upload response did not include file_key");
+    }
+    return { fileKey, raw };
   }
 }
 
@@ -112,6 +185,63 @@ function extensionForContentType(contentType: string | undefined): string {
     default:
       return "";
   }
+}
+
+function contentTypeForFileName(fileName: string): string | undefined {
+  switch (path.extname(fileName).toLowerCase()) {
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".png":
+      return "image/png";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".bmp":
+      return "image/bmp";
+    case ".mp4":
+      return "video/mp4";
+    case ".pdf":
+      return "application/pdf";
+    case ".txt":
+      return "text/plain";
+    default:
+      return undefined;
+  }
+}
+
+function larkFileTypeForFileName(fileName: string): string {
+  switch (path.extname(fileName).toLowerCase()) {
+    case ".opus":
+      return "opus";
+    case ".mp4":
+      return "mp4";
+    case ".pdf":
+      return "pdf";
+    case ".doc":
+    case ".docx":
+      return "doc";
+    case ".xls":
+    case ".xlsx":
+      return "xls";
+    case ".ppt":
+    case ".pptx":
+      return "ppt";
+    default:
+      return "stream";
+  }
+}
+
+function extractNestedString(value: unknown, ...pathSegments: string[]): string | undefined {
+  let current = value;
+  for (const segment of pathSegments) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return typeof current === "string" && current.trim() !== "" ? current : undefined;
 }
 
 function encodePathSegment(value: string): string {

@@ -166,6 +166,7 @@ export interface IncomingLarkMessageResource {
 
 export interface DownloadedLarkFile extends IncomingLarkMessageResource {
   path: string;
+  size: number;
   contentType?: string;
 }
 

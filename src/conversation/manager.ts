@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { LRUCache } from "lru-cache";
 import type { Logger } from "pino";
@@ -99,7 +100,22 @@ export interface LarkFileDownloader {
     fileKey: string;
     fileName?: string;
     outputDir: string;
-  }): Promise<{ path: string; resourceType: "image" | "file"; fileKey: string; fileName?: string; contentType?: string }>;
+  }): Promise<{
+    path: string;
+    resourceType: "image" | "file";
+    fileKey: string;
+    fileName?: string;
+    size: number;
+    contentType?: string;
+  }>;
+  uploadImage?(params: { filePath: string; fileName?: string; contentType?: string }): Promise<{ imageKey: string; raw?: unknown }>;
+  uploadFile?(params: {
+    filePath: string;
+    fileName?: string;
+    fileType?: string;
+    contentType?: string;
+    durationMs?: number;
+  }): Promise<{ fileKey: string; raw?: unknown }>;
 }
 
 export interface WorkspaceManagerLike {
@@ -150,6 +166,11 @@ export interface LarkResponder {
   removeReaction(handle: LarkReactionHandle): Promise<void>;
   replyText(messageId: string, text: string): Promise<void>;
   replyMarkdown(messageId: string, markdown: string): Promise<{ messageId?: string } | void>;
+  replyPost(
+    messageId: string,
+    content: Array<Array<{ tag: "md"; text: string } | { tag: "img"; image_key: string } | { tag: "media"; file_key: string }>>
+  ): Promise<{ messageId?: string } | void>;
+  replyFile(messageId: string, fileKey: string): Promise<{ messageId?: string } | void>;
 }
 
 export interface RoleHomeResolver {
@@ -220,7 +241,7 @@ type ParsedCommand =
   | { kind: "help" };
 
 export class ConversationManager {
-  private static readonly recoveryPrompt = "continue to process previous message";
+  private static readonly recoveryPrompt = "Twinny daemon has beed reloaded, continue with the unfinished work.";
   private static readonly helpText = [
     "可用指令：",
     "/help - 查看可用指令和使用说明",
@@ -1446,14 +1467,228 @@ export class ConversationManager {
       return;
     }
     try {
-      const result = await this.options.lark.replyMarkdown(messageId, text);
+      const outbound = await this.prepareAgentReplyForLark(text, active.workspace);
+      if (outbound === undefined) {
+        const result = await this.options.lark.replyMarkdown(messageId, text);
+        if (result?.messageId) {
+          active.lastAgentReplyMessageId = result.messageId;
+        }
+        return;
+      }
+
+      const result = await this.options.lark.replyPost(messageId, outbound.postContent);
       if (result?.messageId) {
         active.lastAgentReplyMessageId = result.messageId;
+      }
+      for (const file of outbound.files) {
+        try {
+          const fileResult = await this.options.lark.replyFile(messageId, file.fileKey);
+          if (fileResult?.messageId) {
+            active.lastAgentReplyMessageId = fileResult.messageId;
+          }
+        } catch (error) {
+          this.log.warn({ error, messageId, fileName: file.fileName }, "failed to send lark file attachment reply");
+          const errorResult = await this.options.lark.replyMarkdown(
+            messageId,
+            `❌ 发送图片/视频/附件失败：${toErrorMessage(error)}`
+          );
+          if (errorResult?.messageId) {
+            active.lastAgentReplyMessageId = errorResult.messageId;
+          }
+        }
       }
     } catch (error) {
       this.log.warn({ error, messageId, agentMessageId: agentMessage.id }, "failed to send agent message item to lark");
     }
   }
+
+  private async prepareAgentReplyForLark(text: string, workspace: string): Promise<PreparedAgentLarkReply | undefined> {
+    if (!text.split(/\r?\n/).some((line) => line.trimStart().startsWith("SEND_TO_LARK:"))) {
+      return undefined;
+    }
+
+    const builder = new LarkPostContentBuilder();
+    const files: PreparedLarkFileReply[] = [];
+    for (const line of text.split(/\r?\n/)) {
+      const directive = parseSendToLarkDirective(line);
+      if (directive.kind === "none") {
+        builder.addTextLine(line);
+        continue;
+      }
+      if (directive.kind === "invalid") {
+        builder.addTextLine(formatSendToLarkError(directive.reason));
+        continue;
+      }
+
+      try {
+        const file = await resolveWorkspaceFileForLark(directive.path, workspace);
+        if (directive.tag === "img") {
+          if (!this.options.larkFiles?.uploadImage) {
+            throw new Error("Lark image uploader is not configured");
+          }
+          const uploaded = await this.options.larkFiles.uploadImage({
+            filePath: file.filePath,
+            fileName: file.fileName,
+            contentType: contentTypeForFileName(file.fileName)
+          });
+          builder.addImage(uploaded.imageKey);
+          continue;
+        }
+
+        if (!this.options.larkFiles?.uploadFile) {
+          throw new Error("Lark file uploader is not configured");
+        }
+        const uploaded = await this.options.larkFiles.uploadFile({
+          filePath: file.filePath,
+          fileName: file.fileName,
+          fileType: directive.tag === "video" ? "mp4" : larkFileTypeForFileName(file.fileName),
+          contentType: contentTypeForFileName(file.fileName)
+        });
+        if (directive.tag === "video") {
+          builder.addVideo(uploaded.fileKey);
+        } else {
+          builder.addTextLine(`📎 ${file.fileName}`);
+          files.push({ fileName: file.fileName, fileKey: uploaded.fileKey });
+        }
+      } catch (error) {
+        builder.addTextLine(formatSendToLarkError(toErrorMessage(error)));
+      }
+    }
+
+    return {
+      postContent: builder.build(),
+      files
+    };
+  }
+}
+
+type LarkPostNode = { tag: "md"; text: string } | { tag: "img"; image_key: string } | { tag: "media"; file_key: string };
+type LarkPostContent = LarkPostNode[][];
+
+interface PreparedLarkFileReply {
+  fileName: string;
+  fileKey: string;
+}
+
+interface PreparedAgentLarkReply {
+  postContent: LarkPostContent;
+  files: PreparedLarkFileReply[];
+}
+
+type SendToLarkDirective =
+  | { kind: "none" }
+  | { kind: "invalid"; reason: string }
+  | { kind: "send"; tag: "img" | "video" | "file"; path: string };
+
+class LarkPostContentBuilder {
+  private readonly content: LarkPostContent = [];
+  private pendingText: string[] = [];
+
+  addTextLine(line: string): void {
+    this.pendingText.push(line);
+  }
+
+  addImage(imageKey: string): void {
+    this.flushText();
+    this.content.push([{ tag: "img", image_key: imageKey }]);
+  }
+
+  addVideo(fileKey: string): void {
+    this.flushText();
+    this.content.push([{ tag: "media", file_key: fileKey }]);
+  }
+
+  build(): LarkPostContent {
+    this.flushText();
+    return this.content.length > 0 ? this.content : [[{ tag: "md", text: "" }]];
+  }
+
+  private flushText(): void {
+    if (this.pendingText.length === 0) {
+      return;
+    }
+    const text = this.pendingText.join("\n").trim();
+    this.pendingText = [];
+    if (text.length > 0) {
+      this.content.push([{ tag: "md", text }]);
+    }
+  }
+}
+
+function parseSendToLarkDirective(line: string): SendToLarkDirective {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("SEND_TO_LARK:")) {
+    return { kind: "none" };
+  }
+  const body = trimmed.slice("SEND_TO_LARK:".length).trim();
+  const match = /^<(img|image|video|file)\s+([^>]*)>\s*<\/\1>$/.exec(body);
+  if (!match) {
+    return { kind: "invalid", reason: "SEND_TO_LARK 指令格式无效" };
+  }
+  const rawTag = match[1]!;
+  const pathValue = parseXmlAttribute(match[2]!, "path");
+  if (!pathValue) {
+    return { kind: "invalid", reason: "SEND_TO_LARK 缺少 path 属性" };
+  }
+  return {
+    kind: "send",
+    tag: rawTag === "image" ? "img" : (rawTag as "img" | "video" | "file"),
+    path: pathValue
+  };
+}
+
+function parseXmlAttribute(attributes: string, name: string): string | undefined {
+  const pattern = new RegExp(`(?:^|\\s)${name}="([^"]*)"`);
+  const match = pattern.exec(attributes);
+  return match?.[1];
+}
+
+async function resolveWorkspaceFileForLark(
+  filePath: string,
+  workspace: string
+): Promise<{ filePath: string; realPath: string; fileName: string; size: number }> {
+  if (!path.isAbsolute(filePath)) {
+    throw new Error("文件路径必须是绝对路径");
+  }
+
+  const workspacePath = path.resolve(workspace);
+  const requestedPath = path.resolve(filePath);
+  if (!isPathInside(requestedPath, workspacePath)) {
+    throw new Error("文件不在 workspace 内");
+  }
+
+  let realPath: string;
+  try {
+    realPath = await fs.realpath(requestedPath);
+  } catch {
+    throw new Error("文件不存在");
+  }
+
+  const realWorkspace = await fs.realpath(workspacePath).catch(() => workspacePath);
+  if (!isPathInside(realPath, realWorkspace)) {
+    throw new Error("真实文件不在 workspace 内");
+  }
+
+  const stat = await fs.stat(realPath);
+  if (!stat.isFile()) {
+    throw new Error("路径不是普通文件");
+  }
+
+  return {
+    filePath: requestedPath,
+    realPath,
+    fileName: path.basename(requestedPath),
+    size: stat.size
+  };
+}
+
+function isPathInside(candidate: string, base: string): boolean {
+  const relative = path.relative(base, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function formatSendToLarkError(reason: string): string {
+  return `❌ 发送图片/视频/附件失败：${reason}`;
 }
 
 function parseSlashCommand(text: string): ParsedCommand {
@@ -1730,18 +1965,68 @@ function finiteNumber(...values: unknown[]): number | undefined {
 }
 
 function formatDownloadedFileForCodex(
-  file: { path: string; resourceType: "image" | "file"; fileKey: string },
+  file: { path: string; resourceType: "image" | "file"; fileKey: string; size: number },
   messageType: string
 ): string {
   const tag = codexFileTagForMessage(file.resourceType, messageType);
-  return `<${tag} lark_file_key="${escapeXmlAttribute(file.fileKey)}">saved to ${escapeXmlText(file.path)}</${tag}>`;
+  return (
+    `<${tag} path="${escapeXmlAttribute(file.path)}" ` +
+    `lark_file_key="${escapeXmlAttribute(file.fileKey)}" size="${escapeXmlAttribute(String(file.size))}">` +
+    `Saved locally</${tag}>`
+  );
 }
 
-function codexFileTagForMessage(resourceType: "image" | "file", messageType: string): "image" | "video" | "file" {
+function codexFileTagForMessage(resourceType: "image" | "file", messageType: string): "img" | "video" | "file" {
   if (resourceType === "image") {
-    return "image";
+    return "img";
   }
   return messageType === "video" || messageType === "media" ? "video" : "file";
+}
+
+function contentTypeForFileName(fileName: string): string | undefined {
+  switch (path.extname(fileName).toLowerCase()) {
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".png":
+      return "image/png";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".bmp":
+      return "image/bmp";
+    case ".mp4":
+      return "video/mp4";
+    case ".pdf":
+      return "application/pdf";
+    case ".txt":
+      return "text/plain";
+    default:
+      return undefined;
+  }
+}
+
+function larkFileTypeForFileName(fileName: string): string {
+  switch (path.extname(fileName).toLowerCase()) {
+    case ".opus":
+      return "opus";
+    case ".mp4":
+      return "mp4";
+    case ".pdf":
+      return "pdf";
+    case ".doc":
+    case ".docx":
+      return "doc";
+    case ".xls":
+    case ".xlsx":
+      return "xls";
+    case ".ppt":
+    case ".pptx":
+      return "ppt";
+    default:
+      return "stream";
+  }
 }
 
 function safePathSegment(value: string): string {

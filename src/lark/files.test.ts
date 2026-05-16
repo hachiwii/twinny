@@ -40,6 +40,7 @@ describe("LarkFileDownloader", () => {
       resourceType: "file",
       fileKey: "file_1",
       fileName: "report.txt",
+      size: 5,
       contentType: "text/plain"
     });
     expect(fs.readFileSync(downloaded.path, "utf8")).toBe("hello");
@@ -83,6 +84,52 @@ describe("LarkFileDownloader", () => {
     expect(fs.readFileSync(downloaded.path, "utf8")).toBe("new");
     expect(fs.readFileSync(path.join(tempDir, "report.txt"), "utf8")).toBe("existing");
     expect(fs.readFileSync(path.join(tempDir, "report(2).txt"), "utf8")).toBe("existing 2");
+  });
+
+  it("uploads a local image as a message image", async () => {
+    const imagePath = path.join(tempDir, "result.png");
+    fs.writeFileSync(imagePath, "png");
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { image_key: "img_uploaded" } }
+    ]);
+    const downloader = createDownloader(fetch);
+
+    await expect(downloader.uploadImage({ filePath: imagePath })).resolves.toMatchObject({
+      imageKey: "img_uploaded"
+    });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/images", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer tenant-token"
+      },
+      body: expect.any(FormData),
+      signal: undefined
+    });
+  });
+
+  it("uploads a local file with a matching Lark file type", async () => {
+    const filePath = path.join(tempDir, "report.pdf");
+    fs.writeFileSync(filePath, "pdf");
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { file_key: "file_uploaded" } }
+    ]);
+    const downloader = createDownloader(fetch);
+
+    await expect(downloader.uploadFile({ filePath })).resolves.toMatchObject({
+      fileKey: "file_uploaded"
+    });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/files", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer tenant-token"
+      },
+      body: expect.any(FormData),
+      signal: undefined
+    });
   });
 });
 

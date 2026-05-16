@@ -5,7 +5,8 @@ export const LARK_MESSAGE_RECEIVE_EVENT = "im.message.receive_v1" as const;
 export const LARK_REQUIRED_SCOPES = [
   "im:message.p2p_msg:readonly",
   "im:message:readonly",
-  "im:message.reactions:write_only"
+  "im:message.reactions:write_only",
+  "im:resource"
 ] as const;
 
 export interface FetchResponseLike {
@@ -23,7 +24,7 @@ export interface FetchResponseLike {
 export interface FetchRequestInitLike {
   method?: string;
   headers?: Record<string, string>;
-  body?: string;
+  body?: string | FormData;
   signal?: AbortSignal;
 }
 

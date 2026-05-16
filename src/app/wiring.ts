@@ -308,6 +308,15 @@ function adaptLarkSender(sender: LarkMessageSender, workingReaction: string, com
     },
     replyMarkdown: async (messageId: string, markdown: string): Promise<{ messageId?: string }> => {
       return sender.replyMarkdown(messageId, markdown);
+    },
+    replyPost: async (
+      messageId: string,
+      content: Parameters<LarkMessageSender["replyPost"]>[1]
+    ): Promise<{ messageId?: string }> => {
+      return sender.replyPost(messageId, content);
+    },
+    replyFile: async (messageId: string, fileKey: string): Promise<{ messageId?: string }> => {
+      return sender.replyFile(messageId, fileKey);
     }
   };
 }

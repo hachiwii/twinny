@@ -61,6 +61,66 @@ describe("LarkMessageSender", () => {
     });
   });
 
+  it("replies with a rich post containing uploaded media nodes", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { message_id: "om_reply" } }
+    ]);
+    const sender = createSender(fetch);
+
+    await expect(
+      sender.replyPost("om_source", [
+        [{ tag: "md", text: "hello" }],
+        [{ tag: "img", image_key: "img_1" }],
+        [{ tag: "media", file_key: "file_1" }]
+      ])
+    ).resolves.toMatchObject({ messageId: "om_reply" });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/messages/om_source/reply", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        content: JSON.stringify({
+          zh_cn: {
+            content: [
+              [{ tag: "md", text: "hello" }],
+              [{ tag: "img", image_key: "img_1" }],
+              [{ tag: "media", file_key: "file_1" }]
+            ]
+          }
+        }),
+        msg_type: "post"
+      }),
+      signal: undefined
+    });
+  });
+
+  it("replies with a file message through OpenAPI", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { message_id: "om_reply" } }
+    ]);
+    const sender = createSender(fetch);
+
+    await expect(sender.replyFile("om_source", "file_1")).resolves.toMatchObject({ messageId: "om_reply" });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/messages/om_source/reply", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        content: JSON.stringify({ file_key: "file_1" }),
+        msg_type: "file"
+      }),
+      signal: undefined
+    });
+  });
+
   it("optionally sends p2p text to open_id", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },

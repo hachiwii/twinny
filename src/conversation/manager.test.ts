@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { TwinnyError } from "../errors.js";
 import type {
@@ -434,7 +437,8 @@ describe("ConversationManager", () => {
       downloadMessageResource: vi.fn(async ({ outputDir }) => ({
         path: `${outputDir}/report.txt`,
         resourceType: "file" as const,
-        fileKey: "file_1"
+        fileKey: "file_1",
+        size: 123
       }))
     };
     const manager = createManager({ repository, codex, larkFiles });
@@ -558,6 +562,7 @@ describe("ConversationManager", () => {
         resourceType: "file" as const,
         fileKey: "file_1",
         fileName: "report.txt",
+        size: 123,
         contentType: "text/plain"
       }))
     };
@@ -582,7 +587,7 @@ describe("ConversationManager", () => {
       expect.objectContaining({
         input:
           '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
-          '<file lark_file_key="file_1">saved to /tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/report.txt</file>\n' +
+          '<file path="/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/report.txt" lark_file_key="file_1" size="123">Saved locally</file>\n' +
           "</lark_message>"
       })
     );
@@ -596,6 +601,7 @@ describe("ConversationManager", () => {
         resourceType: "file" as const,
         fileKey: "file_1",
         fileName: "clip.mp4",
+        size: 456,
         contentType: "video/mp4"
       }))
     };
@@ -613,7 +619,7 @@ describe("ConversationManager", () => {
       expect.objectContaining({
         input:
           '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
-          '<video lark_file_key="file_1">saved to /tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/clip.mp4</video>\n' +
+          '<video path="/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/clip.mp4" lark_file_key="file_1" size="456">Saved locally</video>\n' +
           "</lark_message>"
       })
     );
@@ -701,6 +707,114 @@ describe("ConversationManager", () => {
     expect(lark.addCompletedReaction).toHaveBeenCalledTimes(1);
   });
 
+  it("uploads SEND_TO_LARK image directives from completed agent messages and embeds them in the Lark post", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-image-"));
+    const workspaceRoot = path.join(tempRoot, "workspaces");
+    const workspace = path.join(workspaceRoot, "p2p:ou_guest");
+    fs.mkdirSync(workspace, { recursive: true });
+    const imagePath = path.join(workspace, "result.png");
+    fs.writeFileSync(imagePath, "png");
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: `ready\nSEND_TO_LARK: <img path="${imagePath}"></img>\ndone`
+        });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(),
+      uploadImage: vi.fn(async () => ({ imageKey: "img_uploaded" }))
+    };
+    const manager = createManager({ codex, lark, larkFiles, workspaceRoot });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyPost).toHaveBeenCalledTimes(1));
+
+    expect(larkFiles.uploadImage).toHaveBeenCalledWith({
+      filePath: imagePath,
+      fileName: "result.png",
+      contentType: "image/png"
+    });
+    expect(lark.replyPost).toHaveBeenCalledWith("m1", [
+      [{ tag: "md", text: "ready" }],
+      [{ tag: "img", image_key: "img_uploaded" }],
+      [{ tag: "md", text: "done" }]
+    ]);
+    expect(lark.replyMarkdown).not.toHaveBeenCalledWith("m1", expect.stringContaining("SEND_TO_LARK"));
+  });
+
+  it("uploads SEND_TO_LARK files, shows the attachment line, and sends the file as a separate reply", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-file-"));
+    const workspaceRoot = path.join(tempRoot, "workspaces");
+    const workspace = path.join(workspaceRoot, "p2p:ou_guest");
+    fs.mkdirSync(workspace, { recursive: true });
+    const filePath = path.join(workspace, "report.txt");
+    fs.writeFileSync(filePath, "report");
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: `see attachment\nSEND_TO_LARK: <file path="${filePath}"></file>`
+        });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(),
+      uploadFile: vi.fn(async () => ({ fileKey: "file_uploaded" }))
+    };
+    const manager = createManager({ codex, lark, larkFiles, workspaceRoot });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyFile).toHaveBeenCalledWith("m1", "file_uploaded"));
+
+    expect(larkFiles.uploadFile).toHaveBeenCalledWith({
+      filePath,
+      fileName: "report.txt",
+      fileType: "stream",
+      contentType: "text/plain"
+    });
+    expect(lark.replyPost).toHaveBeenCalledWith("m1", [[{ tag: "md", text: "see attachment\n📎 report.txt" }]]);
+  });
+
+  it("rejects SEND_TO_LARK symlinks whose real target is outside the workspace", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-link-"));
+    const workspaceRoot = path.join(tempRoot, "workspaces");
+    const workspace = path.join(workspaceRoot, "p2p:ou_guest");
+    fs.mkdirSync(workspace, { recursive: true });
+    const outsideFile = path.join(tempRoot, "outside.png");
+    fs.writeFileSync(outsideFile, "png");
+    const linkPath = path.join(workspace, "linked.png");
+    fs.symlinkSync(outsideFile, linkPath);
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({ id: "agent_1", text: `SEND_TO_LARK: <img path="${linkPath}"></img>` });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(),
+      uploadImage: vi.fn(async () => ({ imageKey: "img_uploaded" }))
+    };
+    const manager = createManager({ codex, lark, larkFiles, workspaceRoot });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyPost).toHaveBeenCalledTimes(1));
+
+    expect(larkFiles.uploadImage).not.toHaveBeenCalled();
+    expect(lark.replyPost).toHaveBeenCalledWith("m1", [
+      [{ tag: "md", text: "❌ 发送图片/视频/附件失败：真实文件不在 workspace 内" }]
+    ]);
+  });
+
   it("recovers processing messages by continuing their stored Codex thread", async () => {
     const row = conversationRecord({ codexThreadId: "thread_recovered" });
     const record = larkMessageRecord({
@@ -720,7 +834,7 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         threadId: "thread_recovered",
-        input: "continue to process previous message"
+        input: "Twinny daemon has beed reloaded, continue with the unfinished work."
       })
     );
     expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m1"], {
@@ -778,6 +892,7 @@ describe("ConversationManager", () => {
         resourceType: "image" as const,
         fileKey: "img_1",
         fileName: "img_1.png",
+        size: 789,
         contentType: "image/png"
       }))
     };
@@ -797,7 +912,7 @@ describe("ConversationManager", () => {
       expect.objectContaining({
         input:
           '<lark_message lark_message_id="m2" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
-          '<image lark_file_key="img_1">saved to /tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m2/img_1.png</image>\n' +
+          '<img path="/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m2/img_1.png" lark_file_key="img_1" size="789">Saved locally</img>\n' +
           "</lark_message>"
       })
     );
@@ -833,12 +948,14 @@ function createManager(options: {
   lark?: LarkResponder;
   larkUsers?: LarkUserDirectory;
   larkFiles?: LarkFileDownloader;
+  workspaceRoot?: string;
 } = {}): ConversationManager {
+  const workspaceRoot = options.workspaceRoot ?? "/tmp/twinny/workspaces";
   return new ConversationManager({
     config,
     repository: options.repository ?? createRepository().repository,
     workspaces: {
-      ensureWorkspace: (key) => `/tmp/twinny/workspaces/${key}`
+      ensureWorkspace: (key) => path.join(workspaceRoot, key)
     },
     roles: {
       codexHomeFor: (role) => config.roles[role].codexHome
@@ -901,7 +1018,9 @@ function createLarkResponder(): LarkResponder {
     addCompletedReaction: vi.fn(async (messageId) => ({ messageId, reactionId: `done_${messageId}` })),
     removeReaction: vi.fn(async () => undefined),
     replyText: vi.fn(async () => undefined),
-    replyMarkdown: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` }))
+    replyMarkdown: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
+    replyPost: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
+    replyFile: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` }))
   };
 }
 
