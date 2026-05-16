@@ -1619,17 +1619,17 @@ export class ConversationManager {
     };
     state.active = active;
 
-    void this.options.codex
-      .startTurn({
-        role: params.role,
-        threadId: active.threadId,
-        input: params.input,
-        cwd: params.workspace,
-        approvalPolicy: "never",
-        onTurnStarted: (turnId) => this.handleTurnStarted(state, active, turnId),
-        onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
-        onTokenUsage: (usage) => this.recordThreadTokenUsageBestEffort(active, usage)
-      })
+    const turnPromise = this.options.codex.startTurn({
+      role: params.role,
+      threadId: active.threadId,
+      input: params.input,
+      cwd: params.workspace,
+      approvalPolicy: "never",
+      onTurnStarted: (turnId) => this.handleTurnStarted(state, active, turnId),
+      onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
+      onTokenUsage: (usage) => this.recordThreadTokenUsageBestEffort(active, usage)
+    });
+    void turnPromise
       .then((result) => {
         active.completedStatus = result.status;
         active.resultText = result.text;
@@ -1662,6 +1662,7 @@ export class ConversationManager {
       .finally(() => {
         void state.controlQueue.enqueue(() => this.finishActiveTurn(state, context.conversationKey, active));
       });
+    await this.createAgentCardBestEffort(state, active);
   }
 
   private async handleTurnStarted(state: ConversationState, active: ActiveTurn, turnId: string): Promise<void> {
@@ -2331,14 +2332,8 @@ export class ConversationManager {
 
     try {
       if (!card.messageId) {
-        const rendered = this.renderAgentCard(state, active, "working");
-        const result = await this.options.lark.replyCard(card.anchorMessageId, rendered);
-        card.messageId = result?.messageId;
-        active.lastAgentReplyMessageId = result?.messageId;
-        card.lastRenderedJson = JSON.stringify(rendered);
-        this.startAgentCardTimer(state, active);
-        if (!card.messageId) {
-          throw new Error("Lark card reply did not return message_id");
+        if (!(await this.createAgentCardBestEffort(state, active))) {
+          await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
         }
         return;
       }
@@ -2348,6 +2343,33 @@ export class ConversationManager {
       card.fallbackPlain = true;
       this.stopAgentCardTimer(active);
       await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
+    }
+  }
+
+  private async createAgentCardBestEffort(state: ConversationState, active: ActiveTurn): Promise<boolean> {
+    const card = active.card;
+    if (!card || card.fallbackPlain) {
+      return false;
+    }
+    if (card.messageId) {
+      return true;
+    }
+    try {
+      const rendered = this.renderAgentCard(state, active, "working");
+      const result = await this.options.lark.replyCard(card.anchorMessageId, rendered);
+      if (!result?.messageId) {
+        throw new Error("Lark card reply did not return message_id");
+      }
+      card.messageId = result.messageId;
+      active.lastAgentReplyMessageId = result.messageId;
+      card.lastRenderedJson = JSON.stringify(rendered);
+      this.startAgentCardTimer(state, active);
+      return true;
+    } catch (error) {
+      this.log.warn({ error, messageId: active.replyMessageId }, "failed to create agent card; falling back to plain");
+      card.fallbackPlain = true;
+      this.stopAgentCardTimer(active);
+      return false;
     }
   }
 
@@ -2378,8 +2400,9 @@ export class ConversationManager {
       return;
     }
     try {
-      const output = await this.prepareAgentFinalCardOutputForLark(active.resultText ?? "", active.workspace);
-      const rendered = this.renderAgentCard(state, active, "finished", output.elements);
+      const final = splitFinalAgentCardMessages(card.messages, active.resultText ?? "");
+      const output = await this.prepareAgentFinalCardOutputForLark(final.text, active.workspace);
+      const rendered = this.renderAgentCard(state, active, "finished", output.elements, undefined, final.processMessages);
       await this.options.lark.patchCard(card.messageId, rendered);
       card.lastRenderedJson = JSON.stringify(rendered);
       for (const file of output.files) {
@@ -2486,11 +2509,12 @@ export class ConversationManager {
     active: ActiveTurn,
     status: "working" | "finished" | "interrupted" | "failed",
     finalElements?: LarkCardElement[],
-    error?: string
+    error?: string,
+    messages?: TwinnyAgentCardMessage[]
   ): LarkCardJson {
     return renderTwinnyAgentCard({
       status,
-      messages: active.card?.messages ?? [],
+      messages: messages ?? active.card?.messages ?? [],
       elapsedMs: Date.now() - active.startedAt,
       queueDepth: state.pendingBatch.length,
       stateKey: active.context.stateKey,
@@ -3041,6 +3065,20 @@ function countNextPendingBatch(state: ConversationState): number {
     }
   }
   return state.pendingBatch.length;
+}
+
+function splitFinalAgentCardMessages(
+  messages: TwinnyAgentCardMessage[],
+  fallbackFinalText: string
+): { text: string; processMessages: TwinnyAgentCardMessage[] } {
+  if (messages.length === 0) {
+    return { text: fallbackFinalText, processMessages: [] };
+  }
+  const finalMessage = messages[messages.length - 1]!;
+  return {
+    text: finalMessage.text,
+    processMessages: messages.slice(0, -1)
+  };
 }
 
 function formatPendingMessageForCodex(message: PendingMessage): string {

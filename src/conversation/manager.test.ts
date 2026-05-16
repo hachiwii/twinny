@@ -1394,6 +1394,33 @@ describe("ConversationManager", () => {
     expect(lark.addCompletedReaction).toHaveBeenCalledTimes(1);
   });
 
+  it("creates an agent card immediately after sending input to Codex with an empty-progress placeholder", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    const initialCard = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
+    expect(lark.replyCard).toHaveBeenCalledWith("m1", expect.any(Object));
+    expect(JSON.stringify(initialCard)).toContain("暂无进度");
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith(
+        "card_m1_1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+  });
+
   it("uses card mode to update a single agent card and skips the DONE reaction", async () => {
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
@@ -1403,7 +1430,7 @@ describe("ConversationManager", () => {
         return {
           threadId,
           turnId: "turn_1",
-          text: "final markdown",
+          text: "final aggregate should not be rendered",
           status: "completed" as const
         };
       })
@@ -1427,11 +1454,18 @@ describe("ConversationManager", () => {
 
     const initialCard = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
     const finalCard = vi.mocked(lark.patchCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const finalBodyElements = (finalCard.body as { elements: unknown[] }).elements;
+    const processPanel = finalBodyElements[0] as Record<string, unknown>;
+    const finalContent = finalBodyElements.slice(1);
     expect(lark.replyCard).toHaveBeenCalledWith("m1", expect.any(Object));
     expect(JSON.stringify(initialCard)).toContain("img_logo");
-    expect(JSON.stringify(initialCard)).toContain("- first item");
+    expect(JSON.stringify(initialCard)).toContain("暂无进度");
+    expect(JSON.stringify(vi.mocked(lark.patchCard).mock.calls)).toContain("- first item");
     expect(JSON.stringify(finalCard)).toContain("工作过程");
-    expect(JSON.stringify(finalCard)).toContain("final markdown");
+    expect(JSON.stringify(processPanel)).toContain("first item");
+    expect(JSON.stringify(processPanel)).not.toContain("second item");
+    expect(JSON.stringify(finalContent)).toContain("second item");
+    expect(JSON.stringify(finalCard)).not.toContain("final aggregate should not be rendered");
     expect(lark.replyMarkdown).not.toHaveBeenCalled();
     expect(lark.addCompletedReaction).not.toHaveBeenCalled();
   });

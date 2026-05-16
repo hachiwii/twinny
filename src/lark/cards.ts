@@ -132,7 +132,7 @@ function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] 
 function workingProcessElements(messages: TwinnyAgentCardMessage[]): LarkCardElement[] {
   const rendered = renderProcessItems(messages);
   if (rendered.length === 0) {
-    return [markdownElement("- 正在处理...")];
+    return [progressPlaceholderElement()];
   }
   const elements: LarkCardElement[] = [];
   for (let index = 0; index < rendered.length; index += 1) {
@@ -145,7 +145,10 @@ function workingProcessElements(messages: TwinnyAgentCardMessage[]): LarkCardEle
 }
 
 function processPanel(messages: TwinnyAgentCardMessage[]): LarkCardElement {
-  const content = renderProcessItems(messages).map((message) => `- ${message}`).join("\n") || "- 无中间输出";
+  const rendered = renderProcessItems(messages);
+  const elements = rendered.length > 0
+    ? [markdownElement(rendered.map((message) => `- ${message}`).join("\n"))]
+    : [progressPlaceholderElement()];
   return {
     tag: "collapsible_panel",
     expanded: false,
@@ -170,7 +173,21 @@ function processPanel(messages: TwinnyAgentCardMessage[]): LarkCardElement {
     },
     vertical_spacing: "8px",
     padding: "8px 8px 8px 8px",
-    elements: [markdownElement(content)]
+    elements
+  };
+}
+
+function progressPlaceholderElement(): LarkCardElement {
+  return {
+    tag: "div",
+    text: {
+      tag: "plain_text",
+      content: "暂无进度",
+      text_size: "notation",
+      text_align: "center",
+      text_color: "grey"
+    },
+    margin: "8px 0px 8px 0px"
   };
 }
 
