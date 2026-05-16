@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
 import { TwinnyError } from "../errors.js";
 import type {
@@ -17,6 +18,7 @@ import {
   type CodexBridge,
   type ConversationRepository,
   type LarkFileDownloader,
+  type LarkMessageReader,
   type LarkResponder,
   type LarkChatDirectory,
   type LarkUserDirectory
@@ -251,58 +253,79 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenCalledTimes(1);
   });
 
-  it("updates edited queued messages in memory and persisted raw message JSON", async () => {
+  it("refreshes queued messages before processing and persists changed content", async () => {
     const { repository } = createRepository();
     const { codex, turns } = createDeferredCodex();
-    const manager = createManager({ repository, codex });
+    const larkMessages = createLarkMessageReader({
+      m2: fetchedLarkMessage("m2", "text", JSON.stringify({ text: "/queue edited" })),
+      m3: fetchedLarkMessage("m3", "text", JSON.stringify({ text: "steer edited" }))
+    });
+    const manager = createManager({ repository, codex, larkMessages });
 
     manager.submitIncoming(message("m1", "active"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue old", { raw: rawReceiveEvent("m2", "/queue old") }));
-    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
+    manager.submitIncoming(message("m3", "steer old", { raw: rawReceiveEvent("m3", "steer old") }));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(2));
     await waitForExpect(() => expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
       larkMessageId: "m2",
       status: "queued"
     })));
 
-    manager.submitMessageEdit({
-      eventId: "edit_1",
-      messageId: "m2",
-      messageType: "text",
-      text: "/queue edited",
-      raw: {
-        header: { event_id: "edit_1" },
-        event: {
-          message: {
-            message_id: "m2",
-            message_type: "text",
-            content: JSON.stringify({ text: "/queue edited" })
-          }
-        }
-      }
-    });
-
-    await waitForExpect(() =>
-      expect(repository.updateQueuedLarkMessage).toHaveBeenCalledWith(
-        "m2",
-        expect.objectContaining({
-          text: "edited",
-          rawEventJson: JSON.stringify(rawReceiveEvent("m2", "/queue edited"))
-        })
-      )
-    );
-
     turns[0]!.resolve(completed("thread_1", "turn_1"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(larkMessages.getMessage).toHaveBeenCalledWith("m2");
+    expect(larkMessages.getMessage).toHaveBeenCalledWith("m3");
+    expect(repository.updateQueuedLarkMessage).toHaveBeenCalledWith(
+      "m2",
+      expect.objectContaining({
+        text: "edited",
+        rawEventJson: JSON.stringify(rawReceiveEvent("m2", "/queue edited"))
+      })
+    );
+    expect(repository.updateQueuedLarkMessage).toHaveBeenCalledWith(
+      "m3",
+      expect.objectContaining({
+        text: "steer edited",
+        rawEventJson: JSON.stringify(rawReceiveEvent("m3", "steer edited"))
+      })
+    );
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ input: wrappedMessage("edited", "m2") })
+      expect.objectContaining({ input: `${wrappedMessage("edited", "m2")}\n${wrappedMessage("steer edited", "m3")}` })
     );
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
   });
 
-  it("ignores recall and edit notifications for non-queued messages", async () => {
+  it("uses stored queued content when refreshing latest Lark content fails", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const larkMessages = createLarkMessageReader(new Error("message fetch failed"));
+    const logger = createLogger();
+    const manager = createManager({ repository, codex, larkMessages, logger });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue stored", { raw: rawReceiveEvent("m2", "/queue stored") }));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ input: wrappedMessage("stored", "m2") })
+    );
+    expect(repository.updateQueuedLarkMessage).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: "m2" }),
+      "failed to refresh queued Lark message; using stored content"
+    );
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("ignores recall notifications for non-queued messages", async () => {
     const { repository } = createRepository();
     const codex = createCodex();
     const manager = createManager({ repository, codex });
@@ -314,13 +337,6 @@ describe("ConversationManager", () => {
     })));
 
     manager.submitMessageRecall({ eventId: "recall_1", messageId: "m1", raw: {} });
-    manager.submitMessageEdit({
-      eventId: "edit_1",
-      messageId: "m1",
-      messageType: "text",
-      text: "edited",
-      raw: {}
-    });
 
     await waitForDelay();
     expect(repository.markLarkMessageRecalled).not.toHaveBeenCalled();
@@ -1564,8 +1580,10 @@ function createManager(options: {
   larkUsers?: LarkUserDirectory;
   larkChats?: LarkChatDirectory;
   larkFiles?: LarkFileDownloader;
+  larkMessages?: LarkMessageReader;
   botOpenId?: string;
   workspaceRoot?: string;
+  logger?: ConstructorParameters<typeof ConversationManager>[0]["logger"];
 } = {}): ConversationManager {
   const workspaceRoot = options.workspaceRoot ?? "/tmp/twinny/workspaces";
   return new ConversationManager({
@@ -1582,7 +1600,9 @@ function createManager(options: {
     larkUsers: options.larkUsers ?? createLarkUserDirectory(),
     larkChats: options.larkChats,
     larkFiles: options.larkFiles,
+    larkMessages: options.larkMessages,
     botOpenId: options.botOpenId,
+    logger: options.logger,
     nameLookupFailureTtlMs: 60_000
   });
 }
@@ -1591,6 +1611,31 @@ function createLarkUserDirectory(): LarkUserDirectory {
   return {
     getUserNameByOpenId: vi.fn(async () => "Guest User")
   };
+}
+
+function createLarkMessageReader(messages: Record<string, unknown> | Error): LarkMessageReader {
+  return {
+    getMessage: vi.fn(async (messageId: string) => {
+      if (messages instanceof Error) {
+        throw messages;
+      }
+      const message = messages[messageId];
+      if (!message) {
+        throw new Error(`missing test message ${messageId}`);
+      }
+      return message;
+    })
+  };
+}
+
+function createLogger() {
+  const logger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn()
+  };
+  return logger as typeof logger & Logger;
 }
 
 function createCodex(overrides: Partial<CodexBridge> = {}): CodexBridge {
@@ -1965,6 +2010,19 @@ function rawReceiveEvent(messageId: string, text: string, messageOverrides: Reco
       message_type: "text",
       content: JSON.stringify({ text }),
       ...messageOverrides
+    }
+  };
+}
+
+function fetchedLarkMessage(messageId: string, messageType: string, content: string) {
+  return {
+    message_id: messageId,
+    msg_type: messageType,
+    create_time: "1234",
+    chat_id: "oc_ignored",
+    chat_type: "p2p",
+    body: {
+      content
     }
   };
 }

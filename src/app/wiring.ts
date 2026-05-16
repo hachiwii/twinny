@@ -5,6 +5,7 @@ import { ConversationManager } from "../conversation/manager.js";
 import {
   LarkEventConsumer,
   LarkFileDownloader,
+  LarkMessageReader,
   LarkMessageSender,
   LarkBotDirectory,
   LarkChatDirectory,
@@ -79,6 +80,7 @@ export class TwinnyRuntime {
     });
     const openApiClient = new LarkOpenApiClient({ tokenManager });
     const larkSender = new LarkMessageSender({ openApiClient, logger: this.log });
+    const larkMessages = new LarkMessageReader({ openApiClient });
     const larkUsers = new LarkUserDirectory({ openApiClient });
     const larkChats = new LarkChatDirectory({ openApiClient });
     const larkBot = new LarkBotDirectory({ openApiClient });
@@ -104,6 +106,7 @@ export class TwinnyRuntime {
       larkUsers,
       larkChats,
       larkFiles,
+      larkMessages,
       botOpenId,
       roles: { codexHomeFor: (role) => getRoleCodexHome(this.config, role) },
       logger: this.log
@@ -119,9 +122,6 @@ export class TwinnyRuntime {
       maxMessageAgeMs: this.config.lark.maxMessageAgeSeconds * 1000,
       onMessage: (message) => {
         conversation.submitIncoming(message);
-      },
-      onMessageEdit: (edit) => {
-        conversation.submitMessageEdit(edit);
       },
       onMessageRecall: (recall) => {
         conversation.submitMessageRecall(recall);

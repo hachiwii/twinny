@@ -13,7 +13,6 @@ import type {
   ConversationType,
   IncomingLarkBotMenuAction,
   IncomingLarkMessage,
-  IncomingLarkMessageEdit,
   IncomingLarkMessageRecall,
   LarkMessageRecord,
   LarkMessageRouteKind,
@@ -137,6 +136,10 @@ export interface LarkFileDownloader {
   }): Promise<{ fileKey: string; raw?: unknown }>;
 }
 
+export interface LarkMessageReader {
+  getMessage(messageId: string): Promise<unknown>;
+}
+
 export interface WorkspaceManagerLike {
   ensureWorkspace(conversationKey: string): Promise<string> | string;
 }
@@ -206,6 +209,7 @@ export interface ConversationManagerOptions {
   larkUsers?: LarkUserDirectory;
   larkChats?: LarkChatDirectory;
   larkFiles?: LarkFileDownloader;
+  larkMessages?: LarkMessageReader;
   botOpenId?: string;
   roles: RoleHomeResolver;
   logger?: Logger;
@@ -335,18 +339,6 @@ export class ConversationManager {
       this.processQueuedMessageRecall(state, conversationKey, recall)
     ).catch((error) => {
       this.log.error({ error, messageId: recall.messageId }, "conversation message recall failed");
-    });
-  }
-
-  submitMessageEdit(edit: IncomingLarkMessageEdit): void {
-    if (this.shuttingDown) {
-      throw new TwinnyError("Conversation manager is shutting down", "CONVERSATION_MANAGER_SHUTTING_DOWN");
-    }
-
-    void this.enqueueQueuedMessageChange(edit.messageId, (state, conversationKey) =>
-      this.processQueuedMessageEdit(state, conversationKey, edit)
-    ).catch((error) => {
-      this.log.error({ error, messageId: edit.messageId }, "conversation message edit failed");
     });
   }
 
@@ -654,45 +646,6 @@ export class ConversationManager {
 
     removePendingMessageById(state.pendingBatch, recall.messageId);
     await this.markMessageRecalledBestEffort(recall.messageId);
-  }
-
-  private async processQueuedMessageEdit(
-    state: ConversationState,
-    conversationKey: string,
-    edit: IncomingLarkMessageEdit
-  ): Promise<void> {
-    const record = queuedLarkMessageRecord(await this.options.repository.getLarkMessageById(edit.messageId));
-    if (!record) {
-      return;
-    }
-
-    const pending = findPendingMessageById(state.pendingBatch, edit.messageId);
-    const existingRaw = pending?.original.raw ?? parseStoredRawEvent(record.rawEventJson);
-    const updatedRaw = patchLarkMessageRawEvent(existingRaw, edit.raw);
-    const parsed = parseSlashCommand(edit.text);
-    const text = parsed.kind === "queue" ? parsed.text : edit.text;
-    let storedText = text;
-
-    if (pending) {
-      const updatedMessage: IncomingLarkMessage = {
-        ...pending.original,
-        messageType: edit.messageType,
-        resources: edit.resources,
-        downloadedFiles: undefined,
-        rawForCodex: edit.rawForCodex,
-        text: edit.text,
-        raw: updatedRaw
-      };
-      await this.prepareMessageResources(conversationKey, updatedMessage);
-      pending.original = updatedMessage;
-      pending.text = (updatedMessage.downloadedFiles?.length ?? 0) > 0 ? updatedMessage.text : text;
-      storedText = pending.text;
-    }
-
-    await this.updateQueuedMessageBestEffort(edit.messageId, {
-      text: storedText,
-      rawEventJson: safeJsonStringify(updatedRaw)
-    });
   }
 
   private async routeMessage(
@@ -1367,7 +1320,63 @@ export class ConversationManager {
     }
     const count = countNextPendingBatch(state);
     const messages = state.pendingBatch.splice(0, count);
+    await this.refreshPendingMessagesBeforeStart(context, messages);
     await this.startTurnForMessages(state, context, messages);
+  }
+
+  private async refreshPendingMessagesBeforeStart(context: MessageContext, messages: PendingMessage[]): Promise<void> {
+    if (!this.options.larkMessages || messages.length === 0) {
+      return;
+    }
+    await Promise.all(messages.map((message) => this.refreshPendingMessageBeforeStart(context, message)));
+  }
+
+  private async refreshPendingMessageBeforeStart(context: MessageContext, pending: PendingMessage): Promise<void> {
+    const reader = this.options.larkMessages;
+    if (!reader) {
+      return;
+    }
+
+    let fetchedRaw: unknown;
+    try {
+      fetchedRaw = await reader.getMessage(pending.messageId);
+    } catch (error) {
+      this.log.warn({ error, messageId: pending.messageId }, "failed to refresh queued Lark message; using stored content");
+      return;
+    }
+
+    try {
+      const latestRaw = patchLarkMessageRawEvent(pending.original.raw, fetchedRaw);
+      if (!larkMessageContentChanged(pending.original.raw, latestRaw)) {
+        return;
+      }
+
+      const normalized = normalizeIncomingLarkMessage(latestRaw, { botOpenId: this.options.botOpenId });
+      if (!normalized || normalized.messageId !== pending.messageId) {
+        this.log.warn(
+          { messageId: pending.messageId },
+          "refreshed queued Lark message could not be normalized; using stored content"
+        );
+        return;
+      }
+
+      normalized.senderName = await this.resolveSenderName(
+        context,
+        normalized,
+        roleForSender(this.options.config, normalized.senderOpenId)
+      );
+      const parsed = parseSlashCommand(normalized.text);
+      const text = parsed.kind === "queue" ? parsed.text : normalized.text;
+      await this.prepareMessageResources(context.conversationKey, normalized);
+      pending.original = normalized;
+      pending.text = (normalized.downloadedFiles?.length ?? 0) > 0 ? normalized.text : text;
+      await this.updateQueuedMessageBestEffort(pending.messageId, {
+        text: pending.text,
+        rawEventJson: safeJsonStringify(latestRaw)
+      });
+    } catch (error) {
+      this.log.warn({ error, messageId: pending.messageId }, "failed to apply refreshed Lark message; using stored content");
+    }
   }
 
   private async startTurnForMessages(
@@ -2744,10 +2753,6 @@ function queuedLarkMessageRecord(value: unknown): LarkMessageRecord | undefined 
   return value as unknown as LarkMessageRecord;
 }
 
-function findPendingMessageById(messages: PendingMessage[], messageId: string): PendingMessage | undefined {
-  return messages.find((message) => message.messageId === messageId);
-}
-
 function removePendingMessageById(messages: PendingMessage[], messageId: string): PendingMessage | undefined {
   const index = messages.findIndex((message) => message.messageId === messageId);
   if (index < 0) {
@@ -2757,7 +2762,7 @@ function removePendingMessageById(messages: PendingMessage[], messageId: string)
 }
 
 function patchLarkMessageRawEvent(existingRaw: unknown, editRaw: unknown): unknown {
-  const patch = extractEditedMessagePatch(editRaw);
+  const patch = extractLarkMessagePatch(editRaw);
   if (!patch || !isRecord(existingRaw)) {
     return existingRaw ?? editRaw;
   }
@@ -2772,7 +2777,27 @@ function patchLarkMessageRawEvent(existingRaw: unknown, editRaw: unknown): unkno
   };
 }
 
-function extractEditedMessagePatch(raw: unknown): Record<string, unknown> | undefined {
+function larkMessageContentChanged(previousRaw: unknown, latestRaw: unknown): boolean {
+  const previous = larkMessageContentSignature(previousRaw);
+  const latest = larkMessageContentSignature(latestRaw);
+  if (!previous || !latest) {
+    return true;
+  }
+  return previous !== latest;
+}
+
+function larkMessageContentSignature(raw: unknown): string | undefined {
+  const patch = extractLarkMessagePatch(raw);
+  if (!patch) {
+    return undefined;
+  }
+  return JSON.stringify({
+    messageType: patch.message_type,
+    content: patch.content
+  });
+}
+
+function extractLarkMessagePatch(raw: unknown): Record<string, unknown> | undefined {
   if (!isRecord(raw)) {
     return undefined;
   }
@@ -2781,8 +2806,6 @@ function extractEditedMessagePatch(raw: unknown): Record<string, unknown> | unde
   const patch: Record<string, unknown> = {};
   for (const field of [
     "message_id",
-    "message_type",
-    "content",
     "chat_id",
     "chat_type",
     "create_time",
@@ -2795,6 +2818,15 @@ function extractEditedMessagePatch(raw: unknown): Record<string, unknown> | unde
     if (value !== undefined) {
       patch[field] = value;
     }
+  }
+  const messageType = message.message_type ?? event.message_type ?? message.msg_type ?? event.msg_type;
+  if (messageType !== undefined) {
+    patch.message_type = messageType;
+  }
+  const body = isRecord(message.body) ? message.body : isRecord(event.body) ? event.body : undefined;
+  const content = message.content ?? event.content ?? body?.content;
+  if (content !== undefined) {
+    patch.content = content;
   }
   return Object.keys(patch).length > 0 ? patch : undefined;
 }

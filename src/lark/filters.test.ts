@@ -3,7 +3,6 @@ import {
   normalizeIncomingLarkMessage,
   normalizeIncomingLarkMessageWithReason,
   normalizeLarkBotMenuWithReason,
-  normalizeLarkMessageEditWithReason,
   normalizeLarkMessageRecallWithReason,
   normalizeTextContent
 } from "./filters.js";
@@ -273,35 +272,6 @@ describe("normalizeLarkMessageRecallWithReason", () => {
         chatId: "oc_1",
         recallTime: 1615380573411,
         raw: expect.anything()
-      }
-    });
-  });
-});
-
-describe("normalizeLarkMessageEditWithReason", () => {
-  it("normalizes v2 edited message events", () => {
-    const result = normalizeLarkMessageEditWithReason({
-      header: { event_id: "event-edit" },
-      event: {
-        message: {
-          message_id: "om_1",
-          chat_id: "oc_1",
-          message_type: "text",
-          content: JSON.stringify({ text: "/queue edited" })
-        },
-        updated_time: "1615380573411"
-      }
-    });
-
-    expect(result).toMatchObject({
-      kind: "edit",
-      edit: {
-        eventId: "event-edit",
-        messageId: "om_1",
-        chatId: "oc_1",
-        messageType: "text",
-        text: "/queue edited",
-        editTime: 1615380573411
       }
     });
   });

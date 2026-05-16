@@ -171,18 +171,6 @@ export interface IncomingLarkMessageRecall {
   raw: unknown;
 }
 
-export interface IncomingLarkMessageEdit {
-  eventId: string;
-  messageId: string;
-  chatId?: string;
-  messageType: string;
-  resources?: IncomingLarkMessageResource[];
-  rawForCodex?: boolean;
-  text: string;
-  editTime?: number;
-  raw: unknown;
-}
-
 export type LarkBotMenuActionKey = "stop" | "new" | "queue" | "status" | "help";
 
 export interface IncomingLarkBotMenuAction {

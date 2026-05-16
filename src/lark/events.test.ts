@@ -38,8 +38,7 @@ describe("LarkEventConsumer", () => {
     expect(Object.keys(registered).sort()).toEqual([
       "application.bot.menu_v6",
       "im.message.recalled_v1",
-      "im.message.receive_v1",
-      "im.message.updated_v1"
+      "im.message.receive_v1"
     ]);
     expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "hello", chatId: "ou_user" }));
     expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "hello", chatId: "oc_group", chatType: "group" }));
@@ -107,7 +106,7 @@ describe("LarkEventConsumer", () => {
     expect(onIgnored).toHaveBeenCalledWith("unsupported_event_key", expect.anything());
   });
 
-  it("forwards normalized message edit and recall events", async () => {
+  it("forwards normalized message recall events", async () => {
     const registered: Record<string, (data: unknown) => unknown> = {};
     const dispatcher: EventDispatcherLike = {
       register(handles) {
@@ -119,30 +118,18 @@ describe("LarkEventConsumer", () => {
       start: vi.fn(),
       close: vi.fn()
     };
-    const onMessageEdit = vi.fn();
     const onMessageRecall = vi.fn();
     const consumer = new LarkEventConsumer({
       appId: "cli_1234567890abcdef",
       appSecret: "secret",
       warmTenantToken: false,
       onMessage: vi.fn(),
-      onMessageEdit,
       onMessageRecall,
       eventDispatcherFactory: () => dispatcher,
       wsClientFactory: () => wsClient
     });
 
     await consumer.start();
-    await registered["im.message.updated_v1"]({
-      header: { event_id: "event-edit" },
-      event: {
-        message: {
-          message_id: "om_1",
-          message_type: "text",
-          content: JSON.stringify({ text: "edited" })
-        }
-      }
-    });
     await registered["im.message.recalled_v1"]({
       header: { event_id: "event-recall" },
       event: {
@@ -152,7 +139,6 @@ describe("LarkEventConsumer", () => {
       }
     });
 
-    expect(onMessageEdit).toHaveBeenCalledWith(expect.objectContaining({ messageId: "om_1", text: "edited" }));
     expect(onMessageRecall).toHaveBeenCalledWith(expect.objectContaining({ messageId: "om_1", recallTime: 1234 }));
   });
 

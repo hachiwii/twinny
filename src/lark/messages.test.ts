@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { TenantAccessTokenManager } from "./auth.js";
-import { LarkMessageSender } from "./messages.js";
+import { LarkMessageReader, LarkMessageSender } from "./messages.js";
 import { LarkOpenApiClient } from "./openapi.js";
 import type { FetchLike, LarkLogger } from "./types.js";
 
@@ -147,6 +147,43 @@ describe("LarkMessageSender", () => {
     });
   });
 
+  it("fetches a message through the mget API", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      {
+        code: 0,
+        data: {
+          items: [
+            {
+              message_id: "om_source",
+              msg_type: "text",
+              body: { content: JSON.stringify({ text: "latest" }) }
+            }
+          ]
+        }
+      }
+    ]);
+    const reader = createReader(fetch);
+
+    await expect(reader.getMessage("om_source")).resolves.toMatchObject({
+      message_id: "om_source",
+      msg_type: "text"
+    });
+
+    expect(fetch).toHaveBeenLastCalledWith(
+      "https://open.feishu.cn/open-apis/im/v1/messages/mget?card_msg_content_type=raw_card_content&message_ids=om_source",
+      {
+        method: "GET",
+        headers: {
+          authorization: "Bearer tenant-token",
+          "content-type": "application/json"
+        },
+        body: undefined,
+        signal: undefined
+      }
+    );
+  });
+
   it("creates and deletes Typing reactions", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
@@ -228,17 +265,25 @@ describe("LarkMessageSender", () => {
 });
 
 function createSender(fetch: FetchLike, logger?: LarkLogger) {
+  const openApiClient = createOpenApiClient(fetch);
+  return new LarkMessageSender({ openApiClient, logger });
+}
+
+function createReader(fetch: FetchLike) {
+  return new LarkMessageReader({ openApiClient: createOpenApiClient(fetch) });
+}
+
+function createOpenApiClient(fetch: FetchLike) {
   const tokenManager = new TenantAccessTokenManager({
     appId: "cli_1234567890abcdef",
     appSecret: "secret",
     fetch
   });
-  const openApiClient = new LarkOpenApiClient({
+  return new LarkOpenApiClient({
     tokenManager,
     fetch,
     retryBaseDelayMs: 0
   });
-  return new LarkMessageSender({ openApiClient, logger });
 }
 
 function sequenceFetch(bodies: unknown[]): FetchLike {

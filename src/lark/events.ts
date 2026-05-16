@@ -4,17 +4,14 @@ import { TenantAccessTokenManager } from "./auth.js";
 import {
   normalizeLarkBotMenuWithReason,
   normalizeIncomingLarkMessageWithReason,
-  normalizeLarkMessageEditWithReason,
   normalizeLarkMessageRecallWithReason
 } from "./filters.js";
 import {
   LARK_BOT_MENU_EVENT,
   LARK_MESSAGE_RECEIVE_EVENT,
   LARK_MESSAGE_RECALLED_EVENT,
-  LARK_MESSAGE_UPDATED_EVENT,
   type IncomingLarkBotMenuAction,
   type IncomingLarkMessage,
-  type IncomingLarkMessageEdit,
   type IncomingLarkMessageRecall,
   type LarkLogger
 } from "./types.js";
@@ -41,7 +38,6 @@ export interface LarkEventConsumerOptions {
   maxMessageAgeMs?: number;
   now?: () => number;
   onMessage: (message: IncomingLarkMessage) => Promise<void> | void;
-  onMessageEdit?: (edit: IncomingLarkMessageEdit) => Promise<void> | void;
   onMessageRecall?: (recall: IncomingLarkMessageRecall) => Promise<void> | void;
   onBotMenu?: (action: IncomingLarkBotMenuAction) => Promise<void> | void;
   onIgnored?: (reason: string, raw: unknown) => void;
@@ -113,18 +109,6 @@ export class LarkEventConsumer {
           return;
         }
         await this.options.onMessage(result.message);
-      },
-      [LARK_MESSAGE_UPDATED_EVENT]: async (data: unknown) => {
-        if (!this.options.onMessageEdit) {
-          return;
-        }
-        const result = normalizeLarkMessageEditWithReason(data);
-        if (result.kind === "ignored") {
-          this.options.onIgnored?.(result.reason, result.raw);
-          this.options.logger?.debug?.({ reason: result.reason }, "ignored Lark message update event");
-          return;
-        }
-        await this.options.onMessageEdit(result.edit);
       },
       [LARK_MESSAGE_RECALLED_EVENT]: async (data: unknown) => {
         if (!this.options.onMessageRecall) {

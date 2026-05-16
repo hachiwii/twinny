@@ -2,7 +2,6 @@ import type {
   IncomingLarkBotMenuAction,
   IncomingLarkMention,
   IncomingLarkMessage,
-  IncomingLarkMessageEdit,
   IncomingLarkMessageRecall,
   IncomingLarkMessageResource
 } from "../types.js";
@@ -63,10 +62,6 @@ export type NormalizeLarkMessageResult =
 
 export type NormalizeLarkMessageRecallResult =
   | { kind: "recall"; recall: IncomingLarkMessageRecall }
-  | { kind: "ignored"; reason: LarkMessageChangeIgnoreReason; raw: unknown };
-
-export type NormalizeLarkMessageEditResult =
-  | { kind: "edit"; edit: IncomingLarkMessageEdit }
   | { kind: "ignored"; reason: LarkMessageChangeIgnoreReason; raw: unknown };
 
 export type NormalizeLarkBotMenuResult =
@@ -213,52 +208,6 @@ export function normalizeLarkMessageRecallWithReason(raw: unknown): NormalizeLar
       messageId,
       chatId: stringValue(event.chat_id) ?? chatIdFromChatInfo(event.chat_info),
       recallTime: parseEpochMs(event.recall_time),
-      raw
-    }
-  };
-}
-
-export function normalizeLarkMessageEditWithReason(raw: unknown): NormalizeLarkMessageEditResult {
-  if (!isRecord(raw)) {
-    return ignoredMessageChange("malformed_event", raw);
-  }
-
-  const header = eventHeader(raw);
-  const event = eventPayload(raw);
-  const message = isRecord(event.message) ? event.message : event;
-  const messageId = stringValue(message.message_id) ?? stringValue(event.message_id);
-  if (!messageId) {
-    return ignoredMessageChange("missing_message_id", raw);
-  }
-
-  const messageType = stringValue(message.message_type) ?? stringValue(event.message_type) ?? "unknown";
-  const content = message.content ?? event.content;
-  const normalized = normalizeMessageContent(messageType, content);
-  const resources = normalized.resources;
-  const shouldUseRaw = normalized.text === null || (normalized.text.length === 0 && resources.length === 0);
-  const text = shouldUseRaw ? stringifyRawMessage(message) : (normalized.text ?? "");
-  const rawForCodex = normalized.rawForCodex || shouldUseRaw;
-
-  return {
-    kind: "edit",
-    edit: {
-      eventId: firstStringValue(header.event_id, raw.event_id, raw.uuid, stringValue(event.event_id), messageId) ?? messageId,
-      messageId,
-      chatId: stringValue(message.chat_id) ?? stringValue(event.chat_id) ?? chatIdFromChatInfo(event.chat_info),
-      messageType,
-      resources: resources.length > 0 ? resources : undefined,
-      rawForCodex: rawForCodex ? true : undefined,
-      text,
-      editTime: parseEpochMs(
-        message.update_time ??
-          message.updated_time ??
-          message.edit_time ??
-          event.update_time ??
-          event.updated_time ??
-          event.edit_time ??
-          header.create_time ??
-          raw.create_time
-      ),
       raw
     }
   };

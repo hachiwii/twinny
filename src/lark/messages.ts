@@ -8,6 +8,10 @@ export interface LarkMessageSenderOptions {
   logger?: LarkLogger;
 }
 
+export interface LarkMessageReaderOptions {
+  openApiClient: LarkOpenApiClient;
+}
+
 export interface TextMessageOptions {
   uuid?: string;
   signal?: AbortSignal;
@@ -179,6 +183,25 @@ export class LarkMessageSender {
   }
 }
 
+export class LarkMessageReader {
+  constructor(private readonly options: LarkMessageReaderOptions) {}
+
+  async getMessage(messageId: string): Promise<unknown> {
+    const raw = await this.options.openApiClient.request("/im/v1/messages/mget", {
+      method: "GET",
+      query: {
+        card_msg_content_type: "raw_card_content",
+        message_ids: messageId
+      }
+    });
+    const message = extractFetchedMessage(raw, messageId);
+    if (!message) {
+      throw new Error(`Lark message response did not include ${messageId}`);
+    }
+    return message;
+  }
+}
+
 function extractMessageId(raw: unknown): string | undefined {
   const data = getData(raw);
   const messageId = data.message_id;
@@ -205,6 +228,32 @@ function getData(raw: unknown): Record<string, unknown> {
   }
   const maybeData = (raw as Record<string, unknown>).data;
   return maybeData && typeof maybeData === "object" && !Array.isArray(maybeData) ? (maybeData as Record<string, unknown>) : {};
+}
+
+function extractFetchedMessage(raw: unknown, messageId: string): unknown {
+  const data = getData(raw);
+  const candidates = [
+    data.items,
+    data.messages,
+    data.message
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      const match = candidate.find(
+        (item) => item && typeof item === "object" && !Array.isArray(item) && (item as Record<string, unknown>).message_id === messageId
+      );
+      if (match) {
+        return match;
+      }
+    }
+    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+      const record = candidate as Record<string, unknown>;
+      if (record.message_id === messageId) {
+        return record;
+      }
+    }
+  }
+  return undefined;
 }
 
 function encodePathSegment(value: string): string {
