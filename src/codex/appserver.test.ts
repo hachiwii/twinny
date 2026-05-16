@@ -41,7 +41,7 @@ describe("CodexAppServer", () => {
     const captureFile = path.join(tempDir, "requests.ndjson");
     const fakeBinary = createFakeCodexBinary(tempDir, captureFile);
     const codexHome = path.join(tempDir, "codex-home");
-    const workspace = path.join(tempDir, "workspaces", "p2p:ou_1");
+    const workspace = path.join(tempDir, "workspaces", "p2p_ou_1");
     fs.mkdirSync(workspace, { recursive: true });
 
     const server = new CodexAppServer({

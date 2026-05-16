@@ -1,24 +1,31 @@
 import type { ConversationType, RoleName, TwinnyConfig } from "../types.js";
 import { TwinnyError } from "../errors.js";
-
-const unsafeConversationKey = /(^$|\/|(^|:)\.\.($|:))/;
+import {
+  assertValidConversationKey,
+  createGroupConversationKey,
+  createP2PConversationKey
+} from "../workspace/slug.js";
 
 export function conversationKeyForP2p(chatId: string): string {
-  if (!chatId || chatId.includes("/") || chatId.includes("..")) {
+  try {
+    return createP2PConversationKey(chatId);
+  } catch {
     throw new TwinnyError(`Invalid p2p chat id: ${chatId}`, "INVALID_CHAT_ID");
   }
-  return `p2p:${chatId}`;
 }
 
 export function conversationKeyForGroup(chatId: string): string {
-  if (!chatId || chatId.includes("/") || chatId.includes("..")) {
+  try {
+    return createGroupConversationKey(chatId);
+  } catch {
     throw new TwinnyError(`Invalid group chat id: ${chatId}`, "INVALID_CHAT_ID");
   }
-  return `group:${chatId}`;
 }
 
 export function validateConversationKey(conversationKey: string): void {
-  if (unsafeConversationKey.test(conversationKey) || conversationKey.split(":").some((part) => part.length === 0)) {
+  try {
+    assertValidConversationKey(conversationKey);
+  } catch {
     throw new TwinnyError(`Invalid conversation key: ${conversationKey}`, "INVALID_CONVERSATION_KEY");
   }
 }

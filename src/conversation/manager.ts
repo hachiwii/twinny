@@ -3001,7 +3001,7 @@ function messageForBotMenuAction(action: IncomingLarkBotMenuAction): IncomingLar
 
 function contextForRecoveredRecord(record: LarkMessageRecord): MessageContext {
   const conversationKey = record.conversationKey ?? conversationKeyForP2p(record.larkUserId);
-  const type: ConversationType = conversationKey.startsWith("group:") ? "group" : "p2p";
+  const type: ConversationType = conversationKey.startsWith("group_") || conversationKey.startsWith("group:") ? "group" : "p2p";
   return {
     type,
     conversationKey,
