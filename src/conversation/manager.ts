@@ -1419,7 +1419,7 @@ function formatDownloadedFileForCodex(
   messageType: string
 ): string {
   const tag = codexFileTagForMessage(file.resourceType, messageType);
-  return `<${tag} lark_file_key="${escapeXmlAttribute(file.fileKey)}">${escapeXmlText(file.path)}</${tag}>`;
+  return `<${tag} lark_file_key="${escapeXmlAttribute(file.fileKey)}">saved to ${escapeXmlText(file.path)}</${tag}>`;
 }
 
 function codexFileTagForMessage(resourceType: "image" | "file", messageType: string): "image" | "video" | "file" {
