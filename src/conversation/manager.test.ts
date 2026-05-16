@@ -102,7 +102,7 @@ describe("ConversationManager", () => {
         larkMessageId: "m1",
         eventId: "e_m1",
         larkUserId: "ou_guest",
-        conversationKey: "p2p_ou_guest",
+        conversationKey: "p2p:ou_guest",
         routeKind: "message",
         status: "processing",
         text: "hello",
@@ -110,23 +110,23 @@ describe("ConversationManager", () => {
       })
     );
     expect(repository.upsertCodexThread).toHaveBeenCalledWith({
-      conversationKey: "p2p_ou_guest",
+      conversationKey: "p2p:ou_guest",
       codexThreadId: "thread_1",
       role: "guest",
       larkThreadId: undefined
     });
     expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m1"], {
-      conversationKey: "p2p_ou_guest",
+      conversationKey: "p2p:ou_guest",
       codexThreadId: "thread_1"
     });
     expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m1"], {
-      conversationKey: "p2p_ou_guest",
+      conversationKey: "p2p:ou_guest",
       codexThreadId: "thread_1",
       codexTurnId: "turn_1"
     });
     expect(repository.updateCodexThreadTokenUsage).toHaveBeenCalledWith({
       codexThreadId: "thread_1",
-      conversationKey: "p2p_ou_guest",
+      conversationKey: "p2p:ou_guest",
       role: "guest",
       totalTokens: 42,
       tokenUsageJson: JSON.stringify({
@@ -148,13 +148,13 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() =>
       expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m2"], {
-        conversationKey: "p2p_ou_guest",
+        conversationKey: "p2p:ou_guest",
         codexThreadId: "thread_1",
         codexTurnId: "turn_1"
       })
     );
     expect(repository.markLarkMessagesSteered).toHaveBeenCalledWith(["m1"], {
-      conversationKey: "p2p_ou_guest",
+      conversationKey: "p2p:ou_guest",
       codexThreadId: "thread_1",
       codexTurnId: "turn_1"
     });
@@ -178,7 +178,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue queued"));
     manager.submitIncoming(message("m3", "second queued"));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(2));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(2));
 
     expect(codex.startTurn).toHaveBeenCalledTimes(1);
     expect(codex.steerTurn).not.toHaveBeenCalled();
@@ -203,7 +203,7 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m3", "2"));
     manager.submitIncoming(message("m4", "/queue 3"));
     manager.submitIncoming(message("m5", "/queue 4"));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(4));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(4));
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
@@ -211,7 +211,7 @@ describe("ConversationManager", () => {
       2,
       expect.objectContaining({ input: `${wrappedMessage("1", "m2")}\n${wrappedMessage("2", "m3")}` })
     );
-    expect(manager.queueDepth("p2p_ou_guest")).toBe(2);
+    expect(manager.queueDepth("p2p:ou_guest")).toBe(2);
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
@@ -219,7 +219,7 @@ describe("ConversationManager", () => {
       3,
       expect.objectContaining({ input: wrappedMessage("3", "m4") })
     );
-    expect(manager.queueDepth("p2p_ou_guest")).toBe(1);
+    expect(manager.queueDepth("p2p:ou_guest")).toBe(1);
 
     turns[2]!.resolve(completed("thread_1", "turn_3"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(4));
@@ -239,7 +239,7 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m1", "active"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue queued"));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
     await waitForExpect(() => expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
       larkMessageId: "m2",
       status: "queued"
@@ -248,7 +248,7 @@ describe("ConversationManager", () => {
     manager.submitMessageRecall({ eventId: "recall_1", messageId: "m2", raw: {} });
 
     await waitForExpect(() => expect(repository.markLarkMessageRecalled).toHaveBeenCalledWith("m2"));
-    expect(manager.queueDepth("p2p_ou_guest")).toBe(0);
+    expect(manager.queueDepth("p2p:ou_guest")).toBe(0);
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));
     await waitForDelay();
@@ -268,7 +268,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue old", { raw: rawReceiveEvent("m2", "/queue old") }));
     manager.submitIncoming(message("m3", "steer old", { raw: rawReceiveEvent("m3", "steer old") }));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(2));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(2));
     await waitForExpect(() => expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
       larkMessageId: "m2",
       status: "queued"
@@ -313,7 +313,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue queued", { raw: rawReceiveEvent("m2", "/queue queued") }));
     manager.submitIncoming(message("m3", "steer stored", { raw: rawReceiveEvent("m3", "steer stored") }));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(2));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(2));
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
@@ -341,7 +341,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue recalled", { raw: rawReceiveEvent("m2", "/queue recalled") }));
     manager.submitIncoming(message("m3", "/queue next", { raw: rawReceiveEvent("m3", "/queue next") }));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(2));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(2));
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
@@ -364,7 +364,7 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m1", "active"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue stored", { raw: rawReceiveEvent("m2", "/queue stored") }));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
@@ -408,7 +408,7 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue queued"));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
     manager.submitIncoming(message("m3", "/stop"));
 
     await waitForExpect(() => expect(repository.markLarkMessagesCleared).toHaveBeenCalledWith(["m2"]));
@@ -452,7 +452,7 @@ describe("ConversationManager", () => {
     vi.mocked(repository.getCodexThreadById).mockReturnValue({
       id: 1,
       codexThreadId: "thread_status",
-      conversationKey: "p2p_ou_guest",
+      conversationKey: "p2p:ou_guest",
       role: "guest",
       totalTokens: 100,
       tokenUsageJson: JSON.stringify({
@@ -480,7 +480,7 @@ describe("ConversationManager", () => {
       "m1",
       [
         "OUID: ou_guest",
-        "Conversation Key: p2p_ou_guest",
+        "Conversation Key: p2p:ou_guest",
         "Codex Thread ID: thread_status",
         "Thread Token Usage:",
         "- total: 100",
@@ -498,7 +498,7 @@ describe("ConversationManager", () => {
 
   it("includes account usage windows in /status for the owner", async () => {
     const row = conversationRecord({
-      conversationKey: "p2p_ou_owner",
+      conversationKey: "p2p:ou_owner",
       chatId: "ou_owner",
       role: "owner",
       codexThreadId: "thread_owner"
@@ -512,7 +512,7 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledTimes(1));
     expect(codex.readAccountRateLimits).toHaveBeenCalledWith({ role: "owner" });
-    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("Conversation Key: p2p_ou_owner"));
+    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("Conversation Key: p2p:ou_owner"));
     expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("Codex Account Usage:"));
     expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("- 5h: 12.50% used"));
     expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("- 7d: 34.00% used"));
@@ -526,7 +526,7 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue queued"));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
     manager.submitIncoming(message("m3", "/stop"));
     await waitForExpect(() =>
       expect(codex.interruptTurn).toHaveBeenCalledWith(
@@ -555,7 +555,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue queued one"));
     manager.submitIncoming(message("m3", "/queue queued two"));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(2));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(2));
 
     manager.submitIncoming(message("m4", "/next"));
     await waitForExpect(() =>
@@ -572,7 +572,7 @@ describe("ConversationManager", () => {
       2,
       expect.objectContaining({ input: wrappedMessage("queued one", "m2") })
     );
-    expect(manager.queueDepth("p2p_ou_guest")).toBe(1);
+    expect(manager.queueDepth("p2p:ou_guest")).toBe(1);
     expect(lark.replyText).toHaveBeenCalledWith(
       "m4",
       "已打断当前任务，将执行队列中的下一条消息。队列剩余 1 条。"
@@ -592,7 +592,7 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m2", "/queue 1"));
     manager.submitIncoming(message("m3", "2"));
     manager.submitIncoming(message("m4", "/queue 3"));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(3));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(3));
 
     manager.submitIncoming(message("m5", "/steer"));
     await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
@@ -605,14 +605,14 @@ describe("ConversationManager", () => {
         input: `${wrappedMessage("1", "m2")}\n${wrappedMessage("2", "m3")}`
       })
     );
-    expect(manager.queueDepth("p2p_ou_guest")).toBe(1);
+    expect(manager.queueDepth("p2p:ou_guest")).toBe(1);
     expect(repository.markLarkMessagesSteered).toHaveBeenCalledWith(["m1"], {
-      conversationKey: "p2p_ou_guest",
+      conversationKey: "p2p:ou_guest",
       codexThreadId: "thread_1",
       codexTurnId: "turn_1"
     });
     expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m2", "m3"], {
-      conversationKey: "p2p_ou_guest",
+      conversationKey: "p2p:ou_guest",
       codexThreadId: "thread_1",
       codexTurnId: "turn_1"
     });
@@ -638,12 +638,12 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue queued one"));
     manager.submitIncoming(message("m3", "/queue queued two"));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(2));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(2));
 
     manager.submitIncoming(message("m4", "/steer"));
     await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
 
-    expect(manager.queueDepth("p2p_ou_guest")).toBe(2);
+    expect(manager.queueDepth("p2p:ou_guest")).toBe(2);
     expect(lark.replyText).toHaveBeenCalledWith("m4", "注入当前任务失败，队列保持不变。");
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));
@@ -697,7 +697,7 @@ describe("ConversationManager", () => {
         })
       )
     );
-    expect(manager.queueDepth("p2p_ou_guest")).toBe(1);
+    expect(manager.queueDepth("p2p:ou_guest")).toBe(1);
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
@@ -714,7 +714,7 @@ describe("ConversationManager", () => {
     vi.mocked(repository.getCodexThreadById).mockReturnValue({
       id: 1,
       codexThreadId: "thread_status",
-      conversationKey: "p2p_ou_guest",
+      conversationKey: "p2p:ou_guest",
       role: "guest",
       totalTokens: 10,
       tokenUsageJson: JSON.stringify({ usage: { total: { totalTokens: 10 } } }),
@@ -731,7 +731,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(lark.sendTextToOpenId).toHaveBeenCalledTimes(2));
     expect(lark.sendTextToOpenId).toHaveBeenCalledWith(
       "ou_guest",
-      expect.stringContaining("Conversation Key: p2p_ou_guest")
+      expect.stringContaining("Conversation Key: p2p:ou_guest")
     );
     expect(lark.sendTextToOpenId).toHaveBeenCalledWith("ou_guest", expect.stringContaining("Codex Thread ID: thread_status"));
     expect(lark.sendTextToOpenId).toHaveBeenCalledWith("ou_guest", expect.stringContaining("/help - 查看可用指令和使用说明"));
@@ -759,7 +759,7 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue stale"));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
     manager.submitIncoming(message("m3", "/new"));
     await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("m3", "已新开 Codex thread：thread_new"));
     manager.submitIncoming(message("m4", "after new"));
@@ -837,30 +837,30 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g1", "已激活群聊：Team Room\n响应模式：at\nRole：guest"));
     expect(row).toBeUndefined();
-    expect(repository.findByConversationKey("group_oc_group")).toBeDefined();
+    expect(repository.findByConversationKey("group:oc_group")).toBeDefined();
     expect(codex.startThread).toHaveBeenCalledWith({
       role: "guest",
-      cwd: "/tmp/twinny/workspaces/group_oc_group",
+      cwd: "/tmp/twinny/workspaces/group:oc_group",
       approvalPolicy: "never"
     });
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         larkMessageId: "g1",
         larkGroupId: "oc_group",
-        conversationKey: "group_oc_group",
+        conversationKey: "group:oc_group",
         routeKind: "control_message",
         text: "/activate"
       })
     );
-    expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
-      conversationKey: "group_oc_group",
+    expect(repository.findByConversationKey("group:oc_group")).toMatchObject({
+      conversationKey: "group:oc_group",
       type: "group",
       chatId: "oc_group",
       name: "Team Room",
       chatMode: "topic",
       responseMode: "at",
       role: "guest",
-      workspace: "/tmp/twinny/workspaces/group_oc_group"
+      workspace: "/tmp/twinny/workspaces/group:oc_group"
     });
   });
 
@@ -876,7 +876,7 @@ describe("ConversationManager", () => {
 
     manager.submitIncoming(groupMessage("g1", "/activate all owner", { senderOpenId: "ou_owner", senderName: "Owner" }));
     await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g1", "已激活群聊：Owner Room\n响应模式：all\nRole：owner"));
-    expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
+    expect(repository.findByConversationKey("group:oc_group")).toMatchObject({
       name: "Owner Room",
       chatMode: "topic",
       responseMode: "all",
@@ -885,7 +885,7 @@ describe("ConversationManager", () => {
 
     manager.submitIncoming(groupMessage("g2", "/activate at", { senderOpenId: "ou_owner", senderName: "Owner" }));
     await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g2", "已激活群聊：Renamed Room\n响应模式：at\nRole：owner"));
-    expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
+    expect(repository.findByConversationKey("group:oc_group")).toMatchObject({
       name: "Renamed Room",
       chatMode: "group",
       responseMode: "at",
@@ -902,7 +902,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() =>
       expect(lark.replyText).toHaveBeenCalledWith("g3", "该群已绑定 role=owner，本期不支持修改为 guest。")
     );
-    expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
+    expect(repository.findByConversationKey("group:oc_group")).toMatchObject({
       responseMode: "at",
       role: "owner"
     });
@@ -952,13 +952,13 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     expect(codex.resumeThread).toHaveBeenCalledWith(
-      expect.objectContaining({ role: "owner", threadId: "thread_group", cwd: "/tmp/twinny/workspaces/group_oc_group" })
+      expect.objectContaining({ role: "owner", threadId: "thread_group", cwd: "/tmp/twinny/workspaces/group:oc_group" })
     );
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         role: "owner",
         threadId: "thread_group",
-        cwd: "/tmp/twinny/workspaces/group_oc_group",
+        cwd: "/tmp/twinny/workspaces/group:oc_group",
         input: '<lark_message lark_message_id="g1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\nhello group\n</lark_message>'
       })
     );
@@ -997,7 +997,7 @@ describe("ConversationManager", () => {
     manager.submitIncoming(groupMessage("g1", "first"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(groupMessage("g2", "/queue queued"));
-    await waitForExpect(() => expect(manager.queueDepth("group_oc_group")).toBe(1));
+    await waitForExpect(() => expect(manager.queueDepth("group:oc_group")).toBe(1));
 
     manager.submitIncoming(groupMessage("g3", "/deactivate", { senderOpenId: "ou_owner", senderName: "Owner" }));
 
@@ -1033,31 +1033,31 @@ describe("ConversationManager", () => {
 
     expect(codex.startThread).toHaveBeenCalledTimes(2);
     expect(codex.resumeThread).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: "thread_topic_a", cwd: "/tmp/twinny/workspaces/group_oc_group" })
+      expect.objectContaining({ threadId: "thread_topic_a", cwd: "/tmp/twinny/workspaces/group:oc_group" })
     );
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ threadId: "thread_topic_a", cwd: "/tmp/twinny/workspaces/group_oc_group" })
+      expect.objectContaining({ threadId: "thread_topic_a", cwd: "/tmp/twinny/workspaces/group:oc_group" })
     );
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ threadId: "thread_topic_a", cwd: "/tmp/twinny/workspaces/group_oc_group" })
+      expect.objectContaining({ threadId: "thread_topic_a", cwd: "/tmp/twinny/workspaces/group:oc_group" })
     );
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       3,
-      expect.objectContaining({ threadId: "thread_topic_b", cwd: "/tmp/twinny/workspaces/group_oc_group" })
+      expect.objectContaining({ threadId: "thread_topic_b", cwd: "/tmp/twinny/workspaces/group:oc_group" })
     );
-    expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith("group_oc_group", "topic_a");
+    expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith("group:oc_group", "topic_a");
     expect(repository.upsertCodexThread).toHaveBeenCalledWith(
       expect.objectContaining({
-        conversationKey: "group_oc_group",
+        conversationKey: "group:oc_group",
         codexThreadId: "thread_topic_a",
         larkThreadId: "topic_a"
       })
     );
     expect(repository.upsertCodexThread).toHaveBeenCalledWith(
       expect.objectContaining({
-        conversationKey: "group_oc_group",
+        conversationKey: "group:oc_group",
         codexThreadId: "thread_topic_b",
         larkThreadId: "topic_b"
       })
@@ -1077,12 +1077,12 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     expect(codex.startThread).toHaveBeenCalledTimes(1);
     expect(codex.startTurn).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: "thread_dm_topic", cwd: "/tmp/twinny/workspaces/p2p_ou_guest" })
+      expect.objectContaining({ threadId: "thread_dm_topic", cwd: "/tmp/twinny/workspaces/p2p:ou_guest" })
     );
-    expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith("p2p_ou_guest", "dm_thread");
+    expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith("p2p:ou_guest", "dm_thread");
     expect(repository.upsertCodexThread).toHaveBeenCalledWith(
       expect.objectContaining({
-        conversationKey: "p2p_ou_guest",
+        conversationKey: "p2p:ou_guest",
         codexThreadId: "thread_dm_topic",
         larkThreadId: "dm_thread"
       })
@@ -1267,13 +1267,13 @@ describe("ConversationManager", () => {
       resourceType: "file",
       fileKey: "file_1",
       fileName: "report.txt",
-      outputDir: "/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m1"
+      outputDir: "/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1"
     });
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         input:
           '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
-          '<file path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m1/report.txt" lark_file_key="file_1" size="123">Saved locally</file>\n' +
+          '<file path="/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/report.txt" lark_file_key="file_1" size="123">Saved locally</file>\n' +
           "</lark_message>"
       })
     );
@@ -1305,7 +1305,7 @@ describe("ConversationManager", () => {
       expect.objectContaining({
         input:
           '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
-          '<video path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m1/clip.mp4" lark_file_key="file_1" size="456">Saved locally</video>\n' +
+          '<video path="/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/clip.mp4" lark_file_key="file_1" size="456">Saved locally</video>\n' +
           "</lark_message>"
       })
     );
@@ -1351,8 +1351,8 @@ describe("ConversationManager", () => {
         input:
           '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
           "Please inspect\n\n" +
-          '<img path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m1/img_1.jpg" lark_file_key="img_1" size="111">Saved locally</img>\n\n' +
-          '<video path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m1/file_1.mp4" lark_file_key="file_1" size="222">Saved locally</video>\n' +
+          '<img path="/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/img_1.jpg" lark_file_key="img_1" size="111">Saved locally</img>\n\n' +
+          '<video path="/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/file_1.mp4" lark_file_key="file_1" size="222">Saved locally</video>\n' +
           "</lark_message>"
       })
     );
@@ -1600,7 +1600,7 @@ describe("ConversationManager", () => {
     await turns[0]!.params.onAgentMessage?.({ id: "agent_1", text: "working" });
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue queued"));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
 
     manager.submitCardAction({
       eventId: "event_card_next",
@@ -1611,7 +1611,7 @@ describe("ConversationManager", () => {
       actionValue: {
         twinny: true,
         action: "next",
-        stateKey: "p2p_ou_guest",
+        stateKey: "p2p:ou_guest",
         runId: 1
       },
       raw: { event_id: "event_card_next" }
@@ -1630,7 +1630,7 @@ describe("ConversationManager", () => {
       eventId: "event_card_next",
       larkUserId: "ou_guest",
       larkGroupId: "oc_ignored",
-      conversationKey: "p2p_ou_guest",
+      conversationKey: "p2p:ou_guest",
       codexThreadId: "thread_1",
       codexTurnId: "turn_1",
       routeKind: "card_action",
@@ -1648,7 +1648,7 @@ describe("ConversationManager", () => {
   it("uploads SEND_TO_LARK image directives from completed agent messages and embeds them in the Lark post", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-image-"));
     const workspaceRoot = path.join(tempRoot, "workspaces");
-    const workspace = path.join(workspaceRoot, "p2p_ou_guest");
+    const workspace = path.join(workspaceRoot, "p2p:ou_guest");
     fs.mkdirSync(workspace, { recursive: true });
     const imagePath = path.join(workspace, "result.png");
     fs.writeFileSync(imagePath, "png");
@@ -1688,7 +1688,7 @@ describe("ConversationManager", () => {
   it("uploads SEND_TO_LARK files, shows the attachment line, and sends the file as a separate reply", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-file-"));
     const workspaceRoot = path.join(tempRoot, "workspaces");
-    const workspace = path.join(workspaceRoot, "p2p_ou_guest");
+    const workspace = path.join(workspaceRoot, "p2p:ou_guest");
     fs.mkdirSync(workspace, { recursive: true });
     const filePath = path.join(workspace, "report.txt");
     fs.writeFileSync(filePath, "report");
@@ -1724,7 +1724,7 @@ describe("ConversationManager", () => {
   it("rejects SEND_TO_LARK symlinks whose real target is outside the workspace", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-link-"));
     const workspaceRoot = path.join(tempRoot, "workspaces");
-    const workspace = path.join(workspaceRoot, "p2p_ou_guest");
+    const workspace = path.join(workspaceRoot, "p2p:ou_guest");
     fs.mkdirSync(workspace, { recursive: true });
     const outsideFile = path.join(tempRoot, "outside.png");
     fs.writeFileSync(outsideFile, "png");
@@ -1776,7 +1776,7 @@ describe("ConversationManager", () => {
       })
     );
     expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m1"], {
-      conversationKey: "p2p_ou_guest",
+      conversationKey: "p2p:ou_guest",
       codexThreadId: "thread_recovered"
     });
   });
@@ -1844,13 +1844,13 @@ describe("ConversationManager", () => {
       resourceType: "image",
       fileKey: "img_1",
       fileName: undefined,
-      outputDir: "/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m2"
+      outputDir: "/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m2"
     });
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         input:
           '<lark_message lark_message_id="m2" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
-          '<img path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m2/img_1.png" lark_file_key="img_1" size="789">Saved locally</img>\n' +
+          '<img path="/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m2/img_1.png" lark_file_key="img_1" size="789">Saved locally</img>\n' +
           "</lark_message>"
       })
     );
@@ -1865,7 +1865,7 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue queued"));
-    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
 
     await manager.shutdown();
 
@@ -2138,7 +2138,7 @@ function createRepository(initial?: ConversationRecord, options: {
         codexThreads.get(codexThreadId) ?? {
           id: nextCodexThreadId++,
           codexThreadId,
-          conversationKey: row?.conversationKey ?? "p2p_ou_guest",
+          conversationKey: row?.conversationKey ?? "p2p:ou_guest",
           role: row?.role ?? "guest",
           totalTokens: 0,
           tokenUsageJson: "{}",
@@ -2244,7 +2244,7 @@ function createRepository(initial?: ConversationRecord, options: {
 function conversationRecord(overrides: Partial<ConversationRecord> = {}): ConversationRecord {
   return {
     id: 1,
-    conversationKey: "p2p_ou_guest",
+    conversationKey: "p2p:ou_guest",
     type: "p2p",
     chatId: "ou_guest",
     name: "Guest User",
@@ -2252,7 +2252,7 @@ function conversationRecord(overrides: Partial<ConversationRecord> = {}): Conver
     role: "guest",
     codexThreadId: "thread_1",
     codexThreadHasRollout: true,
-    workspace: "/tmp/twinny/workspaces/p2p_ou_guest",
+    workspace: "/tmp/twinny/workspaces/p2p:ou_guest",
     roleCodexHome: "/tmp/twinny/roles/guest/codex",
     createdAt: 100,
     updatedAt: 100,
@@ -2262,13 +2262,13 @@ function conversationRecord(overrides: Partial<ConversationRecord> = {}): Conver
 
 function groupConversationRecord(overrides: Partial<ConversationRecord> = {}): ConversationRecord {
   return conversationRecord({
-    conversationKey: "group_oc_group",
+    conversationKey: "group:oc_group",
     type: "group",
     chatId: "oc_group",
     name: "Team Room",
     responseMode: "all",
     codexThreadId: "thread_group",
-    workspace: "/tmp/twinny/workspaces/group_oc_group",
+    workspace: "/tmp/twinny/workspaces/group:oc_group",
     ...overrides
   });
 }
@@ -2281,7 +2281,7 @@ function larkMessageRecord(overrides: Partial<LarkMessageRecord> = {}): LarkMess
     id: 1,
     eventId: larkMessageId ? `e_${larkMessageId}` : "e_card_action",
     larkUserId: "ou_guest",
-    conversationKey: "p2p_ou_guest",
+    conversationKey: "p2p:ou_guest",
     routeKind: "message",
     status: "processing",
     text: "hello",

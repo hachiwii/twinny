@@ -26,11 +26,11 @@ describe("ConversationRepository", () => {
 
   it("creates and queries the P2P conversation mapping", () => {
     const repo = createConversationRepository(db, { now: () => now });
-    const workspace = path.join(tempDir, "workspaces", "p2p_ou_123");
+    const workspace = path.join(tempDir, "workspaces", "p2p:ou_123");
     const roleCodexHome = path.join(tempDir, "roles", "guest", "codex");
 
     const created = repo.create({
-      conversationKey: "p2p_ou_123",
+      conversationKey: "p2p:ou_123",
       type: "p2p",
       chatId: "ou_123",
       name: "Guest User",
@@ -43,7 +43,7 @@ describe("ConversationRepository", () => {
 
     expect(created).toMatchObject({
       id: 1,
-      conversationKey: "p2p_ou_123",
+      conversationKey: "p2p:ou_123",
       type: "p2p",
       chatId: "ou_123",
       name: "Guest User",
@@ -55,7 +55,7 @@ describe("ConversationRepository", () => {
       createdAt: 1000,
       updatedAt: 1000
     });
-    expect(repo.getByConversationKey("p2p_ou_123")).toEqual(created);
+    expect(repo.getByConversationKey("p2p:ou_123")).toEqual(created);
     expect(repo.getByTypeAndChatId("p2p", "ou_123")).toEqual(created);
     expect(repo.getByCodexThreadId("thread-1")).toEqual(created);
     expect(repo.list()).toEqual([created]);
@@ -63,11 +63,11 @@ describe("ConversationRepository", () => {
 
   it("creates group conversations with response modes and updates group settings", () => {
     const repo = createConversationRepository(db, { now: () => now });
-    const workspace = path.join(tempDir, "workspaces", "group_oc_group");
+    const workspace = path.join(tempDir, "workspaces", "group:oc_group");
     const roleCodexHome = path.join(tempDir, "roles", "owner", "codex");
 
     const created = repo.create({
-      conversationKey: "group_oc_group",
+      conversationKey: "group:oc_group",
       type: "topic_group",
       chatId: "oc_group",
       name: "Topic Group",
@@ -81,7 +81,7 @@ describe("ConversationRepository", () => {
     });
 
     expect(created).toMatchObject({
-      conversationKey: "group_oc_group",
+      conversationKey: "group:oc_group",
       type: "topic_group",
       chatId: "oc_group",
       name: "Topic Group",
@@ -93,7 +93,7 @@ describe("ConversationRepository", () => {
     expect(repo.getByTypeAndChatId("topic_group", "oc_group")).toEqual(created);
 
     now = 2000;
-    const updated = repo.updateConversationSettings("group_oc_group", {
+    const updated = repo.updateConversationSettings("group:oc_group", {
       name: "Renamed Group",
       chatMode: "group",
       responseMode: "none"
@@ -109,11 +109,11 @@ describe("ConversationRepository", () => {
 
   it("updates thread bindings transactionally", () => {
     const repo = createConversationRepository(db, { now: () => now });
-    const workspace = path.join(tempDir, "workspaces", "p2p_ou_456");
+    const workspace = path.join(tempDir, "workspaces", "p2p:ou_456");
     const roleCodexHome = path.join(tempDir, "roles", "owner", "codex");
 
     repo.create({
-      conversationKey: "p2p_ou_456",
+      conversationKey: "p2p:ou_456",
       type: "p2p",
       chatId: "ou_456",
       name: "Owner User",
@@ -124,7 +124,7 @@ describe("ConversationRepository", () => {
     });
 
     now = 2000;
-    const updated = repo.updateThreadBinding("p2p_ou_456", {
+    const updated = repo.updateThreadBinding("p2p:ou_456", {
       codexThreadId: "thread-new",
       codexThreadHasRollout: false
     });
@@ -136,8 +136,8 @@ describe("ConversationRepository", () => {
     expect(updated.roleCodexHome).toBe(roleCodexHome);
 
     now = 3000;
-    repo.markThreadHasRollout("p2p_ou_456", "thread-new");
-    expect(repo.getByConversationKey("p2p_ou_456")).toMatchObject({
+    repo.markThreadHasRollout("p2p:ou_456", "thread-new");
+    expect(repo.getByConversationKey("p2p:ou_456")).toMatchObject({
       codexThreadId: "thread-new",
       codexThreadHasRollout: true,
       updatedAt: 3000
@@ -154,11 +154,11 @@ describe("ConversationRepository", () => {
 
   it("records runtime codex threads, messages, and token usage by business ids", () => {
     const repo = createConversationRepository(db, { now: () => now });
-    const workspace = path.join(tempDir, "workspaces", "p2p_ou_456");
+    const workspace = path.join(tempDir, "workspaces", "p2p:ou_456");
     const roleCodexHome = path.join(tempDir, "roles", "guest", "codex");
 
     repo.create({
-      conversationKey: "p2p_ou_456",
+      conversationKey: "p2p:ou_456",
       type: "p2p",
       chatId: "ou_456",
       name: "Guest User",
@@ -171,13 +171,13 @@ describe("ConversationRepository", () => {
     now = 1200;
     const thread = repo.upsertCodexThread({
       codexThreadId: "thread-1",
-      conversationKey: "p2p_ou_456",
+      conversationKey: "p2p:ou_456",
       role: "guest"
     });
     expect(thread).toMatchObject({
       id: 1,
       codexThreadId: "thread-1",
-      conversationKey: "p2p_ou_456",
+      conversationKey: "p2p:ou_456",
       role: "guest",
       totalTokens: 0,
       tokenUsageJson: "{}"
@@ -188,7 +188,7 @@ describe("ConversationRepository", () => {
       larkMessageId: "om_1",
       eventId: "event_1",
       larkUserId: "ou_456",
-      conversationKey: "p2p_ou_456",
+      conversationKey: "p2p:ou_456",
       routeKind: "queued_message",
       status: "queued",
       text: "hello",
@@ -199,7 +199,7 @@ describe("ConversationRepository", () => {
       id: 1,
       larkMessageId: "om_1",
       larkUserId: "ou_456",
-      conversationKey: "p2p_ou_456",
+      conversationKey: "p2p:ou_456",
       routeKind: "queued_message",
       status: "queued",
       text: "hello",
@@ -218,7 +218,7 @@ describe("ConversationRepository", () => {
 
     now = 1400;
     repo.markLarkMessagesProcessing(["om_1"], {
-      conversationKey: "p2p_ou_456",
+      conversationKey: "p2p:ou_456",
       codexThreadId: "thread-1",
       codexTurnId: "turn-1"
     });
@@ -232,7 +232,7 @@ describe("ConversationRepository", () => {
 
     now = 1500;
     repo.markLarkMessagesSteered(["om_1"], {
-      conversationKey: "p2p_ou_456",
+      conversationKey: "p2p:ou_456",
       codexThreadId: "thread-1",
       codexTurnId: "turn-1"
     });
@@ -255,7 +255,7 @@ describe("ConversationRepository", () => {
       larkMessageId: "om_recalled",
       eventId: "event_recalled",
       larkUserId: "ou_456",
-      conversationKey: "p2p_ou_456",
+      conversationKey: "p2p:ou_456",
       routeKind: "queued_message",
       status: "queued",
       text: "recall me",
@@ -282,7 +282,7 @@ describe("ConversationRepository", () => {
       larkMessageId: "om_2",
       eventId: "event_2",
       larkUserId: "ou_456",
-      conversationKey: "p2p_ou_456",
+      conversationKey: "p2p:ou_456",
       routeKind: "message",
       status: "processing",
       text: "processing",
@@ -292,7 +292,7 @@ describe("ConversationRepository", () => {
       larkMessageId: "om_3",
       eventId: "event_3",
       larkUserId: "ou_456",
-      conversationKey: "p2p_ou_456",
+      conversationKey: "p2p:ou_456",
       routeKind: "queued_message",
       status: "queued",
       text: "queued",
@@ -303,7 +303,7 @@ describe("ConversationRepository", () => {
     now = 1700;
     repo.updateCodexThreadTokenUsage({
       codexThreadId: "thread-1",
-      conversationKey: "p2p_ou_456",
+      conversationKey: "p2p:ou_456",
       role: "guest",
       totalTokens: 123,
       tokenUsageJson: '{"totalTokens":123}'
@@ -324,7 +324,7 @@ describe("ConversationRepository", () => {
       larkUserId: "ou_operator",
       larkGroupId: "oc_group",
       larkThreadId: "om_thread",
-      conversationKey: "group_oc_group",
+      conversationKey: "group:oc_group",
       codexThreadId: "thread_1",
       codexTurnId: "turn_1",
       routeKind: "card_action",
@@ -335,7 +335,7 @@ describe("ConversationRepository", () => {
     const duplicate = repo.insertLarkMessage({
       eventId: "event_card_1",
       larkUserId: "ou_operator",
-      conversationKey: "group_oc_group",
+      conversationKey: "group:oc_group",
       routeKind: "card_action",
       status: "completed",
       text: "/next",
@@ -348,7 +348,7 @@ describe("ConversationRepository", () => {
       larkUserId: "ou_operator",
       larkGroupId: "oc_group",
       larkThreadId: "om_thread",
-      conversationKey: "group_oc_group",
+      conversationKey: "group:oc_group",
       codexThreadId: "thread_1",
       codexTurnId: "turn_1",
       routeKind: "card_action",
@@ -375,29 +375,29 @@ describe("ConversationRepository", () => {
 
     const first = repo.upsertCodexThread({
       codexThreadId: "thread-topic-1",
-      conversationKey: "group_oc_group",
+      conversationKey: "group:oc_group",
       larkThreadId: "om_root",
       role: "guest"
     });
     expect(first).toMatchObject({
       codexThreadId: "thread-topic-1",
-      conversationKey: "group_oc_group",
+      conversationKey: "group:oc_group",
       larkThreadId: "om_root",
       role: "guest"
     });
-    expect(repo.getCodexThreadByConversationAndLarkThread("group_oc_group", "om_root")).toEqual(first);
+    expect(repo.getCodexThreadByConversationAndLarkThread("group:oc_group", "om_root")).toEqual(first);
 
     now = 2000;
     repo.updateCodexThreadTokenUsage({
       codexThreadId: "thread-topic-1",
-      conversationKey: "group_oc_group",
+      conversationKey: "group:oc_group",
       role: "guest",
       totalTokens: 321,
       tokenUsageJson: '{"totalTokens":321}'
     });
 
     now = 3000;
-    const replacement = repo.replaceCodexThreadForLarkThread("group_oc_group", "om_root", {
+    const replacement = repo.replaceCodexThreadForLarkThread("group:oc_group", "om_root", {
       codexThreadId: "thread-topic-2",
       role: "guest"
     });
@@ -405,23 +405,23 @@ describe("ConversationRepository", () => {
     expect(replacement).toMatchObject({
       id: first.id,
       codexThreadId: "thread-topic-2",
-      conversationKey: "group_oc_group",
+      conversationKey: "group:oc_group",
       larkThreadId: "om_root",
       totalTokens: 0,
       tokenUsageJson: "{}",
       updatedAt: 3000
     });
-    expect(repo.getCodexThreadByConversationAndLarkThread("group_oc_group", "om_root")).toEqual(replacement);
+    expect(repo.getCodexThreadByConversationAndLarkThread("group:oc_group", "om_root")).toEqual(replacement);
   });
 
   it("rejects mismatched or unsafe conversation keys", () => {
     const repo = createConversationRepository(db);
-    const workspace = path.join(tempDir, "workspaces", "p2p_ou_789");
+    const workspace = path.join(tempDir, "workspaces", "p2p:ou_789");
     const roleCodexHome = path.join(tempDir, "roles", "guest", "codex");
 
     expect(() =>
       repo.create({
-        conversationKey: "p2p_ou_other",
+        conversationKey: "p2p:ou_other",
         type: "p2p",
         chatId: "ou_789",
         name: "Guest User",
@@ -430,11 +430,11 @@ describe("ConversationRepository", () => {
         workspace,
         roleCodexHome
       })
-    ).toThrow(/must be p2p_ou_789/);
+    ).toThrow(/must be p2p:ou_789/);
 
     expect(() =>
       repo.create({
-        conversationKey: "p2p_../secret",
+        conversationKey: "p2p:../secret",
         type: "p2p",
         chatId: "../secret",
         name: "Guest User",

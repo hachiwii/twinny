@@ -15,12 +15,12 @@ describe("codex turn payloads", () => {
       buildTurnStartParams({
         threadId: "thread_123",
         text: "hello",
-        cwd: "/tmp/twinny/workspaces/p2p_ou_1"
+        cwd: "/tmp/twinny/workspaces/p2p:ou_1"
       })
     ).toEqual({
       threadId: "thread_123",
       input: [{ type: "text", text: "hello", text_elements: [] }],
-      cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+      cwd: "/tmp/twinny/workspaces/p2p:ou_1",
       approvalPolicy: "never"
     });
   });
@@ -283,7 +283,7 @@ describe("startCodexTurn", () => {
       {
         threadId: "thread_123",
         text: "work longer than the request timeout",
-        cwd: "/tmp/twinny/workspaces/p2p_ou_1"
+        cwd: "/tmp/twinny/workspaces/p2p:ou_1"
       },
       { requestTimeoutMs: 5 }
     );

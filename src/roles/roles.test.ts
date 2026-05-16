@@ -47,7 +47,7 @@ describe("role helpers", () => {
     tempDirs.push(tempDir);
     const codexHome = path.join(tempDir, "codex");
     const configPath = path.join(codexHome, "config.toml");
-    const workspace = path.join(tempDir, "workspaces", "p2p_ou_guest");
+    const workspace = path.join(tempDir, "workspaces", "p2p:ou_guest");
     await fs.mkdir(codexHome, { recursive: true });
     await fs.writeFile(
       configPath,
@@ -81,7 +81,7 @@ describe("role helpers", () => {
     tempDirs.push(tempDir);
     const codexHome = path.join(tempDir, "codex");
     const configPath = path.join(codexHome, "config.toml");
-    const workspace = path.join(tempDir, "workspaces", "p2p_ou_guest");
+    const workspace = path.join(tempDir, "workspaces", "p2p:ou_guest");
     await fs.mkdir(codexHome, { recursive: true });
     await fs.writeFile(
       configPath,
