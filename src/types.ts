@@ -183,6 +183,18 @@ export interface IncomingLarkMessageEdit {
   raw: unknown;
 }
 
+export type LarkBotMenuActionKey = "stop" | "new" | "queue" | "status" | "help";
+
+export interface IncomingLarkBotMenuAction {
+  eventId: string;
+  eventKey: string;
+  action: LarkBotMenuActionKey;
+  operatorOpenId: string;
+  operatorName?: string;
+  timestamp?: number;
+  raw: unknown;
+}
+
 export interface IncomingLarkMessageResource {
   resourceType: "image" | "file";
   fileKey: string;

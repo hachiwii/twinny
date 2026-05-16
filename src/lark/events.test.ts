@@ -17,12 +17,14 @@ describe("LarkEventConsumer", () => {
       close: vi.fn()
     };
     const onMessage = vi.fn();
+    const onBotMenu = vi.fn();
     const onIgnored = vi.fn();
     const consumer = new LarkEventConsumer({
       appId: "cli_1234567890abcdef",
       appSecret: "secret",
       warmTenantToken: false,
       onMessage,
+      onBotMenu,
       onIgnored,
       eventDispatcherFactory: () => dispatcher,
       wsClientFactory: () => wsClient
@@ -34,6 +36,7 @@ describe("LarkEventConsumer", () => {
     await registered["im.message.receive_v1"](receiveEvent({ message: { chat_type: "unsupported" } }));
 
     expect(Object.keys(registered).sort()).toEqual([
+      "application.bot.menu_v6",
       "im.message.recalled_v1",
       "im.message.receive_v1",
       "im.message.updated_v1"
@@ -46,6 +49,62 @@ describe("LarkEventConsumer", () => {
     await consumer.stop({ force: true });
     expect(wsClient.close).toHaveBeenCalledWith({ force: true });
     expect(consumer.isRunning).toBe(false);
+  });
+
+  it("forwards normalized bot menu events", async () => {
+    const registered: Record<string, (data: unknown) => unknown> = {};
+    const dispatcher: EventDispatcherLike = {
+      register(handles) {
+        Object.assign(registered, handles);
+        return this;
+      }
+    };
+    const wsClient: WsClientLike = {
+      start: vi.fn(),
+      close: vi.fn()
+    };
+    const onBotMenu = vi.fn();
+    const onIgnored = vi.fn();
+    const consumer = new LarkEventConsumer({
+      appId: "cli_1234567890abcdef",
+      appSecret: "secret",
+      warmTenantToken: false,
+      onMessage: vi.fn(),
+      onBotMenu,
+      onIgnored,
+      eventDispatcherFactory: () => dispatcher,
+      wsClientFactory: () => wsClient
+    });
+
+    await consumer.start();
+    await registered["application.bot.menu_v6"]({
+      header: { event_id: "event-menu" },
+      event: {
+        operator: {
+          operator_name: "Guest User",
+          operator_id: { open_id: "ou_guest" }
+        },
+        event_key: "status",
+        timestamp: 1669364458
+      }
+    });
+    await registered["application.bot.menu_v6"]({
+      header: { event_id: "event-menu-ignored" },
+      event: {
+        operator: { operator_id: { open_id: "ou_guest" } },
+        event_key: "unknown"
+      }
+    });
+
+    expect(onBotMenu).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventId: "event-menu",
+        eventKey: "status",
+        action: "status",
+        operatorOpenId: "ou_guest"
+      })
+    );
+    expect(onIgnored).toHaveBeenCalledWith("unsupported_event_key", expect.anything());
   });
 
   it("forwards normalized message edit and recall events", async () => {

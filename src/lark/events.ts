@@ -2,14 +2,17 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 import { DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS } from "../types.js";
 import { TenantAccessTokenManager } from "./auth.js";
 import {
+  normalizeLarkBotMenuWithReason,
   normalizeIncomingLarkMessageWithReason,
   normalizeLarkMessageEditWithReason,
   normalizeLarkMessageRecallWithReason
 } from "./filters.js";
 import {
+  LARK_BOT_MENU_EVENT,
   LARK_MESSAGE_RECEIVE_EVENT,
   LARK_MESSAGE_RECALLED_EVENT,
   LARK_MESSAGE_UPDATED_EVENT,
+  type IncomingLarkBotMenuAction,
   type IncomingLarkMessage,
   type IncomingLarkMessageEdit,
   type IncomingLarkMessageRecall,
@@ -40,6 +43,7 @@ export interface LarkEventConsumerOptions {
   onMessage: (message: IncomingLarkMessage) => Promise<void> | void;
   onMessageEdit?: (edit: IncomingLarkMessageEdit) => Promise<void> | void;
   onMessageRecall?: (recall: IncomingLarkMessageRecall) => Promise<void> | void;
+  onBotMenu?: (action: IncomingLarkBotMenuAction) => Promise<void> | void;
   onIgnored?: (reason: string, raw: unknown) => void;
   wsClientFactory?: (options: LarkEventConsumerWsFactoryOptions) => WsClientLike;
   eventDispatcherFactory?: () => EventDispatcherLike;
@@ -133,6 +137,18 @@ export class LarkEventConsumer {
           return;
         }
         await this.options.onMessageRecall(result.recall);
+      },
+      [LARK_BOT_MENU_EVENT]: async (data: unknown) => {
+        if (!this.options.onBotMenu) {
+          return;
+        }
+        const result = normalizeLarkBotMenuWithReason(data);
+        if (result.kind === "ignored") {
+          this.options.onIgnored?.(result.reason, result.raw);
+          this.options.logger?.debug?.({ reason: result.reason }, "ignored Lark bot menu event");
+          return;
+        }
+        await this.options.onBotMenu(result.action);
       }
     });
 

@@ -1,10 +1,12 @@
 import type {
+  IncomingLarkBotMenuAction,
   IncomingLarkMessage,
   IncomingLarkMessageEdit,
   IncomingLarkMessageRecall,
   LarkReactionHandle
 } from "../types.js";
 
+export const LARK_BOT_MENU_EVENT = "application.bot.menu_v6" as const;
 export const LARK_MESSAGE_RECEIVE_EVENT = "im.message.receive_v1" as const;
 export const LARK_MESSAGE_RECALLED_EVENT = "im.message.recalled_v1" as const;
 export const LARK_MESSAGE_UPDATED_EVENT = "im.message.updated_v1" as const;
@@ -58,4 +60,10 @@ export interface LarkSendMessageResult {
   raw: unknown;
 }
 
-export type { IncomingLarkMessage, IncomingLarkMessageEdit, IncomingLarkMessageRecall, LarkReactionHandle };
+export type {
+  IncomingLarkBotMenuAction,
+  IncomingLarkMessage,
+  IncomingLarkMessageEdit,
+  IncomingLarkMessageRecall,
+  LarkReactionHandle
+};

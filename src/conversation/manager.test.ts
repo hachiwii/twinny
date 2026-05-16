@@ -7,6 +7,7 @@ import type {
   CodexThreadRecord,
   CodexTurnResult,
   ConversationRecord,
+  IncomingLarkBotMenuAction,
   IncomingLarkMessage,
   LarkMessageRecord,
   TwinnyConfig
@@ -581,6 +582,89 @@ describe("ConversationManager", () => {
     );
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("toggles bot menu queue mode and queues the next ordinary message", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    manager.submitBotMenuAction(botMenuAction("menu-1", "queue"));
+    await waitForExpect(() =>
+      expect(lark.sendTextToOpenId).toHaveBeenCalledWith(
+        "ou_guest",
+        "开启排队模式：你的下一条消息会排队等待当前工作结束。"
+      )
+    );
+    manager.submitBotMenuAction(botMenuAction("menu-2", "queue"));
+    await waitForExpect(() =>
+      expect(lark.sendTextToOpenId).toHaveBeenCalledWith(
+        "ou_guest",
+        "退出排队模式：下一条消息会即时提交给模型。"
+      )
+    );
+    manager.submitIncoming(message("m2", "immediate"));
+    await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
+
+    manager.submitBotMenuAction(botMenuAction("menu-3", "queue"));
+    await waitForExpect(() => expect(lark.sendTextToOpenId).toHaveBeenCalledTimes(3));
+    manager.submitIncoming(message("m3", "queued by menu"));
+
+    expect(codex.steerTurn).toHaveBeenCalledTimes(1);
+    await waitForExpect(() =>
+      expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          larkMessageId: "m3",
+          routeKind: "queued_message",
+          status: "queued",
+          text: "queued by menu"
+        })
+      )
+    );
+    expect(manager.queueDepth("p2p:ou_guest")).toBe(1);
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ input: wrappedMessage("queued by menu", "m3") })
+    );
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("handles bot menu status and help as direct p2p replies", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_status" });
+    const { repository } = createRepository(row);
+    vi.mocked(repository.getCodexThreadById).mockReturnValue({
+      id: 1,
+      codexThreadId: "thread_status",
+      conversationKey: "p2p:ou_guest",
+      role: "guest",
+      totalTokens: 10,
+      tokenUsageJson: JSON.stringify({ usage: { total: { totalTokens: 10 } } }),
+      createdAt: 100,
+      updatedAt: 100
+    });
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitBotMenuAction(botMenuAction("menu-status", "status"));
+    manager.submitBotMenuAction(botMenuAction("menu-help", "help"));
+
+    await waitForExpect(() => expect(lark.sendTextToOpenId).toHaveBeenCalledTimes(2));
+    expect(lark.sendTextToOpenId).toHaveBeenCalledWith(
+      "ou_guest",
+      expect.stringContaining("Conversation Key: p2p:ou_guest")
+    );
+    expect(lark.sendTextToOpenId).toHaveBeenCalledWith("ou_guest", expect.stringContaining("Codex Thread ID: thread_status"));
+    expect(lark.sendTextToOpenId).toHaveBeenCalledWith("ou_guest", expect.stringContaining("/help - 查看可用指令和使用说明"));
+    expect(lark.replyText).not.toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
   });
 
   it("interrupts active turns and binds a fresh thread on /new", async () => {
@@ -1555,7 +1639,8 @@ function createLarkResponder(): LarkResponder {
     replyText: vi.fn(async () => undefined),
     replyMarkdown: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     replyPost: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
-    replyFile: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` }))
+    replyFile: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
+    sendTextToOpenId: vi.fn(async () => undefined)
   };
 }
 
@@ -1808,6 +1893,28 @@ function message(messageId: string, text: string, overrides: Partial<IncomingLar
     createTime: 1234,
     raw: {},
     ...overrides
+  };
+}
+
+function botMenuAction(eventId: string, action: IncomingLarkBotMenuAction["action"]): IncomingLarkBotMenuAction {
+  return {
+    eventId,
+    eventKey: action,
+    action,
+    operatorOpenId: "ou_guest",
+    operatorName: "Guest User",
+    timestamp: 1234,
+    raw: {
+      header: { event_id: eventId },
+      event: {
+        operator: {
+          operator_name: "Guest User",
+          operator_id: { open_id: "ou_guest" }
+        },
+        event_key: action,
+        timestamp: 1234
+      }
+    }
   };
 }
 

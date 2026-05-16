@@ -11,6 +11,7 @@ import type {
   ConversationResponseMode,
   ConversationRecord,
   ConversationType,
+  IncomingLarkBotMenuAction,
   IncomingLarkMessage,
   IncomingLarkMessageEdit,
   IncomingLarkMessageRecall,
@@ -189,6 +190,7 @@ export interface LarkResponder {
     content: Array<Array<{ tag: "md"; text: string } | { tag: "img"; image_key: string } | { tag: "media"; file_key: string }>>
   ): Promise<{ messageId?: string } | void>;
   replyFile(messageId: string, fileKey: string): Promise<{ messageId?: string } | void>;
+  sendTextToOpenId(openId: string, text: string): Promise<void>;
 }
 
 export interface RoleHomeResolver {
@@ -226,6 +228,13 @@ interface MessageContext {
   larkThreadId?: string;
 }
 
+interface ConversationActor {
+  senderOpenId: string;
+  senderName?: string;
+  chatId?: string;
+  chatName?: string;
+}
+
 interface PendingMessage {
   messageId: string;
   text: string;
@@ -258,6 +267,7 @@ interface ConversationState {
   processingMessage?: IncomingLarkMessage;
   active?: ActiveTurn;
   pendingBatch: PendingMessage[];
+  queueNextMessage: boolean;
   nextRunId: number;
 }
 
@@ -340,6 +350,30 @@ export class ConversationManager {
     });
   }
 
+  submitBotMenuAction(action: IncomingLarkBotMenuAction): void {
+    if (this.shuttingDown) {
+      throw new TwinnyError("Conversation manager is shutting down", "CONVERSATION_MANAGER_SHUTTING_DOWN");
+    }
+
+    const dedupeKey = `bot_menu:${action.eventId}`;
+    if (this.dedupe.has(dedupeKey)) {
+      this.log.debug({ eventId: action.eventId, eventKey: action.eventKey }, "duplicate lark bot menu event ignored");
+      return;
+    }
+    this.dedupe.set(dedupeKey, true);
+
+    const context = createBotMenuContext(action.operatorOpenId);
+    const state = this.getState(context.stateKey);
+    void state.controlQueue
+      .enqueue(() => this.processBotMenuAction(state, context, action))
+      .catch((error) => {
+        this.log.error(
+          { error, eventId: action.eventId, eventKey: action.eventKey, operatorOpenId: action.operatorOpenId },
+          "conversation bot menu action failed"
+        );
+      });
+  }
+
   async shutdown(): Promise<void> {
     if (this.shuttingDown) {
       return;
@@ -350,6 +384,7 @@ export class ConversationManager {
     for (const state of this.states.values()) {
       state.submittedMessages.clear();
       state.processingMessage = undefined;
+      state.queueNextMessage = false;
       this.clearPendingMessages(state);
       cancelPromises.push(this.suspendActiveTurnForShutdown(state));
     }
@@ -491,6 +526,58 @@ export class ConversationManager {
       state.pendingBatch.length +
       (state.active?.pendingSteers.length ?? 0)
     );
+  }
+
+  private async processBotMenuAction(
+    state: ConversationState,
+    context: MessageContext,
+    action: IncomingLarkBotMenuAction
+  ): Promise<void> {
+    switch (action.action) {
+      case "queue": {
+        state.queueNextMessage = !state.queueNextMessage;
+        await this.sendDirectControlBestEffort(
+          action.operatorOpenId,
+          state.queueNextMessage
+            ? "开启排队模式：你的下一条消息会排队等待当前工作结束。"
+            : "退出排队模式：下一条消息会即时提交给模型。"
+        );
+        return;
+      }
+      case "stop": {
+        const { cleared, interrupted } = await this.stopConversationState(state);
+        await this.sendDirectControlBestEffort(
+          action.operatorOpenId,
+          interrupted
+            ? `已停止当前任务，清空 ${cleared} 条待处理消息。`
+            : `当前没有正在运行的任务，清空 ${cleared} 条待处理消息。`
+        );
+        return;
+      }
+      case "new": {
+        const threadId = await this.openNewThreadForMessage(state, context, messageForBotMenuAction(action));
+        await this.sendDirectControlBestEffort(action.operatorOpenId, `已新开 Codex thread：${threadId}`);
+        return;
+      }
+      case "status": {
+        await this.sendDirectControlBestEffort(
+          action.operatorOpenId,
+          await this.formatStatusText(state, context, {
+            senderOpenId: action.operatorOpenId,
+            senderName: action.operatorName,
+            chatId: action.operatorOpenId
+          })
+        );
+        return;
+      }
+      case "help": {
+        await this.sendDirectControlBestEffort(
+          action.operatorOpenId,
+          helpTextFor(messageForBotMenuAction(action), context, this.options.config)
+        );
+        return;
+      }
+    }
   }
 
   private async processSubmittedMessage(
@@ -932,8 +1019,19 @@ export class ConversationManager {
     message: IncomingLarkMessage,
     text: string
   ): Promise<void> {
-    const pending = toPendingMessage(message, text);
+    const queueByMenu = state.queueNextMessage;
+    if (queueByMenu) {
+      state.queueNextMessage = false;
+    }
+    const pending = toPendingMessage(message, text, { queueBoundary: queueByMenu });
     const active = state.active;
+    if (queueByMenu) {
+      state.pendingBatch.push(pending);
+      if (!active) {
+        await this.startPendingBatch(state, context);
+      }
+      return;
+    }
     if (state.pendingBatch.length > 0 || active?.cancelRequested) {
       state.pendingBatch.push(pending);
       if (!active) {
@@ -962,6 +1060,7 @@ export class ConversationManager {
       return;
     }
 
+    state.queueNextMessage = false;
     state.pendingBatch.push(toPendingMessage(message, text, { queueBoundary: true }));
     if (!state.active) {
       await this.startPendingBatch(state, context);
@@ -978,7 +1077,24 @@ export class ConversationManager {
     context: MessageContext,
     message: IncomingLarkMessage
   ): Promise<void> {
-    const role = roleForSender(this.options.config, message.senderOpenId);
+    await this.replyControlBestEffort(
+      message.messageId,
+      await this.formatStatusText(state, context, {
+        senderOpenId: message.senderOpenId,
+        senderName: message.senderName,
+        chatId: message.chatId,
+        chatName: message.chatName
+      })
+    );
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async formatStatusText(
+    state: ConversationState,
+    context: MessageContext,
+    actor: ConversationActor
+  ): Promise<string> {
+    const role = roleForSender(this.options.config, actor.senderOpenId);
     const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
     const topicThread = context.larkThreadId
       ? await this.options.repository.getCodexThreadByConversationAndLarkThread(context.conversationKey, context.larkThreadId)
@@ -986,13 +1102,13 @@ export class ConversationManager {
     const threadId = state.active?.threadId ?? topicThread?.codexThreadId ?? conversation?.codexThreadId;
     const thread = threadId ? await this.options.repository.getCodexThreadById(threadId) : undefined;
     const lines = [
-      `OUID: ${message.senderOpenId}`,
+      `OUID: ${actor.senderOpenId}`,
       `Conversation Key: ${context.conversationKey}`
     ];
 
     if (isGroupConversationType(context.type)) {
       lines.push(
-        `Chat Name: ${conversation?.name ?? message.chatName ?? message.chatId}`,
+        `Chat Name: ${conversation?.name ?? actor.chatName ?? actor.chatId ?? context.conversationKey}`,
         `Response Mode: ${conversation?.responseMode ?? "none"}`,
         `Role: ${conversation?.role ?? "未创建"}`,
         `Workspace: ${conversation?.workspace ?? "未创建"}`
@@ -1008,8 +1124,7 @@ export class ConversationManager {
       lines.push(...(await this.formatOwnerRateLimitStatus(role)));
     }
 
-    await this.replyControlBestEffort(message.messageId, lines.join("\n"));
-    await this.markMessagesCompletedBestEffort([message.messageId]);
+    return lines.join("\n");
   }
 
   private async formatOwnerRateLimitStatus(role: RoleName): Promise<string[]> {
@@ -1026,15 +1141,22 @@ export class ConversationManager {
   }
 
   private async handleStopCommand(state: ConversationState, message: IncomingLarkMessage): Promise<void> {
-    const clearedMessages = this.clearPendingMessages(state);
-    const cleared = clearedMessages.length;
-    await this.markPendingMessagesClearedBestEffort(clearedMessages);
-    const interrupted = await this.cancelActiveTurn(state);
+    const { cleared, interrupted } = await this.stopConversationState(state);
     const summary = interrupted
       ? `已停止当前任务，清空 ${cleared} 条待处理消息。`
       : `当前没有正在运行的任务，清空 ${cleared} 条待处理消息。`;
     await this.replyControlBestEffort(message.messageId, summary);
     await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async stopConversationState(state: ConversationState): Promise<{ cleared: number; interrupted: boolean }> {
+    state.queueNextMessage = false;
+    const clearedMessages = this.clearPendingMessages(state);
+    await this.markPendingMessagesClearedBestEffort(clearedMessages);
+    return {
+      cleared: clearedMessages.length,
+      interrupted: await this.cancelActiveTurn(state)
+    };
   }
 
   private async handleNextCommand(
@@ -1128,6 +1250,17 @@ export class ConversationManager {
     context: MessageContext,
     message: IncomingLarkMessage
   ): Promise<void> {
+    const threadId = await this.openNewThreadForMessage(state, context, message);
+    await this.replyControlBestEffort(message.messageId, `已新开 Codex thread：${threadId}`);
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async openNewThreadForMessage(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage
+  ): Promise<string> {
+    state.queueNextMessage = false;
     await this.markPendingMessagesClearedBestEffort(this.clearPendingMessages(state));
     await this.cancelActiveTurn(state);
     const existing = await this.options.repository.findByConversationKey(context.conversationKey);
@@ -1176,8 +1309,7 @@ export class ConversationManager {
         role
       });
     }
-    await this.replyControlBestEffort(message.messageId, `已新开 Codex thread：${thread.threadId}`);
-    await this.markMessagesCompletedBestEffort([message.messageId]);
+    return thread.threadId;
   }
 
   private async steerOrDefer(
@@ -1870,6 +2002,7 @@ export class ConversationManager {
       controlQueue: new SerialQueue(),
       submittedMessages: new Map(),
       pendingBatch: [],
+      queueNextMessage: false,
       nextRunId: 0
     };
     this.states.set(conversationKey, state);
@@ -1952,6 +2085,14 @@ export class ConversationManager {
       await this.options.lark.replyText(messageId, text);
     } catch (error) {
       this.log.warn({ error, messageId }, "failed to send lark control reply");
+    }
+  }
+
+  private async sendDirectControlBestEffort(openId: string, text: string): Promise<void> {
+    try {
+      await this.options.lark.sendTextToOpenId(openId, text);
+    } catch (error) {
+      this.log.warn({ error, openId }, "failed to send direct lark control message");
     }
   }
 
@@ -2282,6 +2423,30 @@ function createMessageContext(type: ConversationType, message: IncomingLarkMessa
   };
 }
 
+function createBotMenuContext(operatorOpenId: string): MessageContext {
+  const conversationKey = conversationKeyForP2p(operatorOpenId);
+  return {
+    type: "p2p",
+    conversationKey,
+    stateKey: conversationKey
+  };
+}
+
+function messageForBotMenuAction(action: IncomingLarkBotMenuAction): IncomingLarkMessage {
+  return {
+    eventId: action.eventId,
+    messageId: `bot_menu:${action.eventId}`,
+    chatId: action.operatorOpenId,
+    chatType: "p2p",
+    messageType: "bot_menu",
+    senderOpenId: action.operatorOpenId,
+    senderName: action.operatorName,
+    text: "",
+    createTime: action.timestamp,
+    raw: action.raw
+  };
+}
+
 function contextForRecoveredRecord(record: LarkMessageRecord): MessageContext {
   const conversationKey = record.conversationKey ?? conversationKeyForP2p(record.larkUserId);
   const type: ConversationType = record.larkThreadId
@@ -2363,6 +2528,9 @@ function classifyInitialRoute(
     parsed.kind === "queue"
   ) {
     return { routeKind: "control_message", status: "processing", text: originalText };
+  }
+  if (state.queueNextMessage) {
+    return { routeKind: "queued_message", status: "queued", text: parsed.text };
   }
   if (state.pendingBatch.length > 0 || state.active?.cancelRequested) {
     return { routeKind: "queued_message", status: "queued", text: parsed.text };

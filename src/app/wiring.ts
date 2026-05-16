@@ -126,6 +126,9 @@ export class TwinnyRuntime {
       onMessageRecall: (recall) => {
         conversation.submitMessageRecall(recall);
       },
+      onBotMenu: (action) => {
+        conversation.submitBotMenuAction(action);
+      },
       onIgnored: (reason) => this.log.debug({ reason }, "lark event ignored")
     });
     await this.larkConsumer.start();
@@ -337,6 +340,9 @@ function adaptLarkSender(sender: LarkMessageSender, workingReaction: string, com
     },
     replyFile: async (messageId: string, fileKey: string): Promise<{ messageId?: string }> => {
       return sender.replyFile(messageId, fileKey);
+    },
+    sendTextToOpenId: async (openId: string, text: string): Promise<void> => {
+      await sender.sendTextToOpenId(openId, text);
     }
   };
 }

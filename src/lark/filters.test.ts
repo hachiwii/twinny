@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeIncomingLarkMessage,
   normalizeIncomingLarkMessageWithReason,
+  normalizeLarkBotMenuWithReason,
   normalizeLarkMessageEditWithReason,
   normalizeLarkMessageRecallWithReason,
   normalizeTextContent
@@ -303,6 +304,47 @@ describe("normalizeLarkMessageEditWithReason", () => {
         editTime: 1615380573411
       }
     });
+  });
+});
+
+describe("normalizeLarkBotMenuWithReason", () => {
+  it("normalizes bot floating menu events by operator open_id and event_key", () => {
+    expect(
+      normalizeLarkBotMenuWithReason({
+        header: { event_id: "event-menu" },
+        event: {
+          operator: {
+            operator_name: "Guest User",
+            operator_id: { open_id: "ou_guest", user_id: "u_guest" }
+          },
+          event_key: "queue",
+          timestamp: 1669364458
+        }
+      })
+    ).toEqual({
+      kind: "bot_menu",
+      action: {
+        eventId: "event-menu",
+        eventKey: "queue",
+        action: "queue",
+        operatorOpenId: "ou_guest",
+        operatorName: "Guest User",
+        timestamp: 1669364458,
+        raw: expect.anything()
+      }
+    });
+  });
+
+  it("ignores bot menu events with unknown event keys", () => {
+    expect(
+      normalizeLarkBotMenuWithReason({
+        header: { event_id: "event-menu" },
+        event: {
+          operator: { operator_id: { open_id: "ou_guest" } },
+          event_key: "unknown"
+        }
+      })
+    ).toMatchObject({ kind: "ignored", reason: "unsupported_event_key" });
   });
 });
 

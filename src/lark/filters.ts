@@ -1,4 +1,5 @@
 import type {
+  IncomingLarkBotMenuAction,
   IncomingLarkMention,
   IncomingLarkMessage,
   IncomingLarkMessageEdit,
@@ -46,6 +47,12 @@ export type LarkMessageIgnoreReason =
 
 export type LarkMessageChangeIgnoreReason = "malformed_event" | "missing_message_id";
 
+export type LarkBotMenuIgnoreReason =
+  | "malformed_event"
+  | "missing_event_key"
+  | "unsupported_event_key"
+  | "missing_operator_open_id";
+
 export interface NormalizeLarkMessageOptions {
   botOpenId?: string;
 }
@@ -61,6 +68,10 @@ export type NormalizeLarkMessageRecallResult =
 export type NormalizeLarkMessageEditResult =
   | { kind: "edit"; edit: IncomingLarkMessageEdit }
   | { kind: "ignored"; reason: LarkMessageChangeIgnoreReason; raw: unknown };
+
+export type NormalizeLarkBotMenuResult =
+  | { kind: "bot_menu"; action: IncomingLarkBotMenuAction }
+  | { kind: "ignored"; reason: LarkBotMenuIgnoreReason; raw: unknown };
 
 export function normalizeIncomingLarkMessage(
   raw: unknown,
@@ -140,6 +151,44 @@ export function normalizeIncomingLarkMessageWithReason(
       rawForCodex: rawForCodex ? true : undefined,
       text,
       createTime: parseEpochMs(message.create_time ?? event.create_time),
+      raw
+    }
+  };
+}
+
+export function normalizeLarkBotMenuWithReason(raw: unknown): NormalizeLarkBotMenuResult {
+  if (!isRecord(raw)) {
+    return ignoredBotMenu("malformed_event", raw);
+  }
+
+  const header = eventHeader(raw);
+  const event = eventPayload(raw);
+  const eventKey = stringValue(event.event_key);
+  if (!eventKey) {
+    return ignoredBotMenu("missing_event_key", raw);
+  }
+
+  const action = botMenuActionForEventKey(eventKey);
+  if (!action) {
+    return ignoredBotMenu("unsupported_event_key", raw);
+  }
+
+  const operator = isRecord(event.operator) ? event.operator : {};
+  const operatorId = isRecord(operator.operator_id) ? operator.operator_id : {};
+  const operatorOpenId = stringValue(operatorId.open_id);
+  if (!operatorOpenId) {
+    return ignoredBotMenu("missing_operator_open_id", raw);
+  }
+
+  return {
+    kind: "bot_menu",
+    action: {
+      eventId: firstStringValue(header.event_id, raw.event_id, raw.uuid, `${eventKey}:${operatorOpenId}`) ?? `${eventKey}:${operatorOpenId}`,
+      eventKey,
+      action,
+      operatorOpenId,
+      operatorName: stringValue(operator.operator_name),
+      timestamp: parseEpochMs(event.timestamp ?? header.create_time ?? raw.create_time),
       raw
     }
   };
@@ -566,6 +615,23 @@ function ignoredMessageChange(
   raw: unknown
 ): { kind: "ignored"; reason: LarkMessageChangeIgnoreReason; raw: unknown } {
   return { kind: "ignored", reason, raw };
+}
+
+function ignoredBotMenu(reason: LarkBotMenuIgnoreReason, raw: unknown): NormalizeLarkBotMenuResult {
+  return { kind: "ignored", reason, raw };
+}
+
+function botMenuActionForEventKey(eventKey: string): IncomingLarkBotMenuAction["action"] | undefined {
+  switch (eventKey.trim().toLowerCase()) {
+    case "stop":
+    case "new":
+    case "queue":
+    case "status":
+    case "help":
+      return eventKey.trim().toLowerCase() as IncomingLarkBotMenuAction["action"];
+    default:
+      return undefined;
+  }
 }
 
 function eventPayload(raw: Record<string, unknown>): Record<string, unknown> {
