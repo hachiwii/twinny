@@ -202,6 +202,7 @@ interface PendingMessage {
   messageId: string;
   text: string;
   original: IncomingLarkMessage;
+  queueBoundary: boolean;
 }
 
 interface ActiveTurn {
@@ -368,7 +369,9 @@ export class ConversationManager {
       await this.prepareMessageResources(record.conversationKey ?? conversationKeyForP2p(record.larkUserId), normalized);
     }
     const text = (record.status === "queued" && (normalized.resources?.length ?? 0) > 0) ? normalized.text : record.text;
-    return toPendingMessage(normalized, text);
+    return toPendingMessage(normalized, text, {
+      queueBoundary: record.status === "queued" && parseSlashCommand(normalized.text).kind === "queue"
+    });
   }
 
   private async startRecoveredProcessingMessages(
@@ -661,7 +664,7 @@ export class ConversationManager {
       return;
     }
 
-    state.pendingBatch.push(toPendingMessage(message, text));
+    state.pendingBatch.push(toPendingMessage(message, text, { queueBoundary: true }));
     if (!state.active) {
       await this.startPendingBatch(state, conversationKey);
     }
@@ -727,16 +730,17 @@ export class ConversationManager {
     message: IncomingLarkMessage
   ): Promise<void> {
     const queued = state.pendingBatch.length;
+    const nextBatchSize = countNextPendingBatch(state);
     const interrupted = await this.cancelActiveTurn(state, { waitForCompletion: true });
     if (!interrupted) {
-      await this.startPendingBatch(state, conversationKey, { limit: 1 });
+      await this.startPendingBatch(state, conversationKey);
     }
     const summary = interrupted
       ? queued > 0
-        ? `已打断当前任务，将执行队列中的下一条消息。队列剩余 ${Math.max(queued - 1, 0)} 条。`
+        ? `已打断当前任务，将执行队列中的下一条消息。队列剩余 ${Math.max(queued - nextBatchSize, 0)} 条。`
         : "已打断当前任务，但队列为空。"
       : queued > 0
-        ? `当前没有正在运行的任务，开始执行队列中的下一条消息。队列剩余 ${Math.max(queued - 1, 0)} 条。`
+        ? `当前没有正在运行的任务，开始执行队列中的下一条消息。队列剩余 ${Math.max(queued - nextBatchSize, 0)} 条。`
         : "当前没有正在运行的任务，队列为空。";
     await this.replyControlBestEffort(message.messageId, summary);
     await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -838,15 +842,11 @@ export class ConversationManager {
     }
   }
 
-  private async startPendingBatch(
-    state: ConversationState,
-    conversationKey: string,
-    options: { limit?: number } = {}
-  ): Promise<void> {
+  private async startPendingBatch(state: ConversationState, conversationKey: string): Promise<void> {
     if (state.active || state.pendingBatch.length === 0) {
       return;
     }
-    const count = options.limit === undefined ? state.pendingBatch.length : Math.max(0, Math.min(options.limit, state.pendingBatch.length));
+    const count = countNextPendingBatch(state);
     const messages = state.pendingBatch.splice(0, count);
     await this.startTurnForMessages(state, conversationKey, messages);
   }
@@ -1058,7 +1058,7 @@ export class ConversationManager {
     state.active = undefined;
     await this.clearReactionBestEffort(active);
     if (active.cancelRequested) {
-      await this.startPendingBatch(state, conversationKey, { limit: 1 });
+      await this.startPendingBatch(state, conversationKey);
       return;
     }
     if (active.completedStatus === "completed") {
@@ -1748,12 +1748,29 @@ function classifyInitialRoute(
   return { routeKind: "message", status: "processing", text: parsed.text };
 }
 
-function toPendingMessage(message: IncomingLarkMessage, text: string): PendingMessage {
+function toPendingMessage(
+  message: IncomingLarkMessage,
+  text: string,
+  options: { queueBoundary?: boolean } = {}
+): PendingMessage {
   return {
     messageId: message.messageId,
     text,
-    original: message
+    original: message,
+    queueBoundary: options.queueBoundary ?? false
   };
+}
+
+function countNextPendingBatch(state: ConversationState): number {
+  if (state.pendingBatch.length === 0) {
+    return 0;
+  }
+  for (let index = 1; index < state.pendingBatch.length; index += 1) {
+    if (state.pendingBatch[index]!.queueBoundary) {
+      return index;
+    }
+  }
+  return state.pendingBatch.length;
 }
 
 function formatPendingMessageForCodex(message: PendingMessage): string {

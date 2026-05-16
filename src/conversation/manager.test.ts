@@ -193,6 +193,44 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_1", "turn_2"));
   });
 
+  it("splits pending queue batches at each explicit /queue message", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ codex });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue 1"));
+    manager.submitIncoming(message("m3", "2"));
+    manager.submitIncoming(message("m4", "/queue 3"));
+    manager.submitIncoming(message("m5", "/queue 4"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(4));
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ input: `${wrappedMessage("1", "m2")}\n${wrappedMessage("2", "m3")}` })
+    );
+    expect(manager.queueDepth("p2p:ou_guest")).toBe(2);
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ input: wrappedMessage("3", "m4") })
+    );
+    expect(manager.queueDepth("p2p:ou_guest")).toBe(1);
+
+    turns[2]!.resolve(completed("thread_1", "turn_3"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(4));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      4,
+      expect.objectContaining({ input: wrappedMessage("4", "m5") })
+    );
+
+    turns[3]!.resolve(completed("thread_1", "turn_4"));
+  });
+
   it("records queued messages as cleared when /stop drains the pending batch", async () => {
     const { repository } = createRepository();
     const { codex } = createDeferredCodex();
