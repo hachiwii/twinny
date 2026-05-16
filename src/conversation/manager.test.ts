@@ -1508,6 +1508,9 @@ describe("ConversationManager", () => {
     expect(JSON.stringify(initialCard)).toContain("暂无进度");
     expect(JSON.stringify(vi.mocked(lark.patchCard).mock.calls)).toContain("- first item");
     expect(JSON.stringify(finalCard)).toContain("工作过程");
+    expect(finalCard.config).toMatchObject({
+      summary: { content: "second item" }
+    });
     expect(JSON.stringify(processPanel)).toContain("first item");
     expect(JSON.stringify(processPanel)).not.toContain("second item");
     expect(JSON.stringify(finalContent)).toContain("second item");
@@ -1550,11 +1553,40 @@ describe("ConversationManager", () => {
     const finalBodyElements = (finalCard.body as { elements: unknown[] }).elements;
     const processPanel = finalBodyElements[0] as Record<string, unknown>;
     const finalContent = finalBodyElements.slice(1);
+    expect(finalCard.config).toMatchObject({
+      summary: { content: "final answer" }
+    });
     expect(JSON.stringify(processPanel)).toContain("working notes");
     expect(JSON.stringify(processPanel)).not.toContain("final answer");
     expect(JSON.stringify(finalContent)).toContain("final answer");
     expect(JSON.stringify(finalContent)).not.toContain("working notes");
     expect(lark.replyMarkdown).not.toHaveBeenCalled();
+  });
+
+  it("sets finished agent card summary to the first 100 final output characters", async () => {
+    const finalText = "a".repeat(120);
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({ id: "agent_1", text: finalText });
+        return {
+          threadId,
+          turnId: "turn_1",
+          text: "final aggregate should not be rendered",
+          status: "completed" as const
+        };
+      })
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.patchCard).toHaveBeenCalled());
+
+    const finalCard = vi.mocked(lark.patchCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(finalCard.config).toMatchObject({
+      summary: { content: "a".repeat(100) }
+    });
   });
 
   it("records card button actions as control history and dispatches /next", async () => {

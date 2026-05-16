@@ -24,6 +24,7 @@ export interface RenderTwinnyAgentCardOptions {
   runId: number;
   iconImageKey?: string;
   finalElements?: LarkCardElement[];
+  summaryText?: string;
   error?: string;
 }
 
@@ -37,10 +38,18 @@ const STATUS_HEADER: Record<TwinnyAgentCardStatus, { title: string; template: st
 
 export function renderTwinnyAgentCard(options: RenderTwinnyAgentCardOptions): LarkCardJson {
   const header = STATUS_HEADER[options.status];
+  const summaryContent = options.status === "finished" ? cardSummaryContent(options.summaryText ?? "") : undefined;
   return {
     schema: "2.0",
     config: {
       update_multi: true,
+      ...(summaryContent === undefined
+        ? {}
+        : {
+            summary: {
+              content: summaryContent
+            }
+          }),
       style: {
         text_size: {
           normal_v2: {
@@ -280,6 +289,10 @@ function sanitizeProcessText(text: string): string {
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function cardSummaryContent(text: string): string {
+  return Array.from(sanitizeProcessText(text)).slice(0, 100).join("");
 }
 
 function formatElapsed(elapsedMs: number): string {

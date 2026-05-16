@@ -2448,7 +2448,7 @@ export class ConversationManager {
         active.sawAgentMessagePhase === true
       );
       const output = await this.prepareAgentFinalCardOutputForLark(final.text, active.workspace);
-      const rendered = this.renderAgentCard(state, active, "finished", output.elements, undefined, final.processMessages);
+      const rendered = this.renderAgentCard(state, active, "finished", output.elements, undefined, final.processMessages, final.text);
       await this.options.lark.patchCard(card.messageId, rendered);
       card.lastRenderedJson = JSON.stringify(rendered);
       for (const file of output.files) {
@@ -2565,7 +2565,8 @@ export class ConversationManager {
     status: "working" | "finished" | "interrupted" | "paused" | "failed",
     finalElements?: LarkCardElement[],
     error?: string,
-    messages?: TwinnyAgentCardMessage[]
+    messages?: TwinnyAgentCardMessage[],
+    summaryText?: string
   ): LarkCardJson {
     return renderTwinnyAgentCard({
       status,
@@ -2576,6 +2577,7 @@ export class ConversationManager {
       runId: active.runId,
       iconImageKey: this.options.config.lark.iconImageKey,
       finalElements,
+      summaryText,
       error
     });
   }
