@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { RuntimePaths } from "../types.js";
 
 export const DEFAULT_TWINNY_HOME = "~/.twinny";
@@ -46,3 +47,6 @@ export function createRuntimePaths(home = resolveTwinnyHome()): RuntimePaths {
   };
 }
 
+export function resolveBundledLogoPath(): string {
+  return fileURLToPath(new URL("../../configs/twinny-logo.jpg", import.meta.url));
+}

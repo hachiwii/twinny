@@ -37,6 +37,7 @@ describe("LarkEventConsumer", () => {
 
     expect(Object.keys(registered).sort()).toEqual([
       "application.bot.menu_v6",
+      "card.action.trigger",
       "im.message.recalled_v1",
       "im.message.receive_v1"
     ]);
@@ -104,6 +105,65 @@ describe("LarkEventConsumer", () => {
       })
     );
     expect(onIgnored).toHaveBeenCalledWith("unsupported_event_key", expect.anything());
+  });
+
+  it("forwards normalized card action trigger events", async () => {
+    const registered: Record<string, (data: unknown) => unknown> = {};
+    const dispatcher: EventDispatcherLike = {
+      register(handles) {
+        Object.assign(registered, handles);
+        return this;
+      }
+    };
+    const wsClient: WsClientLike = {
+      start: vi.fn(),
+      close: vi.fn()
+    };
+    const onCardAction = vi.fn();
+    const consumer = new LarkEventConsumer({
+      appId: "cli_1234567890abcdef",
+      appSecret: "secret",
+      warmTenantToken: false,
+      onMessage: vi.fn(),
+      onCardAction,
+      eventDispatcherFactory: () => dispatcher,
+      wsClientFactory: () => wsClient
+    });
+
+    await consumer.start();
+    const raw = {
+      header: { event_id: "event-card" },
+      event: {
+        operator: { open_id: "ou_user" },
+        open_message_id: "om_card",
+        open_chat_id: "oc_group",
+        action: {
+          tag: "button",
+          value: {
+            twinny: true,
+            action: "stop",
+            stateKey: "p2p:ou_user",
+            runId: 1
+          }
+        }
+      }
+    };
+    await registered["card.action.trigger"](raw);
+
+    expect(onCardAction).toHaveBeenCalledWith({
+      eventId: "event-card",
+      operatorOpenId: "ou_user",
+      openMessageId: "om_card",
+      openChatId: "oc_group",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "stop",
+        stateKey: "p2p:ou_user",
+        runId: 1
+      },
+      raw
+    });
   });
 
   it("forwards normalized message recall events", async () => {

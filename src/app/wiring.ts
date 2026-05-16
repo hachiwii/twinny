@@ -1,5 +1,11 @@
 import type { Logger } from "pino";
-import { createRuntimePaths, resolveSecretRef, SecurityCliSecretStore } from "../config/index.js";
+import {
+  createRuntimePaths,
+  resolveBundledLogoPath,
+  resolveSecretRef,
+  SecurityCliSecretStore,
+  writeLarkIconImageKey
+} from "../config/index.js";
 import { RoleCodexAppServerPool } from "../codex/index.js";
 import { ConversationManager } from "../conversation/manager.js";
 import {
@@ -24,6 +30,7 @@ import { WorkspaceManager } from "../workspace/index.js";
 export interface TwinnyRuntimeOptions {
   logger?: Logger;
   requestTimeoutMs?: number;
+  logoFilePath?: string;
 }
 
 export class TwinnyRuntime {
@@ -89,6 +96,7 @@ export class TwinnyRuntime {
       return undefined;
     });
     const larkFiles = new LarkFileDownloader({ openApiClient });
+    await this.provisionLarkIconImageKey(larkFiles);
     const systemNotifier = new TwinnySystemNotifier({
       ownerOpenId: this.config.owner.openId,
       sender: larkSender,
@@ -128,6 +136,9 @@ export class TwinnyRuntime {
       },
       onBotMenu: (action) => {
         conversation.submitBotMenuAction(action);
+      },
+      onCardAction: (action) => {
+        conversation.submitCardAction(action);
       },
       onIgnored: (reason) => this.log.debug({ reason }, "lark event ignored")
     });
@@ -222,6 +233,31 @@ export class TwinnyRuntime {
       this.log.warn({ error }, "failed to release runtime lock cleanly");
     }
   }
+
+  private async provisionLarkIconImageKey(larkFiles: LarkFileDownloader): Promise<void> {
+    if (this.config.lark.iconImageKey) {
+      return;
+    }
+    let imageKey: string;
+    try {
+      const uploaded = await larkFiles.uploadImage({
+        filePath: this.options.logoFilePath ?? resolveBundledLogoPath(),
+        fileName: "twinny-logo.jpg",
+        contentType: "image/jpeg"
+      });
+      imageKey = uploaded.imageKey;
+      this.config.lark.iconImageKey = imageKey;
+    } catch (error) {
+      this.log.warn({ error }, "failed to upload lark card icon; continuing without custom icon");
+      return;
+    }
+
+    try {
+      await writeLarkIconImageKey(this.config, imageKey, this.paths.configFile);
+    } catch (error) {
+      this.log.warn({ error }, "failed to write lark card icon image key to config; continuing with in-memory icon");
+    }
+  }
 }
 
 export async function createRuntime(config: TwinnyConfig, options: TwinnyRuntimeOptions = {}): Promise<TwinnyRuntime> {
@@ -238,6 +274,7 @@ function adaptConversationRepository(repository: ConversationRepository) {
     getCodexThreadById: repository.getCodexThreadById.bind(repository),
     getCodexThreadByConversationAndLarkThread: repository.getCodexThreadByConversationAndLarkThread.bind(repository),
     getLarkMessageById: repository.getLarkMessageById.bind(repository),
+    getLarkMessageByEventId: repository.getLarkMessageByEventId.bind(repository),
     listUnfinishedLarkMessages: repository.listUnfinishedLarkMessages.bind(repository),
     upsertCodexThread: repository.upsertCodexThread.bind(repository),
     replaceCodexThreadForLarkThread: repository.replaceCodexThreadForLarkThread.bind(repository),
@@ -343,6 +380,15 @@ function adaptLarkSender(sender: LarkMessageSender, workingReaction: string, com
     },
     sendTextToOpenId: async (openId: string, text: string): Promise<void> => {
       await sender.sendTextToOpenId(openId, text);
+    },
+    replyCard: async (messageId: string, card: Parameters<LarkMessageSender["replyInteractiveCard"]>[1]): Promise<{ messageId?: string }> => {
+      return sender.replyInteractiveCard(messageId, card);
+    },
+    patchCard: async (messageId: string, card: Parameters<LarkMessageSender["patchInteractiveCard"]>[1]): Promise<{ messageId?: string }> => {
+      return sender.patchInteractiveCard(messageId, card);
+    },
+    recallMessage: async (messageId: string): Promise<void> => {
+      await sender.deleteMessage(messageId);
     }
   };
 }

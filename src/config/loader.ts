@@ -3,9 +3,11 @@ import path from "node:path";
 import { parse, stringify, type TomlTable } from "smol-toml";
 import { z } from "zod";
 import {
+  DEFAULT_AGENT_MESSAGE_MODE,
   DEFAULT_LARK_COMPLETED_REACTION,
   DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
   DEFAULT_LARK_WORKING_REACTION,
+  type AgentMessageMode,
   type RoleName,
   type TwinnyConfig
 } from "../types.js";
@@ -28,7 +30,9 @@ const rawConfigSchema = z.object({
       secret_ref: z.string().optional(),
       working_reaction: z.string().optional(),
       completed_reaction: z.string().optional(),
-      max_message_age_seconds: z.number().optional()
+      max_message_age_seconds: z.number().optional(),
+      agent_message_mode: z.enum(["plain", "card"]).optional(),
+      icon_image_key: z.string().optional()
     })
     .optional(),
   owner: z
@@ -56,6 +60,8 @@ export interface CreateTwinnyConfigInput {
     workingReaction?: string;
     completedReaction?: string;
     maxMessageAgeSeconds?: number;
+    agentMessageMode?: AgentMessageMode;
+    iconImageKey?: string;
   };
   owner: {
     openId: string;
@@ -100,7 +106,9 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
       identity: "bot",
       workingReaction: normalizeOptionalString(input.lark.workingReaction) ?? DEFAULT_LARK_WORKING_REACTION,
       completedReaction: normalizeOptionalString(input.lark.completedReaction) ?? DEFAULT_LARK_COMPLETED_REACTION,
-      maxMessageAgeSeconds: input.lark.maxMessageAgeSeconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS
+      maxMessageAgeSeconds: input.lark.maxMessageAgeSeconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
+      agentMessageMode: input.lark.agentMessageMode ?? DEFAULT_AGENT_MESSAGE_MODE,
+      iconImageKey: normalizeOptionalString(input.lark.iconImageKey)
     },
     owner: {
       openId: input.owner.openId,
@@ -177,7 +185,9 @@ export function parseTwinnyConfig(rawToml: string, options: LoadConfigOptions = 
       identity: parsed.lark?.identity ?? "bot",
       workingReaction: normalizeOptionalString(parsed.lark?.working_reaction) ?? DEFAULT_LARK_WORKING_REACTION,
       completedReaction: normalizeOptionalString(parsed.lark?.completed_reaction) ?? DEFAULT_LARK_COMPLETED_REACTION,
-      maxMessageAgeSeconds: parsed.lark?.max_message_age_seconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS
+      maxMessageAgeSeconds: parsed.lark?.max_message_age_seconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
+      agentMessageMode: parsed.lark?.agent_message_mode ?? DEFAULT_AGENT_MESSAGE_MODE,
+      iconImageKey: normalizeOptionalString(parsed.lark?.icon_image_key)
     },
     owner: {
       openId: parsed.owner?.open_id ?? "",
@@ -198,6 +208,33 @@ export async function writeTwinnyConfig(config: TwinnyConfig, configFile = creat
   await fs.writeFile(configFile, serializeTwinnyConfig(config), { encoding: "utf8", mode: 0o600 });
 }
 
+export async function writeLarkIconImageKey(
+  config: TwinnyConfig,
+  iconImageKey: string,
+  configFile = createRuntimePaths(config.home).configFile
+): Promise<void> {
+  const normalized = normalizeOptionalString(iconImageKey);
+  if (!normalized) {
+    throw new Error("iconImageKey is required");
+  }
+  config.lark.iconImageKey = normalized;
+
+  let rawToml = "";
+  try {
+    rawToml = await fs.readFile(configFile, "utf8");
+  } catch (error) {
+    if (!isNodeError(error, "ENOENT")) {
+      throw error;
+    }
+  }
+
+  const nextToml = rawToml ? patchLarkIconImageKey(rawToml, normalized) : serializeTwinnyConfig(config);
+  await fs.mkdir(path.dirname(configFile), { recursive: true });
+  const tempFile = `${configFile}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempFile, nextToml, { encoding: "utf8", mode: 0o600 });
+  await fs.rename(tempFile, configFile);
+}
+
 export function serializeTwinnyConfig(config: TwinnyConfig): string {
   return stringify(toTomlDocument(config)) + "\n";
 }
@@ -215,6 +252,9 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   if (!config.lark.completedReaction) issues.push("lark.completed_reaction is required");
   if (!Number.isFinite(config.lark.maxMessageAgeSeconds) || config.lark.maxMessageAgeSeconds <= 0) {
     issues.push("lark.max_message_age_seconds must be a positive number");
+  }
+  if (config.lark.agentMessageMode !== "plain" && config.lark.agentMessageMode !== "card") {
+    issues.push("lark.agent_message_mode must be plain or card");
   }
   if (!config.owner.openId) issues.push("owner.open_id is required");
   if (!config.owner.displayName) issues.push("owner.display_name is required");
@@ -260,7 +300,9 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
       secret_ref: config.lark.appSecretRef,
       working_reaction: config.lark.workingReaction,
       completed_reaction: config.lark.completedReaction,
-      max_message_age_seconds: config.lark.maxMessageAgeSeconds
+      max_message_age_seconds: config.lark.maxMessageAgeSeconds,
+      agent_message_mode: config.lark.agentMessageMode,
+      ...(config.lark.iconImageKey ? { icon_image_key: config.lark.iconImageKey } : {})
     },
     owner,
     roles: {
@@ -280,7 +322,36 @@ function resolveConfigPath(value: string, home: string): string {
 }
 
 function normalizeOptionalString(value: string | undefined): string | undefined {
-  return value === undefined ? undefined : value.trim();
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function patchLarkIconImageKey(rawToml: string, iconImageKey: string): string {
+  const lines = rawToml.split(/\r?\n/);
+  const larkHeaderIndex = lines.findIndex((line) => /^\s*\[lark]\s*(?:#.*)?$/.test(line));
+  const rendered = `icon_image_key = ${JSON.stringify(iconImageKey)}`;
+  if (larkHeaderIndex < 0) {
+    const suffix = rawToml.endsWith("\n") ? "" : "\n";
+    return `${rawToml}${suffix}\n[lark]\n${rendered}\n`;
+  }
+
+  let insertIndex = lines.length;
+  for (let index = larkHeaderIndex + 1; index < lines.length; index += 1) {
+    if (/^\s*\[[^\]]+]\s*(?:#.*)?$/.test(lines[index]!)) {
+      insertIndex = index;
+      break;
+    }
+    if (/^\s*icon_image_key\s*=/.test(lines[index]!)) {
+      lines[index] = rendered;
+      return lines.join("\n");
+    }
+  }
+
+  lines.splice(insertIndex, 0, rendered);
+  return lines.join("\n");
 }
 
 function isNodeError(error: unknown, code: string): boolean {

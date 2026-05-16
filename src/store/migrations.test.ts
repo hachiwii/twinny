@@ -102,7 +102,7 @@ describe("store migrations", () => {
       }));
       expect(messageColumns).toEqual([
         { name: "id", type: "INTEGER", notnull: 0, pk: 1 },
-        { name: "lark_message_id", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "lark_message_id", type: "TEXT", notnull: 0, pk: 0 },
         { name: "event_id", type: "TEXT", notnull: 1, pk: 0 },
         { name: "lark_user_id", type: "TEXT", notnull: 1, pk: 0 },
         { name: "lark_group_id", type: "TEXT", notnull: 0, pk: 0 },
@@ -121,6 +121,16 @@ describe("store migrations", () => {
         { name: "failed_at", type: "INTEGER", notnull: 0, pk: 0 },
         { name: "cleared_at", type: "INTEGER", notnull: 0, pk: 0 },
         { name: "raw_event_json", type: "TEXT", notnull: 0, pk: 0 }
+      ]);
+      const messageIndexes = db
+        .prepare<[], SqliteNameRow>(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'lark_messages' ORDER BY name"
+        )
+        .all()
+        .map((row) => row.name);
+      expect(messageIndexes).toEqual([
+        "idx_lark_messages_card_action_event_id",
+        "idx_lark_messages_lark_message_id"
       ]);
     } finally {
       db.close();

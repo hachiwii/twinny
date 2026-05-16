@@ -4,7 +4,9 @@ export type ConversationType = "p2p" | "group" | "topic_group";
 
 export type ConversationResponseMode = "all" | "at" | "none";
 
-export type LarkMessageRouteKind = "message" | "steered_message" | "queued_message" | "control_message";
+export type AgentMessageMode = "plain" | "card";
+
+export type LarkMessageRouteKind = "message" | "steered_message" | "queued_message" | "control_message" | "card_action";
 
 export type LarkMessageStatus =
   | "queued"
@@ -19,6 +21,7 @@ export type LarkMessageStatus =
 export const DEFAULT_LARK_WORKING_REACTION = "Typing";
 export const DEFAULT_LARK_COMPLETED_REACTION = "DONE";
 export const DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS = 60;
+export const DEFAULT_AGENT_MESSAGE_MODE: AgentMessageMode = "card";
 
 export interface OwnerConfig {
   openId: string;
@@ -36,6 +39,8 @@ export interface LarkConfig {
   workingReaction: string;
   completedReaction: string;
   maxMessageAgeSeconds: number;
+  agentMessageMode: AgentMessageMode;
+  iconImageKey?: string;
 }
 
 export interface CodexConfig {
@@ -114,7 +119,7 @@ export interface CodexThreadRecord {
 
 export interface LarkMessageRecord {
   id: number;
-  larkMessageId: string;
+  larkMessageId?: string;
   eventId: string;
   larkUserId: string;
   larkGroupId?: string;
@@ -180,6 +185,16 @@ export interface IncomingLarkBotMenuAction {
   operatorOpenId: string;
   operatorName?: string;
   timestamp?: number;
+  raw: unknown;
+}
+
+export interface IncomingLarkCardAction {
+  eventId: string;
+  operatorOpenId: string;
+  openMessageId?: string;
+  openChatId?: string;
+  actionTag?: string;
+  actionValue: Record<string, unknown>;
   raw: unknown;
 }
 

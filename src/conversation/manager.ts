@@ -3,20 +3,32 @@ import path from "node:path";
 import { LRUCache } from "lru-cache";
 import type { Logger } from "pino";
 import { TwinnyError, toErrorMessage } from "../errors.js";
+import {
+  imageElement,
+  markdownElement,
+  mediaElement,
+  renderTwinnyAgentCard,
+  type LarkCardElement,
+  type LarkCardJson,
+  type TwinnyAgentCardMessage
+} from "../lark/cards.js";
 import { normalizeIncomingLarkMessage } from "../lark/filters.js";
 import { isLarkMessageUnavailableError } from "../lark/messages.js";
 import { logger as defaultLogger } from "../observability/logs.js";
 import type {
   CodexThreadTokenUsageUpdate,
   CodexTurnResult,
+  AgentMessageMode,
   ConversationResponseMode,
   ConversationRecord,
   ConversationType,
   IncomingLarkBotMenuAction,
+  IncomingLarkCardAction,
   IncomingLarkMessage,
   IncomingLarkMessageRecall,
   LarkMessageRecord,
   LarkMessageRouteKind,
+  LarkMessageStatus,
   LarkReactionHandle,
   NewConversationRecord,
   RoleName,
@@ -50,6 +62,7 @@ export interface ConversationRepository {
     larkThreadId: string
   ): Promise<CodexThreadRecord | undefined> | CodexThreadRecord | undefined;
   getLarkMessageById(larkMessageId: string): Promise<unknown | undefined> | unknown | undefined;
+  getLarkMessageByEventId?(eventId: string): Promise<unknown | undefined> | unknown | undefined;
   listUnfinishedLarkMessages(): Promise<LarkMessageRecord[]> | LarkMessageRecord[];
   upsertCodexThread(input: {
     codexThreadId: string;
@@ -70,7 +83,7 @@ export interface ConversationRepository {
     tokenUsageJson: string;
   }): Promise<unknown> | unknown;
   insertLarkMessage(input: {
-    larkMessageId: string;
+    larkMessageId?: string;
     eventId: string;
     larkUserId: string;
     larkGroupId?: string;
@@ -79,7 +92,7 @@ export interface ConversationRepository {
     codexThreadId?: string;
     codexTurnId?: string;
     routeKind: LarkMessageRouteKind;
-    status: "queued" | "processing";
+    status: LarkMessageStatus;
     text: string;
     larkCreateTime?: number;
     rawEventJson?: string;
@@ -195,6 +208,9 @@ export interface LarkResponder {
   ): Promise<{ messageId?: string } | void>;
   replyFile(messageId: string, fileKey: string): Promise<{ messageId?: string } | void>;
   sendTextToOpenId(openId: string, text: string): Promise<void>;
+  replyCard(messageId: string, card: LarkCardJson): Promise<{ messageId?: string } | void>;
+  patchCard(messageId: string, card: LarkCardJson): Promise<{ messageId?: string } | void>;
+  recallMessage(messageId: string): Promise<void>;
 }
 
 export interface RoleHomeResolver {
@@ -249,21 +265,36 @@ interface PendingMessage {
 
 interface ActiveTurn {
   runId: number;
+  agentMessageMode: AgentMessageMode;
   role: RoleName;
   threadId: string;
   workspace: string;
   conversationKey: string;
   context: MessageContext;
   replyMessageId: string;
+  startedAt: number;
   turnId?: string;
   reaction?: LarkReactionHandle | null;
   lastAgentReplyMessageId?: string;
   completedStatus?: CodexTurnResult["status"];
+  resultText?: string;
+  resultError?: string;
+  card?: ActiveTurnCardState;
   pendingSteers: PendingMessage[];
   messageIds: Set<string>;
   processingMessageIds: Set<string>;
   steeredMessageIds: Set<string>;
   cancelRequested: boolean;
+}
+
+interface ActiveTurnCardState {
+  anchorMessageId: string;
+  messageId?: string;
+  startedAt: number;
+  messages: TwinnyAgentCardMessage[];
+  timer?: NodeJS.Timeout;
+  fallbackPlain: boolean;
+  lastRenderedJson?: string;
 }
 
 interface ConversationState {
@@ -287,6 +318,13 @@ type ParsedCommand =
   | { kind: "activate"; text: string }
   | { kind: "deactivate" }
   | { kind: "help" };
+
+interface ParsedCardActionCommand {
+  action: "stop" | "next";
+  stateKey: string;
+  runId: number;
+  text: "/stop" | "/next";
+}
 
 export class ConversationManager {
   private static readonly recoveryPrompt = "Twinny daemon has beed reloaded, continue with the unfinished work.";
@@ -367,6 +405,29 @@ export class ConversationManager {
       });
   }
 
+  submitCardAction(action: IncomingLarkCardAction): void {
+    if (this.shuttingDown) {
+      throw new TwinnyError("Conversation manager is shutting down", "CONVERSATION_MANAGER_SHUTTING_DOWN");
+    }
+    const command = parseTwinnyCardAction(action.actionValue);
+    if (!command) {
+      this.log.debug({ eventId: action.eventId }, "ignored non-twinny card action");
+      return;
+    }
+
+    const state = this.states.get(command.stateKey);
+    if (!state) {
+      void this.recordCardActionBestEffort(action, command, "completed").catch((error) => {
+        this.log.warn({ error, eventId: action.eventId }, "failed to record stale card action");
+      });
+      return;
+    }
+
+    void state.controlQueue.enqueue(() => this.processCardAction(state, action, command)).catch((error) => {
+      this.log.error({ error, eventId: action.eventId }, "conversation card action failed");
+    });
+  }
+
   async shutdown(): Promise<void> {
     if (this.shuttingDown) {
       return;
@@ -401,7 +462,9 @@ export class ConversationManager {
       const context = contextForRecoveredRecord(record);
       const state = this.getState(context.stateKey);
       recoverableStates.set(context.stateKey, { state, context });
-      this.dedupe.set(record.larkMessageId, true);
+      if (record.larkMessageId) {
+        this.dedupe.set(record.larkMessageId, true);
+      }
       const message = await this.toRecoveredPendingMessage(record, context);
       if (record.status === "processing") {
         const group = processingGroups.get(context.stateKey) ?? { state, context, records: [], messages: [] };
@@ -1113,6 +1176,75 @@ export class ConversationManager {
     };
   }
 
+  private async processCardAction(
+    state: ConversationState,
+    action: IncomingLarkCardAction,
+    command: ParsedCardActionCommand
+  ): Promise<void> {
+    const existing = await this.options.repository.getLarkMessageByEventId?.(action.eventId);
+    if (existing) {
+      return;
+    }
+
+    const active = state.active;
+    let status: LarkMessageStatus = "completed";
+    try {
+      const stale =
+        !active ||
+        active.runId !== command.runId ||
+        active.context.stateKey !== command.stateKey ||
+        (action.openMessageId !== undefined && active.card?.messageId !== undefined && action.openMessageId !== active.card.messageId);
+      if (!stale) {
+        if (command.action === "stop") {
+          await this.executeStopAction(state);
+        } else {
+          await this.executeNextAction(state, active.context);
+        }
+      }
+    } catch (error) {
+      status = "failed";
+      throw error;
+    } finally {
+      await this.recordCardActionBestEffort(action, command, status, active);
+    }
+  }
+
+  private async executeStopAction(state: ConversationState): Promise<void> {
+    await this.stopConversationState(state);
+  }
+
+  private async executeNextAction(state: ConversationState, context: MessageContext): Promise<void> {
+    const interrupted = await this.cancelActiveTurn(state, { waitForCompletion: true });
+    if (!interrupted) {
+      await this.startPendingBatch(state, context);
+    }
+  }
+
+  private async recordCardActionBestEffort(
+    action: IncomingLarkCardAction,
+    command: ParsedCardActionCommand,
+    status: LarkMessageStatus,
+    active?: ActiveTurn
+  ): Promise<void> {
+    try {
+      await this.options.repository.insertLarkMessage({
+        eventId: action.eventId,
+        larkUserId: action.operatorOpenId,
+        larkGroupId: action.openChatId,
+        larkThreadId: active?.context.larkThreadId,
+        conversationKey: active?.conversationKey ?? conversationKeyFromStateKey(command.stateKey),
+        codexThreadId: active?.threadId,
+        codexTurnId: active?.turnId,
+        routeKind: "card_action",
+        status,
+        text: command.text,
+        rawEventJson: safeJsonStringify(action.raw)
+      });
+    } catch (error) {
+      this.log.warn({ error, eventId: action.eventId }, "failed to record card action message");
+    }
+  }
+
   private async handleNextCommand(
     state: ConversationState,
     context: MessageContext,
@@ -1192,6 +1324,7 @@ export class ConversationManager {
     const anchor = batch[batch.length - 1]!;
     active.replyMessageId = anchor.messageId;
     await this.moveReactionBestEffort(active, anchor.messageId);
+    await this.moveAgentCardBestEffort(state, active, anchor.messageId);
     await this.replyControlBestEffort(
       message.messageId,
       `已将队列中的 ${nextBatchSize} 条消息注入当前任务。队列剩余 ${state.pendingBatch.length} 条。`
@@ -1282,6 +1415,7 @@ export class ConversationManager {
       });
       active.replyMessageId = message.messageId;
       await this.moveReactionBestEffort(active, message.messageId);
+      await this.moveAgentCardBestEffort(state, active, message.messageId);
       return;
     }
 
@@ -1304,6 +1438,7 @@ export class ConversationManager {
       });
       active.replyMessageId = message.messageId;
       await this.moveReactionBestEffort(active, message.messageId);
+      await this.moveAgentCardBestEffort(state, active, message.messageId);
     } catch (error) {
       this.log.warn(
         { error, threadId: active.threadId, turnId: active.turnId, messageId: message.messageId },
@@ -1454,15 +1589,28 @@ export class ConversationManager {
       conversationKey: context.conversationKey,
       codexThreadId: params.threadId
     });
+    const startedAt = Date.now();
+    const agentMessageMode = this.options.config.lark.agentMessageMode;
     const active: ActiveTurn = {
       runId: ++state.nextRunId,
+      agentMessageMode,
       role: params.role,
       threadId: params.threadId,
       workspace: params.workspace,
       conversationKey: context.conversationKey,
       context,
       replyMessageId: anchor.messageId,
+      startedAt,
       reaction: await this.addReactionBestEffort(anchor.messageId),
+      card:
+        agentMessageMode === "card"
+          ? {
+              anchorMessageId: anchor.messageId,
+              startedAt,
+              messages: [],
+              fallbackPlain: false
+            }
+          : undefined,
       pendingSteers: [],
       messageIds: new Set(params.messages.map((message) => message.messageId)),
       processingMessageIds: new Set(params.messages.map((message) => message.messageId)),
@@ -1470,7 +1618,6 @@ export class ConversationManager {
       cancelRequested: false
     };
     state.active = active;
-    const startedAt = Date.now();
 
     void this.options.codex
       .startTurn({
@@ -1485,6 +1632,8 @@ export class ConversationManager {
       })
       .then((result) => {
         active.completedStatus = result.status;
+        active.resultText = result.text;
+        active.resultError = result.error;
         this.log.info(
           {
             messageId: anchor.messageId,
@@ -1502,7 +1651,10 @@ export class ConversationManager {
         if (state.active === active && !active.cancelRequested) {
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
           this.log.error({ error, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation turn failed");
-          await this.replyErrorBestEffort(active.replyMessageId, error);
+          await this.failAgentCardBestEffort(state, active, toErrorMessage(error));
+          if (active.agentMessageMode !== "card" || active.card?.fallbackPlain || !active.card?.messageId) {
+            await this.replyErrorBestEffort(active.replyMessageId, error);
+          }
         } else {
           this.log.debug({ error, conversationKey: context.conversationKey, threadId: active.threadId }, "ignored stale codex turn failure");
         }
@@ -1603,20 +1755,25 @@ export class ConversationManager {
   ): Promise<void> {
     if (state.active !== active) {
       await this.clearReactionBestEffort(active);
+      this.stopAgentCardTimer(active);
       return;
     }
     state.active = undefined;
     await this.clearReactionBestEffort(active);
     if (active.cancelRequested) {
+      this.stopAgentCardTimer(active);
       await this.startPendingBatch(state, active.context);
       return;
     }
     if (active.completedStatus === "completed") {
       await this.markMessagesCompletedBestEffort([...active.processingMessageIds]);
+      await this.completeAgentCardBestEffort(state, active);
     } else {
       await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
+      await this.failAgentCardBestEffort(state, active, active.resultError ?? "Codex turn failed");
     }
     await this.addCompletedReactionBestEffort(active);
+    this.stopAgentCardTimer(active);
     await this.startPendingBatch(state, active.context);
   }
 
@@ -1640,6 +1797,7 @@ export class ConversationManager {
     active.pendingSteers = [];
     await this.clearReactionBestEffort(active);
     await this.markMessagesInterruptedBestEffort([...active.processingMessageIds]);
+    await this.interruptAgentCardBestEffort(state, active);
     if (active.turnId) {
       await this.interruptActiveTurnBestEffort(active);
     }
@@ -1655,6 +1813,7 @@ export class ConversationManager {
     active.cancelRequested = true;
     active.pendingSteers = [];
     await this.clearReactionBestEffort(active);
+    this.stopAgentCardTimer(active);
     if (active.turnId) {
       await this.interruptActiveTurnBestEffort(active);
     }
@@ -2072,6 +2231,9 @@ export class ConversationManager {
   }
 
   private async addCompletedReactionBestEffort(active: ActiveTurn): Promise<void> {
+    if (active.agentMessageMode === "card") {
+      return;
+    }
     if (active.completedStatus !== "completed" || active.cancelRequested || !active.lastAgentReplyMessageId) {
       return;
     }
@@ -2139,7 +2301,204 @@ export class ConversationManager {
     if (state.active !== active || active.cancelRequested) {
       return;
     }
+    if (active.agentMessageMode === "card") {
+      await state.controlQueue.enqueue(async () => {
+        if (state.active !== active || active.cancelRequested) {
+          return;
+        }
+        await this.updateAgentCardWithMessageBestEffort(state, active, agentMessage);
+      });
+      return;
+    }
     await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
+  }
+
+  private async updateAgentCardWithMessageBestEffort(
+    state: ConversationState,
+    active: ActiveTurn,
+    agentMessage: { id: string; text: string }
+  ): Promise<void> {
+    const text = agentMessage.text.trim();
+    if (text.length === 0) {
+      return;
+    }
+    const card = active.card;
+    if (!card || card.fallbackPlain) {
+      await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
+      return;
+    }
+    card.messages.push({ id: agentMessage.id, text });
+
+    try {
+      if (!card.messageId) {
+        const rendered = this.renderAgentCard(state, active, "working");
+        const result = await this.options.lark.replyCard(card.anchorMessageId, rendered);
+        card.messageId = result?.messageId;
+        active.lastAgentReplyMessageId = result?.messageId;
+        card.lastRenderedJson = JSON.stringify(rendered);
+        this.startAgentCardTimer(state, active);
+        if (!card.messageId) {
+          throw new Error("Lark card reply did not return message_id");
+        }
+        return;
+      }
+      await this.patchAgentCardBestEffort(state, active, "working");
+    } catch (error) {
+      this.log.warn({ error, messageId: active.replyMessageId }, "failed to send or update agent card; falling back to plain");
+      card.fallbackPlain = true;
+      this.stopAgentCardTimer(active);
+      await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
+    }
+  }
+
+  private async patchAgentCardBestEffort(
+    state: ConversationState,
+    active: ActiveTurn,
+    status: "working" | "interrupted" | "failed",
+    error?: string
+  ): Promise<boolean> {
+    const card = active.card;
+    if (!card?.messageId || card.fallbackPlain) {
+      return false;
+    }
+    const rendered = this.renderAgentCard(state, active, status, undefined, error);
+    const serialized = JSON.stringify(rendered);
+    if (serialized === card.lastRenderedJson) {
+      return true;
+    }
+    await this.options.lark.patchCard(card.messageId, rendered);
+    card.lastRenderedJson = serialized;
+    return true;
+  }
+
+  private async completeAgentCardBestEffort(state: ConversationState, active: ActiveTurn): Promise<void> {
+    const card = active.card;
+    this.stopAgentCardTimer(active);
+    if (!card?.messageId || card.fallbackPlain) {
+      return;
+    }
+    try {
+      const output = await this.prepareAgentFinalCardOutputForLark(active.resultText ?? "", active.workspace);
+      const rendered = this.renderAgentCard(state, active, "finished", output.elements);
+      await this.options.lark.patchCard(card.messageId, rendered);
+      card.lastRenderedJson = JSON.stringify(rendered);
+      for (const file of output.files) {
+        try {
+          await this.options.lark.replyFile(active.replyMessageId, file.fileKey);
+        } catch (error) {
+          this.log.warn({ error, messageId: active.replyMessageId, fileName: file.fileName }, "failed to send lark file attachment reply");
+        }
+      }
+    } catch (error) {
+      this.log.warn({ error, messageId: active.replyMessageId }, "failed to finalize agent card; falling back to plain");
+      card.fallbackPlain = true;
+      await this.replyAgentMessageBestEffort(active, active.replyMessageId, {
+        id: "final",
+        text: active.resultText ?? ""
+      });
+    }
+  }
+
+  private async failAgentCardBestEffort(state: ConversationState, active: ActiveTurn, error: string): Promise<void> {
+    this.stopAgentCardTimer(active);
+    try {
+      await this.patchAgentCardBestEffort(state, active, "failed", error);
+    } catch (patchError) {
+      this.log.warn({ error: patchError, messageId: active.replyMessageId }, "failed to update failed agent card");
+      if (active.card) {
+        active.card.fallbackPlain = true;
+      }
+    }
+  }
+
+  private async interruptAgentCardBestEffort(state: ConversationState, active: ActiveTurn): Promise<void> {
+    this.stopAgentCardTimer(active);
+    try {
+      await this.patchAgentCardBestEffort(state, active, "interrupted");
+    } catch (error) {
+      this.log.warn({ error, messageId: active.replyMessageId }, "failed to update interrupted agent card");
+    }
+  }
+
+  private startAgentCardTimer(state: ConversationState, active: ActiveTurn): void {
+    const card = active.card;
+    if (!card || card.timer || card.fallbackPlain || !card.messageId) {
+      return;
+    }
+    card.timer = setInterval(() => {
+      void state.controlQueue
+        .enqueue(async () => {
+          if (state.active !== active || active.cancelRequested) {
+            return;
+          }
+          await this.patchAgentCardBestEffort(state, active, "working");
+        })
+        .catch((error) => {
+          this.log.warn({ error, messageId: card.messageId }, "failed to update agent card elapsed time");
+        });
+    }, 5_000);
+    card.timer.unref?.();
+  }
+
+  private stopAgentCardTimer(active: ActiveTurn): void {
+    const timer = active.card?.timer;
+    if (timer) {
+      clearInterval(timer);
+      active.card!.timer = undefined;
+    }
+  }
+
+  private async moveAgentCardBestEffort(state: ConversationState, active: ActiveTurn, anchorMessageId: string): Promise<void> {
+    const card = active.card;
+    if (!card || card.anchorMessageId === anchorMessageId) {
+      return;
+    }
+    const previousAnchorMessageId = card.anchorMessageId;
+    card.anchorMessageId = anchorMessageId;
+    if (!card.messageId || card.fallbackPlain) {
+      return;
+    }
+
+    const previousMessageId = card.messageId;
+    try {
+      const rendered = this.renderAgentCard(state, active, "working");
+      const result = await this.options.lark.replyCard(anchorMessageId, rendered);
+      if (!result?.messageId) {
+        throw new Error("Lark card reply did not return message_id");
+      }
+      card.messageId = result.messageId;
+      active.lastAgentReplyMessageId = result.messageId;
+      card.lastRenderedJson = JSON.stringify(rendered);
+      try {
+        await this.options.lark.recallMessage(previousMessageId);
+      } catch (error) {
+        this.log.warn({ error, messageId: previousMessageId }, "failed to recall previous agent card after steer");
+      }
+    } catch (error) {
+      card.messageId = previousMessageId;
+      card.anchorMessageId = previousAnchorMessageId;
+      this.log.warn({ error, anchorMessageId }, "failed to move agent card after steer; keeping previous card");
+    }
+  }
+
+  private renderAgentCard(
+    state: ConversationState,
+    active: ActiveTurn,
+    status: "working" | "finished" | "interrupted" | "failed",
+    finalElements?: LarkCardElement[],
+    error?: string
+  ): LarkCardJson {
+    return renderTwinnyAgentCard({
+      status,
+      messages: active.card?.messages ?? [],
+      elapsedMs: Date.now() - active.startedAt,
+      queueDepth: state.pendingBatch.length,
+      stateKey: active.context.stateKey,
+      runId: active.runId,
+      iconImageKey: this.options.config.lark.iconImageKey,
+      finalElements,
+      error
+    });
   }
 
   private async replyAgentMessageBestEffort(
@@ -2245,6 +2604,72 @@ export class ConversationManager {
       files
     };
   }
+
+  private async prepareAgentFinalCardOutputForLark(text: string, workspace: string): Promise<PreparedAgentCardReply> {
+    const elements: LarkCardElement[] = [];
+    const files: PreparedLarkFileReply[] = [];
+    const pendingText: string[] = [];
+    const flushText = (): void => {
+      const markdown = pendingText.join("\n").trim();
+      pendingText.splice(0);
+      if (markdown.length > 0) {
+        elements.push(markdownElement(markdown));
+      }
+    };
+
+    for (const line of text.split(/\r?\n/)) {
+      const directive = parseSendToLarkDirective(line);
+      if (directive.kind === "none") {
+        pendingText.push(line);
+        continue;
+      }
+      flushText();
+      if (directive.kind === "invalid") {
+        elements.push(markdownElement(formatSendToLarkError(directive.reason)));
+        continue;
+      }
+
+      try {
+        const file = await resolveWorkspaceFileForLark(directive.path, workspace);
+        if (directive.tag === "img") {
+          if (!this.options.larkFiles?.uploadImage) {
+            throw new Error("Lark image uploader is not configured");
+          }
+          const uploaded = await this.options.larkFiles.uploadImage({
+            filePath: file.filePath,
+            fileName: file.fileName,
+            contentType: contentTypeForFileName(file.fileName)
+          });
+          elements.push(imageElement(uploaded.imageKey));
+          continue;
+        }
+
+        if (!this.options.larkFiles?.uploadFile) {
+          throw new Error("Lark file uploader is not configured");
+        }
+        const uploaded = await this.options.larkFiles.uploadFile({
+          filePath: file.filePath,
+          fileName: file.fileName,
+          fileType: directive.tag === "video" ? "mp4" : larkFileTypeForFileName(file.fileName),
+          contentType: contentTypeForFileName(file.fileName)
+        });
+        if (directive.tag === "video") {
+          elements.push(mediaElement(uploaded.fileKey));
+        } else {
+          elements.push(markdownElement(`📎 ${file.fileName}`));
+          files.push({ fileName: file.fileName, fileKey: uploaded.fileKey });
+        }
+      } catch (error) {
+        elements.push(markdownElement(formatSendToLarkError(toErrorMessage(error))));
+      }
+    }
+    flushText();
+
+    return {
+      elements: elements.length > 0 ? elements : [markdownElement("")],
+      files
+    };
+  }
 }
 
 type LarkPostNode = { tag: "md"; text: string } | { tag: "img"; image_key: string } | { tag: "media"; file_key: string };
@@ -2257,6 +2682,11 @@ interface PreparedLarkFileReply {
 
 interface PreparedAgentLarkReply {
   postContent: LarkPostContent;
+  files: PreparedLarkFileReply[];
+}
+
+interface PreparedAgentCardReply {
+  elements: LarkCardElement[];
   files: PreparedLarkFileReply[];
 }
 
@@ -2415,6 +2845,24 @@ function parseSlashCommand(text: string): ParsedCommand {
   return { kind: "message", text };
 }
 
+function parseTwinnyCardAction(value: Record<string, unknown>): ParsedCardActionCommand | undefined {
+  if (value.twinny !== true) {
+    return undefined;
+  }
+  const action = value.action;
+  const stateKey = typeof value.stateKey === "string" ? value.stateKey : undefined;
+  const runId = typeof value.runId === "number" && Number.isInteger(value.runId) ? value.runId : undefined;
+  if ((action !== "stop" && action !== "next") || !stateKey || runId === undefined) {
+    return undefined;
+  }
+  return {
+    action,
+    stateKey,
+    runId,
+    text: action === "stop" ? "/stop" : "/next"
+  };
+}
+
 function parseActivateCommand(
   text: string
 ): { kind: "valid"; responseMode: Exclude<ConversationResponseMode, "none">; role?: RoleName } | { kind: "invalid"; message: string } {
@@ -2483,6 +2931,12 @@ function contextForRecoveredRecord(record: LarkMessageRecord): MessageContext {
     stateKey: record.larkThreadId ? `${conversationKey}:thread:${safePathSegment(record.larkThreadId)}` : conversationKey,
     larkThreadId: record.larkThreadId
   };
+}
+
+function conversationKeyFromStateKey(stateKey: string): string {
+  const threadMarker = ":thread:";
+  const threadIndex = stateKey.indexOf(threadMarker);
+  return threadIndex >= 0 ? stateKey.slice(0, threadIndex) : stateKey;
 }
 
 function messageMentionsBot(message: IncomingLarkMessage, botOpenId: string | undefined): boolean {

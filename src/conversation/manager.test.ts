@@ -35,7 +35,8 @@ const config: TwinnyConfig = {
     identity: "bot",
     workingReaction: "Typing",
     completedReaction: "DONE",
-    maxMessageAgeSeconds: 60
+    maxMessageAgeSeconds: 60,
+    agentMessageMode: "plain"
   },
   owner: { openId: "ou_owner", displayName: "Owner" },
   roles: {
@@ -1393,6 +1394,104 @@ describe("ConversationManager", () => {
     expect(lark.addCompletedReaction).toHaveBeenCalledTimes(1);
   });
 
+  it("uses card mode to update a single agent card and skips the DONE reaction", async () => {
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({ id: "agent_1", text: "first item" });
+        await onAgentMessage?.({ id: "agent_2", text: "second item" });
+        return {
+          threadId,
+          turnId: "turn_1",
+          text: "final markdown",
+          status: "completed" as const
+        };
+      })
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig({ iconImageKey: "img_logo" }) });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith(
+        "card_m1_1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+
+    const initialCard = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
+    const finalCard = vi.mocked(lark.patchCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(lark.replyCard).toHaveBeenCalledWith("m1", expect.any(Object));
+    expect(JSON.stringify(initialCard)).toContain("img_logo");
+    expect(JSON.stringify(initialCard)).toContain("- first item");
+    expect(JSON.stringify(finalCard)).toContain("工作过程");
+    expect(JSON.stringify(finalCard)).toContain("final markdown");
+    expect(lark.replyMarkdown).not.toHaveBeenCalled();
+    expect(lark.addCompletedReaction).not.toHaveBeenCalled();
+  });
+
+  it("records card button actions as control history and dispatches /next", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_1", text: "working" });
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue queued"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(1));
+
+    manager.submitCardAction({
+      eventId: "event_card_next",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m1_1",
+      openChatId: "oc_ignored",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "next",
+        stateKey: "p2p:ou_guest",
+        runId: 1
+      },
+      raw: { event_id: "event_card_next" }
+    });
+
+    await waitForExpect(() =>
+      expect(codex.interruptTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ role: "guest", threadId: "thread_1", turnId: "turn_1" })
+      )
+    );
+    const cardActionInput = vi
+      .mocked(repository.insertLarkMessage)
+      .mock.calls.map(([input]) => input)
+      .find((input) => input.routeKind === "card_action");
+    expect(cardActionInput).toMatchObject({
+      eventId: "event_card_next",
+      larkUserId: "ou_guest",
+      larkGroupId: "oc_ignored",
+      conversationKey: "p2p:ou_guest",
+      codexThreadId: "thread_1",
+      codexTurnId: "turn_1",
+      routeKind: "card_action",
+      status: "completed",
+      text: "/next"
+    });
+    expect(cardActionInput).not.toHaveProperty("larkMessageId");
+    expect(lark.replyText).not.toHaveBeenCalledWith(expect.any(String), expect.stringContaining("已打断当前任务"));
+
+    turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
   it("uploads SEND_TO_LARK image directives from completed agent messages and embeds them in the Lark post", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-image-"));
     const workspaceRoot = path.join(tempRoot, "workspaces");
@@ -1639,16 +1738,18 @@ function createManager(options: {
   botOpenId?: string;
   workspaceRoot?: string;
   logger?: ConstructorParameters<typeof ConversationManager>[0]["logger"];
+  config?: TwinnyConfig;
 } = {}): ConversationManager {
   const workspaceRoot = options.workspaceRoot ?? "/tmp/twinny/workspaces";
+  const managerConfig = options.config ?? config;
   return new ConversationManager({
-    config,
+    config: managerConfig,
     repository: options.repository ?? createRepository().repository,
     workspaces: {
       ensureWorkspace: (key) => path.join(workspaceRoot, key)
     },
     roles: {
-      codexHomeFor: (role) => config.roles[role].codexHome
+      codexHomeFor: (role) => managerConfig.roles[role].codexHome
     },
     codex: options.codex ?? createCodex(),
     lark: options.lark ?? createLarkResponder(),
@@ -1660,6 +1761,17 @@ function createManager(options: {
     logger: options.logger,
     nameLookupFailureTtlMs: 60_000
   });
+}
+
+function cardModeConfig(overrides: Partial<TwinnyConfig["lark"]> = {}): TwinnyConfig {
+  return {
+    ...config,
+    lark: {
+      ...config.lark,
+      agentMessageMode: "card",
+      ...overrides
+    }
+  };
 }
 
 function createLarkUserDirectory(): LarkUserDirectory {
@@ -1743,7 +1855,10 @@ function createLarkResponder(): LarkResponder {
     replyMarkdown: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     replyPost: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     replyFile: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
-    sendTextToOpenId: vi.fn(async () => undefined)
+    sendTextToOpenId: vi.fn(async () => undefined),
+    replyCard: vi.fn(async (messageId) => ({ messageId: `card_${messageId}_${++markdownReplyCount}` })),
+    patchCard: vi.fn(async (messageId) => ({ messageId })),
+    recallMessage: vi.fn(async () => undefined)
   };
 }
 
@@ -1758,11 +1873,15 @@ function createRepository(initial?: ConversationRecord, options: {
   let row = initial;
   const larkMessageIds = new Set(options.larkMessageIds ?? []);
   const larkMessages = new Map<string, LarkMessageRecord>();
+  const larkMessagesByEventId = new Map<string, LarkMessageRecord>();
   const codexThreads = new Map<string, CodexThreadRecord>();
   let nextCodexThreadId = 1;
   for (const record of options.larkMessages ?? []) {
-    larkMessageIds.add(record.larkMessageId);
-    larkMessages.set(record.larkMessageId, record);
+    if (record.larkMessageId) {
+      larkMessageIds.add(record.larkMessageId);
+      larkMessages.set(record.larkMessageId, record);
+    }
+    larkMessagesByEventId.set(record.eventId, record);
   }
   for (const thread of options.codexThreads ?? []) {
     codexThreads.set(thread.codexThreadId, thread);
@@ -1845,6 +1964,7 @@ function createRepository(initial?: ConversationRecord, options: {
       getLarkMessageById: vi.fn((larkMessageId) =>
         larkMessages.get(larkMessageId) ?? (larkMessageIds.has(larkMessageId) ? { larkMessageId } : undefined)
       ),
+      getLarkMessageByEventId: vi.fn((eventId) => larkMessagesByEventId.get(eventId)),
       listUnfinishedLarkMessages: vi.fn(() => [...larkMessages.values()].filter((message) =>
         message.status === "processing" || message.status === "queued"
       )),
@@ -1898,8 +2018,11 @@ function createRepository(initial?: ConversationRecord, options: {
           larkCreateTime: input.larkCreateTime,
           rawEventJson: input.rawEventJson
         });
-        larkMessageIds.add(input.larkMessageId);
-        larkMessages.set(input.larkMessageId, record);
+        if (input.larkMessageId) {
+          larkMessageIds.add(input.larkMessageId);
+          larkMessages.set(input.larkMessageId, record);
+        }
+        larkMessagesByEventId.set(input.eventId, record);
         return record;
       }),
       markLarkMessageQueued: vi.fn(),
@@ -1965,11 +2088,12 @@ function groupConversationRecord(overrides: Partial<ConversationRecord> = {}): C
 }
 
 function larkMessageRecord(overrides: Partial<LarkMessageRecord> = {}): LarkMessageRecord {
-  const larkMessageId = overrides.larkMessageId ?? "m1";
-  return {
+  const hasExplicitLarkMessageId = Object.prototype.hasOwnProperty.call(overrides, "larkMessageId");
+  const larkMessageId = hasExplicitLarkMessageId ? overrides.larkMessageId : "m1";
+  const rawMessageId = larkMessageId ?? "m1";
+  const record: LarkMessageRecord = {
     id: 1,
-    larkMessageId,
-    eventId: `e_${larkMessageId}`,
+    eventId: larkMessageId ? `e_${larkMessageId}` : "e_card_action",
     larkUserId: "ou_guest",
     conversationKey: "p2p:ou_guest",
     routeKind: "message",
@@ -1978,9 +2102,13 @@ function larkMessageRecord(overrides: Partial<LarkMessageRecord> = {}): LarkMess
     larkCreateTime: 1234,
     receivedAt: 100,
     updatedAt: 100,
-    rawEventJson: JSON.stringify(rawReceiveEvent(larkMessageId, "hello")),
+    rawEventJson: JSON.stringify(rawReceiveEvent(rawMessageId, "hello")),
     ...overrides
   };
+  if (larkMessageId) {
+    record.larkMessageId = larkMessageId;
+  }
+  return record;
 }
 
 function message(messageId: string, text: string, overrides: Partial<IncomingLarkMessage> = {}): IncomingLarkMessage {

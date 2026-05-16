@@ -8,9 +8,11 @@ import {
 } from "./filters.js";
 import {
   LARK_BOT_MENU_EVENT,
+  LARK_CARD_ACTION_TRIGGER_EVENT,
   LARK_MESSAGE_RECEIVE_EVENT,
   LARK_MESSAGE_RECALLED_EVENT,
   type IncomingLarkBotMenuAction,
+  type IncomingLarkCardAction,
   type IncomingLarkMessage,
   type IncomingLarkMessageRecall,
   type LarkLogger
@@ -40,6 +42,7 @@ export interface LarkEventConsumerOptions {
   onMessage: (message: IncomingLarkMessage) => Promise<void> | void;
   onMessageRecall?: (recall: IncomingLarkMessageRecall) => Promise<void> | void;
   onBotMenu?: (action: IncomingLarkBotMenuAction) => Promise<void> | void;
+  onCardAction?: (action: IncomingLarkCardAction) => Promise<void> | void;
   onIgnored?: (reason: string, raw: unknown) => void;
   wsClientFactory?: (options: LarkEventConsumerWsFactoryOptions) => WsClientLike;
   eventDispatcherFactory?: () => EventDispatcherLike;
@@ -133,6 +136,18 @@ export class LarkEventConsumer {
           return;
         }
         await this.options.onBotMenu(result.action);
+      },
+      [LARK_CARD_ACTION_TRIGGER_EVENT]: async (data: unknown) => {
+        if (!this.options.onCardAction) {
+          return;
+        }
+        const result = normalizeLarkCardActionWithReason(data);
+        if (result.kind === "ignored") {
+          this.options.onIgnored?.(result.reason, result.raw);
+          this.options.logger?.debug?.({ reason: result.reason }, "ignored Lark card action event");
+          return;
+        }
+        await this.options.onCardAction(result.action);
       }
     });
 
@@ -193,6 +208,68 @@ export class LarkEventConsumer {
     this.options.logger?.warn?.(metadata, "dropped stale Lark message event");
     return true;
   }
+}
+
+type NormalizeCardActionResult =
+  | { kind: "ok"; action: IncomingLarkCardAction }
+  | { kind: "ignored"; reason: string; raw: unknown };
+
+function normalizeLarkCardActionWithReason(data: unknown): NormalizeCardActionResult {
+  const root = asRecord(data);
+  if (!root) {
+    return { kind: "ignored", reason: "invalid_card_action_event", raw: data };
+  }
+  const header = asRecord(root.header);
+  const event = asRecord(root.event) ?? root;
+  const eventId = stringValue(root.event_id) ?? stringValue(header?.event_id);
+  const operator = asRecord(event.operator);
+  const operatorOpenId =
+    stringValue(operator?.open_id) ??
+    stringValue(asRecord(operator?.operator_id)?.open_id) ??
+    stringValue(asRecord(operator?.user_id)?.open_id);
+  const action = asRecord(event.action);
+  const actionValue = asRecord(action?.value);
+  const openMessageId =
+    stringValue(event.open_message_id) ??
+    stringValue(event.message_id) ??
+    stringValue(asRecord(event.context)?.open_message_id) ??
+    stringValue(asRecord(event.context)?.message_id);
+  const openChatId =
+    stringValue(event.open_chat_id) ??
+    stringValue(event.chat_id) ??
+    stringValue(asRecord(event.context)?.open_chat_id) ??
+    stringValue(asRecord(event.context)?.chat_id);
+
+  if (!eventId) {
+    return { kind: "ignored", reason: "missing_card_action_event_id", raw: data };
+  }
+  if (!operatorOpenId) {
+    return { kind: "ignored", reason: "missing_card_action_operator", raw: data };
+  }
+  if (!actionValue) {
+    return { kind: "ignored", reason: "missing_card_action_value", raw: data };
+  }
+
+  return {
+    kind: "ok",
+    action: {
+      eventId,
+      operatorOpenId,
+      openMessageId,
+      openChatId,
+      actionTag: stringValue(action?.tag),
+      actionValue,
+      raw: data
+    }
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
 function createDefaultEventDispatcher(): EventDispatcherLike {

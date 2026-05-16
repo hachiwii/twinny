@@ -63,7 +63,7 @@ interface CodexThreadRow {
 
 interface LarkMessageRow {
   id: number;
-  lark_message_id: string;
+  lark_message_id: string | null;
   event_id: string;
   lark_user_id: string;
   lark_group_id: string | null;
@@ -94,7 +94,7 @@ export interface UpsertCodexThreadInput {
 }
 
 export interface InsertLarkMessageInput {
-  larkMessageId: string;
+  larkMessageId?: string;
   eventId: string;
   larkUserId: string;
   larkGroupId?: string;
@@ -168,6 +168,8 @@ export class ConversationRepository {
   private readonly updateCodexThreadUsageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly insertLarkMessageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly selectLarkMessageById: Database.Statement<[string], LarkMessageRow>;
+  private readonly selectLarkMessageByEventId: Database.Statement<[string], LarkMessageRow>;
+  private readonly selectCardActionByEventId: Database.Statement<[string], LarkMessageRow>;
   private readonly selectUnfinishedLarkMessages: Database.Statement<[], LarkMessageRow>;
   private readonly updateLarkMessageProcessingStatement: Database.Statement<[
     string | null,
@@ -379,6 +381,19 @@ export class ConversationRepository {
     `);
     this.selectLarkMessageById = this.db.prepare(`
       SELECT * FROM lark_messages WHERE lark_message_id = ?
+    `);
+    this.selectLarkMessageByEventId = this.db.prepare(`
+      SELECT * FROM lark_messages
+      WHERE event_id = ?
+      ORDER BY id ASC
+      LIMIT 1
+    `);
+    this.selectCardActionByEventId = this.db.prepare(`
+      SELECT * FROM lark_messages
+      WHERE route_kind = 'card_action'
+        AND event_id = ?
+      ORDER BY id ASC
+      LIMIT 1
     `);
     this.selectUnfinishedLarkMessages = this.db.prepare(`
       SELECT * FROM lark_messages
@@ -660,7 +675,7 @@ export class ConversationRepository {
     validateLarkMessageInput(input);
     const now = this.now();
     this.insertLarkMessageStatement.run({
-      larkMessageId: input.larkMessageId,
+      larkMessageId: input.larkMessageId ?? null,
       eventId: input.eventId,
       larkUserId: input.larkUserId,
       larkGroupId: input.larkGroupId ?? null,
@@ -676,12 +691,19 @@ export class ConversationRepository {
       updatedAt: now,
       rawEventJson: input.rawEventJson ?? null
     });
-    return this.requireLarkMessageById(input.larkMessageId);
+    return input.larkMessageId
+      ? this.requireLarkMessageById(input.larkMessageId)
+      : this.requireCardActionByEventId(input.eventId);
   }
 
   getLarkMessageById(larkMessageId: string): LarkMessageRecord | undefined {
     assertNonEmpty(larkMessageId, "larkMessageId");
     return mapLarkMessageRow(this.selectLarkMessageById.get(larkMessageId));
+  }
+
+  getLarkMessageByEventId(eventId: string): LarkMessageRecord | undefined {
+    assertNonEmpty(eventId, "eventId");
+    return mapLarkMessageRow(this.selectLarkMessageByEventId.get(eventId));
   }
 
   listUnfinishedLarkMessages(): LarkMessageRecord[] {
@@ -812,6 +834,14 @@ export class ConversationRepository {
     return record;
   }
 
+  private requireCardActionByEventId(eventId: string): LarkMessageRecord {
+    const record = mapLarkMessageRow(this.selectCardActionByEventId.get(eventId));
+    if (!record) {
+      throw new TwinnyError(`Lark card action event ${eventId} was not found`, "LARK_CARD_ACTION_NOT_FOUND");
+    }
+    return record;
+  }
+
   private markLarkMessagesTerminal(
     larkMessageIds: string[],
     statement: Database.Statement<[number, number, string]>
@@ -891,7 +921,7 @@ function mapLarkMessageRow(row: LarkMessageRow | undefined): LarkMessageRecord |
 function mapRequiredLarkMessageRow(row: LarkMessageRow): LarkMessageRecord {
   return {
     id: row.id,
-    larkMessageId: row.lark_message_id,
+    larkMessageId: row.lark_message_id ?? undefined,
     eventId: row.event_id,
     larkUserId: row.lark_user_id,
     larkGroupId: row.lark_group_id ?? undefined,
@@ -945,7 +975,16 @@ function validateReplaceCodexThreadForLarkThread(input: ReplaceCodexThreadForLar
 }
 
 function validateLarkMessageInput(input: InsertLarkMessageInput): void {
-  assertNonEmpty(input.larkMessageId, "larkMessageId");
+  if (input.routeKind === "card_action") {
+    if (input.larkMessageId !== undefined) {
+      assertNonEmpty(input.larkMessageId, "larkMessageId");
+    }
+  } else {
+    if (input.larkMessageId === undefined) {
+      throw new TwinnyError("larkMessageId is required", "CONVERSATION_FIELD_EMPTY");
+    }
+    assertNonEmpty(input.larkMessageId, "larkMessageId");
+  }
   assertNonEmpty(input.eventId, "eventId");
   assertNonEmpty(input.larkUserId, "larkUserId");
   assertValidRouteKind(input.routeKind);
@@ -1002,7 +1041,8 @@ function assertValidRouteKind(routeKind: LarkMessageRouteKind): void {
     routeKind !== "message" &&
     routeKind !== "steered_message" &&
     routeKind !== "queued_message" &&
-    routeKind !== "control_message"
+    routeKind !== "control_message" &&
+    routeKind !== "card_action"
   ) {
     throw new TwinnyError(`Unsupported Lark message route kind: ${routeKind}`, "LARK_MESSAGE_ROUTE_KIND_INVALID");
   }

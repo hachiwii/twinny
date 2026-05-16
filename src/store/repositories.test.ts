@@ -312,6 +312,60 @@ describe("ConversationRepository", () => {
     });
   });
 
+  it("records card actions without Lark message ids and dedupes by event id", () => {
+    const repo = createConversationRepository(db, { now: () => now });
+
+    const action = repo.insertLarkMessage({
+      eventId: "event_card_1",
+      larkUserId: "ou_operator",
+      larkGroupId: "oc_group",
+      larkThreadId: "om_thread",
+      conversationKey: "group:oc_group",
+      codexThreadId: "thread_1",
+      codexTurnId: "turn_1",
+      routeKind: "card_action",
+      status: "completed",
+      text: "/stop",
+      rawEventJson: "{}"
+    });
+    const duplicate = repo.insertLarkMessage({
+      eventId: "event_card_1",
+      larkUserId: "ou_operator",
+      conversationKey: "group:oc_group",
+      routeKind: "card_action",
+      status: "completed",
+      text: "/next",
+      rawEventJson: "{}"
+    });
+
+    expect(action).toMatchObject({
+      larkMessageId: undefined,
+      eventId: "event_card_1",
+      larkUserId: "ou_operator",
+      larkGroupId: "oc_group",
+      larkThreadId: "om_thread",
+      conversationKey: "group:oc_group",
+      codexThreadId: "thread_1",
+      codexTurnId: "turn_1",
+      routeKind: "card_action",
+      status: "completed",
+      text: "/stop",
+      receivedAt: 1000,
+      updatedAt: 1000
+    });
+    expect(duplicate).toEqual(action);
+    expect(repo.getLarkMessageByEventId("event_card_1")).toEqual(action);
+    expect(() =>
+      repo.insertLarkMessage({
+        eventId: "event_message_1",
+        larkUserId: "ou_operator",
+        routeKind: "message",
+        status: "processing",
+        text: "missing message id"
+      })
+    ).toThrow(/larkMessageId is required/);
+  });
+
   it("finds and replaces Codex threads by group conversation and Lark thread id", () => {
     const repo = createConversationRepository(db, { now: () => now });
 

@@ -7,11 +7,14 @@ import {
   createTwinnyConfig,
   loadTwinnyConfig,
   MemorySecretStore,
+  parseTwinnyConfig,
   readConfigStatus,
   resolveSecretRef,
   resolveTwinnyHome,
   SECRET_ACCOUNTS,
-  SECRET_REFS
+  SECRET_REFS,
+  serializeTwinnyConfig,
+  writeLarkIconImageKey
 } from "./index.js";
 
 const tempDirs: string[] = [];
@@ -50,9 +53,51 @@ describe("Twinny config loading and bootstrap", () => {
     expect(loaded.lark.workingReaction).toBe("JubilantRabbit");
     expect(loaded.lark.completedReaction).toBe("CheckMark");
     expect(loaded.lark.maxMessageAgeSeconds).toBe(30);
+    expect(loaded.lark.agentMessageMode).toBe("card");
     expect(loaded.owner.openId).toBe("ou_owner");
     expect(loaded.roles.owner.codexHome).toBe(path.join(home, "roles", "owner", "codex"));
     expect(loaded.roles.guest.codexHome).toBe(path.join(home, "roles", "guest", "codex"));
+  });
+
+  it("parses and serializes agent message mode and icon image key", () => {
+    const config = parseTwinnyConfig(
+      [
+        "[lark]",
+        'app_id = "cli_test"',
+        'agent_message_mode = "plain"',
+        'icon_image_key = "img_logo"',
+        "",
+        "[owner]",
+        'open_id = "ou_owner"',
+        'display_name = "Owner"'
+      ].join("\n"),
+      { home: "/tmp/twinny" }
+    );
+
+    expect(config.lark.agentMessageMode).toBe("plain");
+    expect(config.lark.iconImageKey).toBe("img_logo");
+    expect(serializeTwinnyConfig(config)).toContain('agent_message_mode = "plain"');
+    expect(serializeTwinnyConfig(config)).toContain('icon_image_key = "img_logo"');
+  });
+
+  it("writes icon_image_key back into the lark section", async () => {
+    const home = await tempHome();
+    const config = createTwinnyConfig({
+      home,
+      lark: { appId: "cli_test" },
+      owner: {
+        openId: "ou_owner",
+        displayName: "Owner"
+      }
+    });
+
+    await bootstrapTwinnyHome(config, { ownerCodexTarget: path.join(home, ".codex") });
+    await writeLarkIconImageKey(config, "img_uploaded");
+    const raw = await fs.readFile(path.join(home, "config.toml"), "utf8");
+    const loaded = await loadTwinnyConfig({ home, env: {} });
+
+    expect(raw).toContain('icon_image_key = "img_uploaded"');
+    expect(loaded.lark.iconImageKey).toBe("img_uploaded");
   });
 
   it("creates the required role files and owner codex symlink", async () => {
@@ -120,6 +165,7 @@ describe("Twinny config loading and bootstrap", () => {
     expect(status.config?.lark.workingReaction).toBe("Typing");
     expect(status.config?.lark.completedReaction).toBe("DONE");
     expect(status.config?.lark.maxMessageAgeSeconds).toBe(60);
+    expect(status.config?.lark.agentMessageMode).toBe("card");
     expect(status.issues).toContain("owner.open_id is required");
   });
 });

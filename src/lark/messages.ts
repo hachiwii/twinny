@@ -46,6 +46,8 @@ export type LarkPostNode =
 
 export type LarkPostParagraph = LarkPostNode[];
 
+export type LarkInteractiveCard = Record<string, unknown>;
+
 export class LarkMessageSender {
   private readonly openApiClient: LarkOpenApiClient;
   private readonly logger?: LarkLogger;
@@ -113,6 +115,52 @@ export class LarkMessageSender {
       messageId: extractMessageId(raw),
       raw
     };
+  }
+
+  async replyInteractiveCard(
+    messageId: string,
+    card: LarkInteractiveCard,
+    options: TextMessageOptions = {}
+  ): Promise<LarkSendMessageResult> {
+    const raw = await this.openApiClient.request(`/im/v1/messages/${encodePathSegment(messageId)}/reply`, {
+      method: "POST",
+      signal: options.signal,
+      body: {
+        content: JSON.stringify(card),
+        msg_type: "interactive",
+        ...(options.uuid ? { uuid: options.uuid } : {})
+      }
+    });
+    return {
+      messageId: extractMessageId(raw),
+      raw
+    };
+  }
+
+  async patchInteractiveCard(
+    messageId: string,
+    card: LarkInteractiveCard,
+    options: TextMessageOptions = {}
+  ): Promise<LarkSendMessageResult> {
+    const raw = await this.openApiClient.request(`/im/v1/messages/${encodePathSegment(messageId)}`, {
+      method: "PATCH",
+      signal: options.signal,
+      body: {
+        content: JSON.stringify(card),
+        ...(options.uuid ? { uuid: options.uuid } : {})
+      }
+    });
+    return {
+      messageId: extractMessageId(raw),
+      raw
+    };
+  }
+
+  async deleteMessage(messageId: string, options: ReactionOptions = {}): Promise<void> {
+    await this.openApiClient.request(`/im/v1/messages/${encodePathSegment(messageId)}`, {
+      method: "DELETE",
+      signal: options.signal
+    });
   }
 
   async sendTextToOpenId(openId: string, text: string, options: TextMessageOptions = {}): Promise<LarkSendMessageResult> {

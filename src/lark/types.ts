@@ -1,5 +1,6 @@
 import type {
   IncomingLarkBotMenuAction,
+  IncomingLarkCardAction,
   IncomingLarkMessage,
   IncomingLarkMessageRecall,
   LarkReactionHandle
@@ -8,11 +9,15 @@ import type {
 export const LARK_BOT_MENU_EVENT = "application.bot.menu_v6" as const;
 export const LARK_MESSAGE_RECEIVE_EVENT = "im.message.receive_v1" as const;
 export const LARK_MESSAGE_RECALLED_EVENT = "im.message.recalled_v1" as const;
+export const LARK_CARD_ACTION_TRIGGER_EVENT = "card.action.trigger" as const;
 
 export const LARK_REQUIRED_SCOPES = [
   "im:message.p2p_msg:readonly",
   "im:message.group_msg",
   "im:message:readonly",
+  "im:message:send_as_bot",
+  "im:message:update",
+  "im:message:recall",
   "im:message.reactions:write_only",
   "im:resource"
 ] as const;
@@ -60,6 +65,7 @@ export interface LarkSendMessageResult {
 
 export type {
   IncomingLarkBotMenuAction,
+  IncomingLarkCardAction,
   IncomingLarkMessage,
   IncomingLarkMessageRecall,
   LarkReactionHandle

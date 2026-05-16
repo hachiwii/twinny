@@ -98,6 +98,79 @@ describe("LarkMessageSender", () => {
     });
   });
 
+  it("replies with an interactive card through OpenAPI", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { message_id: "om_card" } }
+    ]);
+    const sender = createSender(fetch);
+    const card = { schema: "2.0", body: { elements: [{ tag: "markdown", content: "working" }] } };
+
+    await expect(sender.replyInteractiveCard("om_source", card, { uuid: "uuid-1" })).resolves.toMatchObject({
+      messageId: "om_card"
+    });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/messages/om_source/reply", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        content: JSON.stringify(card),
+        msg_type: "interactive",
+        uuid: "uuid-1"
+      }),
+      signal: undefined
+    });
+  });
+
+  it("patches an interactive card message through OpenAPI", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { message_id: "om_card" } }
+    ]);
+    const sender = createSender(fetch);
+    const card = { schema: "2.0", header: { template: "green" } };
+
+    await expect(sender.patchInteractiveCard("om_card", card, { uuid: "uuid-1" })).resolves.toMatchObject({
+      messageId: "om_card"
+    });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/messages/om_card", {
+      method: "PATCH",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        content: JSON.stringify(card),
+        uuid: "uuid-1"
+      }),
+      signal: undefined
+    });
+  });
+
+  it("deletes messages through OpenAPI for card recall", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: {} }
+    ]);
+    const sender = createSender(fetch);
+
+    await expect(sender.deleteMessage("om_card")).resolves.toBeUndefined();
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/messages/om_card", {
+      method: "DELETE",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: undefined,
+      signal: undefined
+    });
+  });
+
   it("replies with a file message through OpenAPI", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
