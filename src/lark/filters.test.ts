@@ -65,14 +65,28 @@ describe("normalizeIncomingLarkMessage", () => {
     }
   );
 
-  it("ignores group, unsupported, and bot-self messages", () => {
+  it("normalizes unsupported p2p message types as raw messages for Codex", () => {
+    const event = receiveEvent({
+      message: {
+        message_type: "merge_forward",
+        content: JSON.stringify({ message_id_list: ["om_child"] })
+      }
+    });
+
+    const normalized = normalizeIncomingLarkMessage(event);
+
+    expect(normalized).toMatchObject({
+      messageId: "om_1",
+      messageType: "merge_forward",
+      rawForCodex: true,
+      text: JSON.stringify(event.message)
+    });
+  });
+
+  it("ignores group and bot-self messages", () => {
     expect(normalizeIncomingLarkMessageWithReason(receiveEvent({ message: { chat_type: "group" } }))).toMatchObject({
       kind: "ignored",
       reason: "non_p2p_message"
-    });
-    expect(normalizeIncomingLarkMessageWithReason(receiveEvent({ message: { message_type: "sticker" } }))).toMatchObject({
-      kind: "ignored",
-      reason: "unsupported_message_type"
     });
     expect(normalizeIncomingLarkMessageWithReason(receiveEvent({ sender: { sender_type: "app" } }))).toMatchObject({
       kind: "ignored",

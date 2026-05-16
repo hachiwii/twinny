@@ -93,7 +93,13 @@ export function normalizeIncomingLarkMessageWithReason(
   }
 
   const resources = extractMessageResources(messageType, message.content);
-  const text = messageType === "text" ? normalizeTextContent(message.content) : fallbackResourceText(resources);
+  const rawForCodex = messageType !== "text" && resources.length === 0;
+  const text =
+    messageType === "text"
+      ? normalizeTextContent(message.content)
+      : rawForCodex
+        ? JSON.stringify(message) ?? ""
+        : fallbackResourceText(resources);
   if (text === null || text.length === 0) {
     return resources.length === 0 ? ignored("unsupported_message_type", raw) : ignored("empty_text", raw);
   }
@@ -109,6 +115,7 @@ export function normalizeIncomingLarkMessageWithReason(
       senderOpenId,
       senderName,
       resources: resources.length > 0 ? resources : undefined,
+      rawForCodex: rawForCodex ? true : undefined,
       text,
       createTime: parseEpochMs(message.create_time ?? raw.create_time),
       raw

@@ -145,6 +145,7 @@ export interface IncomingLarkMessage {
   larkThreadId?: string;
   resources?: IncomingLarkMessageResource[];
   downloadedFiles?: DownloadedLarkFile[];
+  rawForCodex?: boolean;
   text: string;
   createTime?: number;
   raw: unknown;

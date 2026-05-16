@@ -238,7 +238,7 @@ export class ConversationManager {
     }
     this.dedupe.set(message.messageId, true);
 
-    if (message.messageType !== "text" && (message.resources?.length ?? 0) === 0) {
+    if (message.messageType !== "text" && (message.resources?.length ?? 0) === 0 && !message.rawForCodex) {
       this.log.debug({ messageId: message.messageId, messageType: message.messageType }, "unsupported lark message ignored");
       return;
     }
@@ -422,7 +422,7 @@ export class ConversationManager {
       );
     }
     message.downloadedFiles = downloadedFiles;
-    message.text = downloadedFiles.map(formatDownloadedFileForCodex).join("\n");
+    message.text = downloadedFiles.map((file) => formatDownloadedFileForCodex(file, message.messageType)).join("\n");
   }
 
   private async resolveSenderName(message: IncomingLarkMessage, role: RoleName): Promise<string | undefined> {
@@ -1219,6 +1219,9 @@ function formatPendingMessageForCodex(message: PendingMessage): string {
   if (senderName) {
     attributes.push(["sender_name", senderName]);
   }
+  if (message.original.rawForCodex) {
+    attributes.push(["raw", "true"]);
+  }
   const renderedAttributes = attributes
     .map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`)
     .join(" ");
@@ -1238,10 +1241,19 @@ function safeJsonStringify(value: unknown): string | undefined {
   }
 }
 
-function formatDownloadedFileForCodex(file: { path: string; resourceType: "image" | "file"; fileName?: string }): string {
-  const label = file.resourceType === "image" ? "图片" : "文件";
-  const name = file.fileName ? `，文件名：${file.fileName}` : "";
-  return `收到一个${label}${name}，路径在：${file.path}`;
+function formatDownloadedFileForCodex(
+  file: { path: string; resourceType: "image" | "file" },
+  messageType: string
+): string {
+  const tag = codexFileTagForMessage(file.resourceType, messageType);
+  return `<${tag}>${escapeXmlText(file.path)}</${tag}>`;
+}
+
+function codexFileTagForMessage(resourceType: "image" | "file", messageType: string): "image" | "video" | "file" {
+  if (resourceType === "image") {
+    return "image";
+  }
+  return messageType === "video" || messageType === "media" ? "video" : "file";
 }
 
 function safePathSegment(value: string): string {

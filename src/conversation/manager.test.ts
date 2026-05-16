@@ -434,7 +434,65 @@ describe("ConversationManager", () => {
       expect.objectContaining({
         input:
           '<lark_message timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
-          "收到一个文件，文件名：report.txt，路径在：/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/report.txt\n" +
+          "<file>/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/report.txt</file>\n" +
+          "</lark_message>"
+      })
+    );
+  });
+
+  it("formats downloaded Lark video resources as XML file elements for Codex", async () => {
+    const codex = createCodex();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(async ({ outputDir }) => ({
+        path: `${outputDir}/clip.mp4`,
+        resourceType: "file" as const,
+        fileKey: "file_1",
+        fileName: "clip.mp4",
+        contentType: "video/mp4"
+      }))
+    };
+    const manager = createManager({ codex, larkFiles });
+
+    manager.submitIncoming(
+      message("m1", "placeholder", {
+        messageType: "video",
+        resources: [{ resourceType: "file", fileKey: "file_1", fileName: "clip.mp4" }]
+      })
+    );
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input:
+          '<lark_message timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+          "<video>/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/clip.mp4</video>\n" +
+          "</lark_message>"
+      })
+    );
+  });
+
+  it("forwards unsupported Lark message types to Codex with raw metadata", async () => {
+    const codex = createCodex();
+    const manager = createManager({ codex });
+    const rawMessage = JSON.stringify({
+      message_id: "m1",
+      message_type: "merge_forward",
+      content: JSON.stringify({ message_id_list: ["om_child"] })
+    });
+
+    manager.submitIncoming(
+      message("m1", rawMessage, {
+        messageType: "merge_forward",
+        rawForCodex: true
+      })
+    );
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input:
+          '<lark_message timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User" raw="true">\n' +
+          `${rawMessage}\n` +
           "</lark_message>"
       })
     );
