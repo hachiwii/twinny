@@ -272,6 +272,7 @@ describe("ConversationManager", () => {
     expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/new -"));
     expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/stop -"));
     expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/next -"));
+    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/steer -"));
     expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/status -"));
     expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/queue <message> -"));
     expect(codex.startTurn).not.toHaveBeenCalled();
@@ -407,6 +408,81 @@ describe("ConversationManager", () => {
     expect(lark.replyText).toHaveBeenCalledWith(
       "m4",
       "已打断当前任务，将执行队列中的下一条消息。队列剩余 1 条。"
+    );
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("steers the next queued batch into the active turn on /steer", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue 1"));
+    manager.submitIncoming(message("m3", "2"));
+    manager.submitIncoming(message("m4", "/queue 3"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(3));
+
+    manager.submitIncoming(message("m5", "/steer"));
+    await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
+
+    expect(codex.steerTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "guest",
+        threadId: "thread_1",
+        turnId: "turn_1",
+        input: `${wrappedMessage("1", "m2")}\n${wrappedMessage("2", "m3")}`
+      })
+    );
+    expect(manager.queueDepth("p2p:ou_guest")).toBe(1);
+    expect(repository.markLarkMessagesSteered).toHaveBeenCalledWith(["m1"], {
+      conversationKey: "p2p:ou_guest",
+      codexThreadId: "thread_1",
+      codexTurnId: "turn_1"
+    });
+    expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m2", "m3"], {
+      conversationKey: "p2p:ou_guest",
+      codexThreadId: "thread_1",
+      codexTurnId: "turn_1"
+    });
+    expect(lark.replyText).toHaveBeenCalledWith("m5", "已将队列中的 2 条消息注入当前任务。队列剩余 1 条。");
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ input: wrappedMessage("3", "m4") })
+    );
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("keeps queued messages when /steer fails", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    vi.mocked(codex.steerTurn).mockRejectedValueOnce(new Error("steer failed"));
+    const manager = createManager({ codex, lark });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue queued one"));
+    manager.submitIncoming(message("m3", "/queue queued two"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p:ou_guest")).toBe(2));
+
+    manager.submitIncoming(message("m4", "/steer"));
+    await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
+
+    expect(manager.queueDepth("p2p:ou_guest")).toBe(2);
+    expect(lark.replyText).toHaveBeenCalledWith("m4", "注入当前任务失败，队列保持不变。");
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ input: wrappedMessage("queued one", "m2") })
     );
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));

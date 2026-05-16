@@ -237,6 +237,7 @@ type ParsedCommand =
   | { kind: "queue"; text: string }
   | { kind: "stop" }
   | { kind: "next" }
+  | { kind: "steer" }
   | { kind: "status" }
   | { kind: "new" }
   | { kind: "help" };
@@ -250,6 +251,7 @@ export class ConversationManager {
     "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
     "/stop - 停止当前任务并清空待处理消息",
     "/next - 打断当前任务，并执行队列中的下一条消息",
+    "/steer - 将队列中的下一批消息注入当前任务",
     "/queue <message> - 将消息加入下一轮队列，不注入当前任务"
   ].join("\n");
 
@@ -521,6 +523,10 @@ export class ConversationManager {
       await this.handleNextCommand(state, conversationKey, message);
       return;
     }
+    if (parsed.kind === "steer") {
+      await this.handleSteerCommand(state, message);
+      return;
+    }
     if (parsed.kind === "new") {
       await this.handleNewCommand(state, conversationKey, message);
       return;
@@ -742,6 +748,70 @@ export class ConversationManager {
         ? `当前没有正在运行的任务，开始执行队列中的下一条消息。队列剩余 ${Math.max(queued - nextBatchSize, 0)} 条。`
         : "当前没有正在运行的任务，队列为空。";
     await this.replyControlBestEffort(message.messageId, summary);
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async handleSteerCommand(state: ConversationState, message: IncomingLarkMessage): Promise<void> {
+    const nextBatchSize = countNextPendingBatch(state);
+    if (nextBatchSize === 0) {
+      await this.replyControlBestEffort(message.messageId, "队列为空。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const active = state.active;
+    if (!active || active.cancelRequested || !active.turnId || active.completedStatus) {
+      await this.replyControlBestEffort(message.messageId, "当前没有可注入的运行任务，队列保持不变。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const batch = state.pendingBatch.slice(0, nextBatchSize);
+    const input = batch.map(formatPendingMessageForCodex).join("\n");
+    try {
+      await this.options.codex.steerTurn({
+        role: active.role,
+        threadId: active.threadId,
+        turnId: active.turnId,
+        input,
+        cwd: active.workspace,
+        approvalPolicy: "never"
+      });
+    } catch (error) {
+      this.log.warn(
+        { error, threadId: active.threadId, turnId: active.turnId, messageId: message.messageId },
+        "failed to steer queued messages into active codex turn"
+      );
+      await this.replyControlBestEffort(message.messageId, "注入当前任务失败，队列保持不变。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    if (state.active !== active || active.cancelRequested || active.completedStatus) {
+      await this.replyControlBestEffort(message.messageId, "当前任务已结束，队列保持不变。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    state.pendingBatch.splice(0, nextBatchSize);
+    await this.markActiveProcessingMessagesSteered(active);
+    const messageIds = batch.map((queued) => queued.messageId);
+    for (const queued of batch) {
+      active.messageIds.add(queued.messageId);
+      active.processingMessageIds.add(queued.messageId);
+    }
+    await this.markMessagesProcessingBestEffort(messageIds, {
+      conversationKey: active.conversationKey,
+      codexThreadId: active.threadId,
+      codexTurnId: active.turnId
+    });
+    const anchor = batch[batch.length - 1]!;
+    active.replyMessageId = anchor.messageId;
+    await this.moveReactionBestEffort(active, anchor.messageId);
+    await this.replyControlBestEffort(
+      message.messageId,
+      `已将队列中的 ${nextBatchSize} 条消息注入当前任务。队列剩余 ${state.pendingBatch.length} 条。`
+    );
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
@@ -1705,6 +1775,9 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "next") {
     return { kind: "next" };
   }
+  if (command === "steer") {
+    return { kind: "steer" };
+  }
   if (command === "status") {
     return { kind: "status" };
   }
@@ -1733,6 +1806,7 @@ function classifyInitialRoute(
     parsed.kind === "status" ||
     parsed.kind === "stop" ||
     parsed.kind === "next" ||
+    parsed.kind === "steer" ||
     parsed.kind === "new" ||
     parsed.kind === "queue"
   ) {
