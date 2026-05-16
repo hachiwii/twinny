@@ -1839,7 +1839,7 @@ export class ConversationManager {
     active.cancelRequested = true;
     active.pendingSteers = [];
     await this.clearReactionBestEffort(active);
-    this.stopAgentCardTimer(active);
+    await this.pauseAgentCardForShutdownBestEffort(state, active);
     if (active.turnId) {
       await this.interruptActiveTurnBestEffort(active);
     }
@@ -2401,7 +2401,7 @@ export class ConversationManager {
   private async patchAgentCardBestEffort(
     state: ConversationState,
     active: ActiveTurn,
-    status: "working" | "interrupted" | "failed",
+    status: "working" | "interrupted" | "paused" | "failed",
     error?: string
   ): Promise<boolean> {
     const card = active.card;
@@ -2465,6 +2465,15 @@ export class ConversationManager {
       await this.patchAgentCardBestEffort(state, active, "interrupted");
     } catch (error) {
       this.log.warn({ error, messageId: active.replyMessageId }, "failed to update interrupted agent card");
+    }
+  }
+
+  private async pauseAgentCardForShutdownBestEffort(state: ConversationState, active: ActiveTurn): Promise<void> {
+    this.stopAgentCardTimer(active);
+    try {
+      await this.patchAgentCardBestEffort(state, active, "paused");
+    } catch (error) {
+      this.log.warn({ error, messageId: active.replyMessageId }, "failed to update paused agent card on shutdown");
     }
   }
 
@@ -2532,7 +2541,7 @@ export class ConversationManager {
   private renderAgentCard(
     state: ConversationState,
     active: ActiveTurn,
-    status: "working" | "finished" | "interrupted" | "failed",
+    status: "working" | "finished" | "interrupted" | "paused" | "failed",
     finalElements?: LarkCardElement[],
     error?: string,
     messages?: TwinnyAgentCardMessage[]

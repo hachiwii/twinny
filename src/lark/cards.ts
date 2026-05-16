@@ -1,7 +1,7 @@
 export type LarkCardJson = Record<string, unknown>;
 export type LarkCardElement = Record<string, unknown>;
 
-export type TwinnyAgentCardStatus = "working" | "finished" | "interrupted" | "failed";
+export type TwinnyAgentCardStatus = "working" | "finished" | "interrupted" | "paused" | "failed";
 
 export interface TwinnyAgentCardMessage {
   id: string;
@@ -31,6 +31,7 @@ const STATUS_HEADER: Record<TwinnyAgentCardStatus, { title: string; template: st
   working: { title: "工作中...", template: "purple" },
   finished: { title: "已完成", template: "green" },
   interrupted: { title: "已中断", template: "grey" },
+  paused: { title: "工作中断", template: "grey" },
   failed: { title: "发生错误", template: "red" }
 };
 
@@ -114,12 +115,12 @@ function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] 
     return [
       processPanel(options.messages),
       ...(options.finalElements?.length ? options.finalElements : [markdownElement("")]),
-      elapsedElement(options.elapsedMs)
+      elapsedElement(options.elapsedMs, options.status)
     ];
   }
 
   const elements = workingProcessElements(options.messages);
-  elements.push(elapsedElement(options.elapsedMs));
+  elements.push(elapsedElement(options.elapsedMs, options.status));
   if (options.status === "failed" && options.error) {
     elements.push(markdownElement(`- ${sanitizeProcessText(options.error)}`, { text_color: "red" }));
   }
@@ -244,18 +245,26 @@ function buttonElement(label: string, type: string, value: TwinnyAgentCardAction
   };
 }
 
-function elapsedElement(elapsedMs: number): LarkCardElement {
+function elapsedElement(elapsedMs: number, status: TwinnyAgentCardStatus): LarkCardElement {
   return {
     tag: "div",
     text: {
       tag: "plain_text",
-      content: `已工作 ${formatElapsed(elapsedMs)}`,
+      content: elapsedText(elapsedMs, status),
       text_size: "notation",
       text_align: "left",
       text_color: "grey"
     },
     margin: "4px 0px 4px 0px"
   };
+}
+
+function elapsedText(elapsedMs: number, status: TwinnyAgentCardStatus): string {
+  const elapsed = `已工作 ${formatElapsed(elapsedMs)}`;
+  if (status === "paused") {
+    return `${elapsed}，已暂停，服务重启后继续`;
+  }
+  return elapsed;
 }
 
 function renderProcessItems(messages: TwinnyAgentCardMessage[]): string[] {

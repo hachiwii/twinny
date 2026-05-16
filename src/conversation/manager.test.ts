@@ -1787,6 +1787,39 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesFailed).not.toHaveBeenCalled();
     expect(repository.markLarkMessagesCleared).not.toHaveBeenCalled();
   });
+
+  it("updates working agent cards as paused during shutdown without changing unfinished message state", async () => {
+    const { codex } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const { repository } = createRepository();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    await manager.shutdown();
+
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith(
+        "card_m1_1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "grey",
+            title: { tag: "plain_text", content: "工作中断" }
+          })
+        })
+      )
+    );
+    const pausedCard = vi.mocked(lark.patchCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const serialized = JSON.stringify(pausedCard);
+    expect(serialized).toContain("已暂停，服务重启后继续");
+    expect(serialized).not.toContain("\"tag\":\"button\"");
+    expect(serialized).not.toContain("停止");
+    expect(serialized).not.toContain("打断并处理队列中消息");
+    expect(repository.markLarkMessagesFailed).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesInterrupted).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCleared).not.toHaveBeenCalled();
+  });
 });
 
 function createManager(options: {
