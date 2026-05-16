@@ -40,13 +40,13 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m2", "second"));
     await waitForExpect(() =>
       expect(codex.steerTurn).toHaveBeenCalledWith(
-        expect.objectContaining({ threadId: "thread_1", turnId: "turn_1", input: wrappedMessage("second") })
+        expect.objectContaining({ threadId: "thread_1", turnId: "turn_1", input: wrappedMessage("second", "m2") })
       )
     );
 
     expect(codex.startTurn).toHaveBeenCalledTimes(1);
     expect(codex.steerTurn).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: "thread_1", turnId: "turn_1", input: wrappedMessage("second") })
+      expect.objectContaining({ threadId: "thread_1", turnId: "turn_1", input: wrappedMessage("second", "m2") })
     );
     expect(lark.addTypingReaction).toHaveBeenNthCalledWith(1, "m1");
     expect(lark.addTypingReaction).toHaveBeenNthCalledWith(2, "m2");
@@ -172,7 +172,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ input: `${wrappedMessage("queued")}\n${wrappedMessage("second queued")}` })
+      expect.objectContaining({ input: `${wrappedMessage("queued", "m2")}\n${wrappedMessage("second queued", "m3")}` })
     );
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
@@ -282,7 +282,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ threadId: "thread_new", input: wrappedMessage("after new") })
+      expect.objectContaining({ threadId: "thread_new", input: wrappedMessage("after new", "m4") })
     );
     expect(codex.resumeThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_old" }));
     expect(codex.resumeThread).not.toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_new" }));
@@ -323,7 +323,7 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         input:
-          '<lark_message timestamp="1700000000123" sender_ouid="ou_guest" sender_name="Guest &quot;User&quot;">\n' +
+          '<lark_message lark_message_id="m1" timestamp="1700000000123" sender_ouid="ou_guest" sender_name="Guest &quot;User&quot;">\n' +
           'hello <codex> & "friend"\n' +
           "</lark_message>"
       })
@@ -347,7 +347,7 @@ describe("ConversationManager", () => {
     expect(larkUsers.getUserNameByOpenId).toHaveBeenCalledWith("ou_guest");
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        input: '<lark_message timestamp="1234" sender_ouid="ou_guest" sender_name="Resolved User">\nhello\n</lark_message>'
+        input: '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Resolved User">\nhello\n</lark_message>'
       })
     );
   });
@@ -368,7 +368,7 @@ describe("ConversationManager", () => {
     expect(larkUsers.getUserNameByOpenId).not.toHaveBeenCalled();
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        input: '<lark_message timestamp="1234" sender_ouid="ou_guest" sender_name="Stored User">\nhello\n</lark_message>'
+        input: '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Stored User">\nhello\n</lark_message>'
       })
     );
   });
@@ -391,13 +391,13 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
-        input: '<lark_message timestamp="1234" sender_ouid="ou_guest">\nfirst\n</lark_message>'
+        input: '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest">\nfirst\n</lark_message>'
       })
     );
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        input: '<lark_message timestamp="1234" sender_ouid="ou_guest">\nsecond\n</lark_message>'
+        input: '<lark_message lark_message_id="m2" timestamp="1234" sender_ouid="ou_guest">\nsecond\n</lark_message>'
       })
     );
   });
@@ -433,7 +433,7 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         input:
-          '<lark_message timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+          '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
           "<file>/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/report.txt</file>\n" +
           "</lark_message>"
       })
@@ -464,7 +464,7 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         input:
-          '<lark_message timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+          '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
           "<video>/tmp/twinny/workspaces/p2p:ou_guest/.twinny/lark_files/m1/clip.mp4</video>\n" +
           "</lark_message>"
       })
@@ -491,7 +491,7 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         input:
-          '<lark_message timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User" raw="true">\n' +
+          '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User" raw="true">\n' +
           `${rawMessage}\n` +
           "</lark_message>"
       })
@@ -754,8 +754,8 @@ function message(messageId: string, text: string, overrides: Partial<IncomingLar
   };
 }
 
-function wrappedMessage(text: string): string {
-  return `<lark_message timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n${text}\n</lark_message>`;
+function wrappedMessage(text: string, messageId = "m1"): string {
+  return `<lark_message lark_message_id="${messageId}" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n${text}\n</lark_message>`;
 }
 
 function completed(

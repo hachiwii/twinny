@@ -1212,6 +1212,7 @@ function toPendingMessage(message: IncomingLarkMessage, text: string): PendingMe
 function formatPendingMessageForCodex(message: PendingMessage): string {
   const timestamp = message.original.createTime === undefined ? "" : String(message.original.createTime);
   const attributes: Array<[string, string]> = [
+    ["lark_message_id", message.messageId],
     ["timestamp", timestamp],
     ["sender_ouid", message.original.senderOpenId]
   ];
