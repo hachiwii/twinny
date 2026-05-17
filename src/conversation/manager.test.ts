@@ -545,6 +545,29 @@ describe("ConversationManager", () => {
     });
   });
 
+  it("keeps generated Lark uuid values within the OpenAPI limit for project groups", async () => {
+    const longOwnerOpenId = `ou_${"a".repeat(64)}`;
+    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_project" })) });
+    const larkChats: LarkChatDirectory = {
+      createChat: vi.fn(async () => ({ chatId: "oc_project", raw: {} }))
+    };
+    const manager = createManager({
+      codex,
+      larkChats,
+      config: {
+        ...config,
+        owner: { ...config.owner, openId: longOwnerOpenId }
+      }
+    });
+
+    manager.submitIncoming(message("m1", `/project ${"alpha".repeat(20)}`, { senderOpenId: longOwnerOpenId }));
+
+    await waitForExpect(() => expect(larkChats.createChat).toHaveBeenCalledTimes(1));
+    const uuid = vi.mocked(larkChats.createChat!).mock.calls[0]![0].uuid;
+    expect(uuid).toMatch(/^twinny-project-/);
+    expect(uuid?.length).toBeLessThanOrEqual(50);
+  });
+
   it("includes account usage windows in /status for the owner", async () => {
     const row = conversationRecord({
       conversationKey: "p2p_ou_owner",
@@ -827,6 +850,25 @@ describe("ConversationManager", () => {
       creatorOpenId: "ou_owner",
       cardMessageId: "card_oc_group_1"
     });
+  });
+
+  it("keeps generated Lark uuid values within the OpenAPI limit for new-session cards", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "all" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_new_session" })) });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitBotMenuAction(botMenuAction(`event_${"x".repeat(100)}`, "new_session", {
+      operatorOpenId: "ou_owner",
+      operatorName: "Owner",
+      chatId: "oc_group"
+    }));
+
+    await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
+    const options = vi.mocked(lark.sendCardToChatId).mock.calls[0]![2];
+    expect(options?.uuid).toMatch(/^twinny-new-session-/);
+    expect(options?.uuid?.length).toBeLessThanOrEqual(50);
   });
 
   it("interrupts active turns and binds a fresh thread on /new", async () => {

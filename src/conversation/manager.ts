@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { LRUCache } from "lru-cache";
@@ -1149,7 +1150,7 @@ export class ConversationManager {
       groupMessageType: "chat",
       toolkitIds: toolkitId ? [toolkitId] : undefined,
       setBotManager: true,
-      uuid: `twinny-project-${safePathSegment(this.options.config.owner.openId)}-${safePathSegment(projectName)}`
+      uuid: createLarkUuid("twinny-project", this.options.config.owner.openId, projectName)
     });
     const chatId = nonEmptyString(created.chatId);
     if (!chatId) {
@@ -1242,7 +1243,7 @@ export class ConversationManager {
     const result = await this.options.lark.sendCardToChatId(
       action.chatId,
       await this.renderThreadSummaryCard(initialRecord),
-      { uuid: `twinny-new-session-${safePathSegment(action.eventId)}` }
+      { uuid: createLarkUuid("twinny-new-session", action.eventId) }
     );
     const cardMessageId = nonEmptyString(result?.messageId);
     if (!cardMessageId) {
@@ -3923,6 +3924,16 @@ function larkFileTypeForFileName(fileName: string): string {
 
 function safePathSegment(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_") || "message";
+}
+
+function createLarkUuid(prefix: string, ...parts: string[]): string {
+  const raw = [prefix, ...parts].map(safePathSegment).join("-");
+  if (raw.length <= 50) {
+    return raw;
+  }
+  const digest = createHash("sha256").update(raw).digest("hex").slice(0, 12);
+  const headLength = 50 - digest.length - 1;
+  return `${raw.slice(0, headLength).replace(/[-._]+$/g, "")}-${digest}`;
 }
 
 function escapeXmlText(value: string): string {
