@@ -35,6 +35,7 @@ const config: TwinnyConfig = {
     identity: "bot",
     workingReaction: "Typing",
     completedReaction: "DONE",
+    queuedReaction: "OneSecond",
     maxMessageAgeSeconds: 60,
     agentMessageMode: "plain"
   },
@@ -201,6 +202,43 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_1", "turn_2"));
   });
 
+  it("adds queued reactions to waiting /queue and following ordinary messages, then clears them when consumed", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue queued"));
+    manager.submitIncoming(message("m3", "second queued"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(2));
+
+    await waitForExpect(() => expect(lark.addQueuedReaction).toHaveBeenCalledTimes(2));
+    expect(lark.addQueuedReaction).toHaveBeenNthCalledWith(1, "m2");
+    expect(lark.addQueuedReaction).toHaveBeenNthCalledWith(2, "m3");
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(lark.removeReaction).toHaveBeenCalledWith({ messageId: "m2", reactionId: "queued_m2" });
+    expect(lark.removeReaction).toHaveBeenCalledWith({ messageId: "m3", reactionId: "queued_m3" });
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("does not add a queued reaction when /queue can start immediately", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark });
+
+    manager.submitIncoming(message("m1", "/queue immediate"));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(lark.addQueuedReaction).not.toHaveBeenCalled();
+    expect(lark.addTypingReaction).toHaveBeenCalledWith("m1");
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+  });
+
   it("splits pending queue batches at each explicit /queue message", async () => {
     const { codex, turns } = createDeferredCodex();
     const manager = createManager({ codex });
@@ -242,7 +280,8 @@ describe("ConversationManager", () => {
   it("removes recalled queued messages from memory and marks them recalled", async () => {
     const { repository } = createRepository();
     const { codex, turns } = createDeferredCodex();
-    const manager = createManager({ repository, codex });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
 
     manager.submitIncoming(message("m1", "active"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
@@ -252,10 +291,12 @@ describe("ConversationManager", () => {
       larkMessageId: "m2",
       status: "queued"
     })));
+    await waitForExpect(() => expect(lark.addQueuedReaction).toHaveBeenCalledWith("m2"));
 
     manager.submitMessageRecall({ eventId: "recall_1", messageId: "m2", raw: {} });
 
     await waitForExpect(() => expect(repository.markLarkMessageRecalled).toHaveBeenCalledWith("m2"));
+    expect(lark.removeReaction).toHaveBeenCalledWith({ messageId: "m2", reactionId: "queued_m2" });
     expect(manager.queueDepth("p2p_ou_guest")).toBe(0);
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));
@@ -417,9 +458,11 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue queued"));
     await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+    await waitForExpect(() => expect(lark.addQueuedReaction).toHaveBeenCalledWith("m2"));
     manager.submitIncoming(message("m3", "/stop"));
 
     await waitForExpect(() => expect(repository.markLarkMessagesCleared).toHaveBeenCalledWith(["m2"]));
+    expect(lark.removeReaction).toHaveBeenCalledWith({ messageId: "m2", reactionId: "queued_m2" });
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         larkMessageId: "m2",
@@ -2311,6 +2354,7 @@ function createLarkResponder(): LarkResponder {
   return {
     addTypingReaction: vi.fn(async (messageId) => ({ messageId, reactionId: `r_${messageId}` })),
     addCompletedReaction: vi.fn(async (messageId) => ({ messageId, reactionId: `done_${messageId}` })),
+    addQueuedReaction: vi.fn(async (messageId) => ({ messageId, reactionId: `queued_${messageId}` })),
     removeReaction: vi.fn(async () => undefined),
     replyText: vi.fn(async () => undefined),
     replyMarkdown: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),

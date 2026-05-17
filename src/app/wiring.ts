@@ -110,7 +110,12 @@ export class TwinnyRuntime {
       repository: adaptConversationRepository(repository),
       workspaces: workspaceManager,
       codex: adaptCodexPool(this.codexPool),
-      lark: adaptLarkSender(larkSender, this.config.lark.workingReaction, this.config.lark.completedReaction),
+      lark: adaptLarkSender(
+        larkSender,
+        this.config.lark.workingReaction,
+        this.config.lark.completedReaction,
+        this.config.lark.queuedReaction
+      ),
       larkUsers,
       larkChats,
       larkFiles,
@@ -359,11 +364,17 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
   };
 }
 
-function adaptLarkSender(sender: LarkMessageSender, workingReaction: string, completedReaction: string) {
+function adaptLarkSender(
+  sender: LarkMessageSender,
+  workingReaction: string,
+  completedReaction: string,
+  queuedReaction: string
+) {
   return {
     addTypingReaction: (messageId: string): Promise<LarkReactionHandle | null> => sender.createReaction(messageId, workingReaction),
     addCompletedReaction: (messageId: string): Promise<LarkReactionHandle | null> =>
       sender.createReaction(messageId, completedReaction),
+    addQueuedReaction: (messageId: string): Promise<LarkReactionHandle | null> => sender.createReaction(messageId, queuedReaction),
     removeReaction: (handle: LarkReactionHandle): Promise<void> => sender.deleteReaction(handle),
     replyText: async (messageId: string, text: string): Promise<void> => {
       await sender.replyText(messageId, text);

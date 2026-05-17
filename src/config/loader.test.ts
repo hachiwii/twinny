@@ -36,6 +36,7 @@ describe("Twinny config loading and bootstrap", () => {
         appId: "cli_test",
         workingReaction: "JubilantRabbit",
         completedReaction: "CheckMark",
+        queuedReaction: "OneSecond",
         maxMessageAgeSeconds: 30
       },
       owner: {
@@ -52,6 +53,7 @@ describe("Twinny config loading and bootstrap", () => {
     expect(loaded.lark.appId).toBe("cli_test");
     expect(loaded.lark.workingReaction).toBe("JubilantRabbit");
     expect(loaded.lark.completedReaction).toBe("CheckMark");
+    expect(loaded.lark.queuedReaction).toBe("OneSecond");
     expect(loaded.lark.maxMessageAgeSeconds).toBe(30);
     expect(loaded.lark.agentMessageMode).toBe("card");
     expect(loaded.owner.openId).toBe("ou_owner");
@@ -64,6 +66,7 @@ describe("Twinny config loading and bootstrap", () => {
       [
         "[lark]",
         'app_id = "cli_test"',
+        'queued_reaction = "Alarm"',
         'agent_message_mode = "plain"',
         'icon_image_key = "img_logo"',
         "",
@@ -75,8 +78,10 @@ describe("Twinny config loading and bootstrap", () => {
     );
 
     expect(config.lark.agentMessageMode).toBe("plain");
+    expect(config.lark.queuedReaction).toBe("Alarm");
     expect(config.lark.iconImageKey).toBe("img_logo");
     expect(serializeTwinnyConfig(config)).toContain('agent_message_mode = "plain"');
+    expect(serializeTwinnyConfig(config)).toContain('queued_reaction = "Alarm"');
     expect(serializeTwinnyConfig(config)).toContain('icon_image_key = "img_logo"');
   });
 
@@ -164,6 +169,7 @@ describe("Twinny config loading and bootstrap", () => {
     expect(status.complete).toBe(false);
     expect(status.config?.lark.workingReaction).toBe("Typing");
     expect(status.config?.lark.completedReaction).toBe("DONE");
+    expect(status.config?.lark.queuedReaction).toBe("OneSecond");
     expect(status.config?.lark.maxMessageAgeSeconds).toBe(60);
     expect(status.config?.lark.agentMessageMode).toBe("card");
     expect(status.issues).toContain("owner.open_id is required");

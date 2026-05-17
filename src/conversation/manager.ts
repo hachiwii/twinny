@@ -253,6 +253,7 @@ export interface CodexBridge {
 export interface LarkResponder {
   addTypingReaction(messageId: string): Promise<LarkReactionHandle | null>;
   addCompletedReaction(messageId: string): Promise<LarkReactionHandle | null>;
+  addQueuedReaction(messageId: string): Promise<LarkReactionHandle | null>;
   removeReaction(handle: LarkReactionHandle): Promise<void>;
   replyText(messageId: string, text: string): Promise<void>;
   replyMarkdown(messageId: string, markdown: string): Promise<{ messageId?: string } | void>;
@@ -327,6 +328,7 @@ interface PendingMessage {
   text: string;
   original: IncomingLarkMessage;
   queueBoundary: boolean;
+  queuedReaction?: LarkReactionHandle | null;
 }
 
 interface ActiveTurn {
@@ -511,7 +513,7 @@ export class ConversationManager {
       state.submittedMessages.clear();
       state.processingMessage = undefined;
       state.queueNextMessage = false;
-      this.clearPendingMessages(state);
+      await this.clearPendingMessagesBestEffort(state);
       cancelPromises.push(this.suspendActiveTurnForShutdown(state));
     }
 
@@ -784,7 +786,10 @@ export class ConversationManager {
       return;
     }
 
-    removePendingMessageById(state.pendingBatch, recall.messageId);
+    const removed = removePendingMessageById(state.pendingBatch, recall.messageId);
+    if (removed) {
+      await this.clearQueuedReactionBestEffort(removed);
+    }
     await this.markMessageRecalledBestEffort(recall.messageId);
   }
 
@@ -1350,7 +1355,7 @@ export class ConversationManager {
       if (stateKey !== conversationKey && !stateKey.startsWith(`${conversationKey}_thread_`)) {
         continue;
       }
-      const clearedMessages = this.clearPendingMessages(state);
+      const clearedMessages = await this.clearPendingMessagesBestEffort(state);
       cleared += clearedMessages.length;
       await this.markPendingMessagesClearedBestEffort(clearedMessages);
       await this.cancelActiveTurn(state);
@@ -1371,6 +1376,9 @@ export class ConversationManager {
     const pending = toPendingMessage(message, text, { queueBoundary: queueByMenu });
     const active = state.active;
     if (queueByMenu) {
+      if (active || state.pendingBatch.length > 0) {
+        await this.addQueuedReactionBestEffort(pending);
+      }
       state.pendingBatch.push(pending);
       if (!active) {
         await this.startPendingBatch(state, context);
@@ -1378,6 +1386,7 @@ export class ConversationManager {
       return;
     }
     if (state.pendingBatch.length > 0 || active?.cancelRequested) {
+      await this.addQueuedReactionBestEffort(pending);
       state.pendingBatch.push(pending);
       if (!active) {
         await this.startPendingBatch(state, context);
@@ -1406,7 +1415,11 @@ export class ConversationManager {
     }
 
     state.queueNextMessage = false;
-    state.pendingBatch.push(toPendingMessage(message, text, { queueBoundary: true }));
+    const pending = toPendingMessage(message, text, { queueBoundary: true });
+    if (state.active || state.pendingBatch.length > 0) {
+      await this.addQueuedReactionBestEffort(pending);
+    }
+    state.pendingBatch.push(pending);
     if (!state.active) {
       await this.startPendingBatch(state, context);
     }
@@ -1496,7 +1509,7 @@ export class ConversationManager {
 
   private async stopConversationState(state: ConversationState): Promise<{ cleared: number; interrupted: boolean }> {
     state.queueNextMessage = false;
-    const clearedMessages = this.clearPendingMessages(state);
+    const clearedMessages = await this.clearPendingMessagesBestEffort(state);
     await this.markPendingMessagesClearedBestEffort(clearedMessages);
     return {
       cleared: clearedMessages.length,
@@ -1638,6 +1651,7 @@ export class ConversationManager {
     }
 
     state.pendingBatch.splice(0, nextBatchSize);
+    await this.clearQueuedReactionsBestEffort(batch);
     await this.markActiveProcessingMessagesSteered(active);
     const messageIds = batch.map((queued) => queued.messageId);
     for (const queued of batch) {
@@ -1682,7 +1696,7 @@ export class ConversationManager {
     message: IncomingLarkMessage
   ): Promise<string> {
     state.queueNextMessage = false;
-    await this.markPendingMessagesClearedBestEffort(this.clearPendingMessages(state));
+    await this.markPendingMessagesClearedBestEffort(await this.clearPendingMessagesBestEffort(state));
     await this.cancelActiveTurn(state);
     const existing = await this.options.repository.findByConversationKey(context.conversationKey);
     const role = existing?.role ?? roleForSender(this.options.config, message.senderOpenId);
@@ -1778,6 +1792,7 @@ export class ConversationManager {
         { error, threadId: active.threadId, turnId: active.turnId, messageId: message.messageId },
         "failed to steer active codex turn; queueing message for next turn"
       );
+      await this.addQueuedReactionBestEffort(message);
       state.pendingBatch.push(message);
       await this.markPendingMessagesQueuedBestEffort([message]);
       await this.replyControlBestEffort(message.messageId, "当前任务已不可打断注入，已加入下一轮队列。");
@@ -1788,6 +1803,7 @@ export class ConversationManager {
     while (!state.active && state.pendingBatch.length > 0) {
       const count = countNextPendingBatch(state);
       const messages = state.pendingBatch.splice(0, count);
+      await this.clearQueuedReactionsBestEffort(messages);
       const refreshedMessages = await this.refreshPendingMessagesBeforeStart(context, messages);
       if (refreshedMessages.length === 0) {
         continue;
@@ -2042,6 +2058,7 @@ export class ConversationManager {
           active.processingMessageIds.delete(message.messageId);
           active.steeredMessageIds.delete(message.messageId);
         }
+        await this.addQueuedReactionsBestEffort(remaining);
         state.pendingBatch.unshift(...remaining);
         await this.markPendingMessagesQueuedBestEffort(remaining);
         return;
@@ -2077,6 +2094,7 @@ export class ConversationManager {
           active.processingMessageIds.delete(queued.messageId);
           active.steeredMessageIds.delete(queued.messageId);
         }
+        await this.addQueuedReactionsBestEffort(remaining);
         state.pendingBatch.unshift(...remaining);
         await this.markPendingMessagesQueuedBestEffort(remaining);
         return;
@@ -2116,6 +2134,12 @@ export class ConversationManager {
 
   private clearPendingMessages(state: ConversationState): PendingMessage[] {
     const batchPending = state.pendingBatch.splice(0);
+    return batchPending;
+  }
+
+  private async clearPendingMessagesBestEffort(state: ConversationState): Promise<PendingMessage[]> {
+    const batchPending = this.clearPendingMessages(state);
+    await this.clearQueuedReactionsBestEffort(batchPending);
     return batchPending;
   }
 
@@ -2577,6 +2601,38 @@ export class ConversationManager {
     }
   }
 
+  private async addQueuedReactionBestEffort(message: PendingMessage): Promise<void> {
+    if (message.queuedReaction) {
+      return;
+    }
+    try {
+      message.queuedReaction = await this.options.lark.addQueuedReaction(message.messageId);
+    } catch (error) {
+      this.log.warn({ error, messageId: message.messageId }, "failed to add queued reaction");
+      message.queuedReaction = null;
+    }
+  }
+
+  private async addQueuedReactionsBestEffort(messages: PendingMessage[]): Promise<void> {
+    for (const message of messages) {
+      await this.addQueuedReactionBestEffort(message);
+    }
+  }
+
+  private async clearQueuedReactionBestEffort(message: PendingMessage): Promise<void> {
+    const reaction = message.queuedReaction;
+    delete message.queuedReaction;
+    if (reaction) {
+      await this.removeReactionBestEffort(reaction);
+    }
+  }
+
+  private async clearQueuedReactionsBestEffort(messages: PendingMessage[]): Promise<void> {
+    for (const message of messages) {
+      await this.clearQueuedReactionBestEffort(message);
+    }
+  }
+
   private async moveReactionBestEffort(active: ActiveTurn, messageId: string): Promise<void> {
     if (active.reaction?.messageId === messageId) {
       return;
@@ -2603,7 +2659,7 @@ export class ConversationManager {
     try {
       await this.options.lark.removeReaction(handle);
     } catch (error) {
-      this.log.warn({ error, messageId: handle.messageId, reactionId: handle.reactionId }, "failed to remove typing reaction");
+      this.log.warn({ error, messageId: handle.messageId, reactionId: handle.reactionId }, "failed to remove lark reaction");
     }
   }
 

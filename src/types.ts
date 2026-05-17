@@ -32,6 +32,7 @@ export type LarkMessageStatus =
 
 export const DEFAULT_LARK_WORKING_REACTION = "Typing";
 export const DEFAULT_LARK_COMPLETED_REACTION = "DONE";
+export const DEFAULT_LARK_QUEUED_REACTION = "OneSecond";
 export const DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS = 60;
 export const DEFAULT_AGENT_MESSAGE_MODE: AgentMessageMode = "card";
 
@@ -50,6 +51,7 @@ export interface LarkConfig {
   identity: "bot";
   workingReaction: string;
   completedReaction: string;
+  queuedReaction: string;
   maxMessageAgeSeconds: number;
   agentMessageMode: AgentMessageMode;
   iconImageKey?: string;
