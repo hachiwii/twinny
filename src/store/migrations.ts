@@ -15,7 +15,7 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 6;
+export const currentStoreSchemaVersion = 7;
 
 const initialMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const threadRolloutMigrationFile = fileURLToPath(new URL("../../migrations/0002_codex_thread_rollout.sql", import.meta.url));
@@ -23,6 +23,7 @@ const runtimeHistoryMigrationFile = fileURLToPath(new URL("../../migrations/0003
 const groupConversationsMigrationFile = fileURLToPath(new URL("../../migrations/0004_group_conversations.sql", import.meta.url));
 const cardActionsMigrationFile = fileURLToPath(new URL("../../migrations/0005_card_actions.sql", import.meta.url));
 const conversationChatModeMigrationFile = fileURLToPath(new URL("../../migrations/0006_conversation_chat_mode.sql", import.meta.url));
+const conversationKeyMigrationFile = fileURLToPath(new URL("../../migrations/0007_conversation_keys.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -55,6 +56,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 6,
       name: "0006_conversation_chat_mode",
       sql: fs.readFileSync(conversationChatModeMigrationFile, "utf8")
+    },
+    {
+      version: 7,
+      name: "0007_conversation_keys",
+      sql: fs.readFileSync(conversationKeyMigrationFile, "utf8")
     }
   ];
 }

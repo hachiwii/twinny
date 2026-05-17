@@ -222,8 +222,8 @@ describe("store migrations", () => {
           conversation_key, type, chat_id, name, role, codex_thread_id,
           workspace, role_codex_home, created_at, updated_at, codex_thread_has_rollout
         ) VALUES (
-          'p2p:ou_user', 'p2p', 'ou_user', '', 'guest', 'thread-1',
-          '/tmp/workspaces/p2p:ou_user', '/tmp/roles/guest/codex', 1, 1, 1
+          'p2p_ou_user', 'p2p', 'ou_user', '', 'guest', 'thread-1',
+          '/tmp/workspaces/p2p_ou_user', '/tmp/roles/guest/codex', 1, 1, 1
         );
         INSERT INTO users (
           lark_user_id, name, role, created_at, updated_at, last_seen_at
@@ -237,7 +237,7 @@ describe("store migrations", () => {
 
       expect(
         db.prepare<[], { name: string; response_mode: string; chat_mode: string | null }>(
-          "SELECT name, response_mode, chat_mode FROM conversations WHERE conversation_key = 'p2p:ou_user'"
+          "SELECT name, response_mode, chat_mode FROM conversations WHERE conversation_key = 'p2p_ou_user'"
         ).get()
       ).toEqual({ name: "Stored User", response_mode: "all", chat_mode: null });
       expect(

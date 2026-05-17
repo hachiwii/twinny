@@ -1,24 +1,32 @@
 import type { ConversationType, RoleName, TwinnyConfig } from "../types.js";
 import { TwinnyError } from "../errors.js";
 
-const unsafeConversationKey = /(^$|\/|(^|:)\.\.($|:))/;
+const unsafeConversationKey = /(^$|\/)/;
 
 export function conversationKeyForP2p(chatId: string): string {
   if (!chatId || chatId.includes("/") || chatId.includes("..")) {
     throw new TwinnyError(`Invalid p2p chat id: ${chatId}`, "INVALID_CHAT_ID");
   }
-  return `p2p:${chatId}`;
+  return `p2p_${chatId}`;
 }
 
 export function conversationKeyForGroup(chatId: string): string {
   if (!chatId || chatId.includes("/") || chatId.includes("..")) {
     throw new TwinnyError(`Invalid group chat id: ${chatId}`, "INVALID_CHAT_ID");
   }
-  return `group:${chatId}`;
+  return `group_${chatId}`;
 }
 
 export function validateConversationKey(conversationKey: string): void {
-  if (unsafeConversationKey.test(conversationKey) || conversationKey.split(":").some((part) => part.length === 0)) {
+  if (unsafeConversationKey.test(conversationKey) || conversationKey.includes("..")) {
+    throw new TwinnyError(`Invalid conversation key: ${conversationKey}`, "INVALID_CONVERSATION_KEY");
+  }
+  const isP2P = conversationKey.startsWith("p2p_");
+  const isGroup = conversationKey.startsWith("group_");
+  if (!isP2P && !isGroup) {
+    throw new TwinnyError(`Invalid conversation key: ${conversationKey}`, "INVALID_CONVERSATION_KEY");
+  }
+  if ((isP2P && conversationKey.length <= 4) || (isGroup && conversationKey.length <= 6)) {
     throw new TwinnyError(`Invalid conversation key: ${conversationKey}`, "INVALID_CONVERSATION_KEY");
   }
 }

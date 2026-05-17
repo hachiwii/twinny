@@ -30,8 +30,8 @@ describe("WorkspaceManager", () => {
 
     const workspace = manager.ensureWorkspace(conversationKey);
 
-    expect(conversationKey).toBe("p2p:ou_abc");
-    expect(workspace).toBe(path.join(tempDir, "workspaces", "p2p:ou_abc"));
+    expect(conversationKey).toBe("p2p_ou_abc");
+    expect(workspace).toBe(path.join(tempDir, "workspaces", "p2p_ou_abc"));
     expect(fs.statSync(workspace).isDirectory()).toBe(true);
     expect(fs.readdirSync(workspace)).toEqual([]);
     expect(getP2PChatIdFromConversationKey(conversationKey)).toBe("ou_abc");
@@ -43,8 +43,8 @@ describe("WorkspaceManager", () => {
 
     const workspace = manager.ensureWorkspace(conversationKey);
 
-    expect(conversationKey).toBe("group:oc_group");
-    expect(workspace).toBe(path.join(tempDir, "workspaces", "group:oc_group"));
+    expect(conversationKey).toBe("group_oc_group");
+    expect(workspace).toBe(path.join(tempDir, "workspaces", "group_oc_group"));
     expect(fs.statSync(workspace).isDirectory()).toBe(true);
     expect(getGroupChatIdFromConversationKey(conversationKey)).toBe("oc_group");
   });
@@ -58,12 +58,12 @@ describe("WorkspaceManager", () => {
     expect(() => createP2PConversationKey("ou..abc")).toThrow();
     expect(() => createGroupConversationKey("oc/abc")).toThrow();
 
-    expect(isValidConversationKey("p2p:ou_abc")).toBe(true);
-    expect(isValidConversationKey("group:oc_group")).toBe(true);
+    expect(isValidConversationKey("p2p_ou_abc")).toBe(true);
+    expect(isValidConversationKey("group_oc_group")).toBe(true);
     expect(isValidConversationKey("")).toBe(false);
-    expect(isValidConversationKey("p2p:")).toBe(false);
-    expect(isValidConversationKey("p2p:../secret")).toBe(false);
-    expect(isValidConversationKey("p2p:ou/secret")).toBe(false);
-    expect(() => manager.ensureWorkspace("p2p:../secret")).toThrow();
+    expect(isValidConversationKey("p2p_")).toBe(false);
+    expect(isValidConversationKey("p2p_../secret")).toBe(false);
+    expect(isValidConversationKey("p2p_ou/secret")).toBe(false);
+    expect(() => manager.ensureWorkspace("p2p_../secret")).toThrow();
   });
 });

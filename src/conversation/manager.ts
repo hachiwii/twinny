@@ -1047,7 +1047,7 @@ export class ConversationManager {
   private async cancelConversationStates(conversationKey: string): Promise<number> {
     let cleared = 0;
     for (const [stateKey, state] of this.states) {
-      if (stateKey !== conversationKey && !stateKey.startsWith(`${conversationKey}:thread:`)) {
+      if (stateKey !== conversationKey && !stateKey.startsWith(`${conversationKey}_thread_`)) {
         continue;
       }
       const clearedMessages = this.clearPendingMessages(state);
@@ -2970,7 +2970,7 @@ function createMessageContext(type: ConversationType, message: IncomingLarkMessa
   return {
     type,
     conversationKey,
-    stateKey: larkThreadId ? `${conversationKey}:thread:${safePathSegment(larkThreadId)}` : conversationKey,
+    stateKey: larkThreadId ? `${conversationKey}_thread_${safePathSegment(larkThreadId)}` : conversationKey,
     larkThreadId
   };
 }
@@ -3001,17 +3001,17 @@ function messageForBotMenuAction(action: IncomingLarkBotMenuAction): IncomingLar
 
 function contextForRecoveredRecord(record: LarkMessageRecord): MessageContext {
   const conversationKey = record.conversationKey ?? conversationKeyForP2p(record.larkUserId);
-  const type: ConversationType = conversationKey.startsWith("group:") ? "group" : "p2p";
+  const type: ConversationType = conversationKey.startsWith("group_") ? "group" : "p2p";
   return {
     type,
     conversationKey,
-    stateKey: record.larkThreadId ? `${conversationKey}:thread:${safePathSegment(record.larkThreadId)}` : conversationKey,
+    stateKey: record.larkThreadId ? `${conversationKey}_thread_${safePathSegment(record.larkThreadId)}` : conversationKey,
     larkThreadId: record.larkThreadId
   };
 }
 
 function conversationKeyFromStateKey(stateKey: string): string {
-  const threadMarker = ":thread:";
+  const threadMarker = "_thread_";
   const threadIndex = stateKey.indexOf(threadMarker);
   return threadIndex >= 0 ? stateKey.slice(0, threadIndex) : stateKey;
 }

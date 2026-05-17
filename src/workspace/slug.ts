@@ -1,7 +1,7 @@
 import { TwinnyError } from "../errors.js";
 
-export const p2pConversationKeyPrefix = "p2p:";
-export const groupConversationKeyPrefix = "group:";
+export const p2pConversationKeyPrefix = "p2p_";
+export const groupConversationKeyPrefix = "group_";
 
 export function createP2PConversationKey(chatId: string): string {
   assertSafePathSegment(chatId, "chatId");

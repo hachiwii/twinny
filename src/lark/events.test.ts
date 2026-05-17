@@ -142,7 +142,7 @@ describe("LarkEventConsumer", () => {
           value: {
             twinny: true,
             action: "stop",
-            stateKey: "p2p:ou_user",
+            stateKey: "p2p_ou_user",
             runId: 1
           }
         }
@@ -159,7 +159,7 @@ describe("LarkEventConsumer", () => {
       actionValue: {
         twinny: true,
         action: "stop",
-        stateKey: "p2p:ou_user",
+        stateKey: "p2p_ou_user",
         runId: 1
       },
       raw
