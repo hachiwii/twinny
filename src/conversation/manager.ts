@@ -302,6 +302,12 @@ type ShortcutAttachResult =
   | { status: "skipped"; reason: "missing_toolkit_id" | "missing_lark_chat_update" }
   | { status: "failed"; error: unknown };
 
+interface NewSessionTopicRequest {
+  chatId: string;
+  operatorOpenId: string;
+  eventId: string;
+}
+
 interface MessageContext {
   type: ConversationType;
   conversationKey: string;
@@ -377,6 +383,7 @@ type ParsedCommand =
   | { kind: "steer" }
   | { kind: "status" }
   | { kind: "new" }
+  | { kind: "new_topic" }
   | { kind: "project"; name: string }
   | { kind: "activate"; text: string }
   | { kind: "deactivate" }
@@ -833,6 +840,10 @@ export class ConversationManager {
       await this.handleNewCommand(state, context, message);
       return;
     }
+    if (preparedParsed.kind === "new_topic") {
+      await this.handleNewTopicCommand(context, message);
+      return;
+    }
     if (preparedParsed.kind === "deactivate") {
       await this.handleDeactivateCommand(context, message);
       return;
@@ -915,14 +926,15 @@ export class ConversationManager {
     const senderRole = roleForSender(this.options.config, message.senderOpenId);
     const hasBotMention = messageMentionsBot(message, this.options.botOpenId);
     const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+    const isOwnerOnlyGroupCommand = parsed.kind === "activate" || parsed.kind === "new_topic";
     if (!conversation || conversation.responseMode === "none") {
-      if (parsed.kind === "activate" && senderRole === "owner") {
+      if (isOwnerOnlyGroupCommand && senderRole === "owner") {
         return { kind: "allow", text, parsed, conversation };
       }
       return hasBotMention ? { kind: "unauthorized" } : { kind: "ignored" };
     }
 
-    if (conversation.responseMode === "at" && !hasBotMention) {
+    if (conversation.responseMode === "at" && !hasBotMention && !(parsed.kind === "new_topic" && senderRole === "owner")) {
       return { kind: "ignored" };
     }
     return { kind: "allow", text, parsed, conversation };
@@ -1238,9 +1250,42 @@ export class ConversationManager {
       await this.sendDirectControlBestEffort(action.operatorOpenId, "新会话快捷指令只能在群聊中使用。");
       return;
     }
+    await this.createNewSessionTopic(context, {
+      chatId: action.chatId,
+      operatorOpenId: action.operatorOpenId,
+      eventId: action.eventId
+    });
+  }
+
+  private async handleNewTopicCommand(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
+    if (!isGroupConversationType(context.type)) {
+      await this.replyControlBestEffort(message.messageId, "new_topic 只能在群里用。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (roleForSender(this.options.config, message.senderOpenId) !== "owner") {
+      await this.replyControlBestEffort(message.messageId, "只有 owner 可以创建新话题。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    const chatId = nonEmptyString(message.larkGroupId) ?? nonEmptyString(message.chatId);
+    if (!chatId) {
+      await this.replyControlBestEffort(message.messageId, "new_topic 只能在群里用。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    await this.createNewSessionTopic(context, {
+      chatId,
+      operatorOpenId: message.senderOpenId,
+      eventId: message.eventId
+    });
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async createNewSessionTopic(context: MessageContext, request: NewSessionTopicRequest): Promise<void> {
     const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
     if (!conversation || conversation.responseMode === "none") {
-      await this.sendDirectControlBestEffort(action.operatorOpenId, "请先由 owner 在群内执行 /activate。");
+      await this.sendDirectControlBestEffort(request.operatorOpenId, "请先由 owner 在群内执行 /activate。");
       return;
     }
 
@@ -1260,12 +1305,12 @@ export class ConversationManager {
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
       role,
-      creatorOpenId: action.operatorOpenId
+      creatorOpenId: request.operatorOpenId
     });
     const result = await this.options.lark.sendCardToChatId(
-      action.chatId,
+      request.chatId,
       await this.renderThreadSummaryCard(initialRecord),
-      { uuid: createLarkUuid("twinny-new-session", action.eventId) }
+      { uuid: createLarkUuid("twinny-new-session", request.eventId) }
     );
     const cardMessageId = nonEmptyString(result?.messageId);
     if (!cardMessageId) {
@@ -1276,7 +1321,7 @@ export class ConversationManager {
       codexThreadId: thread.threadId,
       role,
       larkThreadId: cardMessageId,
-      creatorOpenId: action.operatorOpenId,
+      creatorOpenId: request.operatorOpenId,
       cardMessageId
     });
   }
@@ -3223,6 +3268,9 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "new") {
     return { kind: "new" };
   }
+  if (command === "new_topic") {
+    return { kind: "new_topic" };
+  }
   if (command === "project") {
     return { kind: "project", name: rest };
   }
@@ -3384,6 +3432,7 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
   if (isGroupConversationType(context.type) && roleForSender(config, message.senderOpenId) === "owner") {
     lines.push(
       "/activate [all|at] [guest|owner] - 激活群聊、设置响应模式并刷新群名",
+      "/new_topic - 在当前群内创建一个新的会话话题",
       "/deactivate - 停用当前群聊"
     );
   }
@@ -3405,6 +3454,7 @@ function classifyInitialRoute(
     parsed.kind === "next" ||
     parsed.kind === "steer" ||
     parsed.kind === "new" ||
+    parsed.kind === "new_topic" ||
     parsed.kind === "project" ||
     parsed.kind === "activate" ||
     parsed.kind === "deactivate" ||

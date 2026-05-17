@@ -891,6 +891,79 @@ describe("ConversationManager", () => {
     expect(options?.uuid).toHaveLength(36);
   });
 
+  it("lets the owner create a new topic card with /new_topic in a group", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_new_topic" })) });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_new_topic", "/new_topic", {
+      senderOpenId: "ou_owner",
+      senderName: "Owner"
+    }));
+
+    await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
+    expect(codex.startThread).toHaveBeenCalledWith({
+      role: "owner",
+      cwd: "/tmp/twinny/workspaces/group_oc_group",
+      approvalPolicy: "never"
+    });
+    expect(lark.sendCardToChatId).toHaveBeenCalledWith(
+      "oc_group",
+      expect.objectContaining({
+        header: expect.objectContaining({
+          template: "blue",
+          title: { tag: "plain_text", content: "新会话" }
+        })
+      }),
+      { uuid: expect.stringMatching(UUID_PATTERN) }
+    );
+    expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread_new_topic",
+      role: "owner",
+      larkThreadId: "card_oc_group_1",
+      creatorOpenId: "ou_owner",
+      cardMessageId: "card_oc_group_1"
+    });
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_new_topic"]);
+  });
+
+  it("rejects /new_topic outside group conversations", async () => {
+    const row = conversationRecord({ role: "owner", chatId: "ou_owner", codexThreadId: "thread_owner" });
+    const { repository } = createRepository(row);
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m_new_topic", "/new_topic", { senderOpenId: "ou_owner" }));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith("m_new_topic", "new_topic 只能在群里用。")
+    );
+    expect(lark.sendCardToChatId).not.toHaveBeenCalled();
+    expect(codex.startThread).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m_new_topic"]);
+  });
+
+  it("requires owner for /new_topic in groups", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "all" });
+    const { repository } = createRepository(row);
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_new_topic", "/new_topic", { senderOpenId: "ou_guest" }));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith("g_new_topic", "只有 owner 可以创建新话题。")
+    );
+    expect(lark.sendCardToChatId).not.toHaveBeenCalled();
+    expect(codex.startThread).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_new_topic"]);
+  });
+
   it("interrupts active turns and binds a fresh thread on /new", async () => {
     const row = conversationRecord({ codexThreadId: "thread_old" });
     const { repository } = createRepository(row);
