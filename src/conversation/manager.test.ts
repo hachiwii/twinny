@@ -973,6 +973,97 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_new_topic"]);
   });
 
+  it("reuses the new topic card thread when topic messages use the card's thread id", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_new_topic" })),
+      resumeThread: vi.fn(async ({ threadId }) => ({ threadId })),
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onTokenUsage }) => {
+        await onTurnStarted?.("turn_1");
+        await onTokenUsage?.({
+          threadId,
+          turnId: "turn_1",
+          totalTokens: 42,
+          raw: {
+            threadId,
+            turnId: "turn_1",
+            usage: { total: { totalTokens: 42 } }
+          }
+        });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    const cardMessageId = "card_oc_group_1";
+    const cardThreadId = "topic_thread_1";
+    const larkMessages = createLarkMessageReader({
+      [cardMessageId]: {
+        message_id: cardMessageId,
+        thread_id: cardThreadId,
+        create_time: "1234",
+        chat_id: "oc_group",
+        chat_type: "topic_group",
+        msg_type: "interactive",
+        body: {
+          content: "{}"
+        }
+      }
+    });
+    const manager = createManager({ repository, codex, lark, larkMessages });
+
+    manager.submitIncoming(groupMessage("g_new_topic", "/new_topic", {
+      senderOpenId: "ou_owner",
+      senderName: "Owner"
+    }));
+    await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadCard).toHaveBeenCalledWith({
+        conversationKey: "group_oc_group",
+        codexThreadId: "thread_new_topic",
+        role: "owner",
+        larkThreadId: cardThreadId,
+        creatorOpenId: "ou_owner",
+        cardMessageId: "card_oc_group_1"
+      })
+    );
+    expect(larkMessages.getMessage).toHaveBeenCalledWith(cardMessageId);
+
+    manager.submitIncoming(groupMessage("g_topic_msg", "topic first", {
+      senderOpenId: "ou_owner",
+      chatType: "topic_group",
+      larkThreadId: cardThreadId
+    }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await waitForExpect(() =>
+      expect(codex.resumeThread).toHaveBeenCalledWith({
+        role: "owner",
+        threadId: "thread_new_topic",
+        cwd: "/tmp/twinny/workspaces/group_oc_group",
+        approvalPolicy: "never"
+      })
+    );
+    expect(codex.startThread).toHaveBeenCalledTimes(1);
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_new_topic",
+        input: wrappedMessage("topic first", "g_topic_msg")
+      })
+    );
+    expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith("group_oc_group", cardThreadId);
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith(
+        cardMessageId,
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+  });
+
   it("rejects /new_topic outside group conversations", async () => {
     const row = conversationRecord({ role: "owner", chatId: "ou_owner", codexThreadId: "thread_owner" });
     const { repository } = createRepository(row);

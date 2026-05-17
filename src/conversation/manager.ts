@@ -1324,14 +1324,28 @@ export class ConversationManager {
     if (!cardMessageId) {
       throw new TwinnyError("Lark new-session card response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
     }
+    const cardThreadId = await this.getLarkMessageThreadId(cardMessageId) ?? cardMessageId;
     await this.options.repository.updateCodexThreadCard({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
       role,
-      larkThreadId: cardMessageId,
+      larkThreadId: cardThreadId,
       creatorOpenId: request.operatorOpenId,
       cardMessageId
     });
+  }
+
+  private async getLarkMessageThreadId(messageId: string): Promise<string | undefined> {
+    if (!this.options.larkMessages) {
+      return undefined;
+    }
+    try {
+      const message = await this.options.larkMessages.getMessage(messageId);
+      return extractLarkMessageThreadId(message);
+    } catch (error) {
+      this.log.warn({ error, messageId }, "failed to fetch sent card message thread id");
+      return undefined;
+    }
   }
 
   private async handleDeactivateCommand(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
@@ -2481,6 +2495,7 @@ export class ConversationManager {
       params.context.conversationKey,
       larkThreadId
     );
+
     if (!existing) {
       const thread = await this.options.codex.startThread({
         role: params.role,
@@ -3925,6 +3940,31 @@ function extractLarkMessagePatch(raw: unknown): Record<string, unknown> | undefi
     patch.content = content;
   }
   return Object.keys(patch).length > 0 ? patch : undefined;
+}
+
+function extractLarkMessageThreadId(raw: unknown): string | undefined {
+  if (!isRecord(raw)) {
+    return undefined;
+  }
+
+  const event = isRecord(raw.event) ? raw.event : raw;
+  const message = isRecord(event.message) ? event.message : event;
+  const candidates = [message, event, raw];
+  for (const source of candidates) {
+    const threadId = source.thread_id;
+    if (typeof threadId === "string" && threadId.trim()) {
+      return threadId.trim();
+    }
+    const rootId = source.root_id;
+    if (typeof rootId === "string" && rootId.trim()) {
+      return rootId.trim();
+    }
+    const parentId = source.parent_id;
+    if (typeof parentId === "string" && parentId.trim()) {
+      return parentId.trim();
+    }
+  }
+  return undefined;
 }
 
 function lastDefined<T>(values: Array<T | undefined>): T | undefined {
