@@ -3927,13 +3927,9 @@ function safePathSegment(value: string): string {
 }
 
 function createLarkUuid(prefix: string, ...parts: string[]): string {
-  const raw = [prefix, ...parts].map(safePathSegment).join("-");
-  if (raw.length <= 50) {
-    return raw;
-  }
-  const digest = createHash("sha256").update(raw).digest("hex").slice(0, 12);
-  const headLength = 50 - digest.length - 1;
-  return `${raw.slice(0, headLength).replace(/[-._]+$/g, "")}-${digest}`;
+  const key = [prefix, ...parts].map(safePathSegment).join("-");
+  const hex = createHash("sha256").update(key).digest("hex").slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function escapeXmlText(value: string): string {

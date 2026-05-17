@@ -45,6 +45,8 @@ const config: TwinnyConfig = {
   }
 };
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 describe("ConversationManager", () => {
   it("steers ordinary messages into the active turn and moves the typing reaction", async () => {
     const { codex, turns } = createDeferredCodex();
@@ -530,7 +532,7 @@ describe("ConversationManager", () => {
       groupMessageType: "chat",
       toolkitIds: ["toolkit_new_session"],
       setBotManager: true,
-      uuid: "twinny-project-ou_owner-alpha"
+      uuid: expect.stringMatching(UUID_PATTERN)
     });
     expect(larkChats.updateChatInfo).toHaveBeenCalledWith("oc_project", { toolkitIds: ["toolkit_new_session"] });
     expect(repository.findByConversationKey("group_oc_project")).toMatchObject({
@@ -564,8 +566,8 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(larkChats.createChat).toHaveBeenCalledTimes(1));
     const uuid = vi.mocked(larkChats.createChat!).mock.calls[0]![0].uuid;
-    expect(uuid).toMatch(/^twinny-project-/);
-    expect(uuid?.length).toBeLessThanOrEqual(50);
+    expect(uuid).toMatch(UUID_PATTERN);
+    expect(uuid).toHaveLength(36);
   });
 
   it("includes account usage windows in /status for the owner", async () => {
@@ -838,7 +840,7 @@ describe("ConversationManager", () => {
           title: { tag: "plain_text", content: "新会话" }
         })
       }),
-      { uuid: "twinny-new-session-menu-new-session" }
+      { uuid: expect.stringMatching(UUID_PATTERN) }
     );
     const sentCard = vi.mocked(lark.sendCardToChatId).mock.calls[0]![1] as Record<string, unknown>;
     expect(JSON.stringify(sentCard)).toContain("thread_new_session");
@@ -867,8 +869,8 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
     const options = vi.mocked(lark.sendCardToChatId).mock.calls[0]![2];
-    expect(options?.uuid).toMatch(/^twinny-new-session-/);
-    expect(options?.uuid?.length).toBeLessThanOrEqual(50);
+    expect(options?.uuid).toMatch(UUID_PATTERN);
+    expect(options?.uuid).toHaveLength(36);
   });
 
   it("interrupts active turns and binds a fresh thread on /new", async () => {
