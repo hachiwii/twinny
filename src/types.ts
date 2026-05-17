@@ -4,6 +4,8 @@ export type ConversationType = "p2p" | "group" | "topic_group";
 
 export type LarkChatMode = "group" | "topic";
 
+export type LarkGroupMessageType = "chat" | "thread";
+
 export type ConversationResponseMode = "all" | "at" | "none";
 
 export type AgentMessageMode = "plain" | "card";
@@ -51,6 +53,7 @@ export interface LarkConfig {
   maxMessageAgeSeconds: number;
   agentMessageMode: AgentMessageMode;
   iconImageKey?: string;
+  newSessionToolkitId?: string;
 }
 
 export interface CodexConfig {
@@ -123,7 +126,15 @@ export interface CodexThreadRecord {
   role: RoleName;
   forkedFromCodexThreadId?: string;
   forkedAt?: number;
+  creatorOpenId?: string;
+  cardMessageId?: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningOutputTokens: number;
   totalTokens: number;
+  contextTokens: number;
+  contextWindow: number;
   tokenUsageJson: string;
   createdAt: number;
   updatedAt: number;
@@ -188,7 +199,7 @@ export interface IncomingLarkMessageRecall {
   raw: unknown;
 }
 
-export type LarkBotMenuActionKey = "stop" | "new" | "queue" | "status" | "help";
+export type LarkBotMenuActionKey = "stop" | "new" | "queue" | "status" | "help" | "new_session";
 
 export interface IncomingLarkBotMenuAction {
   eventId: string;
@@ -196,6 +207,7 @@ export interface IncomingLarkBotMenuAction {
   action: LarkBotMenuActionKey;
   operatorOpenId: string;
   operatorName?: string;
+  chatId?: string;
   timestamp?: number;
   raw: unknown;
 }

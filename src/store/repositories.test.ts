@@ -149,7 +149,7 @@ describe("ConversationRepository", () => {
       )
       .all()
       .map((row) => row.name);
-    expect(tables).toEqual(["codex_threads", "conversations", "lark_messages"]);
+    expect(tables).toEqual(["conversations", "lark_messages", "threads"]);
   });
 
   it("records runtime codex threads, messages, and token usage by business ids", () => {
@@ -305,14 +305,46 @@ describe("ConversationRepository", () => {
       codexThreadId: "thread-1",
       conversationKey: "p2p_ou_456",
       role: "guest",
+      inputTokens: 80,
+      outputTokens: 40,
+      cachedInputTokens: 20,
+      reasoningOutputTokens: 10,
       totalTokens: 123,
+      contextTokens: 60,
+      contextWindow: 200,
       tokenUsageJson: '{"totalTokens":123}'
     });
     expect(repo.getCodexThreadById("thread-1")).toMatchObject({
       codexThreadId: "thread-1",
+      inputTokens: 80,
+      outputTokens: 40,
+      cachedInputTokens: 20,
+      reasoningOutputTokens: 10,
       totalTokens: 123,
+      contextTokens: 60,
+      contextWindow: 200,
       tokenUsageJson: '{"totalTokens":123}',
       updatedAt: 1700
+    });
+    expect(repo.getCodexThreadWorkStats("thread-1")).toEqual({
+      turnCount: 1,
+      totalWorkDurationMs: 200
+    });
+
+    now = 1750;
+    expect(
+      repo.updateCodexThreadCard({
+        codexThreadId: "thread-1",
+        conversationKey: "p2p_ou_456",
+        role: "guest",
+        creatorOpenId: "ou_456",
+        cardMessageId: "om_card"
+      })
+    ).toMatchObject({
+      codexThreadId: "thread-1",
+      creatorOpenId: "ou_456",
+      cardMessageId: "om_card",
+      updatedAt: 1750
     });
   });
 
@@ -392,7 +424,13 @@ describe("ConversationRepository", () => {
       codexThreadId: "thread-topic-1",
       conversationKey: "group_oc_group",
       role: "guest",
+      inputTokens: 200,
+      outputTokens: 100,
+      cachedInputTokens: 50,
+      reasoningOutputTokens: 25,
       totalTokens: 321,
+      contextTokens: 300,
+      contextWindow: 1000,
       tokenUsageJson: '{"totalTokens":321}'
     });
 

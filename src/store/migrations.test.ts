@@ -27,7 +27,7 @@ describe("store migrations", () => {
         )
         .all()
         .map((row) => row.name);
-      expect(tables).toEqual(["codex_threads", "conversations", "lark_messages"]);
+      expect(tables).toEqual(["conversations", "lark_messages", "threads"]);
 
       const columns = db.prepare<[], TableColumnRow>("PRAGMA table_info(conversations)").all().map((row) => ({
         name: row.name,
@@ -65,7 +65,7 @@ describe("store migrations", () => {
         "sqlite_autoindex_conversations_1"
       ]);
 
-      const threadColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(codex_threads)").all().map((row) => ({
+      const threadColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(threads)").all().map((row) => ({
         name: row.name,
         type: row.type,
         notnull: row.notnull,
@@ -82,17 +82,25 @@ describe("store migrations", () => {
         { name: "total_tokens", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "token_usage_json", type: "TEXT", notnull: 1, pk: 0 },
         { name: "created_at", type: "INTEGER", notnull: 1, pk: 0 },
-        { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 }
+        { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "creator_open_id", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "card_message_id", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "input_tokens", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "output_tokens", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "cached_input_tokens", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "reasoning_output_tokens", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "context_tokens", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "context_window", type: "INTEGER", notnull: 1, pk: 0 }
       ]);
       const threadIndexes = db
         .prepare<[], SqliteNameRow>(
-          "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'codex_threads' ORDER BY name"
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'threads' ORDER BY name"
         )
         .all()
         .map((row) => row.name);
       expect(threadIndexes).toEqual([
-        "idx_codex_threads_conversation_lark_thread",
-        "sqlite_autoindex_codex_threads_1"
+        "idx_threads_conversation_lark_thread",
+        "sqlite_autoindex_threads_1"
       ]);
 
       const messageColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(lark_messages)").all().map((row) => ({
@@ -131,6 +139,7 @@ describe("store migrations", () => {
         .map((row) => row.name);
       expect(messageIndexes).toEqual([
         "idx_lark_messages_card_action_event_id",
+        "idx_lark_messages_codex_thread_turn",
         "idx_lark_messages_lark_message_id"
       ]);
     } finally {
@@ -150,7 +159,7 @@ describe("store migrations", () => {
         )
         .all()
         .map((row) => row.name);
-      expect(tables).toEqual(["codex_threads", "conversations", "lark_messages"]);
+      expect(tables).toEqual(["conversations", "lark_messages", "threads"]);
     } finally {
       db.close();
     }

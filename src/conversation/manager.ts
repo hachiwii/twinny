@@ -8,6 +8,7 @@ import {
   markdownElement,
   mediaElement,
   renderTwinnyAgentCard,
+  renderTwinnyThreadSummaryCard,
   type LarkCardElement,
   type LarkCardJson,
   type TwinnyAgentCardMessage
@@ -35,10 +36,18 @@ import type {
   RoleName,
   CodexThreadRecord,
   TwinnyConfig,
-  LarkChatMode
+  LarkChatMode,
+  LarkGroupMessageType
 } from "../types.js";
 import { SerialQueue } from "./queue.js";
-import { conversationKeyForChat, conversationKeyForP2p, conversationTypeForChat, isGroupConversationType, roleForSender } from "./routing.js";
+import {
+  conversationKeyForChat,
+  conversationKeyForGroup,
+  conversationKeyForP2p,
+  conversationTypeForChat,
+  isGroupConversationType,
+  roleForSender
+} from "./routing.js";
 
 export interface ConversationRepository {
   findByConversationKey(conversationKey: string): Promise<ConversationRecord | null> | ConversationRecord | null;
@@ -82,8 +91,26 @@ export interface ConversationRepository {
     conversationKey: string;
     role: RoleName;
     totalTokens: number;
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+    reasoningOutputTokens: number;
+    contextTokens: number;
+    contextWindow: number;
     tokenUsageJson: string;
   }): Promise<unknown> | unknown;
+  updateCodexThreadCard(input: {
+    codexThreadId: string;
+    conversationKey: string;
+    role: RoleName;
+    larkThreadId?: string;
+    creatorOpenId?: string;
+    cardMessageId?: string;
+  }): Promise<CodexThreadRecord> | CodexThreadRecord;
+  getCodexThreadWorkStats(codexThreadId: string): Promise<{ turnCount: number; totalWorkDurationMs: number }> | {
+    turnCount: number;
+    totalWorkDurationMs: number;
+  };
   insertLarkMessage(input: {
     larkMessageId?: string;
     eventId: string;
@@ -124,8 +151,31 @@ export interface LarkUserDirectory {
 }
 
 export interface LarkChatDirectory {
-  getChatInfo?(chatId: string): Promise<{ name?: string; chatMode?: LarkChatMode } | undefined>;
+  getChatInfo?(chatId: string): Promise<{
+    name?: string;
+    chatMode?: LarkChatMode;
+    groupMessageType?: LarkGroupMessageType;
+    toolkitIds?: string[];
+  } | undefined>;
   getChatName?(chatId: string): Promise<string | undefined>;
+  createChat?(input: {
+    name: string;
+    ownerOpenId?: string;
+    userOpenIds?: string[];
+    groupMessageType?: LarkGroupMessageType;
+    toolkitIds?: string[];
+    uuid?: string;
+    setBotManager?: boolean;
+  }): Promise<{ chatId?: string; raw: unknown }>;
+  updateChatInfo?(chatId: string, input: {
+    groupMessageType?: LarkGroupMessageType;
+    toolkitIds?: string[];
+  }): Promise<{
+    name?: string;
+    chatMode?: LarkChatMode;
+    groupMessageType?: LarkGroupMessageType;
+    toolkitIds?: string[];
+  }>;
 }
 
 export interface LarkFileDownloader {
@@ -211,6 +261,7 @@ export interface LarkResponder {
   ): Promise<{ messageId?: string } | void>;
   replyFile(messageId: string, fileKey: string): Promise<{ messageId?: string } | void>;
   sendTextToOpenId(openId: string, text: string): Promise<void>;
+  sendCardToChatId(chatId: string, card: LarkCardJson, options?: { uuid?: string }): Promise<{ messageId?: string } | void>;
   replyCard(messageId: string, card: LarkCardJson): Promise<{ messageId?: string } | void>;
   patchCard(messageId: string, card: LarkCardJson): Promise<{ messageId?: string } | void>;
   recallMessage(messageId: string): Promise<void>;
@@ -320,6 +371,7 @@ type ParsedCommand =
   | { kind: "steer" }
   | { kind: "status" }
   | { kind: "new" }
+  | { kind: "project"; name: string }
   | { kind: "activate"; text: string }
   | { kind: "deactivate" }
   | { kind: "help" };
@@ -398,7 +450,9 @@ export class ConversationManager {
     }
     this.dedupe.set(dedupeKey, true);
 
-    const context = createBotMenuContext(action.operatorOpenId);
+    const context = action.action === "new_session" && action.chatId
+      ? createBotMenuGroupContext(action.chatId)
+      : createBotMenuContext(action.operatorOpenId);
     const state = this.getState(context.stateKey);
     void state.controlQueue
       .enqueue(() => this.processBotMenuAction(state, context, action))
@@ -620,6 +674,10 @@ export class ConversationManager {
         await this.sendDirectControlBestEffort(action.operatorOpenId, `已新开 Codex thread：${threadId}`);
         return;
       }
+      case "new_session": {
+        await this.handleNewSessionShortcut(state, context, action);
+        return;
+      }
       case "status": {
         await this.sendDirectControlBestEffort(
           action.operatorOpenId,
@@ -747,6 +805,10 @@ export class ConversationManager {
     }
     if (preparedParsed.kind === "status") {
       await this.handleStatusCommand(state, context, message);
+      return;
+    }
+    if (preparedParsed.kind === "project") {
+      await this.handleProjectCommand(context, message, preparedParsed.name);
       return;
     }
     if (preparedParsed.kind === "stop") {
@@ -985,6 +1047,7 @@ export class ConversationManager {
       });
     }
 
+    await this.attachNewSessionShortcutBestEffort(message.chatId, groupInfo.toolkitIds);
     await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
     await this.replyControlBestEffort(
       message.messageId,
@@ -996,15 +1059,24 @@ export class ConversationManager {
   private async resolveGroupInfo(
     message: IncomingLarkMessage,
     existing?: ConversationRecord | null
-  ): Promise<{ name: string; chatMode?: LarkChatMode }> {
+  ): Promise<{ name: string; chatMode?: LarkChatMode; groupMessageType?: LarkGroupMessageType; toolkitIds?: string[] }> {
     let resolvedChatMode: LarkChatMode | undefined;
+    let resolvedGroupMessageType: LarkGroupMessageType | undefined;
+    let resolvedToolkitIds: string[] | undefined;
     if (this.options.larkChats?.getChatInfo) {
       try {
         const info = await this.options.larkChats.getChatInfo(message.chatId);
         resolvedChatMode = info?.chatMode;
+        resolvedGroupMessageType = info?.groupMessageType;
+        resolvedToolkitIds = info?.toolkitIds;
         const resolvedName = nonEmptyString(info?.name);
         if (resolvedName) {
-          return { name: resolvedName, chatMode: resolvedChatMode ?? existing?.chatMode };
+          return {
+            name: resolvedName,
+            chatMode: resolvedChatMode ?? existing?.chatMode,
+            groupMessageType: resolvedGroupMessageType,
+            toolkitIds: resolvedToolkitIds
+          };
         }
       } catch (error) {
         this.log.warn({ error, chatId: message.chatId }, "failed to resolve lark chat info");
@@ -1022,8 +1094,168 @@ export class ConversationManager {
 
     return {
       name: nonEmptyString(message.chatName) ?? nonEmptyString(existing?.name) ?? message.chatId,
-      chatMode: resolvedChatMode ?? existing?.chatMode
+      chatMode: resolvedChatMode ?? existing?.chatMode,
+      groupMessageType: resolvedGroupMessageType,
+      toolkitIds: resolvedToolkitIds
     };
+  }
+
+  private async attachNewSessionShortcutBestEffort(chatId: string, currentToolkitIds?: string[]): Promise<void> {
+    const toolkitId = nonEmptyString(this.options.config.lark.newSessionToolkitId);
+    if (!toolkitId || !this.options.larkChats?.updateChatInfo) {
+      return;
+    }
+    try {
+      let toolkitIds = currentToolkitIds;
+      if (!toolkitIds && this.options.larkChats.getChatInfo) {
+        toolkitIds = (await this.options.larkChats.getChatInfo(chatId))?.toolkitIds;
+      }
+      const nextToolkitIds = Array.from(new Set([...(toolkitIds ?? []), toolkitId]));
+      if (toolkitIds?.includes(toolkitId)) {
+        return;
+      }
+      await this.options.larkChats.updateChatInfo(chatId, { toolkitIds: nextToolkitIds });
+    } catch (error) {
+      this.log.warn({ error, chatId, toolkitId }, "failed to attach Lark new-session shortcut");
+    }
+  }
+
+  private async handleProjectCommand(
+    _context: MessageContext,
+    message: IncomingLarkMessage,
+    projectName: string
+  ): Promise<void> {
+    if (roleForSender(this.options.config, message.senderOpenId) !== "owner") {
+      await this.replyControlBestEffort(message.messageId, "只有 owner 可以创建 project 群。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (!projectName.trim()) {
+      await this.replyControlBestEffort(message.messageId, "用法：/project <name>");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (!this.options.larkChats?.createChat) {
+      await this.replyControlBestEffort(message.messageId, "Lark 群创建能力未配置。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const toolkitId = nonEmptyString(this.options.config.lark.newSessionToolkitId);
+    const created = await this.options.larkChats.createChat({
+      name: "twinny",
+      ownerOpenId: this.options.config.owner.openId,
+      userOpenIds: [this.options.config.owner.openId],
+      groupMessageType: "chat",
+      toolkitIds: toolkitId ? [toolkitId] : undefined,
+      setBotManager: true,
+      uuid: `twinny-project-${safePathSegment(this.options.config.owner.openId)}-${safePathSegment(projectName)}`
+    });
+    const chatId = nonEmptyString(created.chatId);
+    if (!chatId) {
+      throw new TwinnyError("Lark create chat response did not include chat_id", "LARK_CHAT_CREATE_FAILED");
+    }
+
+    const conversationKey = conversationKeyForGroup(chatId);
+    const existing = await this.options.repository.findByConversationKey(conversationKey);
+    const workspace = existing?.workspace ?? await this.options.workspaces.ensureWorkspace(conversationKey);
+    const role: RoleName = "owner";
+    const thread = await this.options.codex.startThread({
+      role,
+      cwd: workspace,
+      approvalPolicy: "never"
+    });
+    if (existing) {
+      await this.options.repository.updateConversationSettings(conversationKey, {
+        name: "twinny",
+        chatMode: "group",
+        responseMode: "all"
+      });
+      await this.options.repository.updateThreadBinding(conversationKey, {
+        codexThreadId: thread.threadId,
+        codexThreadHasRollout: false,
+        role,
+        roleCodexHome: this.options.roles.codexHomeFor(role),
+        workspace
+      });
+    } else {
+      await this.options.repository.create({
+        conversationKey,
+        type: "group",
+        chatId,
+        name: "twinny",
+        chatMode: "group",
+        responseMode: "all",
+        role,
+        codexThreadId: thread.threadId,
+        codexThreadHasRollout: false,
+        workspace,
+        roleCodexHome: this.options.roles.codexHomeFor(role)
+      });
+    }
+    await this.recordCodexThreadBestEffort({
+      conversationKey,
+      codexThreadId: thread.threadId,
+      role
+    });
+    await this.attachNewSessionShortcutBestEffort(chatId);
+    await this.replyControlBestEffort(
+      message.messageId,
+      `已创建 project 群：twinny\nProject：${projectName}\nConversation Key：${conversationKey}\nCodex Thread ID：${thread.threadId}`
+    );
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async handleNewSessionShortcut(
+    _state: ConversationState,
+    context: MessageContext,
+    action: IncomingLarkBotMenuAction
+  ): Promise<void> {
+    if (!action.chatId || !isGroupConversationType(context.type)) {
+      await this.sendDirectControlBestEffort(action.operatorOpenId, "新会话快捷指令只能在群聊中使用。");
+      return;
+    }
+    const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+    if (!conversation || conversation.responseMode === "none") {
+      await this.sendDirectControlBestEffort(action.operatorOpenId, "请先由 owner 在群内执行 /activate。");
+      return;
+    }
+
+    const role = conversation.role;
+    const workspace = conversation.workspace;
+    const thread = await this.options.codex.startThread({
+      role,
+      cwd: workspace,
+      approvalPolicy: "never"
+    });
+    await this.options.repository.upsertCodexThread({
+      conversationKey: context.conversationKey,
+      codexThreadId: thread.threadId,
+      role
+    });
+    const initialRecord = await this.options.repository.updateCodexThreadCard({
+      conversationKey: context.conversationKey,
+      codexThreadId: thread.threadId,
+      role,
+      creatorOpenId: action.operatorOpenId
+    });
+    const result = await this.options.lark.sendCardToChatId(
+      action.chatId,
+      await this.renderThreadSummaryCard(initialRecord),
+      { uuid: `twinny-new-session-${safePathSegment(action.eventId)}` }
+    );
+    const cardMessageId = nonEmptyString(result?.messageId);
+    if (!cardMessageId) {
+      throw new TwinnyError("Lark new-session card response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
+    }
+    await this.options.repository.updateCodexThreadCard({
+      conversationKey: context.conversationKey,
+      codexThreadId: thread.threadId,
+      role,
+      larkThreadId: cardMessageId,
+      creatorOpenId: action.operatorOpenId,
+      cardMessageId
+    });
   }
 
   private async handleDeactivateCommand(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
@@ -1723,6 +1955,7 @@ export class ConversationManager {
         codexThreadId: active.threadId,
         codexTurnId: turnId
       });
+      await this.updateThreadSummaryCardBestEffort(active.threadId);
       await this.flushPendingSteers(state, active);
     });
   }
@@ -1808,6 +2041,7 @@ export class ConversationManager {
       await this.failAgentCardBestEffort(state, active, active.resultError ?? "Codex turn failed");
     }
     await this.addCompletedReactionBestEffort(active);
+    await this.updateThreadSummaryCardBestEffort(active.threadId);
     this.stopAgentCardTimer(active);
     await this.startPendingBatch(state, active.context);
   }
@@ -1832,6 +2066,7 @@ export class ConversationManager {
     active.pendingSteers = [];
     await this.clearReactionBestEffort(active);
     await this.markMessagesInterruptedBestEffort([...active.processingMessageIds]);
+    await this.updateThreadSummaryCardBestEffort(active.threadId);
     await this.interruptAgentCardBestEffort(state, active);
     if (active.turnId) {
       await this.interruptActiveTurnBestEffort(active);
@@ -1907,18 +2142,57 @@ export class ConversationManager {
     }
   }
 
+  private async renderThreadSummaryCard(thread: CodexThreadRecord): Promise<LarkCardJson> {
+    const stats = await this.options.repository.getCodexThreadWorkStats(thread.codexThreadId);
+    return renderTwinnyThreadSummaryCard({
+      creatorOpenId: thread.creatorOpenId,
+      createdAt: thread.createdAt,
+      codexThreadId: thread.codexThreadId,
+      turnCount: stats.turnCount,
+      inputTokens: thread.inputTokens,
+      outputTokens: thread.outputTokens,
+      cachedInputTokens: thread.cachedInputTokens,
+      reasoningOutputTokens: thread.reasoningOutputTokens,
+      totalTokens: thread.totalTokens,
+      totalWorkDurationMs: stats.totalWorkDurationMs,
+      contextTokens: thread.contextTokens,
+      contextWindow: thread.contextWindow,
+      iconImageKey: this.options.config.lark.iconImageKey
+    });
+  }
+
+  private async updateThreadSummaryCardBestEffort(codexThreadId: string): Promise<void> {
+    try {
+      const thread = await this.options.repository.getCodexThreadById(codexThreadId);
+      if (!thread?.cardMessageId) {
+        return;
+      }
+      await this.options.lark.patchCard(thread.cardMessageId, await this.renderThreadSummaryCard(thread));
+    } catch (error) {
+      this.log.warn({ error, codexThreadId }, "failed to update thread summary card");
+    }
+  }
+
   private async recordThreadTokenUsageBestEffort(
     active: ActiveTurn,
     usage: CodexThreadTokenUsageUpdate
   ): Promise<void> {
     try {
+      const tokenUsage = extractThreadTokenUsage(usage);
       await this.options.repository.updateCodexThreadTokenUsage({
         codexThreadId: usage.threadId,
         conversationKey: active.conversationKey,
         role: active.role,
-        totalTokens: usage.totalTokens,
+        inputTokens: tokenUsage.inputTokens,
+        outputTokens: tokenUsage.outputTokens,
+        cachedInputTokens: tokenUsage.cachedInputTokens,
+        reasoningOutputTokens: tokenUsage.reasoningOutputTokens,
+        totalTokens: tokenUsage.totalTokens,
+        contextTokens: tokenUsage.contextTokens,
+        contextWindow: tokenUsage.contextWindow,
         tokenUsageJson: safeJsonStringify(usage.raw) ?? "{}"
       });
+      await this.updateThreadSummaryCardBestEffort(usage.threadId);
     } catch (error) {
       this.log.warn({ error, threadId: usage.threadId, totalTokens: usage.totalTokens }, "failed to record token usage");
     }
@@ -2911,6 +3185,9 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "new") {
     return { kind: "new" };
   }
+  if (command === "project") {
+    return { kind: "project", name: rest };
+  }
   if (command === "help") {
     return { kind: "help" };
   }
@@ -2984,15 +3261,27 @@ function createBotMenuContext(operatorOpenId: string): MessageContext {
   };
 }
 
+function createBotMenuGroupContext(chatId: string): MessageContext {
+  const conversationKey = conversationKeyForGroup(chatId);
+  return {
+    type: "group",
+    conversationKey,
+    stateKey: conversationKey
+  };
+}
+
 function messageForBotMenuAction(action: IncomingLarkBotMenuAction): IncomingLarkMessage {
+  const chatId = action.chatId ?? action.operatorOpenId;
+  const chatType = action.chatId ? "group" : "p2p";
   return {
     eventId: action.eventId,
     messageId: `bot_menu:${action.eventId}`,
-    chatId: action.operatorOpenId,
-    chatType: "p2p",
+    chatId,
+    chatType,
     messageType: "bot_menu",
     senderOpenId: action.operatorOpenId,
     senderName: action.operatorName,
+    larkGroupId: action.chatId,
     text: "",
     createTime: action.timestamp,
     raw: action.raw
@@ -3051,7 +3340,8 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/stop - 停止当前任务并清空待处理消息",
     "/next - 打断当前任务，并执行队列中的下一条消息",
     "/steer - 将队列中的下一批消息注入当前任务",
-    "/queue <message> - 将消息加入下一轮队列，不注入当前任务"
+    "/queue <message> - 将消息加入下一轮队列，不注入当前任务",
+    "/project <name> - owner 创建 twinny 项目群"
   ];
   if (isGroupConversationType(context.type) && roleForSender(config, message.senderOpenId) === "owner") {
     lines.push(
@@ -3077,6 +3367,7 @@ function classifyInitialRoute(
     parsed.kind === "next" ||
     parsed.kind === "steer" ||
     parsed.kind === "new" ||
+    parsed.kind === "project" ||
     parsed.kind === "activate" ||
     parsed.kind === "deactivate" ||
     parsed.kind === "queue"
@@ -3170,6 +3461,11 @@ interface TokenBreakdown {
   reasoningOutputTokens: number;
 }
 
+interface ThreadTokenUsageSnapshot extends TokenBreakdown {
+  contextTokens: number;
+  contextWindow: number;
+}
+
 interface RateLimitWindowStatus {
   usedPercent: number;
   windowDurationMins?: number;
@@ -3179,6 +3475,7 @@ interface RateLimitWindowStatus {
 function formatThreadTokenStatus(thread: CodexThreadRecord | undefined): string[] {
   const breakdown = extractThreadTokenBreakdown(thread);
   const cacheHitRate = breakdown.inputTokens > 0 ? breakdown.cachedInputTokens / breakdown.inputTokens : 0;
+  const contextUsage = breakdown.contextWindow > 0 ? breakdown.contextTokens / breakdown.contextWindow : 0;
   return [
     "Thread Token Usage:",
     `- total: ${formatInteger(breakdown.totalTokens)}`,
@@ -3186,23 +3483,96 @@ function formatThreadTokenStatus(thread: CodexThreadRecord | undefined): string[
     `- output: ${formatInteger(breakdown.outputTokens)}`,
     `- cached input: ${formatInteger(breakdown.cachedInputTokens)}`,
     `- reasoning output: ${formatInteger(breakdown.reasoningOutputTokens)}`,
-    `- cache hit rate: ${formatPercent(cacheHitRate)}`
+    `- cache hit rate: ${formatPercent(cacheHitRate)}`,
+    `- context: ${formatInteger(breakdown.contextTokens)} / ${formatInteger(breakdown.contextWindow)} (${formatPercent(contextUsage)})`
   ];
 }
 
-function extractThreadTokenBreakdown(thread: CodexThreadRecord | undefined): TokenBreakdown {
+function extractThreadTokenBreakdown(thread: CodexThreadRecord | undefined): ThreadTokenUsageSnapshot {
   const raw = parseStoredRawEvent(thread?.tokenUsageJson);
   const total = firstRecord(
     nestedRecord(raw, ["tokenUsage", "total"]),
     nestedRecord(raw, ["usage", "total"]),
     nestedRecord(raw, ["total"])
   );
+  const last = firstRecord(
+    nestedRecord(raw, ["tokenUsage", "last"]),
+    nestedRecord(raw, ["usage", "last"]),
+    nestedRecord(raw, ["last"])
+  );
   return {
     totalTokens: finiteNumber(total?.totalTokens, total?.total_tokens, thread?.totalTokens) ?? 0,
-    inputTokens: finiteNumber(total?.inputTokens, total?.input_tokens) ?? 0,
-    cachedInputTokens: finiteNumber(total?.cachedInputTokens, total?.cached_input_tokens) ?? 0,
-    outputTokens: finiteNumber(total?.outputTokens, total?.output_tokens) ?? 0,
-    reasoningOutputTokens: finiteNumber(total?.reasoningOutputTokens, total?.reasoning_output_tokens) ?? 0
+    inputTokens: finiteNumber(total?.inputTokens, total?.input_tokens, total?.prompt_tokens, thread?.inputTokens) ?? 0,
+    cachedInputTokens:
+      finiteNumber(total?.cachedInputTokens, total?.cached_input_tokens, total?.cached_tokens, thread?.cachedInputTokens) ?? 0,
+    outputTokens: finiteNumber(total?.outputTokens, total?.output_tokens, total?.completion_tokens, thread?.outputTokens) ?? 0,
+    reasoningOutputTokens:
+      finiteNumber(total?.reasoningOutputTokens, total?.reasoning_output_tokens, thread?.reasoningOutputTokens) ?? 0,
+    contextTokens: finiteNumber(last?.totalTokens, last?.total_tokens, thread?.contextTokens) ?? 0,
+    contextWindow:
+      finiteNumber(
+        nestedValue(raw, ["modelContextWindow"]),
+        nestedValue(raw, ["model_context_window"]),
+        nestedValue(raw, ["tokenUsage", "modelContextWindow"]),
+        nestedValue(raw, ["tokenUsage", "model_context_window"]),
+        thread?.contextWindow
+      ) ?? 0
+  };
+}
+
+function extractThreadTokenUsage(usage: CodexThreadTokenUsageUpdate): ThreadTokenUsageSnapshot {
+  const raw = usage.raw;
+  const total = firstRecord(
+    nestedRecord(raw, ["tokenUsage", "total"]),
+    nestedRecord(raw, ["usage", "total"]),
+    nestedRecord(raw, ["total"])
+  );
+  const last = firstRecord(
+    nestedRecord(raw, ["tokenUsage", "last"]),
+    nestedRecord(raw, ["usage", "last"]),
+    nestedRecord(raw, ["last"])
+  );
+  return {
+    totalTokens:
+      finiteNumber(
+        usage.totalTokens,
+        total?.totalTokens,
+        total?.total_tokens,
+        nestedValue(raw, ["tokenUsage", "totalTokens"]),
+        nestedValue(raw, ["tokenUsage", "total_tokens"]),
+        nestedValue(raw, ["usage", "totalTokens"]),
+        nestedValue(raw, ["usage", "total_tokens"])
+      ) ?? 0,
+    inputTokens:
+      finiteNumber(total?.inputTokens, total?.input_tokens, total?.promptTokens, total?.prompt_tokens) ?? 0,
+    cachedInputTokens:
+      finiteNumber(
+        total?.cachedInputTokens,
+        total?.cached_input_tokens,
+        total?.cacheInputTokens,
+        total?.cache_input_tokens,
+        total?.cachedTokens,
+        total?.cached_tokens
+      ) ?? 0,
+    outputTokens:
+      finiteNumber(total?.outputTokens, total?.output_tokens, total?.completionTokens, total?.completion_tokens) ?? 0,
+    reasoningOutputTokens:
+      finiteNumber(
+        total?.reasoningOutputTokens,
+        total?.reasoning_output_tokens,
+        total?.reasoningTokens,
+        total?.reasoning_tokens
+      ) ?? 0,
+    contextTokens: finiteNumber(last?.totalTokens, last?.total_tokens) ?? 0,
+    contextWindow:
+      finiteNumber(
+        nestedValue(raw, ["modelContextWindow"]),
+        nestedValue(raw, ["model_context_window"]),
+        nestedValue(raw, ["tokenUsage", "modelContextWindow"]),
+        nestedValue(raw, ["tokenUsage", "model_context_window"]),
+        nestedValue(raw, ["usage", "modelContextWindow"]),
+        nestedValue(raw, ["usage", "model_context_window"])
+      ) ?? 0
   };
 }
 
@@ -3421,6 +3791,17 @@ function nestedRecord(value: unknown, path: string[]): Record<string, unknown> |
     current = current[key];
   }
   return isRecord(current) ? current : undefined;
+}
+
+function nestedValue(value: unknown, path: string[]): unknown {
+  let current: unknown = value;
+  for (const key of path) {
+    if (!isRecord(current)) {
+      return undefined;
+    }
+    current = current[key];
+  }
+  return current;
 }
 
 function finiteNumber(...values: unknown[]): number | undefined {

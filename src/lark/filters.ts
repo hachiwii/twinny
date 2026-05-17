@@ -183,6 +183,7 @@ export function normalizeLarkBotMenuWithReason(raw: unknown): NormalizeLarkBotMe
       action,
       operatorOpenId,
       operatorName: stringValue(operator.operator_name),
+      chatId: chatIdFromBotMenuEvent(event),
       timestamp: parseEpochMs(event.timestamp ?? header.create_time ?? raw.create_time),
       raw
     }
@@ -579,13 +580,20 @@ function ignoredBotMenu(reason: LarkBotMenuIgnoreReason, raw: unknown): Normaliz
 }
 
 function botMenuActionForEventKey(eventKey: string): IncomingLarkBotMenuAction["action"] | undefined {
-  switch (eventKey.trim().toLowerCase()) {
+  const normalized = eventKey.trim().toLowerCase();
+  switch (normalized) {
     case "stop":
     case "new":
     case "queue":
     case "status":
     case "help":
-      return eventKey.trim().toLowerCase() as IncomingLarkBotMenuAction["action"];
+      return normalized as IncomingLarkBotMenuAction["action"];
+    case "new_session":
+    case "new-session":
+    case "new session":
+    case "new_conversation":
+    case "new-conversation":
+      return "new_session";
     default:
       return undefined;
   }
@@ -604,6 +612,18 @@ function chatIdFromChatInfo(value: unknown): string | undefined {
     return undefined;
   }
   return stringValue(value.chat_id);
+}
+
+function chatIdFromBotMenuEvent(event: Record<string, unknown>): string | undefined {
+  return firstStringValue(
+    event.chat_id,
+    event.open_chat_id,
+    isRecord(event.chat) ? event.chat.chat_id : undefined,
+    isRecord(event.chat) ? event.chat.open_chat_id : undefined,
+    chatIdFromChatInfo(event.chat_info),
+    isRecord(event.operator) ? event.operator.chat_id : undefined,
+    isRecord(event.operator) ? event.operator.open_chat_id : undefined
+  );
 }
 
 function stringValue(value: unknown): string | undefined {

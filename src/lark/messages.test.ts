@@ -220,6 +220,34 @@ describe("LarkMessageSender", () => {
     });
   });
 
+  it("sends an interactive card directly to a chat_id", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { message_id: "om_card" } }
+    ]);
+    const sender = createSender(fetch);
+    const card = { schema: "2.0", header: { title: { tag: "plain_text", content: "新会话" } } };
+
+    await expect(sender.sendInteractiveCardToChatId("oc_group", card, { uuid: "uuid-card" })).resolves.toMatchObject({
+      messageId: "om_card"
+    });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        receive_id: "oc_group",
+        content: JSON.stringify(card),
+        msg_type: "interactive",
+        uuid: "uuid-card"
+      }),
+      signal: undefined
+    });
+  });
+
   it("fetches a message through the mget API", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },

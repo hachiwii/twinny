@@ -340,6 +340,35 @@ describe("normalizeLarkBotMenuWithReason", () => {
     });
   });
 
+  it("normalizes group new-session shortcut events with chat ids", () => {
+    expect(
+      normalizeLarkBotMenuWithReason({
+        header: { event_id: "event-new-session" },
+        event: {
+          chat_id: "oc_group",
+          operator: {
+            operator_name: "Owner",
+            operator_id: { open_id: "ou_owner" }
+          },
+          event_key: "new_session",
+          timestamp: 1669364459
+        }
+      })
+    ).toEqual({
+      kind: "bot_menu",
+      action: {
+        eventId: "event-new-session",
+        eventKey: "new_session",
+        action: "new_session",
+        operatorOpenId: "ou_owner",
+        operatorName: "Owner",
+        chatId: "oc_group",
+        timestamp: 1669364459,
+        raw: expect.anything()
+      }
+    });
+  });
+
   it("ignores bot menu events with unknown event keys", () => {
     expect(
       normalizeLarkBotMenuWithReason({

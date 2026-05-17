@@ -279,6 +279,8 @@ function adaptConversationRepository(repository: ConversationRepository) {
     upsertCodexThread: repository.upsertCodexThread.bind(repository),
     replaceCodexThreadForLarkThread: repository.replaceCodexThreadForLarkThread.bind(repository),
     updateCodexThreadTokenUsage: repository.updateCodexThreadTokenUsage.bind(repository),
+    updateCodexThreadCard: repository.updateCodexThreadCard.bind(repository),
+    getCodexThreadWorkStats: repository.getCodexThreadWorkStats.bind(repository),
     insertLarkMessage: repository.insertLarkMessage.bind(repository),
     markLarkMessageQueued: repository.markLarkMessageQueued.bind(repository),
     markLarkMessageRecalled: repository.markLarkMessageRecalled.bind(repository),
@@ -380,6 +382,13 @@ function adaptLarkSender(sender: LarkMessageSender, workingReaction: string, com
     },
     sendTextToOpenId: async (openId: string, text: string): Promise<void> => {
       await sender.sendTextToOpenId(openId, text);
+    },
+    sendCardToChatId: async (
+      chatId: string,
+      card: Parameters<LarkMessageSender["sendInteractiveCardToChatId"]>[1],
+      options?: { uuid?: string }
+    ): Promise<{ messageId?: string }> => {
+      return sender.sendInteractiveCardToChatId(chatId, card, options);
     },
     replyCard: async (messageId: string, card: Parameters<LarkMessageSender["replyInteractiveCard"]>[1]): Promise<{ messageId?: string }> => {
       return sender.replyInteractiveCard(messageId, card);
