@@ -505,7 +505,7 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m1"]);
   });
 
-  it("lets the owner create a chat-mode twinny project group", async () => {
+  it("lets the owner create a thread-message twinny project group", async () => {
     const { repository } = createRepository();
     const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_project" })) });
     const lark = createLarkResponder();
@@ -529,7 +529,7 @@ describe("ConversationManager", () => {
       name: "twinny",
       ownerOpenId: "ou_owner",
       userOpenIds: ["ou_owner"],
-      groupMessageType: "chat",
+      groupMessageType: "thread",
       toolkitIds: ["toolkit_new_session"],
       setBotManager: true,
       uuid: expect.stringMatching(UUID_PATTERN)
@@ -969,7 +969,13 @@ describe("ConversationManager", () => {
 
     manager.submitIncoming(groupMessage("g1", "/activate", { senderOpenId: "ou_owner", senderName: "Owner" }));
 
-    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g1", "已激活群聊：Team Room\n响应模式：at\nRole：guest"));
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith(
+        "g1",
+        expect.stringContaining("已激活群聊：Team Room\n响应模式：at\nRole：guest")
+      )
+    );
+    expect(lark.replyText).toHaveBeenCalledWith("g1", expect.stringContaining("缺少 lark.new_session_toolkit_id 配置"));
     expect(row).toBeUndefined();
     expect(repository.findByConversationKey("group_oc_group")).toBeDefined();
     expect(codex.startThread).toHaveBeenCalledWith({
@@ -1024,7 +1030,7 @@ describe("ConversationManager", () => {
         toolkitIds: ["toolkit_existing", "toolkit_new_session"]
       })
     );
-    expect(lark.replyText).toHaveBeenCalledWith("g1", "已激活群聊：Team Room\n响应模式：at\nRole：guest");
+    expect(lark.replyText).toHaveBeenCalledWith("g1", expect.stringContaining("新会话快捷指令：已挂载"));
   });
 
   it("keeps a group's first activated role immutable while allowing mode and name refreshes", async () => {
@@ -1038,7 +1044,12 @@ describe("ConversationManager", () => {
     const manager = createManager({ repository, lark, larkChats, botOpenId: "ou_bot" });
 
     manager.submitIncoming(groupMessage("g1", "/activate all owner", { senderOpenId: "ou_owner", senderName: "Owner" }));
-    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g1", "已激活群聊：Owner Room\n响应模式：all\nRole：owner"));
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith(
+        "g1",
+        expect.stringContaining("已激活群聊：Owner Room\n响应模式：all\nRole：owner")
+      )
+    );
     expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
       name: "Owner Room",
       chatMode: "topic",
@@ -1047,7 +1058,12 @@ describe("ConversationManager", () => {
     });
 
     manager.submitIncoming(groupMessage("g2", "/activate at", { senderOpenId: "ou_owner", senderName: "Owner" }));
-    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g2", "已激活群聊：Renamed Room\n响应模式：at\nRole：owner"));
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith(
+        "g2",
+        expect.stringContaining("已激活群聊：Renamed Room\n响应模式：at\nRole：owner")
+      )
+    );
     expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
       name: "Renamed Room",
       chatMode: "group",
@@ -1143,7 +1159,12 @@ describe("ConversationManager", () => {
     expect(repository.insertLarkMessage).not.toHaveBeenCalled();
 
     manager.submitIncoming(groupMessage("g2", "/activate all", { senderOpenId: "ou_owner", senderName: "Owner" }));
-    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g2", "已激活群聊：Reenabled Room\n响应模式：all\nRole：guest"));
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith(
+        "g2",
+        expect.stringContaining("已激活群聊：Reenabled Room\n响应模式：all\nRole：guest")
+      )
+    );
     expect(row).toMatchObject({ name: "Reenabled Room", responseMode: "all", role: "guest" });
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({ larkMessageId: "g2", routeKind: "control_message" })

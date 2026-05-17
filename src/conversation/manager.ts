@@ -297,6 +297,11 @@ interface ActiveThreadResolution {
   created?: boolean;
 }
 
+type ShortcutAttachResult =
+  | { status: "attached" | "already_attached" }
+  | { status: "skipped"; reason: "missing_toolkit_id" | "missing_lark_chat_update" }
+  | { status: "failed"; error: unknown };
+
 interface MessageContext {
   type: ConversationType;
   conversationKey: string;
@@ -1048,11 +1053,16 @@ export class ConversationManager {
       });
     }
 
-    await this.attachNewSessionShortcutBestEffort(message.chatId, groupInfo.toolkitIds);
+    const shortcut = await this.attachNewSessionShortcutBestEffort(message.chatId, groupInfo.toolkitIds);
     await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
     await this.replyControlBestEffort(
       message.messageId,
-      `已激活群聊：${groupInfo.name}\n响应模式：${parsed.responseMode}\nRole：${role}`
+      [
+        `已激活群聊：${groupInfo.name}`,
+        `响应模式：${parsed.responseMode}`,
+        `Role：${role}`,
+        formatShortcutAttachResult(shortcut)
+      ].filter(Boolean).join("\n")
     );
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
@@ -1101,10 +1111,12 @@ export class ConversationManager {
     };
   }
 
-  private async attachNewSessionShortcutBestEffort(chatId: string, currentToolkitIds?: string[]): Promise<void> {
+  private async attachNewSessionShortcutBestEffort(chatId: string, currentToolkitIds?: string[]): Promise<ShortcutAttachResult> {
     const toolkitId = nonEmptyString(this.options.config.lark.newSessionToolkitId);
     if (!toolkitId || !this.options.larkChats?.updateChatInfo) {
-      return;
+      const reason = toolkitId ? "missing_lark_chat_update" : "missing_toolkit_id";
+      this.log.warn({ chatId, reason }, "skipped attaching Lark new-session shortcut");
+      return { status: "skipped", reason };
     }
     try {
       let toolkitIds = currentToolkitIds;
@@ -1113,11 +1125,13 @@ export class ConversationManager {
       }
       const nextToolkitIds = Array.from(new Set([...(toolkitIds ?? []), toolkitId]));
       if (toolkitIds?.includes(toolkitId)) {
-        return;
+        return { status: "already_attached" };
       }
       await this.options.larkChats.updateChatInfo(chatId, { toolkitIds: nextToolkitIds });
+      return { status: "attached" };
     } catch (error) {
       this.log.warn({ error, chatId, toolkitId }, "failed to attach Lark new-session shortcut");
+      return { status: "failed", error };
     }
   }
 
@@ -1147,7 +1161,7 @@ export class ConversationManager {
       name: "twinny",
       ownerOpenId: this.options.config.owner.openId,
       userOpenIds: [this.options.config.owner.openId],
-      groupMessageType: "chat",
+      groupMessageType: "thread",
       toolkitIds: toolkitId ? [toolkitId] : undefined,
       setBotManager: true,
       uuid: createLarkUuid("twinny-project", this.options.config.owner.openId, projectName)
@@ -1199,10 +1213,17 @@ export class ConversationManager {
       codexThreadId: thread.threadId,
       role
     });
-    await this.attachNewSessionShortcutBestEffort(chatId);
+    const shortcut = await this.attachNewSessionShortcutBestEffort(chatId);
     await this.replyControlBestEffort(
       message.messageId,
-      `已创建 project 群：twinny\nProject：${projectName}\nConversation Key：${conversationKey}\nCodex Thread ID：${thread.threadId}`
+      [
+        "已创建 project 群：twinny",
+        `Project：${projectName}`,
+        "消息模式：话题",
+        `Conversation Key：${conversationKey}`,
+        `Codex Thread ID：${thread.threadId}`,
+        formatShortcutAttachResult(shortcut)
+      ].filter(Boolean).join("\n")
     );
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
@@ -3160,6 +3181,21 @@ function isPathInside(candidate: string, base: string): boolean {
 
 function formatSendToLarkError(reason: string): string {
   return `❌ 发送图片/视频/附件失败：${reason}`;
+}
+
+function formatShortcutAttachResult(result: ShortcutAttachResult): string {
+  switch (result.status) {
+    case "attached":
+      return "新会话快捷指令：已挂载";
+    case "already_attached":
+      return "新会话快捷指令：已存在";
+    case "skipped":
+      return result.reason === "missing_toolkit_id"
+        ? "新会话快捷指令：未挂载，缺少 lark.new_session_toolkit_id 配置"
+        : "新会话快捷指令：未挂载，Lark 群设置更新能力未配置";
+    case "failed":
+      return `新会话快捷指令：挂载失败，${toErrorMessage(result.error)}`;
+  }
 }
 
 function parseSlashCommand(text: string): ParsedCommand {
