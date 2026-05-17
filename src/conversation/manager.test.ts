@@ -505,7 +505,7 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m1"]);
   });
 
-  it("lets the owner create a thread-message twinny project group", async () => {
+  it("lets the owner create a thread-message project group with the requested name", async () => {
     const { repository } = createRepository();
     const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_project" })) });
     const lark = createLarkResponder();
@@ -522,11 +522,11 @@ describe("ConversationManager", () => {
       config: { ...config, lark: { ...config.lark, newSessionToolkitId: "toolkit_new_session" } }
     });
 
-    manager.submitIncoming(message("m1", "/project alpha", { senderOpenId: "ou_owner", senderName: "Owner" }));
+    manager.submitIncoming(message("m1", "/project Alpha", { senderOpenId: "ou_owner", senderName: "Owner" }));
 
-    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("已创建 project 群：twinny")));
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("已创建 project 群：Alpha")));
     expect(larkChats.createChat).toHaveBeenCalledWith({
-      name: "twinny",
+      name: "Alpha",
       ownerOpenId: "ou_owner",
       userOpenIds: ["ou_owner"],
       groupMessageType: "thread",
@@ -539,7 +539,7 @@ describe("ConversationManager", () => {
       conversationKey: "group_oc_project",
       type: "group",
       chatId: "oc_project",
-      name: "twinny",
+      name: "Alpha",
       chatMode: "group",
       responseMode: "all",
       role: "owner",
@@ -568,6 +568,24 @@ describe("ConversationManager", () => {
     const uuid = vi.mocked(larkChats.createChat!).mock.calls[0]![0].uuid;
     expect(uuid).toMatch(UUID_PATTERN);
     expect(uuid).toHaveLength(36);
+  });
+
+  it("uses the Lark message id for project group idempotency", async () => {
+    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_project" })) });
+    const larkChats: LarkChatDirectory = {
+      createChat: vi.fn(async ({ uuid }) => ({ chatId: `oc_${uuid}`, raw: {} }))
+    };
+    const manager = createManager({ codex, larkChats });
+
+    manager.submitIncoming(message("m1", "/project Alpha", { senderOpenId: "ou_owner" }));
+    manager.submitIncoming(message("m2", "/project Alpha", { senderOpenId: "ou_owner" }));
+
+    await waitForExpect(() => expect(larkChats.createChat).toHaveBeenCalledTimes(2));
+    const firstUuid = vi.mocked(larkChats.createChat!).mock.calls[0]![0].uuid;
+    const secondUuid = vi.mocked(larkChats.createChat!).mock.calls[1]![0].uuid;
+    expect(firstUuid).toMatch(UUID_PATTERN);
+    expect(secondUuid).toMatch(UUID_PATTERN);
+    expect(firstUuid).not.toBe(secondUuid);
   });
 
   it("includes account usage windows in /status for the owner", async () => {

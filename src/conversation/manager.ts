@@ -1145,7 +1145,8 @@ export class ConversationManager {
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
-    if (!projectName.trim()) {
+    const projectDisplayName = projectName.trim();
+    if (!projectDisplayName) {
       await this.replyControlBestEffort(message.messageId, "用法：/project <name>");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
@@ -1158,13 +1159,13 @@ export class ConversationManager {
 
     const toolkitId = nonEmptyString(this.options.config.lark.newSessionToolkitId);
     const created = await this.options.larkChats.createChat({
-      name: "twinny",
+      name: projectDisplayName,
       ownerOpenId: this.options.config.owner.openId,
       userOpenIds: [this.options.config.owner.openId],
       groupMessageType: "thread",
       toolkitIds: toolkitId ? [toolkitId] : undefined,
       setBotManager: true,
-      uuid: createLarkUuid("twinny-project", this.options.config.owner.openId, projectName)
+      uuid: createLarkUuid("twinny-project", message.messageId)
     });
     const chatId = nonEmptyString(created.chatId);
     if (!chatId) {
@@ -1182,7 +1183,7 @@ export class ConversationManager {
     });
     if (existing) {
       await this.options.repository.updateConversationSettings(conversationKey, {
-        name: "twinny",
+        name: projectDisplayName,
         chatMode: "group",
         responseMode: "all"
       });
@@ -1198,7 +1199,7 @@ export class ConversationManager {
         conversationKey,
         type: "group",
         chatId,
-        name: "twinny",
+        name: projectDisplayName,
         chatMode: "group",
         responseMode: "all",
         role,
@@ -1217,8 +1218,8 @@ export class ConversationManager {
     await this.replyControlBestEffort(
       message.messageId,
       [
-        "已创建 project 群：twinny",
-        `Project：${projectName}`,
+        `已创建 project 群：${projectDisplayName}`,
+        `Project：${projectDisplayName}`,
         "消息模式：话题",
         `Conversation Key：${conversationKey}`,
         `Codex Thread ID：${thread.threadId}`,
