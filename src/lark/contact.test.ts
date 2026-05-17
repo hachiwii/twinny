@@ -66,6 +66,68 @@ describe("LarkChatDirectory", () => {
       signal: undefined
     });
   });
+
+  it("creates a chat-mode group with shortcut toolkit ids", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { chat_id: "oc_project" } }
+    ]);
+    const directory = new LarkChatDirectory({ openApiClient: createOpenApiClient(fetch) });
+
+    await expect(directory.createChat({
+      name: "twinny",
+      ownerOpenId: "ou_owner",
+      userOpenIds: ["ou_owner"],
+      groupMessageType: "chat",
+      toolkitIds: ["toolkit_new_session"],
+      uuid: "uuid-project",
+      setBotManager: true
+    })).resolves.toMatchObject({ chatId: "oc_project" });
+
+    expect(fetch).toHaveBeenLastCalledWith(
+      "https://open.feishu.cn/open-apis/im/v1/chats?user_id_type=open_id&uuid=uuid-project&set_bot_manager=true",
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer tenant-token",
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          name: "twinny",
+          chat_type: "private",
+          group_message_type: "chat",
+          owner_id: "ou_owner",
+          user_id_list: ["ou_owner"],
+          toolkit_ids: ["toolkit_new_session"]
+        }),
+        signal: undefined
+      }
+    );
+  });
+
+  it("updates group shortcut toolkit ids", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { chat: { chat_id: "oc_group", toolkit_ids: ["toolkit_new_session"] } } }
+    ]);
+    const directory = new LarkChatDirectory({ openApiClient: createOpenApiClient(fetch) });
+
+    await expect(directory.updateChatInfo("oc_group", {
+      toolkitIds: ["toolkit_new_session"]
+    })).resolves.toMatchObject({ chatId: "oc_group", toolkitIds: ["toolkit_new_session"] });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/chats/oc_group?user_id_type=open_id", {
+      method: "PUT",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        toolkit_ids: ["toolkit_new_session"]
+      }),
+      signal: undefined
+    });
+  });
 });
 
 describe("LarkBotDirectory", () => {

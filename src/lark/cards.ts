@@ -28,6 +28,22 @@ export interface RenderTwinnyAgentCardOptions {
   error?: string;
 }
 
+export interface RenderTwinnyThreadSummaryCardOptions {
+  creatorOpenId?: string;
+  createdAt: number;
+  codexThreadId: string;
+  turnCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+  totalWorkDurationMs: number;
+  contextTokens: number;
+  contextWindow: number;
+  iconImageKey?: string;
+}
+
 const STATUS_HEADER: Record<TwinnyAgentCardStatus, { title: string; template: string }> = {
   working: { title: "工作中...", template: "purple" },
   finished: { title: "已完成", template: "green" },
@@ -79,6 +95,68 @@ export function renderTwinnyAgentCard(options: RenderTwinnyAgentCardOptions): La
         content: ""
       },
       template: header.template,
+      ...(options.iconImageKey
+        ? {
+            icon: {
+              tag: "custom_icon",
+              img_key: options.iconImageKey
+            }
+          }
+        : {}),
+      padding: "12px 12px 12px 12px"
+    }
+  };
+}
+
+export function renderTwinnyThreadSummaryCard(options: RenderTwinnyThreadSummaryCardOptions): LarkCardJson {
+  const creator = options.creatorOpenId ? `<at id=${options.creatorOpenId}></at>` : "未知";
+  const contextUsage = formatContextUsage(options.contextTokens, options.contextWindow);
+  const rows = [
+    ["Turn", String(options.turnCount)],
+    ["Input Token", formatInteger(options.inputTokens)],
+    ["Output Token", formatInteger(options.outputTokens)],
+    ["Cache Input Token", formatInteger(options.cachedInputTokens)],
+    ["Reasoning Token", formatInteger(options.reasoningOutputTokens)],
+    ["Total Token", formatInteger(options.totalTokens)],
+    ["总工作时间", formatElapsed(options.totalWorkDurationMs)],
+    ["Context 用量", contextUsage]
+  ];
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      summary: {
+        content: "新会话"
+      }
+    },
+    body: {
+      direction: "vertical",
+      horizontal_spacing: "8px",
+      vertical_spacing: "8px",
+      horizontal_align: "left",
+      vertical_align: "top",
+      padding: "12px 12px 12px 12px",
+      elements: [
+        markdownElement(
+          [
+            `创建人：${creator}`,
+            `创建时间：${formatTimestamp(options.createdAt)}`,
+            `Codex Thread ID：${options.codexThreadId}`
+          ].join("\n")
+        ),
+        markdownElement(markdownTable(["指标", "值"], rows))
+      ]
+    },
+    header: {
+      title: {
+        tag: "plain_text",
+        content: "新会话"
+      },
+      subtitle: {
+        tag: "plain_text",
+        content: ""
+      },
+      template: "blue",
       ...(options.iconImageKey
         ? {
             icon: {
@@ -307,4 +385,48 @@ function formatElapsed(elapsedMs: number): string {
     return `${minutes}m${seconds}s`;
   }
   return `${seconds}s`;
+}
+
+function formatInteger(value: number): string {
+  return Math.max(0, Math.trunc(value)).toLocaleString("en-US");
+}
+
+function formatContextUsage(contextTokens: number, contextWindow: number): string {
+  const tokens = Math.max(0, Math.trunc(contextTokens));
+  const window = Math.max(0, Math.trunc(contextWindow));
+  if (window <= 0) {
+    return formatInteger(tokens);
+  }
+  const percentage = Math.min(100, (tokens / window) * 100);
+  return `${formatInteger(tokens)} / ${formatInteger(window)} (${percentage.toFixed(1)}%)`;
+}
+
+function formatTimestamp(timestamp: number): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return "未知";
+  }
+  const date = new Date(timestamp);
+  const year = date.getFullYear();
+  const month = pad2(date.getMonth() + 1);
+  const day = pad2(date.getDate());
+  const hours = pad2(date.getHours());
+  const minutes = pad2(date.getMinutes());
+  const seconds = pad2(date.getSeconds());
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function markdownTable(headers: [string, string], rows: string[][]): string {
+  return [
+    `| ${headers.map(escapeMarkdownTableCell).join(" | ")} |`,
+    "| --- | --- |",
+    ...rows.map((row) => `| ${escapeMarkdownTableCell(row[0] ?? "")} | ${escapeMarkdownTableCell(row[1] ?? "")} |`)
+  ].join("\n");
+}
+
+function escapeMarkdownTableCell(value: string): string {
+  return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 }

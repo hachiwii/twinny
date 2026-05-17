@@ -183,6 +183,50 @@ export class LarkMessageSender {
     };
   }
 
+  async sendTextToChatId(chatId: string, text: string, options: TextMessageOptions = {}): Promise<LarkSendMessageResult> {
+    const raw = await this.openApiClient.request("/im/v1/messages", {
+      method: "POST",
+      query: {
+        receive_id_type: "chat_id"
+      },
+      signal: options.signal,
+      body: {
+        receive_id: chatId,
+        content: JSON.stringify({ text }),
+        msg_type: "text",
+        ...(options.uuid ? { uuid: options.uuid } : {})
+      }
+    });
+    return {
+      messageId: extractMessageId(raw),
+      raw
+    };
+  }
+
+  async sendInteractiveCardToChatId(
+    chatId: string,
+    card: LarkInteractiveCard,
+    options: TextMessageOptions = {}
+  ): Promise<LarkSendMessageResult> {
+    const raw = await this.openApiClient.request("/im/v1/messages", {
+      method: "POST",
+      query: {
+        receive_id_type: "chat_id"
+      },
+      signal: options.signal,
+      body: {
+        receive_id: chatId,
+        content: JSON.stringify(card),
+        msg_type: "interactive",
+        ...(options.uuid ? { uuid: options.uuid } : {})
+      }
+    });
+    return {
+      messageId: extractMessageId(raw),
+      raw
+    };
+  }
+
   async createReaction(
     messageId: string,
     emojiType = DEFAULT_LARK_WORKING_REACTION,

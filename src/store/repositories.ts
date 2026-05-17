@@ -58,10 +58,23 @@ interface CodexThreadRow {
   role: RoleName;
   forked_from_codex_thread_id: string | null;
   forked_at: number | null;
+  creator_open_id: string | null;
+  card_message_id: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  reasoning_output_tokens: number;
   total_tokens: number;
+  context_tokens: number;
+  context_window: number;
   token_usage_json: string;
   created_at: number;
   updated_at: number;
+}
+
+interface CodexThreadWorkStatsRow {
+  turn_count: number;
+  total_work_duration_ms: number | null;
 }
 
 interface LarkMessageRow {
@@ -116,8 +129,28 @@ export interface UpdateCodexThreadTokenUsageInput {
   codexThreadId: string;
   conversationKey: string;
   role: RoleName;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningOutputTokens: number;
   totalTokens: number;
+  contextTokens: number;
+  contextWindow: number;
   tokenUsageJson: string;
+}
+
+export interface UpdateCodexThreadCardInput {
+  codexThreadId: string;
+  conversationKey: string;
+  role: RoleName;
+  larkThreadId?: string;
+  creatorOpenId?: string;
+  cardMessageId?: string;
+}
+
+export interface CodexThreadWorkStats {
+  turnCount: number;
+  totalWorkDurationMs: number;
 }
 
 export interface ReplaceCodexThreadForLarkThreadInput {
@@ -170,6 +203,8 @@ export class ConversationRepository {
   private readonly selectCodexThreadByConversationAndLarkThread: Database.Statement<[string, string], CodexThreadRow>;
   private readonly replaceCodexThreadForLarkThreadStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly updateCodexThreadUsageStatement: Database.Statement<[Record<string, unknown>]>;
+  private readonly updateCodexThreadCardStatement: Database.Statement<[Record<string, unknown>]>;
+  private readonly selectCodexThreadWorkStats: Database.Statement<[string], CodexThreadWorkStatsRow>;
   private readonly insertLarkMessageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly selectLarkMessageById: Database.Statement<[string], LarkMessageRow>;
   private readonly selectLarkMessageByEventId: Database.Statement<[string], LarkMessageRow>;
@@ -275,7 +310,7 @@ export class ConversationRepository {
       DELETE FROM conversations WHERE conversation_key = ?
     `);
     this.upsertCodexThreadStatement = this.db.prepare(`
-      INSERT INTO codex_threads (
+      INSERT INTO threads (
         codex_thread_id,
         conversation_key,
         lark_thread_id,
@@ -300,37 +335,49 @@ export class ConversationRepository {
       )
       ON CONFLICT(codex_thread_id) DO UPDATE SET
         conversation_key = excluded.conversation_key,
-        lark_thread_id = COALESCE(excluded.lark_thread_id, codex_threads.lark_thread_id),
+        lark_thread_id = COALESCE(excluded.lark_thread_id, threads.lark_thread_id),
         role = excluded.role,
-        forked_from_codex_thread_id = COALESCE(excluded.forked_from_codex_thread_id, codex_threads.forked_from_codex_thread_id),
-        forked_at = COALESCE(excluded.forked_at, codex_threads.forked_at),
+        forked_from_codex_thread_id = COALESCE(excluded.forked_from_codex_thread_id, threads.forked_from_codex_thread_id),
+        forked_at = COALESCE(excluded.forked_at, threads.forked_at),
         updated_at = excluded.updated_at
     `);
     this.selectCodexThreadById = this.db.prepare(`
-      SELECT * FROM codex_threads WHERE codex_thread_id = ?
+      SELECT * FROM threads WHERE codex_thread_id = ?
     `);
     this.selectCodexThreadByConversationAndLarkThread = this.db.prepare(`
-      SELECT * FROM codex_threads
+      SELECT * FROM threads
       WHERE conversation_key = ?
         AND lark_thread_id = ?
     `);
     this.replaceCodexThreadForLarkThreadStatement = this.db.prepare(`
-      UPDATE codex_threads
+      UPDATE threads
       SET codex_thread_id = @codexThreadId,
           role = @role,
+          input_tokens = 0,
+          output_tokens = 0,
+          cached_input_tokens = 0,
+          reasoning_output_tokens = 0,
           total_tokens = 0,
+          context_tokens = 0,
+          context_window = 0,
           token_usage_json = '{}',
           updated_at = @updatedAt
       WHERE conversation_key = @conversationKey
         AND lark_thread_id = @larkThreadId
     `);
     this.updateCodexThreadUsageStatement = this.db.prepare(`
-      INSERT INTO codex_threads (
+      INSERT INTO threads (
         codex_thread_id,
         conversation_key,
         lark_thread_id,
         role,
+        input_tokens,
+        output_tokens,
+        cached_input_tokens,
+        reasoning_output_tokens,
         total_tokens,
+        context_tokens,
+        context_window,
         token_usage_json,
         created_at,
         updated_at
@@ -339,7 +386,13 @@ export class ConversationRepository {
         @conversationKey,
         NULL,
         @role,
+        @inputTokens,
+        @outputTokens,
+        @cachedInputTokens,
+        @reasoningOutputTokens,
         @totalTokens,
+        @contextTokens,
+        @contextWindow,
         @tokenUsageJson,
         @createdAt,
         @updatedAt
@@ -347,9 +400,63 @@ export class ConversationRepository {
       ON CONFLICT(codex_thread_id) DO UPDATE SET
         conversation_key = excluded.conversation_key,
         role = excluded.role,
+        input_tokens = excluded.input_tokens,
+        output_tokens = excluded.output_tokens,
+        cached_input_tokens = excluded.cached_input_tokens,
+        reasoning_output_tokens = excluded.reasoning_output_tokens,
         total_tokens = excluded.total_tokens,
+        context_tokens = excluded.context_tokens,
+        context_window = excluded.context_window,
         token_usage_json = excluded.token_usage_json,
         updated_at = excluded.updated_at
+    `);
+    this.updateCodexThreadCardStatement = this.db.prepare(`
+      INSERT INTO threads (
+        codex_thread_id,
+        conversation_key,
+        lark_thread_id,
+        role,
+        creator_open_id,
+        card_message_id,
+        created_at,
+        updated_at
+      ) VALUES (
+        @codexThreadId,
+        @conversationKey,
+        @larkThreadId,
+        @role,
+        @creatorOpenId,
+        @cardMessageId,
+        @createdAt,
+        @updatedAt
+      )
+      ON CONFLICT(codex_thread_id) DO UPDATE SET
+        conversation_key = excluded.conversation_key,
+        lark_thread_id = COALESCE(excluded.lark_thread_id, threads.lark_thread_id),
+        role = excluded.role,
+        creator_open_id = COALESCE(excluded.creator_open_id, threads.creator_open_id),
+        card_message_id = COALESCE(excluded.card_message_id, threads.card_message_id),
+        updated_at = excluded.updated_at
+    `);
+    this.selectCodexThreadWorkStats = this.db.prepare(`
+      SELECT
+        COUNT(*) AS turn_count,
+        COALESCE(SUM(CASE
+          WHEN terminal_at IS NOT NULL AND started_at IS NOT NULL AND terminal_at > started_at
+          THEN terminal_at - started_at
+          ELSE 0
+        END), 0) AS total_work_duration_ms
+      FROM (
+        SELECT
+          codex_turn_id,
+          MIN(processing_started_at) AS started_at,
+          MAX(COALESCE(completed_at, failed_at, cleared_at)) AS terminal_at
+        FROM lark_messages
+        WHERE codex_thread_id = ?
+          AND codex_turn_id IS NOT NULL
+          AND processing_started_at IS NOT NULL
+        GROUP BY codex_turn_id
+      )
     `);
     this.insertLarkMessageStatement = this.db.prepare(`
       INSERT OR IGNORE INTO lark_messages (
@@ -665,21 +772,69 @@ export class ConversationRepository {
     assertNonEmpty(input.codexThreadId, "codexThreadId");
     assertValidConversationKey(input.conversationKey);
     assertValidRole(input.role);
+    assertNonNegativeFinite(input.inputTokens, "inputTokens");
+    assertNonNegativeFinite(input.outputTokens, "outputTokens");
+    assertNonNegativeFinite(input.cachedInputTokens, "cachedInputTokens");
+    assertNonNegativeFinite(input.reasoningOutputTokens, "reasoningOutputTokens");
     if (!Number.isFinite(input.totalTokens) || input.totalTokens < 0) {
       throw new TwinnyError("totalTokens must be a non-negative finite number", "CODEX_THREAD_TOKEN_USAGE_INVALID");
     }
+    assertNonNegativeFinite(input.contextTokens, "contextTokens");
+    assertNonNegativeFinite(input.contextWindow, "contextWindow");
     assertNonEmpty(input.tokenUsageJson, "tokenUsageJson");
     const now = this.now();
     this.updateCodexThreadUsageStatement.run({
       codexThreadId: input.codexThreadId,
       conversationKey: input.conversationKey,
       role: input.role,
+      inputTokens: Math.trunc(input.inputTokens),
+      outputTokens: Math.trunc(input.outputTokens),
+      cachedInputTokens: Math.trunc(input.cachedInputTokens),
+      reasoningOutputTokens: Math.trunc(input.reasoningOutputTokens),
       totalTokens: Math.trunc(input.totalTokens),
+      contextTokens: Math.trunc(input.contextTokens),
+      contextWindow: Math.trunc(input.contextWindow),
       tokenUsageJson: input.tokenUsageJson,
       createdAt: now,
       updatedAt: now
     });
     return this.requireCodexThreadById(input.codexThreadId);
+  }
+
+  updateCodexThreadCard(input: UpdateCodexThreadCardInput): CodexThreadRecord {
+    assertNonEmpty(input.codexThreadId, "codexThreadId");
+    assertValidConversationKey(input.conversationKey);
+    assertValidRole(input.role);
+    if (input.larkThreadId !== undefined) {
+      assertNonEmpty(input.larkThreadId, "larkThreadId");
+    }
+    if (input.creatorOpenId !== undefined) {
+      assertNonEmpty(input.creatorOpenId, "creatorOpenId");
+    }
+    if (input.cardMessageId !== undefined) {
+      assertNonEmpty(input.cardMessageId, "cardMessageId");
+    }
+    const now = this.now();
+    this.updateCodexThreadCardStatement.run({
+      codexThreadId: input.codexThreadId,
+      conversationKey: input.conversationKey,
+      role: input.role,
+      larkThreadId: input.larkThreadId ?? null,
+      creatorOpenId: input.creatorOpenId ?? null,
+      cardMessageId: input.cardMessageId ?? null,
+      createdAt: now,
+      updatedAt: now
+    });
+    return this.requireCodexThreadById(input.codexThreadId);
+  }
+
+  getCodexThreadWorkStats(codexThreadId: string): CodexThreadWorkStats {
+    assertNonEmpty(codexThreadId, "codexThreadId");
+    const row = this.selectCodexThreadWorkStats.get(codexThreadId);
+    return {
+      turnCount: Math.trunc(row?.turn_count ?? 0),
+      totalWorkDurationMs: Math.trunc(row?.total_work_duration_ms ?? 0)
+    };
   }
 
   insertLarkMessage(input: InsertLarkMessageInput): LarkMessageRecord {
@@ -917,7 +1072,15 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     role: row.role,
     forkedFromCodexThreadId: row.forked_from_codex_thread_id ?? undefined,
     forkedAt: row.forked_at ?? undefined,
+    creatorOpenId: row.creator_open_id ?? undefined,
+    cardMessageId: row.card_message_id ?? undefined,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cachedInputTokens: row.cached_input_tokens,
+    reasoningOutputTokens: row.reasoning_output_tokens,
     totalTokens: row.total_tokens,
+    contextTokens: row.context_tokens,
+    contextWindow: row.context_window,
     tokenUsageJson: row.token_usage_json,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -1117,5 +1280,11 @@ function assertAbsolutePath(value: string, field: string): void {
 function assertNonEmpty(value: string, field: string): void {
   if (value.trim() === "") {
     throw new TwinnyError(`${field} must not be empty`, "CONVERSATION_FIELD_EMPTY");
+  }
+}
+
+function assertNonNegativeFinite(value: number, field: string): void {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new TwinnyError(`${field} must be a non-negative finite number`, "CODEX_THREAD_TOKEN_USAGE_INVALID");
   }
 }

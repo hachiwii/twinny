@@ -128,7 +128,13 @@ describe("ConversationManager", () => {
       codexThreadId: "thread_1",
       conversationKey: "p2p_ou_guest",
       role: "guest",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
       totalTokens: 42,
+      contextTokens: 0,
+      contextWindow: 0,
       tokenUsageJson: JSON.stringify({
         threadId: "thread_1",
         turnId: "turn_1",
@@ -449,7 +455,7 @@ describe("ConversationManager", () => {
   it("replies to /status with conversation, thread, and token usage", async () => {
     const row = conversationRecord({ codexThreadId: "thread_status" });
     const { repository } = createRepository(row);
-    vi.mocked(repository.getCodexThreadById).mockReturnValue({
+    vi.mocked(repository.getCodexThreadById).mockReturnValue(codexThreadRecord({
       id: 1,
       codexThreadId: "thread_status",
       conversationKey: "p2p_ou_guest",
@@ -468,7 +474,7 @@ describe("ConversationManager", () => {
       }),
       createdAt: 100,
       updatedAt: 100
-    });
+    }));
     const codex = createCodex();
     const lark = createLarkResponder();
     const manager = createManager({ repository, codex, lark });
@@ -488,12 +494,55 @@ describe("ConversationManager", () => {
         "- output: 20",
         "- cached input: 40",
         "- reasoning output: 5",
-        "- cache hit rate: 50.00%"
+        "- cache hit rate: 50.00%",
+        "- context: 0 / 0 (0.00%)"
       ].join("\n")
     );
     expect(codex.readAccountRateLimits).not.toHaveBeenCalled();
     expect(codex.startTurn).not.toHaveBeenCalled();
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m1"]);
+  });
+
+  it("lets the owner create a chat-mode twinny project group", async () => {
+    const { repository } = createRepository();
+    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_project" })) });
+    const lark = createLarkResponder();
+    const larkChats: LarkChatDirectory = {
+      createChat: vi.fn(async () => ({ chatId: "oc_project", raw: {} })),
+      getChatInfo: vi.fn(async () => ({ toolkitIds: [] })),
+      updateChatInfo: vi.fn(async () => ({ toolkitIds: ["toolkit_new_session"] }))
+    };
+    const manager = createManager({
+      repository,
+      codex,
+      lark,
+      larkChats,
+      config: { ...config, lark: { ...config.lark, newSessionToolkitId: "toolkit_new_session" } }
+    });
+
+    manager.submitIncoming(message("m1", "/project alpha", { senderOpenId: "ou_owner", senderName: "Owner" }));
+
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("已创建 project 群：twinny")));
+    expect(larkChats.createChat).toHaveBeenCalledWith({
+      name: "twinny",
+      ownerOpenId: "ou_owner",
+      userOpenIds: ["ou_owner"],
+      groupMessageType: "chat",
+      toolkitIds: ["toolkit_new_session"],
+      setBotManager: true,
+      uuid: "twinny-project-ou_owner-alpha"
+    });
+    expect(larkChats.updateChatInfo).toHaveBeenCalledWith("oc_project", { toolkitIds: ["toolkit_new_session"] });
+    expect(repository.findByConversationKey("group_oc_project")).toMatchObject({
+      conversationKey: "group_oc_project",
+      type: "group",
+      chatId: "oc_project",
+      name: "twinny",
+      chatMode: "group",
+      responseMode: "all",
+      role: "owner",
+      codexThreadId: "thread_project"
+    });
   });
 
   it("includes account usage windows in /status for the owner", async () => {
@@ -711,7 +760,7 @@ describe("ConversationManager", () => {
   it("handles bot menu status and help as direct p2p replies", async () => {
     const row = conversationRecord({ codexThreadId: "thread_status" });
     const { repository } = createRepository(row);
-    vi.mocked(repository.getCodexThreadById).mockReturnValue({
+    vi.mocked(repository.getCodexThreadById).mockReturnValue(codexThreadRecord({
       id: 1,
       codexThreadId: "thread_status",
       conversationKey: "p2p_ou_guest",
@@ -720,7 +769,7 @@ describe("ConversationManager", () => {
       tokenUsageJson: JSON.stringify({ usage: { total: { totalTokens: 10 } } }),
       createdAt: 100,
       updatedAt: 100
-    });
+    }));
     const codex = createCodex();
     const lark = createLarkResponder();
     const manager = createManager({ repository, codex, lark });
@@ -737,6 +786,47 @@ describe("ConversationManager", () => {
     expect(lark.sendTextToOpenId).toHaveBeenCalledWith("ou_guest", expect.stringContaining("/help - 查看可用指令和使用说明"));
     expect(lark.replyText).not.toHaveBeenCalled();
     expect(codex.startTurn).not.toHaveBeenCalled();
+  });
+
+  it("creates a new topic card when the group new-session shortcut is clicked", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "all" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_new_session" })) });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitBotMenuAction(botMenuAction("menu-new-session", "new_session", {
+      operatorOpenId: "ou_owner",
+      operatorName: "Owner",
+      chatId: "oc_group"
+    }));
+
+    await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
+    expect(codex.startThread).toHaveBeenCalledWith({
+      role: "owner",
+      cwd: "/tmp/twinny/workspaces/group_oc_group",
+      approvalPolicy: "never"
+    });
+    expect(lark.sendCardToChatId).toHaveBeenCalledWith(
+      "oc_group",
+      expect.objectContaining({
+        header: expect.objectContaining({
+          template: "blue",
+          title: { tag: "plain_text", content: "新会话" }
+        })
+      }),
+      { uuid: "twinny-new-session-menu-new-session" }
+    );
+    const sentCard = vi.mocked(lark.sendCardToChatId).mock.calls[0]![1] as Record<string, unknown>;
+    expect(JSON.stringify(sentCard)).toContain("thread_new_session");
+    expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread_new_session",
+      role: "owner",
+      larkThreadId: "card_oc_group_1",
+      creatorOpenId: "ou_owner",
+      cardMessageId: "card_oc_group_1"
+    });
   });
 
   it("interrupts active turns and binds a fresh thread on /new", async () => {
@@ -862,6 +952,35 @@ describe("ConversationManager", () => {
       role: "guest",
       workspace: "/tmp/twinny/workspaces/group_oc_group"
     });
+  });
+
+  it("attaches the configured new-session shortcut when a group is activated", async () => {
+    const { repository } = createRepository();
+    const lark = createLarkResponder();
+    const larkChats: LarkChatDirectory = {
+      getChatInfo: vi.fn(async () => ({
+        name: "Team Room",
+        chatMode: "topic" as const,
+        toolkitIds: ["toolkit_existing"]
+      })),
+      updateChatInfo: vi.fn(async () => ({ toolkitIds: ["toolkit_existing", "toolkit_new_session"] }))
+    };
+    const manager = createManager({
+      repository,
+      lark,
+      larkChats,
+      botOpenId: "ou_bot",
+      config: { ...config, lark: { ...config.lark, newSessionToolkitId: "toolkit_new_session" } }
+    });
+
+    manager.submitIncoming(groupMessage("g1", "/activate", { senderOpenId: "ou_owner", senderName: "Owner" }));
+
+    await waitForExpect(() =>
+      expect(larkChats.updateChatInfo).toHaveBeenCalledWith("oc_group", {
+        toolkitIds: ["toolkit_existing", "toolkit_new_session"]
+      })
+    );
+    expect(lark.replyText).toHaveBeenCalledWith("g1", "已激活群聊：Team Room\n响应模式：at\nRole：guest");
   });
 
   it("keeps a group's first activated role immutable while allowing mode and name refreshes", async () => {
@@ -2042,6 +2161,7 @@ function createLarkResponder(): LarkResponder {
     replyPost: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     replyFile: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     sendTextToOpenId: vi.fn(async () => undefined),
+    sendCardToChatId: vi.fn(async (chatId) => ({ messageId: `card_${chatId}_${++markdownReplyCount}` })),
     replyCard: vi.fn(async (messageId) => ({ messageId: `card_${messageId}_${++markdownReplyCount}` })),
     patchCard: vi.fn(async (messageId) => ({ messageId })),
     recallMessage: vi.fn(async () => undefined)
@@ -2084,17 +2204,16 @@ function createRepository(initial?: ConversationRecord, options: {
     larkThreadId?: string;
   }): CodexThreadRecord => {
     const existing = codexThreads.get(input.codexThreadId);
-    const record: CodexThreadRecord = {
+    const record = codexThreadRecord({
+      ...existing,
       id: existing?.id ?? nextCodexThreadId++,
       codexThreadId: input.codexThreadId,
       conversationKey: input.conversationKey,
       larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
       role: input.role,
-      totalTokens: existing?.totalTokens ?? 0,
-      tokenUsageJson: existing?.tokenUsageJson ?? "{}",
       createdAt: existing?.createdAt ?? Date.now(),
       updatedAt: Date.now()
-    };
+    });
     codexThreads.set(record.codexThreadId, record);
     return record;
   };
@@ -2107,7 +2226,7 @@ function createRepository(initial?: ConversationRecord, options: {
     if (existing) {
       codexThreads.delete(existing.codexThreadId);
     }
-    const record: CodexThreadRecord = {
+    const record = codexThreadRecord({
       id: existing?.id ?? nextCodexThreadId++,
       codexThreadId: update.codexThreadId,
       conversationKey,
@@ -2117,7 +2236,7 @@ function createRepository(initial?: ConversationRecord, options: {
       tokenUsageJson: "{}",
       createdAt: existing?.createdAt ?? Date.now(),
       updatedAt: Date.now()
-    };
+    });
     codexThreads.set(record.codexThreadId, record);
     return record;
   };
@@ -2135,16 +2254,14 @@ function createRepository(initial?: ConversationRecord, options: {
     repository: {
       findByConversationKey: () => row ?? null,
       getCodexThreadById: vi.fn((codexThreadId) =>
-        codexThreads.get(codexThreadId) ?? {
+        codexThreads.get(codexThreadId) ?? codexThreadRecord({
           id: nextCodexThreadId++,
           codexThreadId,
           conversationKey: row?.conversationKey ?? "p2p_ou_guest",
           role: row?.role ?? "guest",
-          totalTokens: 0,
-          tokenUsageJson: "{}",
           createdAt: Date.now(),
           updatedAt: Date.now()
-        }
+        })
       ),
       getCodexThreadByConversationAndLarkThread: vi.fn(getCodexThreadByLarkThread),
       getLarkMessageById: vi.fn((larkMessageId) =>
@@ -2187,7 +2304,60 @@ function createRepository(initial?: ConversationRecord, options: {
       },
       upsertCodexThread: vi.fn(putCodexThread),
       replaceCodexThreadForLarkThread: vi.fn(replaceCodexThreadForLarkThread),
-      updateCodexThreadTokenUsage: vi.fn(),
+      updateCodexThreadTokenUsage: vi.fn((input) => {
+        const existing = codexThreads.get(input.codexThreadId);
+        const record = codexThreadRecord({
+          ...existing,
+          codexThreadId: input.codexThreadId,
+          conversationKey: input.conversationKey,
+          role: input.role,
+          inputTokens: input.inputTokens,
+          outputTokens: input.outputTokens,
+          cachedInputTokens: input.cachedInputTokens,
+          reasoningOutputTokens: input.reasoningOutputTokens,
+          totalTokens: input.totalTokens,
+          contextTokens: input.contextTokens,
+          contextWindow: input.contextWindow,
+          tokenUsageJson: input.tokenUsageJson,
+          updatedAt: Date.now()
+        });
+        codexThreads.set(record.codexThreadId, record);
+        return record;
+      }),
+      updateCodexThreadCard: vi.fn((input) => {
+        const existing = codexThreads.get(input.codexThreadId);
+        const record = codexThreadRecord({
+          ...existing,
+          codexThreadId: input.codexThreadId,
+          conversationKey: input.conversationKey,
+          larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
+          role: input.role,
+          creatorOpenId: input.creatorOpenId ?? existing?.creatorOpenId,
+          cardMessageId: input.cardMessageId ?? existing?.cardMessageId,
+          updatedAt: Date.now()
+        });
+        codexThreads.set(record.codexThreadId, record);
+        return record;
+      }),
+      getCodexThreadWorkStats: vi.fn((codexThreadId) => {
+        const turns = new Map<string, { startedAt: number; terminalAt?: number }>();
+        for (const message of larkMessages.values()) {
+          if (message.codexThreadId !== codexThreadId || !message.codexTurnId || !message.processingStartedAt) {
+            continue;
+          }
+          const existing = turns.get(message.codexTurnId);
+          const terminalAt = message.completedAt ?? message.failedAt ?? message.clearedAt;
+          turns.set(message.codexTurnId, {
+            startedAt: Math.min(existing?.startedAt ?? message.processingStartedAt, message.processingStartedAt),
+            terminalAt: Math.max(existing?.terminalAt ?? 0, terminalAt ?? 0) || existing?.terminalAt
+          });
+        }
+        return {
+          turnCount: turns.size,
+          totalWorkDurationMs: [...turns.values()].reduce((sum, turn) =>
+            sum + (turn.terminalAt && turn.terminalAt > turn.startedAt ? turn.terminalAt - turn.startedAt : 0), 0)
+        };
+      }),
       insertLarkMessage: vi.fn((input) => {
         const record = larkMessageRecord({
           larkMessageId: input.larkMessageId,
@@ -2273,6 +2443,26 @@ function groupConversationRecord(overrides: Partial<ConversationRecord> = {}): C
   });
 }
 
+function codexThreadRecord(overrides: Partial<CodexThreadRecord> = {}): CodexThreadRecord {
+  return {
+    id: 1,
+    codexThreadId: "thread_1",
+    conversationKey: "p2p_ou_guest",
+    role: "guest",
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+    contextTokens: 0,
+    contextWindow: 0,
+    tokenUsageJson: "{}",
+    createdAt: 100,
+    updatedAt: 100,
+    ...overrides
+  };
+}
+
 function larkMessageRecord(overrides: Partial<LarkMessageRecord> = {}): LarkMessageRecord {
   const hasExplicitLarkMessageId = Object.prototype.hasOwnProperty.call(overrides, "larkMessageId");
   const larkMessageId = hasExplicitLarkMessageId ? overrides.larkMessageId : "m1";
@@ -2313,7 +2503,11 @@ function message(messageId: string, text: string, overrides: Partial<IncomingLar
   };
 }
 
-function botMenuAction(eventId: string, action: IncomingLarkBotMenuAction["action"]): IncomingLarkBotMenuAction {
+function botMenuAction(
+  eventId: string,
+  action: IncomingLarkBotMenuAction["action"],
+  overrides: Partial<IncomingLarkBotMenuAction> = {}
+): IncomingLarkBotMenuAction {
   return {
     eventId,
     eventKey: action,
@@ -2331,7 +2525,8 @@ function botMenuAction(eventId: string, action: IncomingLarkBotMenuAction["actio
         event_key: action,
         timestamp: 1234
       }
-    }
+    },
+    ...overrides
   };
 }
 

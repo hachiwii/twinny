@@ -19,6 +19,9 @@ export const LARK_REQUIRED_SCOPES = [
   "im:message:update",
   "im:message:recall",
   "im:message.reactions:write_only",
+  "im:chat:read",
+  "im:chat:create",
+  "im:chat:update",
   "im:resource"
 ] as const;
 

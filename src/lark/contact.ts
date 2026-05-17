@@ -1,13 +1,36 @@
 import { LarkOpenApiClient } from "./openapi.js";
-import type { LarkChatMode } from "../types.js";
+import type { LarkChatMode, LarkGroupMessageType } from "../types.js";
 
 export interface LarkUserDirectoryOptions {
   openApiClient: LarkOpenApiClient;
 }
 
 export interface LarkChatInfo {
+  chatId?: string;
   name?: string;
   chatMode?: LarkChatMode;
+  groupMessageType?: LarkGroupMessageType;
+  toolkitIds?: string[];
+}
+
+export interface CreateLarkChatInput {
+  name: string;
+  ownerOpenId?: string;
+  userOpenIds?: string[];
+  groupMessageType?: LarkGroupMessageType;
+  toolkitIds?: string[];
+  uuid?: string;
+  setBotManager?: boolean;
+}
+
+export interface UpdateLarkChatInput {
+  groupMessageType?: LarkGroupMessageType;
+  toolkitIds?: string[];
+}
+
+export interface LarkChatCreateResult {
+  chatId?: string;
+  raw: unknown;
 }
 
 export class LarkUserDirectory {
@@ -27,6 +50,29 @@ export class LarkUserDirectory {
 export class LarkChatDirectory {
   constructor(private readonly options: LarkUserDirectoryOptions) {}
 
+  async createChat(input: CreateLarkChatInput): Promise<LarkChatCreateResult> {
+    const raw = await this.options.openApiClient.request("/im/v1/chats", {
+      method: "POST",
+      query: {
+        user_id_type: "open_id",
+        ...(input.uuid ? { uuid: input.uuid } : {}),
+        ...(input.setBotManager === undefined ? {} : { set_bot_manager: input.setBotManager })
+      },
+      body: {
+        name: input.name,
+        chat_type: "private",
+        group_message_type: input.groupMessageType ?? "chat",
+        ...(input.ownerOpenId ? { owner_id: input.ownerOpenId } : {}),
+        ...(input.userOpenIds?.length ? { user_id_list: input.userOpenIds } : {}),
+        ...(input.toolkitIds?.length ? { toolkit_ids: input.toolkitIds } : {})
+      }
+    });
+    return {
+      chatId: extractChatId(raw),
+      raw
+    };
+  }
+
   async getChatInfo(chatId: string): Promise<LarkChatInfo> {
     const raw = await this.options.openApiClient.request(`/im/v1/chats/${encodePathSegment(chatId)}`, {
       method: "GET",
@@ -39,6 +85,20 @@ export class LarkChatDirectory {
 
   async getChatName(chatId: string): Promise<string | undefined> {
     return (await this.getChatInfo(chatId)).name;
+  }
+
+  async updateChatInfo(chatId: string, input: UpdateLarkChatInput): Promise<LarkChatInfo> {
+    const raw = await this.options.openApiClient.request(`/im/v1/chats/${encodePathSegment(chatId)}`, {
+      method: "PUT",
+      query: {
+        user_id_type: "open_id"
+      },
+      body: {
+        ...(input.groupMessageType ? { group_message_type: input.groupMessageType } : {}),
+        ...(input.toolkitIds ? { toolkit_ids: input.toolkitIds } : {})
+      }
+    });
+    return extractChatInfo(raw);
   }
 }
 
@@ -62,14 +122,31 @@ function extractUserName(raw: unknown): string | undefined {
 function extractChatInfo(raw: unknown): LarkChatInfo {
   const data = getRecord(raw, "data");
   const chat = getRecord(data, "chat");
+  const toolkitIds = arrayOfStrings(chat.toolkit_ids) ?? arrayOfStrings(data.toolkit_ids);
   return {
+    chatId: firstNonEmptyString(chat.chat_id, data.chat_id),
     name: firstNonEmptyString(chat.name, chat.chat_name, chat.title, data.name, data.chat_name, data.title),
-    chatMode: normalizeLarkChatMode(firstNonEmptyString(chat.chat_mode, data.chat_mode))
+    chatMode: normalizeLarkChatMode(firstNonEmptyString(chat.chat_mode, data.chat_mode)),
+    groupMessageType: normalizeLarkGroupMessageType(firstNonEmptyString(chat.group_message_type, data.group_message_type)),
+    toolkitIds
   };
+}
+
+function extractChatId(raw: unknown): string | undefined {
+  const data = getRecord(raw, "data");
+  const chat = getRecord(data, "chat");
+  return firstNonEmptyString(chat.chat_id, data.chat_id);
 }
 
 function normalizeLarkChatMode(value: string | undefined): LarkChatMode | undefined {
   if (value === "group" || value === "topic") {
+    return value;
+  }
+  return undefined;
+}
+
+function normalizeLarkGroupMessageType(value: string | undefined): LarkGroupMessageType | undefined {
+  if (value === "chat" || value === "thread") {
     return value;
   }
   return undefined;
@@ -96,6 +173,14 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
     }
   }
   return undefined;
+}
+
+function arrayOfStrings(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const strings = value.filter((item): item is string => typeof item === "string" && item.trim() !== "");
+  return strings.length > 0 ? strings : undefined;
 }
 
 function encodePathSegment(value: string): string {
