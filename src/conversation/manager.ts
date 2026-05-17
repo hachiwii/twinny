@@ -392,10 +392,10 @@ type ParsedCommand =
   | { kind: "help" };
 
 interface ParsedCardActionCommand {
-  action: "stop" | "next";
+  action: "stop" | "next" | "queue";
   stateKey: string;
   runId: number;
-  text: "/stop" | "/next";
+  text: "/stop" | "/next" | "/queue";
 }
 
 export class ConversationManager {
@@ -666,6 +666,9 @@ export class ConversationManager {
     switch (action.action) {
       case "queue": {
         state.queueNextMessage = !state.queueNextMessage;
+        if (state.active) {
+          await this.patchAgentCardBestEffort(state, state.active, "working");
+        }
         await this.sendDirectControlBestEffort(
           action.operatorOpenId,
           state.queueNextMessage
@@ -1536,10 +1539,16 @@ export class ConversationManager {
         active.context.stateKey !== command.stateKey ||
         (action.openMessageId !== undefined && active.card?.messageId !== undefined && action.openMessageId !== active.card.messageId);
       if (!stale) {
-        if (command.action === "stop") {
-          await this.executeStopAction(state);
-        } else {
-          await this.executeNextAction(state, active.context);
+        switch (command.action) {
+          case "stop":
+            await this.executeStopAction(state);
+            break;
+          case "next":
+            await this.executeNextAction(state, active.context);
+            break;
+          case "queue":
+            await this.executeQueueAction(state, active);
+            break;
         }
       }
     } catch (error) {
@@ -1559,6 +1568,11 @@ export class ConversationManager {
     if (!interrupted) {
       await this.startPendingBatch(state, context);
     }
+  }
+
+  private async executeQueueAction(state: ConversationState, active: ActiveTurn): Promise<void> {
+    state.queueNextMessage = !state.queueNextMessage;
+    await this.patchAgentCardBestEffort(state, active, "working");
   }
 
   private async recordCardActionBestEffort(
@@ -2971,6 +2985,7 @@ export class ConversationManager {
       messages: messages ?? active.card?.messages ?? [],
       elapsedMs: Date.now() - active.startedAt,
       queueDepth: state.pendingBatch.length,
+      queueNextMessage: state.queueNextMessage,
       stateKey: active.context.stateKey,
       runId: active.runId,
       iconImageKey: this.options.config.lark.iconImageKey,
@@ -3352,14 +3367,14 @@ function parseTwinnyCardAction(value: Record<string, unknown>): ParsedCardAction
   const action = value.action;
   const stateKey = typeof value.stateKey === "string" ? value.stateKey : undefined;
   const runId = typeof value.runId === "number" && Number.isInteger(value.runId) ? value.runId : undefined;
-  if ((action !== "stop" && action !== "next") || !stateKey || runId === undefined) {
+  if ((action !== "stop" && action !== "next" && action !== "queue") || !stateKey || runId === undefined) {
     return undefined;
   }
   return {
     action,
     stateKey,
     runId,
-    text: action === "stop" ? "/stop" : "/next"
+    text: action === "stop" ? "/stop" : action === "next" ? "/next" : "/queue"
   };
 }
 

@@ -10,7 +10,7 @@ export interface TwinnyAgentCardMessage {
 
 export interface TwinnyAgentCardActionValue {
   twinny: true;
-  action: "stop" | "next";
+  action: "stop" | "next" | "queue";
   stateKey: string;
   runId: number;
 }
@@ -20,6 +20,7 @@ export interface RenderTwinnyAgentCardOptions {
   messages: TwinnyAgentCardMessage[];
   elapsedMs: number;
   queueDepth: number;
+  queueNextMessage: boolean;
   stateKey: string;
   runId: number;
   iconImageKey?: string;
@@ -281,23 +282,19 @@ function progressPlaceholderElement(): LarkCardElement {
 
 function buttonsElement(options: RenderTwinnyAgentCardOptions): LarkCardElement {
   const buttons: LarkCardElement[] = [
-    buttonElement("停止", "danger_filled", {
+    buttonElement("打断", "danger_filled", {
       twinny: true,
-      action: "stop",
+      action: "next",
+      stateKey: options.stateKey,
+      runId: options.runId
+    }),
+    buttonElement(options.queueNextMessage ? "关闭排队" : "开启排队", "default", {
+      twinny: true,
+      action: "queue",
       stateKey: options.stateKey,
       runId: options.runId
     })
   ];
-  if (options.queueDepth > 0) {
-    buttons.push(
-      buttonElement("打断并处理队列中消息", "default", {
-        twinny: true,
-        action: "next",
-        stateKey: options.stateKey,
-        runId: options.runId
-      })
-    );
-  }
   return {
     tag: "column_set",
     horizontal_spacing: "8px",

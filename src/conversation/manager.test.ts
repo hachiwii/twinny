@@ -1963,6 +1963,109 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_1", "turn_2"));
   });
 
+  it("toggles queue mode via card action and updates the button label", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_1", text: "working" });
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    const initialCard = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
+    expect(JSON.stringify(initialCard)).toContain("开启排队");
+
+    manager.submitCardAction({
+      eventId: "event_card_queue_1",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m1_1",
+      openChatId: "oc_ignored",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "queue",
+        stateKey: "p2p_ou_guest",
+        runId: 1
+      },
+      raw: { event_id: "event_card_queue_1" }
+    });
+
+    await waitForExpect(() => {
+      const card = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
+      expect(card).toBeDefined();
+      expect(JSON.stringify(card)).toContain("关闭排队");
+    });
+
+    manager.submitCardAction({
+      eventId: "event_card_queue_2",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m1_1",
+      openChatId: "oc_ignored",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "queue",
+        stateKey: "p2p_ou_guest",
+        runId: 1
+      },
+      raw: { event_id: "event_card_queue_2" }
+    });
+
+    await waitForExpect(() => {
+      const card = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
+      expect(card).toBeDefined();
+      expect(JSON.stringify(card)).toContain("开启排队");
+    });
+
+    manager.submitCardAction({
+      eventId: "event_card_queue_3",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m1_1",
+      openChatId: "oc_ignored",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "queue",
+        stateKey: "p2p_ou_guest",
+        runId: 1
+      },
+      raw: { event_id: "event_card_queue_3" }
+    });
+
+    await waitForExpect(() => {
+      const card = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
+      expect(card).toBeDefined();
+      expect(JSON.stringify(card)).toContain("关闭排队");
+    });
+
+    manager.submitIncoming(message("m2", "queued by card"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+    await waitForExpect(() => {
+      expect(
+        vi
+          .mocked(repository.insertLarkMessage)
+          .mock.calls
+          .map(([input]) => input)
+          .some((input) => input.routeKind === "queued_message" && input.status === "queued" && input.text === "queued by card")
+      ).toBe(true);
+    });
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    const cardActions = vi
+      .mocked(repository.insertLarkMessage)
+      .mock.calls
+      .map(([input]) => input)
+      .filter((input) => input.routeKind === "card_action");
+    expect(cardActions).toHaveLength(3);
+    expect(cardActions[0]).toMatchObject({ eventId: "event_card_queue_1", text: "/queue" });
+    expect(cardActions[1]).toMatchObject({ eventId: "event_card_queue_2", text: "/queue" });
+    expect(cardActions[2]).toMatchObject({ eventId: "event_card_queue_3", text: "/queue" });
+  });
+
   it("uploads SEND_TO_LARK image directives from completed agent messages and embeds them in the Lark post", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-image-"));
     const workspaceRoot = path.join(tempRoot, "workspaces");
