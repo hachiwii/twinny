@@ -44,6 +44,11 @@ export interface ForwardThreadOptions {
   signal?: AbortSignal;
 }
 
+export interface MessageReadUsersOptions {
+  signal?: AbortSignal;
+  pageSize?: number;
+}
+
 export type LarkPostNode =
   | { tag: "md"; text: string }
   | { tag: "img"; image_key: string }
@@ -186,6 +191,38 @@ export class LarkMessageSender {
       method: "DELETE",
       signal: options.signal
     });
+  }
+
+  async listMessageReadOpenIds(messageId: string, options: MessageReadUsersOptions = {}): Promise<string[]> {
+    const readOpenIds = new Set<string>();
+    const pageSize = options.pageSize ?? 100;
+    let pageToken: string | undefined;
+
+    do {
+      const raw = await this.openApiClient.request(`/im/v1/messages/${encodePathSegment(messageId)}/read_users`, {
+        method: "GET",
+        query: {
+          user_id_type: "open_id",
+          page_size: pageSize,
+          page_token: pageToken
+        },
+        signal: options.signal
+      });
+      const data = getData(raw);
+      for (const item of Array.isArray(data.items) ? data.items : []) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+          continue;
+        }
+        const userId = (item as Record<string, unknown>).user_id;
+        if (typeof userId === "string" && userId.trim()) {
+          readOpenIds.add(userId);
+        }
+      }
+      const nextPageToken = typeof data.page_token === "string" && data.page_token.trim() ? data.page_token : undefined;
+      pageToken = data.has_more === true ? nextPageToken : undefined;
+    } while (pageToken);
+
+    return [...readOpenIds];
   }
 
   async sendTextToOpenId(openId: string, text: string, options: TextMessageOptions = {}): Promise<LarkSendMessageResult> {

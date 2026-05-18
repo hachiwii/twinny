@@ -422,6 +422,9 @@ function adaptLarkSender(
     },
     recallMessage: async (messageId: string): Promise<void> => {
       await sender.deleteMessage(messageId);
+    },
+    getMessageReadOpenIds: async (messageId: string): Promise<string[]> => {
+      return sender.listMessageReadOpenIds(messageId);
     }
   };
 }

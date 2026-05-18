@@ -198,6 +198,57 @@ describe("LarkMessageSender", () => {
     });
   });
 
+  it("lists message read users as open_ids through OpenAPI", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      {
+        code: 0,
+        data: {
+          has_more: true,
+          page_token: "next-page",
+          items: [{ user_id: "ou_1" }]
+        }
+      },
+      {
+        code: 0,
+        data: {
+          has_more: false,
+          items: [{ user_id: "ou_2" }]
+        }
+      }
+    ]);
+    const sender = createSender(fetch);
+
+    await expect(sender.listMessageReadOpenIds("om_card")).resolves.toEqual(["ou_1", "ou_2"]);
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "https://open.feishu.cn/open-apis/im/v1/messages/om_card/read_users?user_id_type=open_id&page_size=100",
+      {
+        method: "GET",
+        headers: {
+          authorization: "Bearer tenant-token",
+          "content-type": "application/json"
+        },
+        body: undefined,
+        signal: undefined
+      }
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      "https://open.feishu.cn/open-apis/im/v1/messages/om_card/read_users?user_id_type=open_id&page_size=100&page_token=next-page",
+      {
+        method: "GET",
+        headers: {
+          authorization: "Bearer tenant-token",
+          "content-type": "application/json"
+        },
+        body: undefined,
+        signal: undefined
+      }
+    );
+  });
+
   it("replies with a file message through OpenAPI", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },

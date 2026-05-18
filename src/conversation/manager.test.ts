@@ -2254,6 +2254,34 @@ describe("ConversationManager", () => {
     expect(lark.recallMessage).not.toHaveBeenCalledWith("card_m1_1");
   });
 
+  it("updates the completed card in place when all turn senders have not read the working card", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    vi.mocked(lark.getMessageReadOpenIds).mockResolvedValueOnce([]);
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith(
+        "card_m1_1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+
+    expect(lark.getMessageReadOpenIds).toHaveBeenCalledWith("card_m1_1");
+    expect(lark.replyCard).toHaveBeenCalledTimes(1);
+    expect(lark.recallMessage).not.toHaveBeenCalledWith("card_m1_1");
+  });
+
   it("uses card mode to send a completed card, recall the working card, and skip the DONE reaction", async () => {
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
@@ -2970,7 +2998,8 @@ function createLarkResponder(): LarkResponder {
     forwardThreadToThread: vi.fn(async (threadId) => ({ messageId: `forward_${threadId}_${++markdownReplyCount}`, raw: {} })),
     replyCard: vi.fn(async (messageId) => ({ messageId: `card_${messageId}_${++markdownReplyCount}` })),
     patchCard: vi.fn(async (messageId) => ({ messageId })),
-    recallMessage: vi.fn(async () => undefined)
+    recallMessage: vi.fn(async () => undefined),
+    getMessageReadOpenIds: vi.fn(async () => ["ou_guest", "ou_owner", "ou_first", "ou_second"])
   };
 }
 

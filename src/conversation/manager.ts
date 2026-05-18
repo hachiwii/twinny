@@ -265,6 +265,7 @@ export interface LarkResponder {
   replyCard(messageId: string, card: LarkCardJson): Promise<{ messageId?: string } | void>;
   patchCard(messageId: string, card: LarkCardJson): Promise<{ messageId?: string } | void>;
   recallMessage(messageId: string): Promise<void>;
+  getMessageReadOpenIds(messageId: string): Promise<string[]>;
 }
 
 export interface RoleHomeResolver {
@@ -2984,27 +2985,14 @@ export class ConversationManager {
       const output = await this.prepareAgentFinalCardOutputForLark(final.text, active.workspace);
       const rendered = this.renderAgentCard(state, active, "finished", output.elements, undefined, final.processMessages, final.text);
       const previousMessageId = card.messageId;
-      if (state.pendingBatch.length > 0) {
-        await this.options.lark.patchCard(previousMessageId, rendered);
-        active.lastAgentReplyMessageId = previousMessageId;
-        card.lastRenderedJson = JSON.stringify(rendered);
+      const shouldUpdateInPlace =
+        state.pendingBatch.length > 0 || (await this.shouldUpdateCompletedAgentCardInPlace(active, previousMessageId));
+      if (shouldUpdateInPlace) {
+        await this.updateCompletedAgentCardInPlace(active, card, previousMessageId, rendered);
         await this.replyAgentCardFilesBestEffort(active.replyMessageId, output.files);
         return;
       }
-      const result = await this.options.lark.replyCard(active.replyMessageId, rendered);
-      const completedCardMessageId = nonEmptyString(result?.messageId);
-      if (!completedCardMessageId) {
-        throw new Error("Lark completed card reply did not return message_id");
-      }
-      card.anchorMessageId = active.replyMessageId;
-      card.messageId = completedCardMessageId;
-      active.lastAgentReplyMessageId = completedCardMessageId;
-      card.lastRenderedJson = JSON.stringify(rendered);
-      try {
-        await this.options.lark.recallMessage(previousMessageId);
-      } catch (error) {
-        this.log.warn({ error, messageId: previousMessageId }, "failed to recall previous agent card after completion");
-      }
+      await this.resendCompletedAgentCard(active, card, previousMessageId, rendered);
       await this.replyAgentCardFilesBestEffort(active.replyMessageId, output.files);
     } catch (error) {
       this.log.warn({ error, messageId: active.replyMessageId }, "failed to finalize agent card; falling back to plain");
@@ -3013,6 +3001,60 @@ export class ConversationManager {
         id: "final",
         text: active.resultText ?? ""
       });
+    }
+  }
+
+  private async shouldUpdateCompletedAgentCardInPlace(active: ActiveTurn, currentCardMessageId: string): Promise<boolean> {
+    const participantOpenIds = activeTurnMentionOpenIds(active);
+    if (participantOpenIds.length === 0) {
+      return false;
+    }
+
+    try {
+      const readOpenIds = new Set(await this.options.lark.getMessageReadOpenIds(currentCardMessageId));
+      const allParticipantsUnread = participantOpenIds.every((openId) => !readOpenIds.has(openId));
+      // 如果参与 sender 都还没读当前进行中卡片，卡片本身已经在他们的未读列表里；
+      // 原地更新即可保留未读入口，不需要撤回重发来重新制造未读消息。
+      return allParticipantsUnread;
+    } catch (error) {
+      this.log.warn(
+        { error, messageId: currentCardMessageId, participantCount: participantOpenIds.length },
+        "failed to check lark card read status before completion"
+      );
+      return false;
+    }
+  }
+
+  private async updateCompletedAgentCardInPlace(
+    active: ActiveTurn,
+    card: ActiveTurnCardState,
+    messageId: string,
+    rendered: LarkCardJson
+  ): Promise<void> {
+    await this.options.lark.patchCard(messageId, rendered);
+    active.lastAgentReplyMessageId = messageId;
+    card.lastRenderedJson = JSON.stringify(rendered);
+  }
+
+  private async resendCompletedAgentCard(
+    active: ActiveTurn,
+    card: ActiveTurnCardState,
+    previousMessageId: string,
+    rendered: LarkCardJson
+  ): Promise<void> {
+    const result = await this.options.lark.replyCard(active.replyMessageId, rendered);
+    const completedCardMessageId = nonEmptyString(result?.messageId);
+    if (!completedCardMessageId) {
+      throw new Error("Lark completed card reply did not return message_id");
+    }
+    card.anchorMessageId = active.replyMessageId;
+    card.messageId = completedCardMessageId;
+    active.lastAgentReplyMessageId = completedCardMessageId;
+    card.lastRenderedJson = JSON.stringify(rendered);
+    try {
+      await this.options.lark.recallMessage(previousMessageId);
+    } catch (error) {
+      this.log.warn({ error, messageId: previousMessageId }, "failed to recall previous agent card after completion");
     }
   }
 
