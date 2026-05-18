@@ -281,7 +281,7 @@ describe("ConversationManager", () => {
     const { repository } = createRepository();
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();
-    const manager = createManager({ repository, codex, lark });
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
 
     manager.submitIncoming(message("m1", "active"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
@@ -452,7 +452,7 @@ describe("ConversationManager", () => {
     const { repository } = createRepository();
     const { codex } = createDeferredCodex();
     const lark = createLarkResponder();
-    const manager = createManager({ repository, codex, lark });
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
 
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
@@ -522,7 +522,7 @@ describe("ConversationManager", () => {
     }));
     const codex = createCodex();
     const lark = createLarkResponder();
-    const manager = createManager({ repository, codex, lark });
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
 
     manager.submitIncoming(message("m1", "/status"));
 
@@ -641,7 +641,7 @@ describe("ConversationManager", () => {
     const { repository } = createRepository(row);
     const codex = createCodex();
     const lark = createLarkResponder();
-    const manager = createManager({ repository, codex, lark });
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
 
     manager.submitIncoming(message("m1", "/status", { senderOpenId: "ou_owner", senderName: "Owner" }));
 
@@ -1019,10 +1019,11 @@ describe("ConversationManager", () => {
       })
     );
 
-    manager.submitIncoming(groupMessage("g_topic_msg", "topic first", {
+    manager.submitIncoming(groupMessage("g_topic_msg", "@_bot topic first", {
       senderOpenId: "ou_owner",
       chatType: "topic_group",
-      larkThreadId: cardThreadId
+      larkThreadId: cardThreadId,
+      mentions: [botMention()]
     }));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     await waitForExpect(() =>
@@ -1042,11 +1043,11 @@ describe("ConversationManager", () => {
     );
     expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith("group_oc_group", cardThreadId);
     await waitForExpect(() =>
-      expect(lark.patchCard).toHaveBeenCalledWith(
-        cardMessageId,
-        expect.objectContaining({
-          header: expect.objectContaining({
-            title: { tag: "plain_text", content: "新会话" }
+    expect(lark.patchCard).toHaveBeenCalledWith(
+      cardMessageId,
+      expect.objectContaining({
+        header: expect.objectContaining({
+          title: { tag: "plain_text", content: "新会话" }
           })
         })
       )
@@ -1353,6 +1354,72 @@ describe("ConversationManager", () => {
         threadId: "thread_group",
         cwd: "/tmp/twinny/workspaces/group_oc_group",
         input: '<lark_message lark_message_id="g1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\nhello group\n</lark_message>'
+      })
+    );
+  });
+
+  it("ignores unmentioned at-mode topic messages and still reuses thread on the next mention", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const { repository } = createRepository(row);
+    const thread = codexThreadRecord({
+      codexThreadId: "thread_topic_1",
+      larkThreadId: "topic_thread_1",
+      conversationKey: "group_oc_group",
+      role: "owner",
+      creatorOpenId: "ou_owner"
+    });
+    const codex = createCodex({
+      resumeThread: vi.fn(async ({ threadId }) => ({ threadId })),
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onTokenUsage }) => {
+        await onTurnStarted?.("turn_1");
+        await onTokenUsage?.({
+          threadId,
+          turnId: "turn_1",
+          totalTokens: 42,
+          raw: {
+            threadId,
+            turnId: "turn_1",
+            usage: { total: { totalTokens: 42 } }
+          }
+        });
+        return completed(thread.codexThreadId, "turn_1");
+      })
+    });
+    vi.spyOn(repository, "getCodexThreadByConversationAndLarkThread").mockReturnValue(thread);
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(
+      groupMessage("g_topic_msg_no_mention", "topic first", {
+        senderOpenId: "ou_owner",
+        chatType: "topic_group",
+        larkThreadId: "topic_thread_1"
+      })
+    );
+    await waitForDelay();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(codex.resumeThread).not.toHaveBeenCalled();
+    expect(lark.replyText).not.toHaveBeenCalled();
+
+    manager.submitIncoming(
+      groupMessage("g_topic_msg_mention", "@_bot topic second", {
+        senderOpenId: "ou_owner",
+        chatType: "topic_group",
+        larkThreadId: "topic_thread_1",
+        mentions: [botMention()]
+      })
+    );
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.resumeThread).toHaveBeenCalledWith({
+      role: "owner",
+      threadId: "thread_topic_1",
+      cwd: "/tmp/twinny/workspaces/group_oc_group",
+      approvalPolicy: "never"
+    });
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_topic_1",
+        input: wrappedMessage("topic second", "g_topic_msg_mention", "ou_owner")
       })
     );
   });

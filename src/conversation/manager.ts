@@ -950,7 +950,6 @@ export class ConversationManager {
     if (
       conversation.responseMode === "at" &&
       !hasBotMention &&
-      !context.larkThreadId &&
       !(parsed.kind === "new_topic" && senderRole === "owner")
     ) {
       return { kind: "ignored" };
