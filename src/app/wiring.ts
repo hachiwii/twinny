@@ -24,7 +24,16 @@ import { logger as defaultLogger } from "../observability/logs.js";
 import { TwinnySystemNotifier } from "../observability/system-notifications.js";
 import { getRoleCodexHome } from "../roles/index.js";
 import { createConversationRepository, openRuntimeDatabase, type ConversationRepository, type TwinnyDatabase } from "../store/index.js";
-import type { CodexAgentMessage, CodexThreadTokenUsageUpdate, LarkReactionHandle, RoleName, TwinnyConfig } from "../types.js";
+import type {
+  CodexAgentMessage,
+  CodexPlanUpdate,
+  CodexRequestUserInputRequest,
+  CodexThreadTokenUsageUpdate,
+  LarkReactionHandle,
+  RoleName,
+  TwinnyConfig
+} from "../types.js";
+import type { CodexRequestUserInputResponder } from "../codex/turn.js";
 import { WorkspaceManager } from "../workspace/index.js";
 
 export interface TwinnyRuntimeOptions {
@@ -285,6 +294,8 @@ function adaptConversationRepository(repository: ConversationRepository) {
     replaceCodexThreadForLarkThread: repository.replaceCodexThreadForLarkThread.bind(repository),
     updateCodexThreadTokenUsage: repository.updateCodexThreadTokenUsage.bind(repository),
     updateCodexThreadCard: repository.updateCodexThreadCard.bind(repository),
+    updateCodexThreadPlanMode: repository.updateCodexThreadPlanMode.bind(repository),
+    updateCodexThreadStatus: repository.updateCodexThreadStatus.bind(repository),
     getCodexThreadWorkStats: repository.getCodexThreadWorkStats.bind(repository),
     insertLarkMessage: repository.insertLarkMessage.bind(repository),
     markLarkMessageQueued: repository.markLarkMessageQueued.bind(repository),
@@ -314,25 +325,43 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       threadId,
       input,
       cwd,
+      planMode,
+      model,
+      effort,
       onTurnStarted,
       onAgentMessage,
-      onTokenUsage
+      onTokenUsage,
+      onPlanUpdated,
+      onRequestUserInput
     }: {
       role: RoleName;
       threadId: string;
       input: string;
       cwd: string;
+      planMode?: boolean;
+      model?: string;
+      effort?: string;
       onTurnStarted?: (turnId: string) => Promise<void> | void;
       onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
       onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
+      onPlanUpdated?: (plan: CodexPlanUpdate) => Promise<void> | void;
+      onRequestUserInput?: (
+        request: CodexRequestUserInputRequest,
+        responder: CodexRequestUserInputResponder
+      ) => Promise<void> | void;
     }) =>
       pool.get(role).startTurn({
         threadId,
         text: input,
         cwd,
+        planMode,
+        model,
+        effort,
         onTurnStarted,
         onAgentMessage,
-        onTokenUsage
+        onTokenUsage,
+        onPlanUpdated,
+        onRequestUserInput
       }),
     steerTurn: async ({
       role,

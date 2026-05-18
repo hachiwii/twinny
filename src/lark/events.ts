@@ -229,6 +229,7 @@ function normalizeLarkCardActionWithReason(data: unknown): NormalizeCardActionRe
     stringValue(asRecord(operator?.user_id)?.open_id);
   const action = asRecord(event.action);
   const actionValue = asRecord(action?.value);
+  const formValue = asRecord(action?.form_value) ?? asRecord(action?.formValue);
   const openMessageId =
     stringValue(event.open_message_id) ??
     stringValue(event.message_id) ??
@@ -259,6 +260,7 @@ function normalizeLarkCardActionWithReason(data: unknown): NormalizeCardActionRe
       openChatId,
       actionTag: stringValue(action?.tag),
       actionValue,
+      formValue,
       raw: data
     }
   };

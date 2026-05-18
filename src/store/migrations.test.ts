@@ -90,7 +90,9 @@ describe("store migrations", () => {
         { name: "reasoning_output_tokens", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "context_tokens", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "context_window", type: "INTEGER", notnull: 1, pk: 0 },
-        { name: "thread_has_rollout", type: "INTEGER", notnull: 1, pk: 0 }
+        { name: "thread_has_rollout", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "plan_mode", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "status", type: "TEXT", notnull: 1, pk: 0 }
       ]);
       const threadIndexes = db
         .prepare<[], SqliteNameRow>(

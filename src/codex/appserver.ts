@@ -98,12 +98,6 @@ export class CodexAppServer extends EventEmitter {
     });
     this.protocolClient = protocol;
     protocol.start();
-    protocol.on("serverRequest", (request) => {
-      protocol.respondError(request.id, {
-        code: "TWINNY_UNSUPPORTED_SERVER_REQUEST",
-        message: `Twinny does not implement Codex server request ${request.method}`
-      });
-    });
 
     this.initializeResponse = await protocol.initialize(createInitializeParams(this.options.clientVersion));
     return this.initializeResponse;

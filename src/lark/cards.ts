@@ -1,7 +1,17 @@
 export type LarkCardJson = Record<string, unknown>;
 export type LarkCardElement = Record<string, unknown>;
 
-export type TwinnyAgentCardStatus = "working" | "finished" | "interrupted" | "paused" | "failed";
+export type TwinnyAgentCardStatus =
+  | "working"
+  | "finished"
+  | "interrupted"
+  | "paused"
+  | "failed"
+  | "waiting_input"
+  | "waiting_plan"
+  | "interrupted_input"
+  | "interrupted_plan"
+  | "accepted_plan";
 
 export interface TwinnyAgentCardMessage {
   id: string;
@@ -10,10 +20,30 @@ export interface TwinnyAgentCardMessage {
 
 export interface TwinnyAgentCardActionValue {
   twinny: true;
-  action: "stop" | "next" | "queue";
+  action: "stop" | "next" | "queue" | "request_input_submit" | "request_input_interrupt" | "plan_implement" | "plan_interrupt";
   stateKey: string;
   runId: number;
 }
+
+export interface TwinnyAgentCardInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  isOther: boolean;
+  isSecret: boolean;
+  options: Array<{ label: string; description: string }> | null;
+}
+
+export type TwinnyAgentCardWaiting =
+  | {
+      kind: "request_user_input";
+      requestId: string;
+      questions: TwinnyAgentCardInputQuestion[];
+    }
+  | {
+      kind: "plan";
+      planText: string;
+    };
 
 export interface RenderTwinnyAgentCardOptions {
   status: TwinnyAgentCardStatus;
@@ -25,6 +55,8 @@ export interface RenderTwinnyAgentCardOptions {
   stateKey: string;
   runId: number;
   iconImageKey?: string;
+  planMode?: boolean;
+  waiting?: TwinnyAgentCardWaiting;
   finalElements?: LarkCardElement[];
   mentionOpenIds?: string[];
   summaryText?: string;
@@ -62,11 +94,17 @@ const STATUS_HEADER: Record<TwinnyAgentCardStatus, { title: string; subtitle?: s
   finished: { title: "已完成", template: "green" },
   interrupted: { title: "已中断", template: "grey" },
   paused: { title: "工作中断", subtitle: "服务重启中，任务将在重启后自动恢复", template: "grey" },
-  failed: { title: "发生错误", template: "red" }
+  failed: { title: "发生错误", template: "red" },
+  waiting_input: { title: "等待交互", template: "yellow" },
+  waiting_plan: { title: "确认计划", template: "wathet" },
+  interrupted_input: { title: "交互已打断", template: "grey" },
+  interrupted_plan: { title: "计划已打断", template: "grey" },
+  accepted_plan: { title: "计划已确认", template: "grey" }
 };
 
 export function renderTwinnyAgentCard(options: RenderTwinnyAgentCardOptions): LarkCardJson {
   const header = STATUS_HEADER[options.status];
+  const subtitle = cardHeaderSubtitle(options, header.subtitle);
   const summaryContent = options.status === "finished" ? cardSummaryContent(options.summaryText ?? "") : undefined;
   return {
     schema: "2.0",
@@ -105,7 +143,7 @@ export function renderTwinnyAgentCard(options: RenderTwinnyAgentCardOptions): La
       },
       subtitle: {
         tag: "plain_text",
-        content: header.subtitle ?? ""
+        content: subtitle
       },
       template: header.template,
       ...(options.iconImageKey
@@ -216,12 +254,37 @@ function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] 
       ...finishedMentionElements(options.mentionOpenIds),
       ...finishedProcessPanelElements(options.messages),
       ...(options.finalElements?.length ? options.finalElements : [markdownElement("")]),
-      elapsedElement(options.elapsedMs, options.runtimeStats)
+      elapsedElement(options.elapsedMs, options.runtimeStats, options.planMode)
     ];
   }
 
+  if (
+    options.status === "waiting_input" ||
+    options.status === "interrupted_input" ||
+    options.status === "waiting_plan" ||
+    options.status === "interrupted_plan" ||
+    options.status === "accepted_plan"
+  ) {
+    const elements: LarkCardElement[] = [
+      ...finishedMentionElements(options.mentionOpenIds),
+      ...finishedProcessPanelElements(options.messages)
+    ];
+    if (options.waiting?.kind === "request_user_input") {
+      elements.push(...requestUserInputElements(options.waiting.questions));
+    } else if (options.waiting?.kind === "plan") {
+      elements.push(...planElements(options.waiting.planText));
+    }
+    elements.push(elapsedElement(options.elapsedMs, options.runtimeStats, options.planMode));
+    if (options.status === "waiting_input") {
+      elements.push(waitingButtonsElement(options, "提交", "primary_filled", "request_input_submit", "打断", "danger_filled", "request_input_interrupt"));
+    } else if (options.status === "waiting_plan") {
+      elements.push(waitingButtonsElement(options, "实现", "primary_filled", "plan_implement", "打断", "danger_filled", "plan_interrupt"));
+    }
+    return elements;
+  }
+
   const elements = workingProcessElements(options.messages);
-  elements.push(elapsedElement(options.elapsedMs, options.runtimeStats));
+  elements.push(elapsedElement(options.elapsedMs, options.runtimeStats, options.planMode));
   if (options.status === "failed" && options.error) {
     elements.push(markdownElement(`- ${sanitizeProcessText(options.error)}`, { text_color: "red" }));
   }
@@ -331,6 +394,45 @@ function buttonsElement(options: RenderTwinnyAgentCardOptions): LarkCardElement 
   };
 }
 
+function waitingButtonsElement(
+  options: RenderTwinnyAgentCardOptions,
+  primaryLabel: string,
+  primaryType: string,
+  primaryAction: TwinnyAgentCardActionValue["action"],
+  dangerLabel: string,
+  dangerType: string,
+  dangerAction: TwinnyAgentCardActionValue["action"]
+): LarkCardElement {
+  const buttons = [
+    buttonElement(primaryLabel, primaryType, {
+      twinny: true,
+      action: primaryAction,
+      stateKey: options.stateKey,
+      runId: options.runId
+    }),
+    buttonElement(dangerLabel, dangerType, {
+      twinny: true,
+      action: dangerAction,
+      stateKey: options.stateKey,
+      runId: options.runId
+    })
+  ];
+  return {
+    tag: "column_set",
+    horizontal_spacing: "8px",
+    horizontal_align: "left",
+    columns: buttons.map((button) => ({
+      tag: "column",
+      width: "weighted",
+      weight: 1,
+      elements: [{ ...button, width: "fill" }],
+      direction: "horizontal",
+      vertical_align: "top"
+    })),
+    margin: "0px 0px 0px 0px"
+  };
+}
+
 function queueModeHintElement(options: RenderTwinnyAgentCardOptions): LarkCardElement {
   const hint = options.queueNextMessage
     ? "排队模式：新消息将等待当前任务完成后发送。"
@@ -371,13 +473,14 @@ function buttonElement(label: string, type: string, value: TwinnyAgentCardAction
 
 function elapsedElement(
   elapsedMs: number,
-  runtimeStats: TwinnyAgentCardRuntimeStats | undefined
+  runtimeStats: TwinnyAgentCardRuntimeStats | undefined,
+  planMode?: boolean
 ): LarkCardElement {
   return {
     tag: "div",
     text: {
       tag: "plain_text",
-      content: elapsedText(elapsedMs, runtimeStats),
+      content: elapsedText(elapsedMs, runtimeStats, planMode),
       text_size: "notation",
       text_align: "left",
       text_color: "grey"
@@ -388,10 +491,112 @@ function elapsedElement(
 
 function elapsedText(
   elapsedMs: number,
-  runtimeStats: TwinnyAgentCardRuntimeStats | undefined
+  runtimeStats: TwinnyAgentCardRuntimeStats | undefined,
+  planMode?: boolean
 ): string {
   const parts = [`已工作 ${formatElapsed(elapsedMs)}`, ...runtimeStatParts(runtimeStats)];
+  if (planMode) {
+    parts.push("Plan on");
+  }
   return parts.join(" · ");
+}
+
+function requestUserInputElements(questions: TwinnyAgentCardInputQuestion[]): LarkCardElement[] {
+  const elements: LarkCardElement[] = [];
+  for (let index = 0; index < questions.length; index += 1) {
+    const question = questions[index]!;
+    if (index > 0) {
+      elements.push({ tag: "hr", margin: "0px 0px 0px 0px" });
+    }
+    const title = `${index + 1}. ${question.header || question.question || question.id}`;
+    elements.push(markdownElement(`##### ${title}`, { margin: "8px 0px 8px 0px" }));
+    const body = question.question.trim();
+    if (body && body !== question.header.trim()) {
+      elements.push(markdownElement(body, { margin: "0px 0px 0px 0px" }));
+    }
+    for (const option of question.options ?? []) {
+      elements.push(markdownElement(`- **${escapeMarkdown(option.label)}**: ${escapeMarkdown(option.description)}`, { margin: "0px 0px 0px 0px" }));
+    }
+    if ((question.options?.length ?? 0) > 0) {
+      elements.push(selectElement(question));
+    }
+    if (question.isOther || (question.options?.length ?? 0) === 0) {
+      elements.push(inputElement(question));
+    }
+  }
+  return elements.length > 0 ? elements : [progressPlaceholderElement()];
+}
+
+function planElements(planText: string): LarkCardElement[] {
+  return [markdownElement(planText.trim() || "暂无计划")];
+}
+
+function selectElement(question: TwinnyAgentCardInputQuestion): LarkCardElement {
+  return {
+    tag: "select_static",
+    name: formSelectName(question.id),
+    placeholder: {
+      tag: "plain_text",
+      content: "请选择"
+    },
+    options: (question.options ?? []).map((option) => ({
+      text: {
+        tag: "plain_text",
+        content: option.label
+      },
+      value: option.label,
+      icon: {
+        tag: "standard_icon",
+        token: "check_outlined"
+      }
+    })),
+    type: "default",
+    width: "fill",
+    initial_index: 0,
+    margin: "0px 0px 0px 0px"
+  };
+}
+
+function inputElement(question: TwinnyAgentCardInputQuestion): LarkCardElement {
+  return {
+    tag: "input",
+    name: formOtherName(question.id),
+    placeholder: {
+      tag: "plain_text",
+      content: question.options?.length ? "输入其它答案，选项将被忽略" : "请输入"
+    },
+    default_value: "",
+    width: "fill",
+    ...(question.isSecret ? { input_type: "password" } : {}),
+    margin: "0px 0px 0px 0px"
+  };
+}
+
+function cardHeaderSubtitle(
+  options: RenderTwinnyAgentCardOptions,
+  fallback: string | undefined
+): string {
+  if (options.waiting?.kind === "request_user_input") {
+    const count = options.waiting.questions.length;
+    return `${count} 个问题待回答`;
+  }
+  return fallback ?? "";
+}
+
+function formSelectName(id: string): string {
+  return `answer_${safeFormKey(id)}_select`;
+}
+
+function formOtherName(id: string): string {
+  return `answer_${safeFormKey(id)}_other`;
+}
+
+function safeFormKey(value: string): string {
+  return value.replace(/[^A-Za-z0-9_]/g, "_");
+}
+
+function escapeMarkdown(value: string): string {
+  return value.replace(/\*/g, "\\*").replace(/_/g, "\\_");
 }
 
 function renderProcessItems(messages: TwinnyAgentCardMessage[]): string[] {

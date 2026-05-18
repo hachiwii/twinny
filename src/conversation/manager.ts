@@ -12,6 +12,7 @@ import {
   renderTwinnyThreadSummaryCard,
   type LarkCardElement,
   type LarkCardJson,
+  type TwinnyAgentCardInputQuestion,
   type TwinnyAgentCardMessage,
   type TwinnyAgentCardRuntimeStats
 } from "../lark/cards.js";
@@ -22,6 +23,10 @@ import type {
   CodexThreadTokenUsageUpdate,
   CodexTurnResult,
   CodexAgentMessage,
+  CodexPlanUpdate,
+  CodexRequestUserInputRequest,
+  CodexRequestUserInputResponse,
+  CodexThreadStatus,
   AgentMessageMode,
   ConversationResponseMode,
   ConversationRecord,
@@ -41,6 +46,7 @@ import type {
   LarkChatMode,
   LarkGroupMessageType
 } from "../types.js";
+import type { CodexRequestUserInputResponder } from "../codex/turn.js";
 import type { LarkSendMessageResult } from "../lark/types.js";
 import { SerialQueue } from "./queue.js";
 import {
@@ -110,6 +116,16 @@ export interface ConversationRepository {
     creatorOpenId?: string;
     cardMessageId?: string;
   }): Promise<CodexThreadRecord> | CodexThreadRecord;
+  updateCodexThreadPlanMode(
+    conversationKey: string,
+    codexThreadId: string,
+    planMode: boolean
+  ): Promise<CodexThreadRecord> | CodexThreadRecord;
+  updateCodexThreadStatus(
+    conversationKey: string,
+    codexThreadId: string,
+    status: CodexThreadStatus
+  ): Promise<CodexThreadRecord> | CodexThreadRecord;
   getCodexThreadWorkStats(codexThreadId: string): Promise<{ turnCount: number; totalWorkDurationMs: number }> | {
     turnCount: number;
     totalWorkDurationMs: number;
@@ -213,9 +229,17 @@ export interface CodexBridge {
     input: string;
     cwd: string;
     approvalPolicy: "never";
+    planMode?: boolean;
+    model?: string;
+    effort?: string;
     onTurnStarted?: (turnId: string) => Promise<void> | void;
     onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
     onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
+    onPlanUpdated?: (plan: CodexPlanUpdate) => Promise<void> | void;
+    onRequestUserInput?: (
+      request: CodexRequestUserInputRequest,
+      responder: CodexRequestUserInputResponder
+    ) => Promise<void> | void;
   }): Promise<CodexTurnResult>;
   steerTurn(params: {
     role: RoleName;
@@ -324,8 +348,20 @@ interface PendingMessage {
   text: string;
   original: IncomingLarkMessage;
   queueBoundary: boolean;
+  control?: "plan_on" | "plan_off";
   queuedReaction?: LarkReactionHandle | null;
 }
+
+type ActiveTurnWaiting =
+  | {
+      kind: "request_user_input";
+      request: CodexRequestUserInputRequest;
+      responder: CodexRequestUserInputResponder;
+    }
+  | {
+      kind: "plan";
+      plan: CodexPlanUpdate;
+    };
 
 interface ActiveTurn {
   runId: number;
@@ -339,6 +375,7 @@ interface ActiveTurn {
   startedAt: number;
   model?: string;
   modelReasoningEffort?: string;
+  planMode: boolean;
   threadTokenUsage: ThreadTokenUsageSnapshot;
   turnId?: string;
   reaction?: LarkReactionHandle | null;
@@ -349,6 +386,7 @@ interface ActiveTurn {
   finalAgentMessageText?: string;
   sawAgentMessagePhase?: boolean;
   card?: ActiveTurnCardState;
+  waiting?: ActiveTurnWaiting;
   pendingSteers: PendingMessage[];
   messagesById: Map<string, PendingMessage>;
   messageIds: Set<string>;
@@ -385,6 +423,8 @@ interface ConversationState {
 type ParsedCommand =
   | { kind: "message"; text: string }
   | { kind: "queue"; text: string }
+  | { kind: "plan"; text: string }
+  | { kind: "exit" }
   | { kind: "stop" }
   | { kind: "next" }
   | { kind: "steer" }
@@ -396,10 +436,10 @@ type ParsedCommand =
   | { kind: "help" };
 
 interface ParsedCardActionCommand {
-  action: "stop" | "next" | "queue";
+  action: "stop" | "next" | "queue" | "request_input_submit" | "request_input_interrupt" | "plan_implement" | "plan_interrupt";
   stateKey: string;
   runId: number;
-  text: "/stop" | "/next" | "/queue";
+  text: string;
 }
 
 export class ConversationManager {
@@ -556,9 +596,13 @@ export class ConversationManager {
     if (record.status === "queued") {
       await this.prepareMessageResources(context.conversationKey, normalized);
     }
+    const parsed = parseSlashCommand(normalized.text);
     const text = (record.status === "queued" && (normalized.resources?.length ?? 0) > 0) ? normalized.text : record.text;
     return toPendingMessage(normalized, text, {
-      queueBoundary: record.status === "queued" && parseSlashCommand(normalized.text).kind === "queue"
+      queueBoundary:
+        record.status === "queued" &&
+        (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit"),
+      control: parsed.kind === "plan" ? "plan_on" : parsed.kind === "exit" ? "plan_off" : undefined
     });
   }
 
@@ -857,6 +901,14 @@ export class ConversationManager {
     }
     if (preparedParsed.kind === "queue") {
       await this.handleQueueCommand(state, context, message, preparedParsed.text);
+      return;
+    }
+    if (preparedParsed.kind === "plan") {
+      await this.handlePlanCommand(state, context, message, preparedParsed.text);
+      return;
+    }
+    if (preparedParsed.kind === "exit") {
+      await this.handleExitCommand(state, context, message);
       return;
     }
     await this.handleUserMessage(state, context, message, preparedParsed.text);
@@ -1347,6 +1399,15 @@ export class ConversationManager {
     }
     const pending = toPendingMessage(message, text, { queueBoundary: queueByMenu });
     const active = state.active;
+    if (active?.waiting) {
+      await this.addQueuedReactionBestEffort(pending);
+      state.pendingBatch.push(pending);
+      await this.cancelActiveTurn(state, { waitForCompletion: true });
+      if (!state.active) {
+        await this.startPendingBatch(state, context);
+      }
+      return;
+    }
     if (queueByMenu) {
       if (active || state.pendingBatch.length > 0) {
         await this.addQueuedReactionBestEffort(pending);
@@ -1388,6 +1449,45 @@ export class ConversationManager {
 
     state.queueNextMessage = false;
     const pending = toPendingMessage(message, text, { queueBoundary: true });
+    if (state.active || state.pendingBatch.length > 0) {
+      await this.addQueuedReactionBestEffort(pending);
+    }
+    state.pendingBatch.push(pending);
+    if (!state.active) {
+      await this.startPendingBatch(state, context);
+    }
+  }
+
+  private async handlePlanCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    state.queueNextMessage = false;
+    const pending = toPendingMessage(message, text, {
+      queueBoundary: true,
+      control: "plan_on"
+    });
+    if (state.active || state.pendingBatch.length > 0) {
+      await this.addQueuedReactionBestEffort(pending);
+    }
+    state.pendingBatch.push(pending);
+    if (!state.active) {
+      await this.startPendingBatch(state, context);
+    }
+  }
+
+  private async handleExitCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage
+  ): Promise<void> {
+    state.queueNextMessage = false;
+    const pending = toPendingMessage(message, "", {
+      queueBoundary: true,
+      control: "plan_off"
+    });
     if (state.active || state.pendingBatch.length > 0) {
       await this.addQueuedReactionBestEffort(pending);
     }
@@ -1448,7 +1548,12 @@ export class ConversationManager {
       }
     }
 
-    lines.push(`Codex Thread ID: ${threadId ?? "未创建"}`, ...formatThreadTokenStatus(thread));
+    lines.push(
+      `Codex Thread ID: ${threadId ?? "未创建"}`,
+      `Thread Status: ${thread?.status ?? "idle"}`,
+      `Plan Mode: ${thread?.planMode ? "on" : "off"}`,
+      ...formatThreadTokenStatus(thread)
+    );
 
     if (role === "owner") {
       lines.push(...(await this.formatOwnerRateLimitStatus(role)));
@@ -1518,6 +1623,18 @@ export class ConversationManager {
           case "queue":
             await this.executeQueueAction(state, active);
             break;
+          case "request_input_submit":
+            await this.executeRequestInputSubmitAction(state, active, action.formValue);
+            break;
+          case "request_input_interrupt":
+            await this.executeNextAction(state, active.context);
+            break;
+          case "plan_implement":
+            await this.executePlanImplementAction(state, active, action);
+            break;
+          case "plan_interrupt":
+            await this.executeNextAction(state, active.context);
+            break;
         }
       }
     } catch (error) {
@@ -1534,7 +1651,7 @@ export class ConversationManager {
 
   private async executeNextAction(state: ConversationState, context: MessageContext): Promise<void> {
     const interrupted = await this.cancelActiveTurn(state, { waitForCompletion: true });
-    if (!interrupted) {
+    if (!interrupted || !state.active) {
       await this.startPendingBatch(state, context);
     }
   }
@@ -1542,6 +1659,60 @@ export class ConversationManager {
   private async executeQueueAction(state: ConversationState, active: ActiveTurn): Promise<void> {
     state.queueNextMessage = !state.queueNextMessage;
     await this.patchAgentCardBestEffort(state, active, "working");
+  }
+
+  private async executeRequestInputSubmitAction(
+    state: ConversationState,
+    active: ActiveTurn,
+    formValue: Record<string, unknown> | undefined
+  ): Promise<void> {
+    if (active.waiting?.kind !== "request_user_input") {
+      return;
+    }
+    const waiting = active.waiting;
+    active.waiting = undefined;
+    await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
+    await this.patchAgentCardBestEffort(state, active, "working");
+    waiting.responder.respond(buildRequestUserInputResponse(waiting.request, formValue));
+  }
+
+  private async executePlanImplementAction(
+    state: ConversationState,
+    active: ActiveTurn,
+    action: IncomingLarkCardAction
+  ): Promise<void> {
+    if (active.waiting?.kind !== "plan") {
+      return;
+    }
+    const planText = formatPlanUpdateForCard(active.waiting.plan);
+    const original = active.messagesById.get(active.replyMessageId)?.original;
+    if (!original) {
+      return;
+    }
+
+    state.active = undefined;
+    active.cancelRequested = true;
+    await this.clearReactionBestEffort(active);
+    await this.patchAgentCardBestEffort(state, active, "accepted_plan");
+    await this.setThreadPlanModeBestEffort(active.conversationKey, active.threadId, false);
+    await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
+    await this.markMessagesCompletedBestEffort([...active.processingMessageIds]);
+    this.stopAgentCardTimer(active);
+    if (active.turnId && active.completedStatus === undefined) {
+      await this.interruptActiveTurnBestEffort(active);
+    }
+
+    const pending = toPendingMessage(
+      {
+        ...original,
+        eventId: `card_action:${action.eventId}:plan_implement`,
+        text: planText,
+        raw: action.raw
+      },
+      `Implement the confirmed plan.\n\n${planText}`,
+      { queueBoundary: true }
+    );
+    await this.startTurnForMessages(state, active.context, [pending]);
   }
 
   private async recordMenuActionBestEffort(
@@ -1812,6 +1983,13 @@ export class ConversationManager {
 
   private async startPendingBatch(state: ConversationState, context: MessageContext): Promise<void> {
     while (!state.active && state.pendingBatch.length > 0) {
+      const first = state.pendingBatch[0]!;
+      if (first.control) {
+        state.pendingBatch.shift();
+        await this.clearQueuedReactionBestEffort(first);
+        await this.processPendingControlMessage(state, context, first);
+        continue;
+      }
       const count = countNextPendingBatch(state);
       const messages = state.pendingBatch.splice(0, count);
       await this.clearQueuedReactionsBestEffort(messages);
@@ -1822,6 +2000,28 @@ export class ConversationManager {
       await this.startTurnForMessages(state, context, refreshedMessages);
       return;
     }
+  }
+
+  private async processPendingControlMessage(
+    state: ConversationState,
+    context: MessageContext,
+    pending: PendingMessage
+  ): Promise<void> {
+    const resolved = await this.resolveThreadForMessage(context, pending.original);
+    if (pending.control === "plan_on") {
+      await this.setThreadPlanModeBestEffort(resolved.conversationKey, resolved.threadId, true);
+      if (pending.text.trim().length > 0) {
+        await this.startTurnForMessages(state, context, [{ ...pending, control: undefined }]);
+        return;
+      }
+      await this.markMessagesCompletedBestEffort([pending.messageId]);
+      await this.replyControlBestEffort(pending.messageId, "已开启 plan mode。");
+      return;
+    }
+
+    await this.setThreadPlanModeBestEffort(resolved.conversationKey, resolved.threadId, false);
+    await this.markMessagesCompletedBestEffort([pending.messageId]);
+    await this.replyControlBestEffort(pending.messageId, "已退出 plan mode。");
   }
 
   private async refreshPendingMessagesBeforeStart(context: MessageContext, messages: PendingMessage[]): Promise<PendingMessage[]> {
@@ -1898,14 +2098,38 @@ export class ConversationManager {
       return;
     }
     const anchor = messages[messages.length - 1]!;
-    const senderRole = roleForSender(this.options.config, anchor.original.senderOpenId);
+    const resolved = await this.resolveThreadForMessage(context, anchor.original);
+    if (resolved.replacedMissingThread) {
+      await this.notifyThreadReplacementBestEffort(anchor.messageId, resolved.previousThreadId, resolved.threadId);
+    }
+    await this.beginActiveTurn(state, context, {
+      messages,
+      role: resolved.role,
+      threadId: resolved.threadId,
+      workspace: resolved.workspace,
+      input: messages.map(formatPendingMessageForCodex).join("\n")
+    });
+  }
+
+  private async resolveThreadForMessage(
+    context: MessageContext,
+    message: IncomingLarkMessage
+  ): Promise<{
+    conversationKey: string;
+    role: RoleName;
+    workspace: string;
+    threadId: string;
+    replacedMissingThread: boolean;
+    previousThreadId?: string;
+  }> {
+    const senderRole = roleForSender(this.options.config, message.senderOpenId);
     const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
     const binding = await this.getOrCreateConversation({
       conversationKey: context.conversationKey,
       type: context.type,
       role: senderRole,
       workspace,
-      message: anchor.original
+      message
     });
     const role = binding.conversation.role;
     const activeThread = await this.resolveActiveThread(binding, {
@@ -1913,22 +2137,20 @@ export class ConversationManager {
       workspace,
       context
     });
-    if (activeThread.replacedMissingThread) {
-      await this.notifyThreadReplacementBestEffort(anchor.messageId, activeThread.previousThreadId, activeThread.threadId);
-    }
     await this.recordCodexThreadBestEffort({
       conversationKey: context.conversationKey,
       codexThreadId: activeThread.threadId,
       role,
       larkThreadId: context.larkThreadId
     });
-    await this.beginActiveTurn(state, context, {
-      messages,
+    return {
+      conversationKey: context.conversationKey,
       role,
-      threadId: activeThread.threadId,
       workspace,
-      input: messages.map(formatPendingMessageForCodex).join("\n")
-    });
+      threadId: activeThread.threadId,
+      replacedMissingThread: activeThread.replacedMissingThread,
+      previousThreadId: activeThread.previousThreadId
+    };
   }
 
   private async beginActiveTurn(
@@ -1954,6 +2176,8 @@ export class ConversationManager {
       this.readCodexTurnModelSettingsBestEffort(params.role, params.workspace),
       this.readThreadTokenUsageBestEffort(params.threadId)
     ]);
+    const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
+    const planMode = threadRecord?.planMode === true;
     const startedAt = Date.now();
     const agentMessageMode = this.options.config.lark.agentMessageMode;
     const active: ActiveTurn = {
@@ -1968,6 +2192,7 @@ export class ConversationManager {
       startedAt,
       model: modelSettings.model,
       modelReasoningEffort: modelSettings.effort,
+      planMode,
       threadTokenUsage,
       reaction: await this.addReactionBestEffort(anchor.messageId),
       card:
@@ -1987,6 +2212,7 @@ export class ConversationManager {
       cancelRequested: false
     };
     state.active = active;
+    await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
 
     const turnPromise = this.options.codex.startTurn({
       role: params.role,
@@ -1994,9 +2220,14 @@ export class ConversationManager {
       input: params.input,
       cwd: params.workspace,
       approvalPolicy: "never",
+      planMode: active.planMode,
+      model: modelSettings.model,
+      effort: modelSettings.effort,
       onTurnStarted: (turnId) => this.handleTurnStarted(state, active, turnId),
       onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
-      onTokenUsage: (usage) => this.recordThreadTokenUsageBestEffort(state, active, usage)
+      onTokenUsage: (usage) => this.recordThreadTokenUsageBestEffort(state, active, usage),
+      onPlanUpdated: (plan) => this.handlePlanUpdated(state, active, plan),
+      onRequestUserInput: (request, responder) => this.handleRequestUserInput(state, active, request, responder)
     });
     void turnPromise
       .then((result) => {
@@ -2123,6 +2354,59 @@ export class ConversationManager {
     }
   }
 
+  private async handleRequestUserInput(
+    state: ConversationState,
+    active: ActiveTurn,
+    request: CodexRequestUserInputRequest,
+    responder: CodexRequestUserInputResponder
+  ): Promise<void> {
+    await state.controlQueue.enqueue(async () => {
+      if (state.active !== active || active.cancelRequested) {
+        responder.reject("Twinny turn is no longer active");
+        return;
+      }
+      active.waiting = {
+        kind: "request_user_input",
+        request,
+        responder
+      };
+      await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "waiting");
+      if (state.pendingBatch.length > 0) {
+        await this.cancelActiveTurn(state, { waitForCompletion: true });
+        if (!state.active) {
+          await this.startPendingBatch(state, active.context);
+        }
+        return;
+      }
+      await this.notifyAgentCardBestEffort(state, active, "waiting_input");
+    });
+  }
+
+  private async handlePlanUpdated(
+    state: ConversationState,
+    active: ActiveTurn,
+    plan: CodexPlanUpdate
+  ): Promise<void> {
+    await state.controlQueue.enqueue(async () => {
+      if (state.active !== active || active.cancelRequested) {
+        return;
+      }
+      active.waiting = {
+        kind: "plan",
+        plan
+      };
+      await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "waiting");
+      if (state.pendingBatch.length > 0) {
+        await this.cancelActiveTurn(state, { waitForCompletion: true });
+        if (!state.active) {
+          await this.startPendingBatch(state, active.context);
+        }
+        return;
+      }
+      await this.notifyAgentCardBestEffort(state, active, "waiting_plan");
+    });
+  }
+
   private async finishActiveTurn(
     state: ConversationState,
     conversationKey: string,
@@ -2133,9 +2417,16 @@ export class ConversationManager {
       this.stopAgentCardTimer(active);
       return;
     }
+    if (!active.cancelRequested && active.completedStatus === "completed" && active.waiting?.kind === "plan") {
+      await this.clearReactionBestEffort(active);
+      await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "waiting");
+      this.stopAgentCardTimer(active);
+      return;
+    }
     state.active = undefined;
     await this.clearReactionBestEffort(active);
     if (active.cancelRequested) {
+      await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
       this.stopAgentCardTimer(active);
       await this.startPendingBatch(state, active.context);
       return;
@@ -2149,6 +2440,7 @@ export class ConversationManager {
     }
     await this.addCompletedReactionBestEffort(active);
     await this.updateThreadSummaryCardBestEffort(active.threadId);
+    await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
     this.stopAgentCardTimer(active);
     await this.startPendingBatch(state, active.context);
   }
@@ -2172,7 +2464,8 @@ export class ConversationManager {
     if (!active) {
       return false;
     }
-    if (!options.waitForCompletion) {
+    const noCompletionExpected = active.completedStatus !== undefined || !active.turnId;
+    if (!options.waitForCompletion || noCompletionExpected) {
       state.active = undefined;
     }
     active.cancelRequested = true;
@@ -2181,6 +2474,9 @@ export class ConversationManager {
     await this.markMessagesInterruptedBestEffort([...active.processingMessageIds]);
     await this.updateThreadSummaryCardBestEffort(active.threadId);
     await this.interruptAgentCardBestEffort(state, active);
+    if (!options.waitForCompletion || noCompletionExpected) {
+      await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
+    }
     if (active.turnId) {
       await this.interruptActiveTurnBestEffort(active);
     }
@@ -2197,6 +2493,7 @@ export class ConversationManager {
     active.pendingSteers = [];
     await this.clearReactionBestEffort(active);
     await this.pauseAgentCardForShutdownBestEffort(state, active);
+    await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
     if (active.turnId) {
       await this.interruptActiveTurnBestEffort(active);
     }
@@ -2229,6 +2526,30 @@ export class ConversationManager {
       await this.options.repository.upsertCodexThread(params);
     } catch (error) {
       this.log.warn({ error, codexThreadId: params.codexThreadId }, "failed to record codex thread");
+    }
+  }
+
+  private async setThreadPlanModeBestEffort(
+    conversationKey: string,
+    codexThreadId: string,
+    planMode: boolean
+  ): Promise<void> {
+    try {
+      await this.options.repository.updateCodexThreadPlanMode(conversationKey, codexThreadId, planMode);
+    } catch (error) {
+      this.log.warn({ error, codexThreadId, planMode }, "failed to update codex thread plan mode");
+    }
+  }
+
+  private async setThreadStatusBestEffort(
+    conversationKey: string,
+    codexThreadId: string,
+    status: CodexThreadStatus
+  ): Promise<void> {
+    try {
+      await this.options.repository.updateCodexThreadStatus(conversationKey, codexThreadId, status);
+    } catch (error) {
+      this.log.warn({ error, codexThreadId, status }, "failed to update codex thread status");
     }
   }
 
@@ -2898,7 +3219,16 @@ export class ConversationManager {
   private async patchAgentCardBestEffort(
     state: ConversationState,
     active: ActiveTurn,
-    status: "working" | "interrupted" | "paused" | "failed",
+    status:
+      | "working"
+      | "interrupted"
+      | "paused"
+      | "failed"
+      | "waiting_input"
+      | "waiting_plan"
+      | "interrupted_input"
+      | "interrupted_plan"
+      | "accepted_plan",
     error?: string
   ): Promise<boolean> {
     const card = active.card;
@@ -2913,6 +3243,60 @@ export class ConversationManager {
     await this.options.lark.patchCard(card.messageId, rendered);
     card.lastRenderedJson = serialized;
     return true;
+  }
+
+  private async notifyAgentCardBestEffort(
+    state: ConversationState,
+    active: ActiveTurn,
+    status: "waiting_input" | "waiting_plan"
+  ): Promise<void> {
+    const card = active.card;
+    if (!card || card.fallbackPlain) {
+      return;
+    }
+
+    const rendered = this.renderAgentCard(state, active, status);
+    const serialized = JSON.stringify(rendered);
+    if (!card.messageId) {
+      try {
+        const result = await this.options.lark.replyCard(card.anchorMessageId, rendered);
+        if (!result?.messageId) {
+          throw new Error("Lark card reply did not return message_id");
+        }
+        card.messageId = result.messageId;
+        active.lastAgentReplyMessageId = result.messageId;
+        card.lastRenderedJson = serialized;
+        return;
+      } catch (error) {
+        this.log.warn({ error, messageId: active.replyMessageId }, "failed to send waiting agent card");
+        card.fallbackPlain = true;
+        return;
+      }
+    }
+
+    try {
+      const previousMessageId = card.messageId;
+      const shouldUpdateInPlace =
+        state.pendingBatch.length > 0 || (await this.shouldUpdateCompletedAgentCardInPlace(active, previousMessageId));
+      if (shouldUpdateInPlace) {
+        await this.options.lark.patchCard(previousMessageId, rendered);
+        card.lastRenderedJson = serialized;
+        active.lastAgentReplyMessageId = previousMessageId;
+        return;
+      }
+      const result = await this.options.lark.replyCard(active.replyMessageId, rendered);
+      const waitingCardMessageId = nonEmptyString(result?.messageId);
+      if (!waitingCardMessageId) {
+        throw new Error("Lark waiting card reply did not return message_id");
+      }
+      card.anchorMessageId = active.replyMessageId;
+      card.messageId = waitingCardMessageId;
+      active.lastAgentReplyMessageId = waitingCardMessageId;
+      card.lastRenderedJson = serialized;
+      await this.options.lark.recallMessage(previousMessageId);
+    } catch (error) {
+      this.log.warn({ error, messageId: active.replyMessageId }, "failed to notify waiting agent card");
+    }
   }
 
   private async completeAgentCardBestEffort(state: ConversationState, active: ActiveTurn): Promise<void> {
@@ -3032,7 +3416,13 @@ export class ConversationManager {
   private async interruptAgentCardBestEffort(state: ConversationState, active: ActiveTurn): Promise<void> {
     this.stopAgentCardTimer(active);
     try {
-      await this.patchAgentCardBestEffort(state, active, "interrupted");
+      const status =
+        active.waiting?.kind === "request_user_input"
+          ? "interrupted_input"
+          : active.waiting?.kind === "plan"
+            ? "interrupted_plan"
+            : "interrupted";
+      await this.patchAgentCardBestEffort(state, active, status);
     } catch (error) {
       this.log.warn({ error, messageId: active.replyMessageId }, "failed to update interrupted agent card");
     }
@@ -3111,7 +3501,17 @@ export class ConversationManager {
   private renderAgentCard(
     state: ConversationState,
     active: ActiveTurn,
-    status: "working" | "finished" | "interrupted" | "paused" | "failed",
+    status:
+      | "working"
+      | "finished"
+      | "interrupted"
+      | "paused"
+      | "failed"
+      | "waiting_input"
+      | "waiting_plan"
+      | "interrupted_input"
+      | "interrupted_plan"
+      | "accepted_plan",
     finalElements?: LarkCardElement[],
     error?: string,
     messages?: TwinnyAgentCardMessage[],
@@ -3127,8 +3527,18 @@ export class ConversationManager {
       stateKey: active.context.stateKey,
       runId: active.runId,
       iconImageKey: this.options.config.lark.iconImageKey,
+      planMode: active.planMode,
+      waiting: renderWaitingState(active.waiting),
       finalElements,
-      mentionOpenIds: status === "finished" ? activeTurnMentionOpenIds(active) : undefined,
+      mentionOpenIds:
+        status === "finished" ||
+        status === "waiting_input" ||
+        status === "waiting_plan" ||
+        status === "interrupted_input" ||
+        status === "interrupted_plan" ||
+        status === "accepted_plan"
+          ? activeTurnMentionOpenIds(active)
+          : undefined,
       summaryText,
       error
     });
@@ -3483,6 +3893,12 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "queue") {
     return { kind: "queue", text: rest };
   }
+  if (command === "plan") {
+    return { kind: "plan", text: rest };
+  }
+  if (command === "exit") {
+    return { kind: "exit" };
+  }
   return { kind: "message", text };
 }
 
@@ -3493,15 +3909,46 @@ function parseTwinnyCardAction(value: Record<string, unknown>): ParsedCardAction
   const action = value.action;
   const stateKey = typeof value.stateKey === "string" ? value.stateKey : undefined;
   const runId = typeof value.runId === "number" && Number.isInteger(value.runId) ? value.runId : undefined;
-  if ((action !== "stop" && action !== "next" && action !== "queue") || !stateKey || runId === undefined) {
+  if (!isTwinnyCardAction(action) || !stateKey || runId === undefined) {
     return undefined;
   }
   return {
     action,
     stateKey,
     runId,
-    text: action === "stop" ? "/stop" : action === "next" ? "/next" : "/queue"
+    text: twinnyCardActionText(action)
   };
+}
+
+function isTwinnyCardAction(value: unknown): value is ParsedCardActionCommand["action"] {
+  return (
+    value === "stop" ||
+    value === "next" ||
+    value === "queue" ||
+    value === "request_input_submit" ||
+    value === "request_input_interrupt" ||
+    value === "plan_implement" ||
+    value === "plan_interrupt"
+  );
+}
+
+function twinnyCardActionText(action: ParsedCardActionCommand["action"]): string {
+  switch (action) {
+    case "stop":
+      return "/stop";
+    case "next":
+      return "/next";
+    case "queue":
+      return "/queue";
+    case "request_input_submit":
+      return "/request-input submit";
+    case "request_input_interrupt":
+      return "/request-input interrupt";
+    case "plan_implement":
+      return "/plan implement";
+    case "plan_interrupt":
+      return "/plan interrupt";
+  }
 }
 
 function activeTurnWorkDurationMs(codexThreadId: string, active: ActiveTurn | undefined, now = Date.now()): number {
@@ -3522,6 +3969,93 @@ function activeTurnRuntimeStats(active: ActiveTurn): TwinnyAgentCardRuntimeStats
     contextTokens: active.threadTokenUsage.contextTokens,
     contextWindow: active.threadTokenUsage.contextWindow
   };
+}
+
+function renderWaitingState(activeWaiting: ActiveTurnWaiting | undefined):
+  | { kind: "request_user_input"; requestId: string; questions: TwinnyAgentCardInputQuestion[] }
+  | { kind: "plan"; planText: string }
+  | undefined {
+  if (!activeWaiting) {
+    return undefined;
+  }
+  if (activeWaiting.kind === "request_user_input") {
+    return {
+      kind: "request_user_input",
+      requestId: String(activeWaiting.request.requestId),
+      questions: activeWaiting.request.params.questions
+    };
+  }
+  return {
+    kind: "plan",
+    planText: formatPlanUpdateForCard(activeWaiting.plan)
+  };
+}
+
+function formatPlanUpdateForCard(plan: CodexPlanUpdate): string {
+  const lines: string[] = [];
+  const explanation = nonEmptyString(plan.explanation ?? undefined);
+  if (explanation) {
+    lines.push(explanation);
+  }
+  for (const step of plan.plan) {
+    lines.push(`- [${formatPlanStepStatus(step.status)}] ${step.step}`);
+  }
+  return lines.join("\n");
+}
+
+function formatPlanStepStatus(status: CodexPlanUpdate["plan"][number]["status"]): string {
+  if (status === "completed") {
+    return "x";
+  }
+  if (status === "inProgress") {
+    return "~";
+  }
+  return " ";
+}
+
+function buildRequestUserInputResponse(
+  request: CodexRequestUserInputRequest,
+  formValue: Record<string, unknown> | undefined
+): CodexRequestUserInputResponse {
+  const answers: CodexRequestUserInputResponse["answers"] = {};
+  for (const question of request.params.questions) {
+    const other = stringArrayValue(formValue?.[formOtherName(question.id)])
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const selected = stringArrayValue(formValue?.[formSelectName(question.id)])
+      .map((value) => value.trim())
+      .filter(Boolean);
+    answers[question.id] = {
+      answers: other.length > 0 ? other : selected
+    };
+  }
+  return { answers };
+}
+
+function formSelectName(id: string): string {
+  return `answer_${safeFormKey(id)}_select`;
+}
+
+function formOtherName(id: string): string {
+  return `answer_${safeFormKey(id)}_other`;
+}
+
+function safeFormKey(value: string): string {
+  return value.replace(/[^A-Za-z0-9_]/g, "_");
+}
+
+function stringArrayValue(value: unknown): string[] {
+  if (typeof value === "string") {
+    return [value];
+  }
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string");
+  }
+  if (isRecord(value)) {
+    const selected = value.value ?? value.values ?? value.option;
+    return stringArrayValue(selected);
+  }
+  return [];
 }
 
 function parseActivateCommand(
@@ -3794,6 +4328,12 @@ function classifyInitialRoute(
   if (parsed.kind === "queue" && parsed.text.length > 0) {
     return { routeKind: "queued_message", status: "queued", text: parsed.text };
   }
+  if (parsed.kind === "plan") {
+    return { routeKind: "queued_message", status: "queued", text: parsed.text };
+  }
+  if (parsed.kind === "exit") {
+    return { routeKind: "queued_message", status: "queued", text: originalText };
+  }
   if (
     parsed.kind === "help" ||
     parsed.kind === "status" ||
@@ -3811,7 +4351,7 @@ function classifyInitialRoute(
   if (state.queueNextMessage) {
     return { routeKind: "queued_message", status: "queued", text: parsed.text };
   }
-  if (state.pendingBatch.length > 0 || state.active?.cancelRequested) {
+  if (state.pendingBatch.length > 0 || state.active?.cancelRequested || state.active?.waiting) {
     return { routeKind: "queued_message", status: "queued", text: parsed.text };
   }
   if (state.active) {
@@ -3823,13 +4363,14 @@ function classifyInitialRoute(
 function toPendingMessage(
   message: IncomingLarkMessage,
   text: string,
-  options: { queueBoundary?: boolean } = {}
+  options: { queueBoundary?: boolean; control?: PendingMessage["control"] } = {}
 ): PendingMessage {
   return {
     messageId: message.messageId,
     text,
     original: message,
-    queueBoundary: options.queueBoundary ?? false
+    queueBoundary: options.queueBoundary ?? false,
+    control: options.control
   };
 }
 

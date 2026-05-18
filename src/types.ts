@@ -12,6 +12,8 @@ export type AgentMessageMode = "plain" | "card";
 
 export type AgentMessagePhase = "commentary" | "final_answer";
 
+export type CodexThreadStatus = "idle" | "working" | "waiting";
+
 export interface CodexAgentMessage {
   id: string;
   text: string;
@@ -129,6 +131,8 @@ export interface CodexThreadRecord {
   conversationKey: string;
   larkThreadId?: string;
   role: RoleName;
+  planMode: boolean;
+  status: CodexThreadStatus;
   forkedFromCodexThreadId?: string;
   forkedAt?: number;
   creatorOpenId?: string;
@@ -227,6 +231,7 @@ export interface IncomingLarkCardAction {
   openChatId?: string;
   actionTag?: string;
   actionValue: Record<string, unknown>;
+  formValue?: Record<string, unknown>;
   raw: unknown;
 }
 
@@ -263,6 +268,52 @@ export interface CodexTurnResult {
   status: "completed" | "failed" | "interrupted";
   error?: string;
   durationMs?: number;
+}
+
+export interface CodexRequestUserInputOption {
+  label: string;
+  description: string;
+}
+
+export interface CodexRequestUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  isOther: boolean;
+  isSecret: boolean;
+  options: CodexRequestUserInputOption[] | null;
+}
+
+export interface CodexRequestUserInputParams {
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  questions: CodexRequestUserInputQuestion[];
+}
+
+export interface CodexRequestUserInputAnswer {
+  answers: string[];
+}
+
+export interface CodexRequestUserInputResponse {
+  answers: Record<string, CodexRequestUserInputAnswer | undefined>;
+}
+
+export interface CodexRequestUserInputRequest {
+  requestId: string | number;
+  params: CodexRequestUserInputParams;
+}
+
+export interface CodexPlanStep {
+  step: string;
+  status: "pending" | "inProgress" | "completed";
+}
+
+export interface CodexPlanUpdate {
+  threadId: string;
+  turnId: string;
+  explanation: string | null;
+  plan: CodexPlanStep[];
 }
 
 export interface CodexThreadTokenUsageUpdate {

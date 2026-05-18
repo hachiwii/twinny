@@ -1,6 +1,15 @@
 import { TwinnyError, toErrorMessage } from "../errors.js";
-import type { AgentMessagePhase, CodexAgentMessage, CodexThreadTokenUsageUpdate, CodexTurnResult } from "../types.js";
-import type { CodexNotificationMessage, CodexProtocolClient } from "./protocol.js";
+import type {
+  AgentMessagePhase,
+  CodexAgentMessage,
+  CodexPlanUpdate,
+  CodexRequestUserInputParams,
+  CodexRequestUserInputRequest,
+  CodexRequestUserInputResponse,
+  CodexThreadTokenUsageUpdate,
+  CodexTurnResult
+} from "../types.js";
+import type { CodexNotificationMessage, CodexProtocolClient, CodexRequestMessage } from "./protocol.js";
 
 export interface TextTurnInput {
   type: "text";
@@ -13,15 +22,31 @@ export interface TurnStartParams {
   input: TextTurnInput[];
   cwd: string;
   approvalPolicy: "never";
+  collaborationMode?: {
+    mode: "plan";
+    settings: {
+      model: string;
+      reasoning_effort: string | null;
+      developer_instructions: string | null;
+    };
+  };
 }
 
 export interface TurnStartOptions {
   threadId: string;
   text: string;
   cwd: string;
+  planMode?: boolean;
+  model?: string;
+  effort?: string;
   onTurnStarted?: (turnId: string) => Promise<void> | void;
   onAgentMessage?: (message: CompletedAgentMessage) => Promise<void> | void;
   onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
+  onPlanUpdated?: (plan: CodexPlanUpdate) => Promise<void> | void;
+  onRequestUserInput?: (
+    request: CodexRequestUserInputRequest,
+    responder: CodexRequestUserInputResponder
+  ) => Promise<void> | void;
 }
 
 export interface TurnRequestOptions {
@@ -56,6 +81,11 @@ interface ItemCompletedParams {
 
 export type CompletedAgentMessage = CodexAgentMessage;
 
+export interface CodexRequestUserInputResponder {
+  respond(response: CodexRequestUserInputResponse): void;
+  reject(error: Error | string): void;
+}
+
 export interface TurnSteerOptions {
   threadId: string;
   turnId: string;
@@ -87,12 +117,23 @@ export function buildTextTurnInput(text: string): TextTurnInput {
 }
 
 export function buildTurnStartParams(options: TurnStartOptions): TurnStartParams {
-  return {
+  const params: TurnStartParams = {
     threadId: options.threadId,
     input: [buildTextTurnInput(options.text)],
     cwd: options.cwd,
     approvalPolicy: "never"
   };
+  if (options.planMode) {
+    params.collaborationMode = {
+      mode: "plan",
+      settings: {
+        model: options.model ?? "gpt-5.5",
+        reasoning_effort: options.effort ?? "medium",
+        developer_instructions: null
+      }
+    };
+  }
+  return params;
 }
 
 export function buildTurnSteerParams(options: TurnSteerOptions): TurnSteerParams {
@@ -118,13 +159,18 @@ export async function startCodexTurn(
   const accumulator = new TurnOutputAccumulator(options.threadId, undefined, {
     onTurnStarted: options.onTurnStarted,
     onAgentMessage: options.onAgentMessage,
-    onTokenUsage: options.onTokenUsage
+    onTokenUsage: options.onTokenUsage,
+    onPlanUpdated: options.onPlanUpdated
   });
   const onNotification = (notification: CodexNotificationMessage): void => {
     accumulator.record(notification);
   };
+  const onServerRequest = (request: CodexRequestMessage): void => {
+    handleTurnServerRequest(protocol, options, request);
+  };
 
   protocol.on("notification", onNotification);
+  protocol.on("serverRequest", onServerRequest);
   try {
     const response = await protocol.request<TurnStartResponse, TurnStartParams>(
       "turn/start",
@@ -141,6 +187,7 @@ export async function startCodexTurn(
       : new TwinnyError(toErrorMessage(error), "CODEX_TURN_FAILED", error);
   } finally {
     protocol.off("notification", onNotification);
+    protocol.off("serverRequest", onServerRequest);
   }
 }
 
@@ -175,6 +222,7 @@ export class TurnOutputAccumulator {
       onTurnStarted?: (turnId: string) => Promise<void> | void;
       onAgentMessage?: (message: CompletedAgentMessage) => Promise<void> | void;
       onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
+      onPlanUpdated?: (plan: CodexPlanUpdate) => Promise<void> | void;
     } = {}
   ) {
     this.turnId = turnId;
@@ -211,6 +259,10 @@ export class TurnOutputAccumulator {
       }
       if (notification.method === "thread/tokenUsage/updated") {
         this.recordTokenUsage(notification.params);
+        return;
+      }
+      if (notification.method === "turn/plan/updated") {
+        this.recordPlanUpdated(notification.params);
         return;
       }
       if (notification.method === "error") {
@@ -352,6 +404,23 @@ export class TurnOutputAccumulator {
     });
   }
 
+  private recordPlanUpdated(params: unknown): void {
+    const plan = parsePlanUpdate(params);
+    if (!plan || plan.threadId !== this.threadId) {
+      return;
+    }
+    if (this.turnId && plan.turnId !== this.turnId) {
+      return;
+    }
+    this.setTurnId(plan.turnId);
+    void Promise.resolve(this.callbacks.onPlanUpdated?.(plan)).catch((error: unknown) => {
+      const parsedError =
+        error instanceof Error ? error : new TwinnyError(toErrorMessage(error), "CODEX_PLAN_CALLBACK_FAILED");
+      this.completionError = parsedError;
+      this.rejectWait?.(parsedError);
+    });
+  }
+
   private toResult(): CodexTurnResult {
     const turn = this.completed?.turn;
     const status = turn?.status === "failed" ? "failed" : turn?.status === "interrupted" ? "interrupted" : "completed";
@@ -406,6 +475,157 @@ function extractAgentMessage(item: unknown): CompletedAgentMessage | undefined {
   }
   const phase = agentMessagePhaseValue(item.phase);
   return phase === undefined ? { id, text } : { id, text, phase };
+}
+
+function handleTurnServerRequest(
+  protocol: CodexProtocolClient,
+  options: TurnStartOptions,
+  request: CodexRequestMessage
+): void {
+  if (request.method !== "item/tool/requestUserInput") {
+    if (requestMatchesThread(request, options.threadId)) {
+      protocol.respondError(request.id, {
+        code: "TWINNY_UNSUPPORTED_SERVER_REQUEST",
+        message: `Twinny does not implement Codex server request ${request.method}`
+      });
+    }
+    return;
+  }
+  const params = parseRequestUserInputParams(request.params);
+  if (!params || params.threadId !== options.threadId) {
+    return;
+  }
+  if (!options.onRequestUserInput) {
+    protocol.respondError(request.id, {
+      code: "TWINNY_UNSUPPORTED_SERVER_REQUEST",
+      message: "Twinny does not implement item/tool/requestUserInput for this turn"
+    });
+    return;
+  }
+
+  let settled = false;
+  const responder: CodexRequestUserInputResponder = {
+    respond: (response) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      protocol.respond(request.id, response);
+    },
+    reject: (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      protocol.respondError(request.id, {
+        code: "TWINNY_REQUEST_USER_INPUT_FAILED",
+        message: typeof error === "string" ? error : error.message
+      });
+    }
+  };
+
+  void Promise.resolve(
+    options.onRequestUserInput(
+      {
+        requestId: request.id,
+        params
+      },
+      responder
+    )
+  ).catch((error: unknown) => {
+    responder.reject(error instanceof Error ? error : toErrorMessage(error));
+  });
+}
+
+function requestMatchesThread(request: CodexRequestMessage, threadId: string): boolean {
+  return isRecord(request.params) && request.params.threadId === threadId;
+}
+
+function parseRequestUserInputParams(value: unknown): CodexRequestUserInputParams | undefined {
+  if (!isRecord(value) || typeof value.threadId !== "string" || typeof value.turnId !== "string") {
+    return undefined;
+  }
+  if (typeof value.itemId !== "string" || !Array.isArray(value.questions)) {
+    return undefined;
+  }
+  const questions = value.questions.map(parseRequestUserInputQuestion);
+  if (questions.some((question) => question === undefined)) {
+    return undefined;
+  }
+  return {
+    threadId: value.threadId,
+    turnId: value.turnId,
+    itemId: value.itemId,
+    questions: questions as CodexRequestUserInputParams["questions"]
+  };
+}
+
+function parseRequestUserInputQuestion(value: unknown): CodexRequestUserInputParams["questions"][number] | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const { id, header, question, isOther, isSecret, options } = value;
+  if (
+    typeof id !== "string" ||
+    typeof header !== "string" ||
+    typeof question !== "string" ||
+    typeof isOther !== "boolean" ||
+    typeof isSecret !== "boolean"
+  ) {
+    return undefined;
+  }
+  if (options !== null && options !== undefined && !Array.isArray(options)) {
+    return undefined;
+  }
+  const parsedOptions = (options ?? null) === null
+    ? null
+    : (options as unknown[]).map((option) => {
+        if (!isRecord(option) || typeof option.label !== "string" || typeof option.description !== "string") {
+          return undefined;
+        }
+        return { label: option.label, description: option.description };
+      });
+  if (Array.isArray(parsedOptions) && parsedOptions.some((option) => option === undefined)) {
+    return undefined;
+  }
+  return {
+    id,
+    header,
+    question,
+    isOther,
+    isSecret,
+    options: parsedOptions as CodexRequestUserInputParams["questions"][number]["options"]
+  };
+}
+
+function parsePlanUpdate(value: unknown): CodexPlanUpdate | undefined {
+  if (!isRecord(value) || typeof value.threadId !== "string" || typeof value.turnId !== "string") {
+    return undefined;
+  }
+  if (value.explanation !== null && value.explanation !== undefined && typeof value.explanation !== "string") {
+    return undefined;
+  }
+  if (!Array.isArray(value.plan)) {
+    return undefined;
+  }
+  const plan = value.plan.map((step) => {
+    if (!isRecord(step) || typeof step.step !== "string") {
+      return undefined;
+    }
+    if (step.status !== "pending" && step.status !== "inProgress" && step.status !== "completed") {
+      return undefined;
+    }
+    return { step: step.step, status: step.status };
+  });
+  if (plan.some((step) => step === undefined)) {
+    return undefined;
+  }
+  return {
+    threadId: value.threadId,
+    turnId: value.turnId,
+    explanation: typeof value.explanation === "string" ? value.explanation : null,
+    plan: plan as CodexPlanUpdate["plan"]
+  };
 }
 
 function agentMessagePhaseValue(value: unknown): AgentMessagePhase | null | undefined {

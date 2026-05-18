@@ -322,6 +322,39 @@ describe("ConversationManager", () => {
     turns[0]!.resolve(completed("thread_1", "turn_1"));
   });
 
+  it("enables plan mode without starting a turn when /plan has no body", async () => {
+    const { repository } = createRepository();
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m1", "/plan"));
+
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadPlanMode).toHaveBeenCalledWith("p2p_ou_guest", "thread_1", true)
+    );
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m1"]);
+    expect(lark.replyText).toHaveBeenCalledWith("m1", "已开启 plan mode。");
+  });
+
+  it("starts /plan body as a plan-mode turn", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const codex = createCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "/plan investigate plan mode"));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(repository.updateCodexThreadPlanMode).toHaveBeenCalledWith("p2p_ou_guest", "thread_1", true);
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planMode: true,
+        input: wrappedMessage("investigate plan mode", "m1")
+      })
+    );
+  });
+
   it("splits pending queue batches at each explicit /queue message", async () => {
     const { codex, turns } = createDeferredCodex();
     const manager = createManager({ codex });
@@ -616,6 +649,8 @@ describe("ConversationManager", () => {
         "OUID: ou_guest",
         "Conversation Key: p2p_ou_guest",
         "Codex Thread ID: thread_status",
+        "Thread Status: idle",
+        "Plan Mode: off",
         "Thread Token Usage:",
         "- total: 100",
         "- input: 80",
@@ -2497,6 +2532,84 @@ describe("ConversationManager", () => {
     expect(cardActions[2]).toMatchObject({ eventId: "event_card_queue_3", text: "/queue" });
   });
 
+  it("renders requestUserInput waiting card and submits form answers back to Codex", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    vi.mocked(lark.getMessageReadOpenIds).mockResolvedValue([]);
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+    const responder = {
+      respond: vi.fn(),
+      reject: vi.fn()
+    };
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    await turns[0]!.params.onRequestUserInput?.(
+      {
+        requestId: "request_1",
+        params: {
+          threadId: "thread_1",
+          turnId: "turn_1",
+          itemId: "item_1",
+          questions: [
+            {
+              id: "choice",
+              header: "Choose mode",
+              question: "Choose mode",
+              isOther: true,
+              isSecret: false,
+              options: [{ label: "直接实现", description: "按计划改代码并测试。" }]
+            }
+          ]
+        }
+      },
+      responder
+    );
+
+    await waitForExpect(() => {
+      const card = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
+      expect(card).toBeDefined();
+      expect(JSON.stringify(card)).toContain("等待交互");
+      expect(JSON.stringify(card)).toContain("Choose mode");
+    });
+    expect(repository.updateCodexThreadStatus).toHaveBeenCalledWith("p2p_ou_guest", "thread_1", "waiting");
+
+    manager.submitCardAction({
+      eventId: "event_request_submit",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m1_1",
+      openChatId: "oc_ignored",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "request_input_submit",
+        stateKey: "p2p_ou_guest",
+        runId: 1
+      },
+      formValue: {
+        answer_choice_select: "直接实现",
+        answer_choice_other: ""
+      },
+      raw: { event_id: "event_request_submit" }
+    });
+
+    await waitForExpect(() =>
+      expect(responder.respond).toHaveBeenCalledWith({
+        answers: {
+          choice: {
+            answers: ["直接实现"]
+          }
+        }
+      })
+    );
+    expect(repository.updateCodexThreadStatus).toHaveBeenCalledWith("p2p_ou_guest", "thread_1", "working");
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+  });
+
   it("uploads SEND_TO_LARK image directives from completed agent messages and embeds them in the Lark post", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-image-"));
     const workspaceRoot = path.join(tempRoot, "workspaces");
@@ -3080,6 +3193,26 @@ function createRepository(initial?: ConversationRecord, options: {
         codexThreads.set(record.codexThreadId, record);
         return record;
       }),
+      updateCodexThreadPlanMode: vi.fn((conversationKey, codexThreadId, planMode) => {
+        const existing = codexThreads.get(codexThreadId);
+        if (!existing) {
+          throw new Error("missing codex thread");
+        }
+        existing.conversationKey = conversationKey;
+        existing.planMode = planMode;
+        existing.updatedAt = Date.now();
+        return existing;
+      }),
+      updateCodexThreadStatus: vi.fn((conversationKey, codexThreadId, status) => {
+        const existing = codexThreads.get(codexThreadId);
+        if (!existing) {
+          throw new Error("missing codex thread");
+        }
+        existing.conversationKey = conversationKey;
+        existing.status = status;
+        existing.updatedAt = Date.now();
+        return existing;
+      }),
       getCodexThreadWorkStats: vi.fn((codexThreadId) => {
         const turns = new Map<string, { startedAt: number; terminalAt?: number }>();
         for (const message of larkMessages.values()) {
@@ -3207,6 +3340,8 @@ function codexThreadRecord(overrides: Partial<CodexThreadRecord> = {}): CodexThr
     codexThreadId: "thread_1",
     conversationKey: "p2p_ou_guest",
     role: "guest",
+    planMode: false,
+    status: "idle",
     inputTokens: 0,
     outputTokens: 0,
     cachedInputTokens: 0,
