@@ -275,6 +275,33 @@ describe("LarkMessageSender", () => {
     });
   });
 
+  it("forwards a thread to another thread through OpenAPI", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { message_id: "om_forward" } }
+    ]);
+    const sender = createSender(fetch);
+
+    await expect(sender.forwardThreadToThread("omt_agent", "omt_original", { uuid: "uuid-forward" })).resolves.toMatchObject({
+      messageId: "om_forward"
+    });
+
+    expect(fetch).toHaveBeenLastCalledWith(
+      "https://open.feishu.cn/open-apis/im/v1/threads/omt_agent/forward?receive_id_type=thread_id&uuid=uuid-forward",
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer tenant-token",
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          receive_id: "omt_original"
+        }),
+        signal: undefined
+      }
+    );
+  });
+
   it("fetches a message through the mget API", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },

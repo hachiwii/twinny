@@ -407,6 +407,13 @@ function adaptLarkSender(
     ) => {
       return sender.sendInteractiveCardToChatId(chatId, card, options);
     },
+    forwardThreadToThread: async (
+      threadId: string,
+      receiveThreadId: string,
+      options?: { uuid?: string }
+    ) => {
+      return sender.forwardThreadToThread(threadId, receiveThreadId, options);
+    },
     replyCard: async (messageId: string, card: Parameters<LarkMessageSender["replyInteractiveCard"]>[1]): Promise<{ messageId?: string }> => {
       return sender.replyInteractiveCard(messageId, card);
     },

@@ -1181,7 +1181,7 @@ describe("ConversationManager", () => {
     );
   });
 
-  it("replaces user-created project topics with a bot topic proxy message", async () => {
+  it("keeps user-created project topics and links them to a bot topic proxy message", async () => {
     const row = groupConversationRecord({
       type: "project",
       role: "owner",
@@ -1234,8 +1234,17 @@ describe("ConversationManager", () => {
         content: JSON.stringify({ text: "please handle this" })
       }
     );
+    expect(lark.replyText).toHaveBeenCalledWith("user_topic_root", "已创建 Agent 话题");
+    expect(lark.forwardThreadToThread).toHaveBeenCalledWith(
+      "bot_topic_1",
+      "user_topic_1",
+      { uuid: expect.stringMatching(UUID_PATTERN) }
+    );
+    const noticeCallOrder = vi.mocked(lark.replyText).mock.invocationCallOrder[0]!;
+    const forwardCallOrder = vi.mocked(lark.forwardThreadToThread).mock.invocationCallOrder[0]!;
+    expect(noticeCallOrder).toBeLessThan(forwardCallOrder);
     expect(lark.replyMarkdown).not.toHaveBeenCalledWith("card_project_1", expect.stringContaining("来自"));
-    expect(lark.recallMessage).toHaveBeenCalledWith("user_topic_root");
+    expect(lark.recallMessage).not.toHaveBeenCalled();
     expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
       conversationKey: "group_oc_group",
       codexThreadId: "thread_proxy_topic",
@@ -2917,6 +2926,7 @@ function createLarkResponder(): LarkResponder {
     replyFile: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     sendTextToOpenId: vi.fn(async () => undefined),
     sendCardToChatId: vi.fn(async (chatId) => ({ messageId: `card_${chatId}_${++markdownReplyCount}`, raw: {} })),
+    forwardThreadToThread: vi.fn(async (threadId) => ({ messageId: `forward_${threadId}_${++markdownReplyCount}`, raw: {} })),
     replyCard: vi.fn(async (messageId) => ({ messageId: `card_${messageId}_${++markdownReplyCount}` })),
     patchCard: vi.fn(async (messageId) => ({ messageId })),
     recallMessage: vi.fn(async () => undefined)

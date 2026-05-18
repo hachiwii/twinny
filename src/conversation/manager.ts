@@ -261,6 +261,7 @@ export interface LarkResponder {
     card: LarkCardJson,
     options?: { uuid?: string }
   ): Promise<LarkSendMessageResult | void>;
+  forwardThreadToThread(threadId: string, receiveThreadId: string, options?: { uuid?: string }): Promise<LarkSendMessageResult | void>;
   replyCard(messageId: string, card: LarkCardJson): Promise<{ messageId?: string } | void>;
   patchCard(messageId: string, card: LarkCardJson): Promise<{ messageId?: string } | void>;
   recallMessage(messageId: string): Promise<void>;
@@ -923,7 +924,7 @@ export class ConversationManager {
     }
 
     const proxyMessageId = await this.sendProjectTopicProxyMessage(topic.cardMessageId, message);
-    await this.recallProjectTopicOriginalBestEffort(message.messageId);
+    await this.replyProjectTopicRedirectNoticeBestEffort(message, topic.larkThreadId, context.larkThreadId);
 
     const proxyContext = createProjectTopicProxyContext(context, topic.larkThreadId);
     const proxyMessage = createProjectTopicProxyMessage(message, proxyMessageId, topic.larkThreadId);
@@ -946,11 +947,21 @@ export class ConversationManager {
     return proxyMessageId;
   }
 
-  private async recallProjectTopicOriginalBestEffort(messageId: string): Promise<void> {
+  private async replyProjectTopicRedirectNoticeBestEffort(
+    message: IncomingLarkMessage,
+    agentThreadId: string,
+    originalThreadId: string
+  ): Promise<void> {
     try {
-      await this.options.lark.recallMessage(messageId);
+      await this.options.lark.replyText(message.messageId, "已创建 Agent 话题");
+      await this.options.lark.forwardThreadToThread(agentThreadId, originalThreadId, {
+        uuid: createLarkUuid("twinny-project-topic-forward", message.messageId, agentThreadId, originalThreadId)
+      });
     } catch (error) {
-      this.log.warn({ error, messageId }, "failed to recall user-created project topic message");
+      this.log.warn(
+        { error, messageId: message.messageId, agentThreadId, originalThreadId },
+        "failed to reply with project topic redirect notice"
+      );
     }
   }
 

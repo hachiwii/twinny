@@ -39,6 +39,11 @@ export interface ReactionOptions {
   signal?: AbortSignal;
 }
 
+export interface ForwardThreadOptions {
+  uuid?: string;
+  signal?: AbortSignal;
+}
+
 export type LarkPostNode =
   | { tag: "md"; text: string }
   | { tag: "img"; image_key: string }
@@ -239,6 +244,28 @@ export class LarkMessageSender {
         content: JSON.stringify(card),
         msg_type: "interactive",
         ...(options.uuid ? { uuid: options.uuid } : {})
+      }
+    });
+    return {
+      messageId: extractMessageId(raw),
+      raw
+    };
+  }
+
+  async forwardThreadToThread(
+    threadId: string,
+    receiveThreadId: string,
+    options: ForwardThreadOptions = {}
+  ): Promise<LarkSendMessageResult> {
+    const raw = await this.openApiClient.request(`/im/v1/threads/${encodePathSegment(threadId)}/forward`, {
+      method: "POST",
+      query: {
+        receive_id_type: "thread_id",
+        ...(options.uuid ? { uuid: options.uuid } : {})
+      },
+      signal: options.signal,
+      body: {
+        receive_id: receiveThreadId
       }
     });
     return {
