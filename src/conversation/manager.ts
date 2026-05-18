@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
+import { parse as parseToml } from "smol-toml";
 import { TwinnyError, toErrorMessage } from "../errors.js";
 import {
   imageElement,
@@ -11,7 +12,8 @@ import {
   renderTwinnyThreadSummaryCard,
   type LarkCardElement,
   type LarkCardJson,
-  type TwinnyAgentCardMessage
+  type TwinnyAgentCardMessage,
+  type TwinnyAgentCardRuntimeStats
 } from "../lark/cards.js";
 import { normalizeIncomingLarkMessage } from "../lark/filters.js";
 import { isLarkMessageUnavailableError } from "../lark/messages.js";
@@ -339,6 +341,9 @@ interface ActiveTurn {
   context: MessageContext;
   replyMessageId: string;
   startedAt: number;
+  model?: string;
+  modelReasoningEffort?: string;
+  threadTokenUsage: ThreadTokenUsageSnapshot;
   turnId?: string;
   reaction?: LarkReactionHandle | null;
   lastAgentReplyMessageId?: string;
@@ -364,6 +369,11 @@ interface ActiveTurnCardState {
   timer?: NodeJS.Timeout;
   fallbackPlain: boolean;
   lastRenderedJson?: string;
+}
+
+interface CodexTurnModelSettings {
+  model?: string;
+  effort?: string;
 }
 
 interface ConversationState {
@@ -2049,6 +2059,10 @@ export class ConversationManager {
       conversationKey: context.conversationKey,
       codexThreadId: params.threadId
     });
+    const [modelSettings, threadTokenUsage] = await Promise.all([
+      this.readCodexTurnModelSettingsBestEffort(params.role, params.workspace),
+      this.readThreadTokenUsageBestEffort(params.threadId)
+    ]);
     const startedAt = Date.now();
     const agentMessageMode = this.options.config.lark.agentMessageMode;
     const active: ActiveTurn = {
@@ -2061,6 +2075,9 @@ export class ConversationManager {
       context,
       replyMessageId: anchor.messageId,
       startedAt,
+      model: modelSettings.model,
+      modelReasoningEffort: modelSettings.effort,
+      threadTokenUsage,
       reaction: await this.addReactionBestEffort(anchor.messageId),
       card:
         agentMessageMode === "card"
@@ -2088,7 +2105,7 @@ export class ConversationManager {
       approvalPolicy: "never",
       onTurnStarted: (turnId) => this.handleTurnStarted(state, active, turnId),
       onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
-      onTokenUsage: (usage) => this.recordThreadTokenUsageBestEffort(active, usage)
+      onTokenUsage: (usage) => this.recordThreadTokenUsageBestEffort(state, active, usage)
     });
     void turnPromise
       .then((result) => {
@@ -2392,12 +2409,36 @@ export class ConversationManager {
     }
   }
 
+  private async readCodexTurnModelSettingsBestEffort(role: RoleName, workspace: string): Promise<CodexTurnModelSettings> {
+    const configPath = path.join(this.options.roles.codexHomeFor(role), "config.toml");
+    try {
+      const content = await fs.readFile(configPath, "utf8");
+      return extractCodexTurnModelSettings(parseToml(content), workspace);
+    } catch (error) {
+      if (!isNodeErrorCode(error, "ENOENT")) {
+        this.log.warn({ error, role, configPath }, "failed to read codex model settings");
+      }
+      return {};
+    }
+  }
+
+  private async readThreadTokenUsageBestEffort(codexThreadId: string): Promise<ThreadTokenUsageSnapshot> {
+    try {
+      return extractThreadTokenBreakdown(await this.options.repository.getCodexThreadById(codexThreadId));
+    } catch (error) {
+      this.log.warn({ error, codexThreadId }, "failed to read thread token usage");
+      return emptyThreadTokenUsageSnapshot();
+    }
+  }
+
   private async recordThreadTokenUsageBestEffort(
+    state: ConversationState,
     active: ActiveTurn,
     usage: CodexThreadTokenUsageUpdate
   ): Promise<void> {
     try {
       const tokenUsage = extractThreadTokenUsage(usage);
+      active.threadTokenUsage = tokenUsage;
       await this.options.repository.updateCodexThreadTokenUsage({
         codexThreadId: usage.threadId,
         conversationKey: active.conversationKey,
@@ -2412,9 +2453,23 @@ export class ConversationManager {
         tokenUsageJson: safeJsonStringify(usage.raw) ?? "{}"
       });
       await this.updateThreadSummaryCardBestEffort(usage.threadId, { active });
+      this.patchActiveAgentCardTokenUsageBestEffort(state, active);
     } catch (error) {
       this.log.warn({ error, threadId: usage.threadId, totalTokens: usage.totalTokens }, "failed to record token usage");
     }
+  }
+
+  private patchActiveAgentCardTokenUsageBestEffort(state: ConversationState, active: ActiveTurn): void {
+    void state.controlQueue
+      .enqueue(async () => {
+        if (state.active !== active || active.cancelRequested || active.completedStatus !== undefined) {
+          return;
+        }
+        await this.patchAgentCardBestEffort(state, active, "working");
+      })
+      .catch((error) => {
+        this.log.warn({ error, threadId: active.threadId }, "failed to update agent card token usage");
+      });
   }
 
   private async markPendingMessagesProcessingBestEffort(
@@ -3175,6 +3230,7 @@ export class ConversationManager {
       status,
       messages: messages ?? active.card?.messages ?? [],
       elapsedMs: Date.now() - active.startedAt,
+      runtimeStats: activeTurnRuntimeStats(active),
       queueDepth: state.pendingBatch.length,
       queueNextMessage: state.queueNextMessage,
       stateKey: active.context.stateKey,
@@ -3563,6 +3619,18 @@ function activeTurnWorkDurationMs(codexThreadId: string, active: ActiveTurn | un
   return Number.isFinite(durationMs) && durationMs > 0 ? Math.trunc(durationMs) : 0;
 }
 
+function activeTurnRuntimeStats(active: ActiveTurn): TwinnyAgentCardRuntimeStats {
+  return {
+    model: active.model,
+    effort: active.modelReasoningEffort,
+    inputTokens: active.threadTokenUsage.inputTokens,
+    cachedInputTokens: active.threadTokenUsage.cachedInputTokens,
+    outputTokens: active.threadTokenUsage.outputTokens,
+    contextTokens: active.threadTokenUsage.contextTokens,
+    contextWindow: active.threadTokenUsage.contextWindow
+  };
+}
+
 function parseActivateCommand(
   text: string
 ): { kind: "valid"; responseMode: Exclude<ConversationResponseMode, "none">; role?: RoleName } | { kind: "invalid"; message: string } {
@@ -3934,13 +4002,35 @@ function extractThreadTokenBreakdown(thread: CodexThreadRecord | undefined): Thr
     outputTokens: finiteNumber(total?.outputTokens, total?.output_tokens, total?.completion_tokens, thread?.outputTokens) ?? 0,
     reasoningOutputTokens:
       finiteNumber(total?.reasoningOutputTokens, total?.reasoning_output_tokens, thread?.reasoningOutputTokens) ?? 0,
-    contextTokens: finiteNumber(last?.totalTokens, last?.total_tokens, thread?.contextTokens) ?? 0,
+    contextTokens:
+      finiteNumber(
+        last?.totalTokens,
+        last?.total_tokens,
+        nestedValue(raw, ["tokenUsage", "lastTotal"]),
+        nestedValue(raw, ["tokenUsage", "last_total"]),
+        nestedValue(raw, ["usage", "lastTotal"]),
+        nestedValue(raw, ["usage", "last_total"]),
+        nestedValue(raw, ["lastTotal"]),
+        nestedValue(raw, ["last_total"]),
+        thread?.contextTokens
+      ) ?? 0,
     contextWindow:
       finiteNumber(
         nestedValue(raw, ["modelContextWindow"]),
         nestedValue(raw, ["model_context_window"]),
+        nestedValue(raw, ["contextWindow"]),
+        nestedValue(raw, ["context_window"]),
+        nestedValue(raw, ["window"]),
         nestedValue(raw, ["tokenUsage", "modelContextWindow"]),
         nestedValue(raw, ["tokenUsage", "model_context_window"]),
+        nestedValue(raw, ["tokenUsage", "contextWindow"]),
+        nestedValue(raw, ["tokenUsage", "context_window"]),
+        nestedValue(raw, ["tokenUsage", "window"]),
+        nestedValue(raw, ["usage", "modelContextWindow"]),
+        nestedValue(raw, ["usage", "model_context_window"]),
+        nestedValue(raw, ["usage", "contextWindow"]),
+        nestedValue(raw, ["usage", "context_window"]),
+        nestedValue(raw, ["usage", "window"]),
         thread?.contextWindow
       ) ?? 0
   };
@@ -3989,17 +4079,78 @@ function extractThreadTokenUsage(usage: CodexThreadTokenUsageUpdate): ThreadToke
         total?.reasoningTokens,
         total?.reasoning_tokens
       ) ?? 0,
-    contextTokens: finiteNumber(last?.totalTokens, last?.total_tokens) ?? 0,
+    contextTokens:
+      finiteNumber(
+        last?.totalTokens,
+        last?.total_tokens,
+        nestedValue(raw, ["tokenUsage", "lastTotal"]),
+        nestedValue(raw, ["tokenUsage", "last_total"]),
+        nestedValue(raw, ["usage", "lastTotal"]),
+        nestedValue(raw, ["usage", "last_total"]),
+        nestedValue(raw, ["lastTotal"]),
+        nestedValue(raw, ["last_total"])
+      ) ?? 0,
     contextWindow:
       finiteNumber(
         nestedValue(raw, ["modelContextWindow"]),
         nestedValue(raw, ["model_context_window"]),
+        nestedValue(raw, ["contextWindow"]),
+        nestedValue(raw, ["context_window"]),
+        nestedValue(raw, ["window"]),
         nestedValue(raw, ["tokenUsage", "modelContextWindow"]),
         nestedValue(raw, ["tokenUsage", "model_context_window"]),
+        nestedValue(raw, ["tokenUsage", "contextWindow"]),
+        nestedValue(raw, ["tokenUsage", "context_window"]),
+        nestedValue(raw, ["tokenUsage", "window"]),
         nestedValue(raw, ["usage", "modelContextWindow"]),
-        nestedValue(raw, ["usage", "model_context_window"])
+        nestedValue(raw, ["usage", "model_context_window"]),
+        nestedValue(raw, ["usage", "contextWindow"]),
+        nestedValue(raw, ["usage", "context_window"]),
+        nestedValue(raw, ["usage", "window"])
       ) ?? 0
   };
+}
+
+function emptyThreadTokenUsageSnapshot(): ThreadTokenUsageSnapshot {
+  return {
+    totalTokens: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    contextTokens: 0,
+    contextWindow: 0
+  };
+}
+
+function extractCodexTurnModelSettings(raw: unknown, workspace: string): CodexTurnModelSettings {
+  const root = isRecord(raw) ? raw : undefined;
+  const project = root ? codexProjectSettings(root, workspace) : undefined;
+  return {
+    model: firstNonEmptyString(project?.model, root?.model),
+    effort: firstNonEmptyString(
+      project?.model_reasoning_effort,
+      project?.modelReasoningEffort,
+      project?.reasoning_effort,
+      project?.reasoningEffort,
+      root?.model_reasoning_effort,
+      root?.modelReasoningEffort,
+      root?.reasoning_effort,
+      root?.reasoningEffort
+    )
+  };
+}
+
+function codexProjectSettings(root: Record<string, unknown>, workspace: string): Record<string, unknown> | undefined {
+  if (!isRecord(root.projects)) {
+    return undefined;
+  }
+  return firstRecord(recordValue(root.projects, path.resolve(workspace)), recordValue(root.projects, workspace));
+}
+
+function recordValue(record: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+  const value = record[key];
+  return isRecord(value) ? value : undefined;
 }
 
 function formatAccountRateLimitStatus(value: unknown): string[] {
@@ -4082,9 +4233,26 @@ function formatPercent(value: number): string {
   return `${(value * 100).toFixed(2)}%`;
 }
 
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const trimmed = nonEmptyString(value);
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return undefined;
+}
+
 function nonEmptyString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function isNodeErrorCode(error: unknown, code: string): boolean {
+  return isRecord(error) && error.code === code;
 }
 
 function safeJsonStringify(value: unknown): string | undefined {

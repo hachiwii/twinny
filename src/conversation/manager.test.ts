@@ -2219,6 +2219,60 @@ describe("ConversationManager", () => {
     expect(lark.recallMessage).toHaveBeenCalledWith("card_m1_1");
   });
 
+  it("updates the working agent card footer with model and thread token usage", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-codex-config-"));
+    const codexHome = path.join(tempRoot, "codex");
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.writeFileSync(path.join(codexHome, "config.toml"), [
+      'model = "gpt-5.5"',
+      'model_reasoning_effort = "xhigh"',
+      ""
+    ].join("\n"));
+    const managerConfig: TwinnyConfig = {
+      ...cardModeConfig(),
+      roles: {
+        ...config.roles,
+        guest: { codexHome }
+      }
+    };
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: managerConfig });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    await turns[0]!.params.onTokenUsage?.({
+      threadId: "thread_1",
+      turnId: "turn_1",
+      totalTokens: 328_210,
+      raw: {
+        threadId: "thread_1",
+        turnId: "turn_1",
+        tokenUsage: {
+          total: {
+            totalTokens: 328_210,
+            inputTokens: 327_000,
+            cachedInputTokens: 294_300,
+            outputTokens: 1_210
+          },
+          last: {
+            totalTokens: 57_000
+          },
+          modelContextWindow: 100_000
+        }
+      }
+    });
+
+    await waitForExpect(() => {
+      const card = vi.mocked(lark.patchCard).mock.calls.find(([messageId]) => messageId === "card_m1_1")?.[1];
+      expect(card).toBeDefined();
+      expect(JSON.stringify(card)).toContain("gpt-5.5 xhigh · 57% · **↑** 327 K (90%) **↓** 1.21 K");
+    });
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForDelay();
+  });
+
   it("updates the working card in place when queued messages are pending at completion", async () => {
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();

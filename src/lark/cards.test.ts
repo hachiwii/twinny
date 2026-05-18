@@ -61,6 +61,23 @@ describe("renderTwinnyAgentCard", () => {
     expect(JSON.stringify(card)).toContain("追加模式：新消息将和排队消息一起发送。");
   });
 
+  it("adds model, context, and compact token usage to the elapsed footer", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      elapsedMs: 150_000,
+      runtimeStats: {
+        model: "gpt-5.5",
+        effort: "xhigh",
+        contextTokens: 57_000,
+        contextWindow: 100_000,
+        inputTokens: 327_000,
+        cachedInputTokens: 294_300,
+        outputTokens: 1_210
+      }
+    }));
+
+    expect(JSON.stringify(card)).toContain("已工作 2m30s · gpt-5.5 xhigh · 57% · **↑** 327 K (90%) **↓** 1.21 K");
+  });
+
   it("puts completed-card mentions at the start of the body", () => {
     const card = renderTwinnyAgentCard(createOptions({
       status: "finished",

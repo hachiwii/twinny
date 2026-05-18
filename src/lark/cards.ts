@@ -19,6 +19,7 @@ export interface RenderTwinnyAgentCardOptions {
   status: TwinnyAgentCardStatus;
   messages: TwinnyAgentCardMessage[];
   elapsedMs: number;
+  runtimeStats?: TwinnyAgentCardRuntimeStats;
   queueDepth: number;
   queueNextMessage: boolean;
   stateKey: string;
@@ -28,6 +29,16 @@ export interface RenderTwinnyAgentCardOptions {
   mentionOpenIds?: string[];
   summaryText?: string;
   error?: string;
+}
+
+export interface TwinnyAgentCardRuntimeStats {
+  model?: string;
+  effort?: string;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  contextTokens: number;
+  contextWindow: number;
 }
 
 export interface RenderTwinnyThreadSummaryCardOptions {
@@ -205,12 +216,12 @@ function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] 
       ...finishedMentionElements(options.mentionOpenIds),
       ...finishedProcessPanelElements(options.messages),
       ...(options.finalElements?.length ? options.finalElements : [markdownElement("")]),
-      elapsedElement(options.elapsedMs, options.status)
+      elapsedElement(options.elapsedMs, options.status, options.runtimeStats)
     ];
   }
 
   const elements = workingProcessElements(options.messages);
-  elements.push(elapsedElement(options.elapsedMs, options.status));
+  elements.push(elapsedElement(options.elapsedMs, options.status, options.runtimeStats));
   if (options.status === "failed" && options.error) {
     elements.push(markdownElement(`- ${sanitizeProcessText(options.error)}`, { text_color: "red" }));
   }
@@ -358,22 +369,25 @@ function buttonElement(label: string, type: string, value: TwinnyAgentCardAction
   };
 }
 
-function elapsedElement(elapsedMs: number, status: TwinnyAgentCardStatus): LarkCardElement {
-  return {
-    tag: "div",
-    text: {
-      tag: "plain_text",
-      content: elapsedText(elapsedMs, status),
-      text_size: "notation",
-      text_align: "left",
-      text_color: "grey"
-    },
+function elapsedElement(
+  elapsedMs: number,
+  status: TwinnyAgentCardStatus,
+  runtimeStats: TwinnyAgentCardRuntimeStats | undefined
+): LarkCardElement {
+  return markdownElement(elapsedText(elapsedMs, status, runtimeStats), {
+    text_size: "notation",
+    text_color: "grey",
     margin: "4px 0px 4px 0px"
-  };
+  });
 }
 
-function elapsedText(elapsedMs: number, status: TwinnyAgentCardStatus): string {
-  const elapsed = `已工作 ${formatElapsed(elapsedMs)}`;
+function elapsedText(
+  elapsedMs: number,
+  status: TwinnyAgentCardStatus,
+  runtimeStats: TwinnyAgentCardRuntimeStats | undefined
+): string {
+  const parts = [`已工作 ${formatElapsed(elapsedMs)}`, ...runtimeStatParts(runtimeStats)];
+  const elapsed = parts.join(" · ");
   if (status === "paused") {
     return `${elapsed}，已暂停，服务重启后继续`;
   }
@@ -415,6 +429,68 @@ function formatElapsed(elapsedMs: number): string {
 
 function formatInteger(value: number): string {
   return Math.max(0, Math.trunc(value)).toLocaleString("en-US");
+}
+
+function runtimeStatParts(stats: TwinnyAgentCardRuntimeStats | undefined): string[] {
+  if (!stats) {
+    return [];
+  }
+  const parts: string[] = [];
+  const model = formatModelAndEffort(stats.model, stats.effort);
+  if (model) {
+    parts.push(model);
+  }
+  const context = formatContextPercentage(stats.contextTokens, stats.contextWindow);
+  if (context) {
+    parts.push(context);
+  }
+  const tokenUsage = formatCompactTokenUsage(stats);
+  if (tokenUsage) {
+    parts.push(tokenUsage);
+  }
+  return parts;
+}
+
+function formatModelAndEffort(model: string | undefined, effort: string | undefined): string | undefined {
+  const parts = [model, effort].map((value) => value?.trim()).filter((value): value is string => Boolean(value));
+  return parts.length > 0 ? parts.join(" ") : undefined;
+}
+
+function formatContextPercentage(contextTokens: number, contextWindow: number): string | undefined {
+  const tokens = Math.max(0, Math.trunc(contextTokens));
+  const window = Math.max(0, Math.trunc(contextWindow));
+  if (window <= 0) {
+    return undefined;
+  }
+  return `${Math.round(Math.min(100, (tokens / window) * 100))}%`;
+}
+
+function formatCompactTokenUsage(stats: TwinnyAgentCardRuntimeStats): string | undefined {
+  const inputTokens = Math.max(0, Math.trunc(stats.inputTokens));
+  const cachedInputTokens = Math.max(0, Math.trunc(stats.cachedInputTokens));
+  const outputTokens = Math.max(0, Math.trunc(stats.outputTokens));
+  if (inputTokens === 0 && cachedInputTokens === 0 && outputTokens === 0) {
+    return undefined;
+  }
+  const cacheRate = inputTokens > 0 ? cachedInputTokens / inputTokens : 0;
+  return `**↑** ${formatCompactTokenCount(inputTokens)} (${Math.round(Math.min(100, cacheRate * 100))}%) **↓** ${formatCompactTokenCount(outputTokens)}`;
+}
+
+function formatCompactTokenCount(value: number): string {
+  const units = ["", "K", "M", "B"];
+  let scaled = Math.max(0, Math.trunc(value));
+  let unitIndex = 0;
+  while (scaled >= 1000 && unitIndex < units.length - 1) {
+    scaled /= 1000;
+    unitIndex += 1;
+  }
+  let rounded = Number(scaled.toPrecision(3));
+  if (rounded >= 1000 && unitIndex < units.length - 1) {
+    unitIndex += 1;
+    rounded = Number((Math.max(0, Math.trunc(value)) / 1000 ** unitIndex).toPrecision(3));
+  }
+  const formatted = String(rounded);
+  return unitIndex === 0 ? formatted : `${formatted} ${units[unitIndex]}`;
 }
 
 function formatContextUsage(contextTokens: number, contextWindow: number): string {
