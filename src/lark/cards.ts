@@ -203,7 +203,7 @@ function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] 
   if (options.status === "finished") {
     return [
       ...finishedMentionElements(options.mentionOpenIds),
-      processPanel(options.messages),
+      ...finishedProcessPanelElements(options.messages),
       ...(options.finalElements?.length ? options.finalElements : [markdownElement("")]),
       elapsedElement(options.elapsedMs, options.status)
     ];
@@ -226,6 +226,11 @@ function finishedMentionElements(openIds: string[] | undefined): LarkCardElement
   return mentions.length > 0 ? [markdownElement(mentions.join(" "))] : [];
 }
 
+function finishedProcessPanelElements(messages: TwinnyAgentCardMessage[]): LarkCardElement[] {
+  const rendered = renderProcessItems(messages);
+  return rendered.length > 0 ? [processPanel(rendered)] : [];
+}
+
 function workingProcessElements(messages: TwinnyAgentCardMessage[]): LarkCardElement[] {
   const rendered = renderProcessItems(messages);
   if (rendered.length === 0) {
@@ -241,11 +246,7 @@ function workingProcessElements(messages: TwinnyAgentCardMessage[]): LarkCardEle
   return elements;
 }
 
-function processPanel(messages: TwinnyAgentCardMessage[]): LarkCardElement {
-  const rendered = renderProcessItems(messages);
-  const elements = rendered.length > 0
-    ? [markdownElement(rendered.map((message) => `- ${message}`).join("\n"))]
-    : [progressPlaceholderElement()];
+function processPanel(renderedMessages: string[]): LarkCardElement {
   return {
     tag: "collapsible_panel",
     expanded: false,
@@ -270,7 +271,7 @@ function processPanel(messages: TwinnyAgentCardMessage[]): LarkCardElement {
     },
     vertical_spacing: "8px",
     padding: "8px 8px 8px 8px",
-    elements
+    elements: [markdownElement(renderedMessages.map((message) => `- ${message}`).join("\n"))]
   };
 }
 

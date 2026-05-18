@@ -2036,6 +2036,8 @@ describe("ConversationManager", () => {
         })
       )
     );
+    const finalCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(JSON.stringify(finalCard)).not.toContain("工作过程");
     expect(lark.recallMessage).toHaveBeenCalledWith("card_m1_1");
   });
 

@@ -43,4 +43,16 @@ describe("renderTwinnyAgentCard", () => {
 
     expect(JSON.stringify(elements[0])).toContain("<at id=ou_first></at> <at id=ou_second></at>");
   });
+
+  it("omits completed-card process panel when process messages are empty", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "finished",
+      messages: [],
+      finalElements: []
+    }));
+    const serialized = JSON.stringify(card);
+
+    expect(serialized).not.toContain("工作过程");
+    expect(serialized).not.toContain("暂无进度");
+  });
 });
