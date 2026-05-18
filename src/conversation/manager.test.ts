@@ -2102,7 +2102,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() => {
       const card = vi.mocked(lark.patchCard).mock.calls.find(([messageId]) => messageId === "card_m1_1")?.[1];
       expect(card).toBeDefined();
-      expect(JSON.stringify(card)).toContain("gpt-5.5 xhigh · 57% · **↑** 327 K (90%) **↓** 1.21 K");
+      expect(JSON.stringify(card)).toContain("gpt-5.5 xhigh · 57% · ↑ 327 K (90%) ↓ 1.21 K");
     });
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));

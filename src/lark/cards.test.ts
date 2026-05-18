@@ -37,6 +37,26 @@ function findButton(card: Record<string, unknown>, label: string): Record<string
   return undefined;
 }
 
+function findTextElement(card: Record<string, unknown>, content: string): Record<string, unknown> | undefined {
+  const queue: unknown[] = [(card.body as { elements: unknown[] }).elements];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+    if (current && typeof current === "object") {
+      const element = current as Record<string, unknown>;
+      const text = element.text as { content?: string } | undefined;
+      if (text?.content === content) {
+        return element;
+      }
+      queue.push(...Object.values(element));
+    }
+  }
+  return undefined;
+}
+
 describe("renderTwinnyAgentCard", () => {
   it("displays append-mode hint by default", () => {
     const card = renderTwinnyAgentCard(createOptions({}));
@@ -61,7 +81,7 @@ describe("renderTwinnyAgentCard", () => {
     expect(JSON.stringify(card)).toContain("追加模式：新消息将和排队消息一起发送。");
   });
 
-  it("adds model, context, and compact token usage to the elapsed footer", () => {
+  it("adds model, context, and compact token usage to the plain-text elapsed footer", () => {
     const card = renderTwinnyAgentCard(createOptions({
       elapsedMs: 150_000,
       runtimeStats: {
@@ -74,8 +94,18 @@ describe("renderTwinnyAgentCard", () => {
         outputTokens: 1_210
       }
     }));
+    const footer = "已工作 2m30s · gpt-5.5 xhigh · 57% · ↑ 327 K (90%) ↓ 1.21 K";
 
-    expect(JSON.stringify(card)).toContain("已工作 2m30s · gpt-5.5 xhigh · 57% · **↑** 327 K (90%) **↓** 1.21 K");
+    expect(JSON.stringify(card)).toContain(footer);
+    expect(findTextElement(card, footer)).toMatchObject({
+      tag: "div",
+      text: expect.objectContaining({
+        tag: "plain_text",
+        text_color: "grey"
+      })
+    });
+    expect(JSON.stringify(card)).not.toContain("**↑**");
+    expect(JSON.stringify(card)).not.toContain("**↓**");
   });
 
   it("puts completed-card mentions at the start of the body", () => {

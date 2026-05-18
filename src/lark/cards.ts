@@ -374,11 +374,17 @@ function elapsedElement(
   status: TwinnyAgentCardStatus,
   runtimeStats: TwinnyAgentCardRuntimeStats | undefined
 ): LarkCardElement {
-  return markdownElement(elapsedText(elapsedMs, status, runtimeStats), {
-    text_size: "notation",
-    text_color: "grey",
+  return {
+    tag: "div",
+    text: {
+      tag: "plain_text",
+      content: elapsedText(elapsedMs, status, runtimeStats),
+      text_size: "notation",
+      text_align: "left",
+      text_color: "grey"
+    },
     margin: "4px 0px 4px 0px"
-  });
+  };
 }
 
 function elapsedText(
@@ -473,7 +479,7 @@ function formatCompactTokenUsage(stats: TwinnyAgentCardRuntimeStats): string | u
     return undefined;
   }
   const cacheRate = inputTokens > 0 ? cachedInputTokens / inputTokens : 0;
-  return `**↑** ${formatCompactTokenCount(inputTokens)} (${Math.round(Math.min(100, cacheRate * 100))}%) **↓** ${formatCompactTokenCount(outputTokens)}`;
+  return `↑ ${formatCompactTokenCount(inputTokens)} (${Math.round(Math.min(100, cacheRate * 100))}%) ↓ ${formatCompactTokenCount(outputTokens)}`;
 }
 
 function formatCompactTokenCount(value: number): string {
