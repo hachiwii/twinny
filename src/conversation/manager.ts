@@ -2962,6 +2962,13 @@ export class ConversationManager {
       const output = await this.prepareAgentFinalCardOutputForLark(final.text, active.workspace);
       const rendered = this.renderAgentCard(state, active, "finished", output.elements, undefined, final.processMessages, final.text);
       const previousMessageId = card.messageId;
+      if (state.pendingBatch.length > 0) {
+        await this.options.lark.patchCard(previousMessageId, rendered);
+        active.lastAgentReplyMessageId = previousMessageId;
+        card.lastRenderedJson = JSON.stringify(rendered);
+        await this.replyAgentCardFilesBestEffort(active.replyMessageId, output.files);
+        return;
+      }
       const result = await this.options.lark.replyCard(active.replyMessageId, rendered);
       const completedCardMessageId = nonEmptyString(result?.messageId);
       if (!completedCardMessageId) {
@@ -2976,13 +2983,7 @@ export class ConversationManager {
       } catch (error) {
         this.log.warn({ error, messageId: previousMessageId }, "failed to recall previous agent card after completion");
       }
-      for (const file of output.files) {
-        try {
-          await this.options.lark.replyFile(active.replyMessageId, file.fileKey);
-        } catch (error) {
-          this.log.warn({ error, messageId: active.replyMessageId, fileName: file.fileName }, "failed to send lark file attachment reply");
-        }
-      }
+      await this.replyAgentCardFilesBestEffort(active.replyMessageId, output.files);
     } catch (error) {
       this.log.warn({ error, messageId: active.replyMessageId }, "failed to finalize agent card; falling back to plain");
       card.fallbackPlain = true;
@@ -2990,6 +2991,19 @@ export class ConversationManager {
         id: "final",
         text: active.resultText ?? ""
       });
+    }
+  }
+
+  private async replyAgentCardFilesBestEffort(
+    messageId: string,
+    files: Array<{ fileKey: string; fileName?: string }>
+  ): Promise<void> {
+    for (const file of files) {
+      try {
+        await this.options.lark.replyFile(messageId, file.fileKey);
+      } catch (error) {
+        this.log.warn({ error, messageId, fileName: file.fileName }, "failed to send lark file attachment reply");
+      }
     }
   }
 

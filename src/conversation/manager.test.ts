@@ -2169,6 +2169,41 @@ describe("ConversationManager", () => {
     expect(lark.recallMessage).toHaveBeenCalledWith("card_m1_1");
   });
 
+  it("updates the working card in place when queued messages are pending at completion", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_1", text: "final answer" });
+    manager.submitIncoming(message("m2", "/queue queued"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith(
+        "card_m1_1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+
+    expect(lark.replyCard).not.toHaveBeenCalledWith(
+      "m1",
+      expect.objectContaining({
+        header: expect.objectContaining({ template: "green" })
+      })
+    );
+    expect(lark.recallMessage).not.toHaveBeenCalledWith("card_m1_1");
+  });
+
   it("uses card mode to send a completed card, recall the working card, and skip the DONE reaction", async () => {
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
