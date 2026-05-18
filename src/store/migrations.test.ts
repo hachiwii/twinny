@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
-import { currentStoreSchemaVersion, getStoreSchemaVersion, runStoreMigrations } from "./migrations.js";
+import { currentStoreSchemaVersion, getStoreSchemaVersion, loadStoreMigrations, runStoreMigrations } from "./migrations.js";
 
 interface SqliteNameRow {
   name: string;
@@ -47,7 +47,6 @@ describe("store migrations", () => {
         { name: "role_codex_home", type: "TEXT", notnull: 1, pk: 0 },
         { name: "created_at", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 },
-        { name: "thread_has_rollout", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "response_mode", type: "TEXT", notnull: 1, pk: 0 },
         { name: "chat_mode", type: "TEXT", notnull: 0, pk: 0 }
       ]);
@@ -90,7 +89,8 @@ describe("store migrations", () => {
         { name: "cached_input_tokens", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "reasoning_output_tokens", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "context_tokens", type: "INTEGER", notnull: 1, pk: 0 },
-        { name: "context_window", type: "INTEGER", notnull: 1, pk: 0 }
+        { name: "context_window", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "thread_has_rollout", type: "INTEGER", notnull: 1, pk: 0 }
       ]);
       const threadIndexes = db
         .prepare<[], SqliteNameRow>(
@@ -160,6 +160,146 @@ describe("store migrations", () => {
         .all()
         .map((row) => row.name);
       expect(tables).toEqual(["conversations", "lark_messages", "threads"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("moves rollout state from conversations into thread rows", () => {
+    const db = new Database(":memory:");
+    try {
+      const migrationsToV8 = loadStoreMigrations().filter((migration) => migration.version <= 8);
+      expect(runStoreMigrations(db, { migrations: migrationsToV8 })).toBe(8);
+
+      db.prepare(`
+        INSERT INTO conversations (
+          conversation_key,
+          type,
+          chat_id,
+          name,
+          role,
+          thread_id,
+          thread_has_rollout,
+          workspace,
+          role_codex_home,
+          created_at,
+          updated_at,
+          response_mode
+        ) VALUES (?, 'group', ?, ?, 'owner', ?, ?, ?, ?, 1000, 1000, 'at')
+      `).run(
+        "group_oc_main_started",
+        "oc_main_started",
+        "Main Started",
+        "thread_main_started",
+        1,
+        "/tmp/workspaces/group_oc_main_started",
+        "/tmp/roles/owner/codex"
+      );
+      db.prepare(`
+        INSERT INTO conversations (
+          conversation_key,
+          type,
+          chat_id,
+          name,
+          role,
+          thread_id,
+          thread_has_rollout,
+          workspace,
+          role_codex_home,
+          created_at,
+          updated_at,
+          response_mode
+        ) VALUES (?, 'group', ?, ?, 'owner', ?, ?, ?, ?, 1000, 1000, 'at')
+      `).run(
+        "group_oc_main_empty",
+        "oc_main_empty",
+        "Main Empty",
+        "thread_main_empty",
+        0,
+        "/tmp/workspaces/group_oc_main_empty",
+        "/tmp/roles/owner/codex"
+      );
+      db.prepare(`
+        INSERT INTO threads (
+          thread_id,
+          conversation_key,
+          lark_thread_id,
+          role,
+          total_tokens,
+          token_usage_json,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, NULL, ?, 0, '{}', 1000, 1000)
+      `).run("thread_main_started", "group_oc_main_started", "owner");
+      db.prepare(`
+        INSERT INTO threads (
+          thread_id,
+          conversation_key,
+          lark_thread_id,
+          role,
+          total_tokens,
+          token_usage_json,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, NULL, ?, 0, '{}', 1000, 1000)
+      `).run("thread_main_empty", "group_oc_main_empty", "owner");
+      db.prepare(`
+        INSERT INTO threads (
+          thread_id,
+          conversation_key,
+          lark_thread_id,
+          role,
+          total_tokens,
+          token_usage_json,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, 0, '{}', 1000, 1000)
+      `).run("thread_empty", "group_oc_group", "topic_empty", "owner");
+      db.prepare(`
+        INSERT INTO threads (
+          thread_id,
+          conversation_key,
+          lark_thread_id,
+          role,
+          total_tokens,
+          token_usage_json,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, 0, '{}', 1000, 1000)
+      `).run("thread_started", "group_oc_group", "topic_started", "owner");
+      db.prepare(`
+        INSERT INTO lark_messages (
+          lark_message_id,
+          event_id,
+          lark_user_id,
+          conversation_key,
+          thread_id,
+          codex_turn_id,
+          route_kind,
+          status,
+          text,
+          received_at,
+          updated_at,
+          processing_started_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'message', 'completed', 'hello', 1100, 1100, 1100)
+      `).run("om_started", "event_started", "ou_owner", "group_oc_group", "thread_started", "turn_1");
+
+      expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
+      const conversationColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(conversations)").all();
+      expect(conversationColumns.some((column) => column.name === "thread_has_rollout")).toBe(false);
+      const rows = db
+        .prepare<[], { thread_id: string; thread_has_rollout: number }>(`
+          SELECT thread_id, thread_has_rollout
+          FROM threads
+          ORDER BY thread_id
+        `)
+        .all();
+      expect(rows).toEqual([
+        { thread_id: "thread_empty", thread_has_rollout: 0 },
+        { thread_id: "thread_main_empty", thread_has_rollout: 0 },
+        { thread_id: "thread_main_started", thread_has_rollout: 1 },
+        { thread_id: "thread_started", thread_has_rollout: 1 }
+      ]);
     } finally {
       db.close();
     }

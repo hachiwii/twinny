@@ -27,7 +27,6 @@ interface ConversationRow {
   response_mode: ConversationResponseMode;
   role: RoleName;
   thread_id: string;
-  thread_has_rollout: 0 | 1;
   workspace: string;
   role_codex_home: string;
   created_at: number;
@@ -43,7 +42,6 @@ interface InsertConversationParams {
   responseMode: ConversationResponseMode;
   role: RoleName;
   codexThreadId: string;
-  codexThreadHasRollout: 0 | 1;
   workspace: string;
   roleCodexHome: string;
   createdAt: number;
@@ -60,6 +58,7 @@ interface CodexThreadRow {
   forked_at: number | null;
   creator_open_id: string | null;
   card_message_id: string | null;
+  thread_has_rollout: 0 | 1;
   input_tokens: number;
   output_tokens: number;
   cached_input_tokens: number;
@@ -105,6 +104,7 @@ export interface UpsertCodexThreadInput {
   conversationKey: string;
   role: RoleName;
   larkThreadId?: string;
+  codexThreadHasRollout?: boolean;
   forkedFromCodexThreadId?: string;
   forkedAt?: number;
 }
@@ -158,11 +158,11 @@ export interface ReplaceCodexThreadForLarkThreadInput {
   larkThreadId: string;
   codexThreadId: string;
   role: RoleName;
+  codexThreadHasRollout?: boolean;
 }
 
 export interface UpdateConversationThreadBinding {
   codexThreadId: string;
-  codexThreadHasRollout?: boolean;
   role?: RoleName;
   roleCodexHome?: string;
   workspace?: string;
@@ -189,14 +189,13 @@ export class ConversationRepository {
   private readonly updateSettings: Database.Statement<[string, string | null, string, number, string]>;
   private readonly updateThread: Database.Statement<[
     string,
-    0 | 1,
     RoleName,
     string,
     string,
     number,
     string
   ]>;
-  private readonly markRollout: Database.Statement<[number, string, string]>;
+  private readonly markCodexThreadRollout: Database.Statement<[number, string, string]>;
   private readonly deleteByKey: Database.Statement<[string]>;
   private readonly upsertCodexThreadStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly selectCodexThreadById: Database.Statement<[string], CodexThreadRow>;
@@ -248,7 +247,6 @@ export class ConversationRepository {
         response_mode,
         role,
         thread_id,
-        thread_has_rollout,
         workspace,
         role_codex_home,
         created_at,
@@ -262,7 +260,6 @@ export class ConversationRepository {
         @responseMode,
         @role,
         @codexThreadId,
-        @codexThreadHasRollout,
         @workspace,
         @roleCodexHome,
         @createdAt,
@@ -292,15 +289,14 @@ export class ConversationRepository {
     this.updateThread = this.db.prepare(`
       UPDATE conversations
       SET thread_id = ?,
-          thread_has_rollout = ?,
           role = ?,
           role_codex_home = ?,
           workspace = ?,
           updated_at = ?
       WHERE conversation_key = ?
     `);
-    this.markRollout = this.db.prepare(`
-      UPDATE conversations
+    this.markCodexThreadRollout = this.db.prepare(`
+      UPDATE threads
       SET thread_has_rollout = 1,
           updated_at = ?
       WHERE conversation_key = ?
@@ -317,6 +313,7 @@ export class ConversationRepository {
         role,
         forked_from_thread_id,
         forked_at,
+        thread_has_rollout,
         total_tokens,
         token_usage_json,
         created_at,
@@ -328,6 +325,7 @@ export class ConversationRepository {
         @role,
         @forkedFromCodexThreadId,
         @forkedAt,
+        @codexThreadHasRollout,
         @totalTokens,
         @tokenUsageJson,
         @createdAt,
@@ -339,6 +337,10 @@ export class ConversationRepository {
         role = excluded.role,
         forked_from_thread_id = COALESCE(excluded.forked_from_thread_id, threads.forked_from_thread_id),
         forked_at = COALESCE(excluded.forked_at, threads.forked_at),
+        thread_has_rollout = CASE
+          WHEN threads.thread_has_rollout = 1 OR excluded.thread_has_rollout = 1 THEN 1
+          ELSE 0
+        END,
         updated_at = excluded.updated_at
     `);
     this.selectCodexThreadById = this.db.prepare(`
@@ -360,6 +362,7 @@ export class ConversationRepository {
           total_tokens = 0,
           context_tokens = 0,
           context_window = 0,
+          thread_has_rollout = @codexThreadHasRollout,
           token_usage_json = '{}',
           updated_at = @updatedAt
       WHERE conversation_key = @conversationKey
@@ -378,6 +381,7 @@ export class ConversationRepository {
         total_tokens,
         context_tokens,
         context_window,
+        thread_has_rollout,
         token_usage_json,
         created_at,
         updated_at
@@ -393,6 +397,7 @@ export class ConversationRepository {
         @totalTokens,
         @contextTokens,
         @contextWindow,
+        1,
         @tokenUsageJson,
         @createdAt,
         @updatedAt
@@ -407,6 +412,7 @@ export class ConversationRepository {
         total_tokens = excluded.total_tokens,
         context_tokens = excluded.context_tokens,
         context_window = excluded.context_window,
+        thread_has_rollout = 1,
         token_usage_json = excluded.token_usage_json,
         updated_at = excluded.updated_at
     `);
@@ -418,6 +424,7 @@ export class ConversationRepository {
         role,
         creator_open_id,
         card_message_id,
+        thread_has_rollout,
         created_at,
         updated_at
       ) VALUES (
@@ -427,6 +434,7 @@ export class ConversationRepository {
         @role,
         @creatorOpenId,
         @cardMessageId,
+        0,
         @createdAt,
         @updatedAt
       )
@@ -647,10 +655,8 @@ export class ConversationRepository {
       const role = update.role ?? existing.role;
       const roleCodexHome = update.roleCodexHome ?? existing.roleCodexHome;
       const workspace = update.workspace ?? existing.workspace;
-      const codexThreadHasRollout = update.codexThreadHasRollout ?? existing.codexThreadHasRollout;
       this.updateThread.run(
         update.codexThreadId,
-        codexThreadHasRollout ? 1 : 0,
         role,
         roleCodexHome,
         workspace,
@@ -690,7 +696,8 @@ export class ConversationRepository {
   markThreadHasRollout(conversationKey: string, codexThreadId: string): void {
     assertValidConversationKey(conversationKey);
     assertNonEmpty(codexThreadId, "codexThreadId");
-    this.markRollout.run(this.now(), conversationKey, codexThreadId);
+    const now = this.now();
+    this.markCodexThreadRollout.run(now, conversationKey, codexThreadId);
   }
 
   deleteByConversationKey(conversationKey: string): boolean {
@@ -709,6 +716,7 @@ export class ConversationRepository {
       role: input.role,
       forkedFromCodexThreadId: input.forkedFromCodexThreadId ?? null,
       forkedAt: input.forkedAt ?? null,
+      codexThreadHasRollout: input.codexThreadHasRollout === true ? 1 : 0,
       totalTokens: 0,
       tokenUsageJson: "{}",
       createdAt: now,
@@ -734,19 +742,22 @@ export class ConversationRepository {
   replaceCodexThreadForLarkThread(
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; role: RoleName }
+    update: { codexThreadId: string; role: RoleName; codexThreadHasRollout?: boolean }
   ): CodexThreadRecord {
     const input = {
       conversationKey,
       larkThreadId,
       codexThreadId: update.codexThreadId,
-      role: update.role
+      role: update.role,
+      codexThreadHasRollout: update.codexThreadHasRollout
     };
     validateReplaceCodexThreadForLarkThread(input);
     const now = this.now();
+    const codexThreadHasRollout = input.codexThreadHasRollout === true ? 1 : 0;
     const replace = this.db.transaction(() => {
       const result = this.replaceCodexThreadForLarkThreadStatement.run({
         ...input,
+        codexThreadHasRollout,
         updatedAt: now
       });
       if (result.changes === 0) {
@@ -757,6 +768,7 @@ export class ConversationRepository {
           role: input.role,
           forkedFromCodexThreadId: null,
           forkedAt: null,
+          codexThreadHasRollout,
           totalTokens: 0,
           tokenUsageJson: "{}",
           createdAt: now,
@@ -977,7 +989,6 @@ export class ConversationRepository {
       responseMode: input.responseMode ?? (input.type === "p2p" ? "all" : "none"),
       role: input.role,
       codexThreadId: input.codexThreadId,
-      codexThreadHasRollout: input.codexThreadHasRollout === false ? 0 : 1,
       workspace: input.workspace,
       roleCodexHome: input.roleCodexHome,
       createdAt: now,
@@ -1052,7 +1063,6 @@ function mapRequiredConversationRow(row: ConversationRow): ConversationRecord {
     responseMode: row.response_mode,
     role: row.role,
     codexThreadId: row.thread_id,
-    codexThreadHasRollout: row.thread_has_rollout === 1,
     workspace: row.workspace,
     roleCodexHome: row.role_codex_home,
     createdAt: row.created_at,
@@ -1074,6 +1084,7 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     forkedAt: row.forked_at ?? undefined,
     creatorOpenId: row.creator_open_id ?? undefined,
     cardMessageId: row.card_message_id ?? undefined,
+    codexThreadHasRollout: row.thread_has_rollout === 1,
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
     cachedInputTokens: row.cached_input_tokens,

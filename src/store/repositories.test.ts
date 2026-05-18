@@ -49,7 +49,6 @@ describe("ConversationRepository", () => {
       name: "Guest User",
       role: "guest",
       codexThreadId: "thread-1",
-      codexThreadHasRollout: true,
       workspace,
       roleCodexHome,
       createdAt: 1000,
@@ -75,7 +74,6 @@ describe("ConversationRepository", () => {
       responseMode: "at",
       role: "owner",
       codexThreadId: "thread-group",
-      codexThreadHasRollout: false,
       workspace,
       roleCodexHome
     });
@@ -87,8 +85,7 @@ describe("ConversationRepository", () => {
       name: "Topic Group",
       chatMode: "topic",
       responseMode: "at",
-      role: "owner",
-      codexThreadHasRollout: false
+      role: "owner"
     });
     expect(repo.getByTypeAndChatId("topic_group", "oc_group")).toEqual(created);
 
@@ -125,20 +122,28 @@ describe("ConversationRepository", () => {
 
     now = 2000;
     const updated = repo.updateThreadBinding("p2p_ou_456", {
-      codexThreadId: "thread-new",
-      codexThreadHasRollout: false
+      codexThreadId: "thread-new"
     });
 
     expect(updated.codexThreadId).toBe("thread-new");
-    expect(updated.codexThreadHasRollout).toBe(false);
     expect(updated.updatedAt).toBe(2000);
     expect(updated.workspace).toBe(workspace);
     expect(updated.roleCodexHome).toBe(roleCodexHome);
+
+    repo.upsertCodexThread({
+      codexThreadId: "thread-new",
+      conversationKey: "p2p_ou_456",
+      role: "owner",
+      codexThreadHasRollout: false
+    });
 
     now = 3000;
     repo.markThreadHasRollout("p2p_ou_456", "thread-new");
     expect(repo.getByConversationKey("p2p_ou_456")).toMatchObject({
       codexThreadId: "thread-new",
+      updatedAt: 2000
+    });
+    expect(repo.getCodexThreadById("thread-new")).toMatchObject({
       codexThreadHasRollout: true,
       updatedAt: 3000
     });
@@ -179,8 +184,16 @@ describe("ConversationRepository", () => {
       codexThreadId: "thread-1",
       conversationKey: "p2p_ou_456",
       role: "guest",
+      codexThreadHasRollout: false,
       totalTokens: 0,
       tokenUsageJson: "{}"
+    });
+
+    now = 1250;
+    repo.markThreadHasRollout("p2p_ou_456", "thread-1");
+    expect(repo.getCodexThreadById("thread-1")).toMatchObject({
+      codexThreadHasRollout: true,
+      updatedAt: 1250
     });
 
     now = 1300;
@@ -323,6 +336,7 @@ describe("ConversationRepository", () => {
       totalTokens: 123,
       contextTokens: 60,
       contextWindow: 200,
+      codexThreadHasRollout: true,
       tokenUsageJson: '{"totalTokens":123}',
       updatedAt: 1700
     });
@@ -409,7 +423,8 @@ describe("ConversationRepository", () => {
       codexThreadId: "thread-topic-1",
       conversationKey: "group_oc_group",
       larkThreadId: "om_root",
-      role: "guest"
+      role: "guest",
+      codexThreadHasRollout: false
     });
     expect(first).toMatchObject({
       codexThreadId: "thread-topic-1",
@@ -433,6 +448,10 @@ describe("ConversationRepository", () => {
       contextWindow: 1000,
       tokenUsageJson: '{"totalTokens":321}'
     });
+    expect(repo.getCodexThreadById("thread-topic-1")).toMatchObject({
+      codexThreadHasRollout: true,
+      totalTokens: 321
+    });
 
     now = 3000;
     const replacement = repo.replaceCodexThreadForLarkThread("group_oc_group", "om_root", {
@@ -446,6 +465,7 @@ describe("ConversationRepository", () => {
       conversationKey: "group_oc_group",
       larkThreadId: "om_root",
       totalTokens: 0,
+      codexThreadHasRollout: false,
       tokenUsageJson: "{}",
       updatedAt: 3000
     });

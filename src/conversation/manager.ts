@@ -58,7 +58,6 @@ export interface ConversationRepository {
     conversationKey: string,
     update: {
       codexThreadId: string;
-      codexThreadHasRollout?: boolean;
       role?: RoleName;
       roleCodexHome?: string;
       workspace?: string;
@@ -82,11 +81,12 @@ export interface ConversationRepository {
     conversationKey: string;
     role: RoleName;
     larkThreadId?: string;
+    codexThreadHasRollout?: boolean;
   }): Promise<unknown> | unknown;
   replaceCodexThreadForLarkThread?(
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; role: RoleName }
+    update: { codexThreadId: string; role: RoleName; codexThreadHasRollout?: boolean }
   ): Promise<CodexThreadRecord> | CodexThreadRecord;
   updateCodexThreadTokenUsage(input: {
     codexThreadId: string;
@@ -637,7 +637,7 @@ export class ConversationManager {
           approvalPolicy: "never"
         })
       ).threadId;
-    return await this.options.repository.create({
+    const conversation = await this.options.repository.create({
       conversationKey: context.conversationKey,
       type: context.type,
       chatId: context.type === "p2p" ? message.senderOpenId : message.chatId,
@@ -645,10 +645,16 @@ export class ConversationManager {
       responseMode: context.type === "p2p" ? "all" : "at",
       role,
       codexThreadId: threadId,
-      codexThreadHasRollout: recoveredThreadId !== undefined,
       workspace,
       roleCodexHome: this.options.roles.codexHomeFor(role)
     });
+    await this.recordCodexThreadBestEffort({
+      conversationKey: context.conversationKey,
+      codexThreadId: threadId,
+      role,
+      codexThreadHasRollout: recoveredThreadId !== undefined
+    });
+    return conversation;
   }
 
   queueDepth(conversationKey: string): number {
@@ -1071,14 +1077,14 @@ export class ConversationManager {
         responseMode: parsed.responseMode,
         role,
         codexThreadId: thread.threadId,
-        codexThreadHasRollout: false,
         workspace,
         roleCodexHome: this.options.roles.codexHomeFor(role)
       });
       await this.recordCodexThreadBestEffort({
         conversationKey: context.conversationKey,
         codexThreadId: thread.threadId,
-        role
+        role,
+        codexThreadHasRollout: false
       });
     }
 
@@ -1218,7 +1224,6 @@ export class ConversationManager {
       });
       await this.options.repository.updateThreadBinding(conversationKey, {
         codexThreadId: thread.threadId,
-        codexThreadHasRollout: false,
         role,
         roleCodexHome: this.options.roles.codexHomeFor(role),
         workspace
@@ -1233,7 +1238,6 @@ export class ConversationManager {
         responseMode: "all",
         role,
         codexThreadId: thread.threadId,
-        codexThreadHasRollout: false,
         workspace,
         roleCodexHome: this.options.roles.codexHomeFor(role)
       });
@@ -1241,7 +1245,8 @@ export class ConversationManager {
     await this.recordCodexThreadBestEffort({
       conversationKey,
       codexThreadId: thread.threadId,
-      role
+      role,
+      codexThreadHasRollout: false
     });
     const shortcut = await this.attachNewSessionShortcutBestEffort(chatId);
     await this.replyControlBestEffort(
@@ -1316,7 +1321,8 @@ export class ConversationManager {
     await this.options.repository.upsertCodexThread({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
-      role
+      role,
+      codexThreadHasRollout: false
     });
     const initialRecord = await this.options.repository.updateCodexThreadCard({
       conversationKey: context.conversationKey,
@@ -1737,12 +1743,12 @@ export class ConversationManager {
         codexThreadId: thread.threadId,
         role,
         larkThreadId: context.larkThreadId,
+        codexThreadHasRollout: false,
         replaceExistingLarkThread: true
       });
     } else if (existing) {
       await this.options.repository.updateThreadBinding(context.conversationKey, {
         codexThreadId: thread.threadId,
-        codexThreadHasRollout: false,
         role,
         roleCodexHome: this.options.roles.codexHomeFor(role),
         workspace
@@ -1756,7 +1762,6 @@ export class ConversationManager {
         responseMode: context.type === "p2p" ? "all" : "at",
         role,
         codexThreadId: thread.threadId,
-        codexThreadHasRollout: false,
         workspace,
         roleCodexHome: this.options.roles.codexHomeFor(role)
       });
@@ -1765,7 +1770,8 @@ export class ConversationManager {
       await this.recordCodexThreadBestEffort({
         conversationKey: context.conversationKey,
         codexThreadId: thread.threadId,
-        role
+        role,
+        codexThreadHasRollout: false
       });
     }
     return thread.threadId;
@@ -2226,6 +2232,7 @@ export class ConversationManager {
     codexThreadId: string;
     role: RoleName;
     larkThreadId?: string;
+    codexThreadHasRollout?: boolean;
   }): Promise<void> {
     try {
       await this.options.repository.upsertCodexThread(params);
@@ -2239,13 +2246,15 @@ export class ConversationManager {
     codexThreadId: string;
     role: RoleName;
     larkThreadId: string;
+    codexThreadHasRollout?: boolean;
     replaceExistingLarkThread?: boolean;
   }): Promise<void> {
     try {
       if (params.replaceExistingLarkThread && this.options.repository.replaceCodexThreadForLarkThread) {
         await this.options.repository.replaceCodexThreadForLarkThread(params.conversationKey, params.larkThreadId, {
           codexThreadId: params.codexThreadId,
-          role: params.role
+          role: params.role,
+          codexThreadHasRollout: params.codexThreadHasRollout
         });
         return;
       }
@@ -2463,7 +2472,6 @@ export class ConversationManager {
       responseMode: params.type === "p2p" ? "all" : "at",
       role: params.role,
       codexThreadId: thread.threadId,
-      codexThreadHasRollout: false,
       workspace: params.workspace,
       roleCodexHome: this.options.roles.codexHomeFor(params.role)
     });
@@ -2475,24 +2483,27 @@ export class ConversationManager {
     params: { role: RoleName; workspace: string; context: MessageContext }
   ): Promise<ActiveThreadResolution> {
     const larkThreadId = params.context.larkThreadId;
-    if (!larkThreadId) {
-      return binding.created
-        ? { threadId: binding.conversation.codexThreadId, replacedMissingThread: false, created: true }
-        : binding.conversation.codexThreadHasRollout
-          ? await this.resumeExistingThread(binding.conversation, {
-              role: params.role,
-              workspace: params.workspace,
-              conversationKey: params.context.conversationKey
-            })
-          : { threadId: binding.conversation.codexThreadId, replacedMissingThread: false };
+    if (!larkThreadId && binding.created) {
+      return { threadId: binding.conversation.codexThreadId, replacedMissingThread: false, created: true };
     }
 
-    const existing = await this.options.repository.getCodexThreadByConversationAndLarkThread(
-      params.context.conversationKey,
-      larkThreadId
-    );
+    const existing = larkThreadId
+      ? await this.options.repository.getCodexThreadByConversationAndLarkThread(
+          params.context.conversationKey,
+          larkThreadId
+        )
+      : await this.options.repository.getCodexThreadById(binding.conversation.codexThreadId);
 
     if (!existing) {
+      if (!larkThreadId) {
+        await this.recordCodexThreadBestEffort({
+          conversationKey: params.context.conversationKey,
+          codexThreadId: binding.conversation.codexThreadId,
+          role: params.role,
+          codexThreadHasRollout: false
+        });
+        return { threadId: binding.conversation.codexThreadId, replacedMissingThread: false };
+      }
       const thread = await this.options.codex.startThread({
         role: params.role,
         cwd: params.workspace,
@@ -2502,70 +2513,43 @@ export class ConversationManager {
         conversationKey: params.context.conversationKey,
         codexThreadId: thread.threadId,
         role: params.role,
-        larkThreadId
+        larkThreadId,
+        codexThreadHasRollout: false
       });
       return { threadId: thread.threadId, replacedMissingThread: false, created: true };
     }
 
-    try {
-      const resumed = await this.options.codex.resumeThread({
-        role: params.role,
-        threadId: existing.codexThreadId,
-        cwd: params.workspace,
-        approvalPolicy: "never"
-      });
-      if (resumed.threadId !== existing.codexThreadId) {
-        await this.recordOrReplaceCodexThreadBestEffort({
-          conversationKey: params.context.conversationKey,
-          codexThreadId: resumed.threadId,
-          role: params.role,
-          larkThreadId,
-          replaceExistingLarkThread: true
-        });
-      }
-      return { threadId: resumed.threadId, replacedMissingThread: false };
-    } catch (error) {
-      if (!isMissingRolloutError(error)) {
-        throw error;
-      }
-      const replacement = await this.options.codex.startThread({
-        role: params.role,
-        cwd: params.workspace,
-        approvalPolicy: "never"
-      });
-      await this.recordOrReplaceCodexThreadBestEffort({
-        conversationKey: params.context.conversationKey,
-        codexThreadId: replacement.threadId,
-        role: params.role,
-        larkThreadId,
-        replaceExistingLarkThread: true
-      });
-      return {
-        threadId: replacement.threadId,
-        replacedMissingThread: true,
-        previousThreadId: existing.codexThreadId
-      };
-    }
+    return await this.resumeThreadRecord(existing, {
+      role: params.role,
+      workspace: params.workspace,
+      conversationKey: params.context.conversationKey,
+      larkThreadId
+    });
   }
 
-  private async resumeExistingThread(
-    conversation: ConversationRecord,
-    params: { role: RoleName; workspace: string; conversationKey: string }
+  private async resumeThreadRecord(
+    thread: CodexThreadRecord,
+    params: { role: RoleName; workspace: string; conversationKey: string; larkThreadId?: string }
   ): Promise<ActiveThreadResolution> {
+    if (!thread.codexThreadHasRollout) {
+      return { threadId: thread.codexThreadId, replacedMissingThread: false };
+    }
+
     try {
       const resumed = await this.options.codex.resumeThread({
         role: params.role,
-        threadId: conversation.codexThreadId,
+        threadId: thread.codexThreadId,
         cwd: params.workspace,
         approvalPolicy: "never"
       });
-      if (resumed.threadId !== conversation.codexThreadId) {
-        await this.options.repository.updateThreadBinding(params.conversationKey, {
+      if (resumed.threadId !== thread.codexThreadId) {
+        await this.replaceThreadBindingBestEffort({
+          conversationKey: params.conversationKey,
           codexThreadId: resumed.threadId,
-          codexThreadHasRollout: true,
           role: params.role,
-          roleCodexHome: this.options.roles.codexHomeFor(params.role),
-          workspace: params.workspace
+          workspace: params.workspace,
+          larkThreadId: params.larkThreadId,
+          codexThreadHasRollout: true
         });
       }
       return { threadId: resumed.threadId, replacedMissingThread: false };
@@ -2577,7 +2561,7 @@ export class ConversationManager {
         {
           error,
           conversationKey: params.conversationKey,
-          codexThreadId: conversation.codexThreadId
+          codexThreadId: thread.codexThreadId
         },
         "codex thread rollout missing; starting replacement thread"
       );
@@ -2586,19 +2570,53 @@ export class ConversationManager {
         cwd: params.workspace,
         approvalPolicy: "never"
       });
-      await this.options.repository.updateThreadBinding(params.conversationKey, {
+      await this.replaceThreadBindingBestEffort({
+        conversationKey: params.conversationKey,
         codexThreadId: replacement.threadId,
-        codexThreadHasRollout: false,
         role: params.role,
-        roleCodexHome: this.options.roles.codexHomeFor(params.role),
-        workspace: params.workspace
+        workspace: params.workspace,
+        larkThreadId: params.larkThreadId,
+        codexThreadHasRollout: false
       });
       return {
         threadId: replacement.threadId,
         replacedMissingThread: true,
-        previousThreadId: conversation.codexThreadId
+        previousThreadId: thread.codexThreadId
       };
     }
+  }
+
+  private async replaceThreadBindingBestEffort(params: {
+    conversationKey: string;
+    codexThreadId: string;
+    role: RoleName;
+    workspace: string;
+    larkThreadId?: string;
+    codexThreadHasRollout: boolean;
+  }): Promise<void> {
+    if (params.larkThreadId) {
+      await this.recordOrReplaceCodexThreadBestEffort({
+        conversationKey: params.conversationKey,
+        codexThreadId: params.codexThreadId,
+        role: params.role,
+        larkThreadId: params.larkThreadId,
+        codexThreadHasRollout: params.codexThreadHasRollout,
+        replaceExistingLarkThread: true
+      });
+      return;
+    }
+    await this.options.repository.updateThreadBinding(params.conversationKey, {
+      codexThreadId: params.codexThreadId,
+      role: params.role,
+      roleCodexHome: this.options.roles.codexHomeFor(params.role),
+      workspace: params.workspace
+    });
+    await this.recordCodexThreadBestEffort({
+      conversationKey: params.conversationKey,
+      codexThreadId: params.codexThreadId,
+      role: params.role,
+      codexThreadHasRollout: params.codexThreadHasRollout
+    });
   }
 
   private getState(conversationKey: string): ConversationState {

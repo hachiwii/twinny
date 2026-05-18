@@ -973,7 +973,7 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_new_topic"]);
   });
 
-  it("reuses the new topic card thread when topic messages use the card's thread id", async () => {
+  it("starts the first new topic message without resuming an empty card thread", async () => {
     const row = groupConversationRecord({ role: "owner", responseMode: "at" });
     const { repository } = createRepository(row);
     const codex = createCodex({
@@ -1001,7 +1001,7 @@ describe("ConversationManager", () => {
       messageId: cardMessageId,
       raw: { data: { thread_id: cardThreadId } }
     });
-    const manager = createManager({ repository, codex, lark });
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
 
     manager.submitIncoming(groupMessage("g_new_topic", "/new_topic", {
       senderOpenId: "ou_owner",
@@ -1026,14 +1026,7 @@ describe("ConversationManager", () => {
       mentions: [botMention()]
     }));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
-    await waitForExpect(() =>
-      expect(codex.resumeThread).toHaveBeenCalledWith({
-        role: "owner",
-        threadId: "thread_new_topic",
-        cwd: "/tmp/twinny/workspaces/group_oc_group",
-        approvalPolicy: "never"
-      })
-    );
+    expect(codex.resumeThread).not.toHaveBeenCalled();
     expect(codex.startThread).toHaveBeenCalledTimes(1);
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1042,15 +1035,42 @@ describe("ConversationManager", () => {
       })
     );
     expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith("group_oc_group", cardThreadId);
+    expect(lark.replyText).not.toHaveBeenCalledWith(
+      "g_topic_msg",
+      expect.stringContaining("Codex thread state was missing")
+    );
     await waitForExpect(() =>
-    expect(lark.patchCard).toHaveBeenCalledWith(
-      cardMessageId,
-      expect.objectContaining({
-        header: expect.objectContaining({
-          title: { tag: "plain_text", content: "新会话" }
+      expect(lark.patchCard).toHaveBeenCalledWith(
+        cardMessageId,
+        expect.objectContaining({
+          header: expect.objectContaining({
+            title: { tag: "plain_text", content: "新会话" }
           })
         })
       )
+    );
+
+    await waitForDelay();
+    manager.submitIncoming(groupMessage("g_topic_msg_2", "@_bot topic second", {
+      senderOpenId: "ou_owner",
+      chatType: "topic_group",
+      larkThreadId: cardThreadId,
+      mentions: [botMention()]
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(codex.resumeThread).toHaveBeenCalledWith({
+      role: "owner",
+      threadId: "thread_new_topic",
+      cwd: "/tmp/twinny/workspaces/group_oc_group",
+      approvalPolicy: "never"
+    });
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        threadId: "thread_new_topic",
+        input: wrappedMessage("topic second", "g_topic_msg_2", "ou_owner")
+      })
     );
   });
 
@@ -1126,7 +1146,9 @@ describe("ConversationManager", () => {
     expect(codex.resumeThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_old" }));
     expect(codex.resumeThread).not.toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_new" }));
     expect(lark.replyText).not.toHaveBeenCalledWith("m4", expect.stringMatching(/^WARN:/));
-    await waitForExpect(() => expect(row.codexThreadHasRollout).toBe(true));
+    await waitForExpect(() =>
+      expect(repository.getCodexThreadById("thread_new")).toMatchObject({ codexThreadHasRollout: true })
+    );
 
     turns[0]!.resolve(completed("thread_old", "turn_1", "interrupted"));
     turns[1]!.resolve(completed("thread_new", "turn_2"));
@@ -2625,6 +2647,7 @@ function createRepository(initial?: ConversationRecord, options: {
   larkMessageIds?: string[];
   larkMessages?: LarkMessageRecord[];
   codexThreads?: CodexThreadRecord[];
+  mainThreadHasRollout?: boolean;
 } = {}): {
   repository: ConversationRepository;
   row: ConversationRecord | undefined;
@@ -2655,6 +2678,7 @@ function createRepository(initial?: ConversationRecord, options: {
     conversationKey: string;
     role: "owner" | "guest";
     larkThreadId?: string;
+    codexThreadHasRollout?: boolean;
   }): CodexThreadRecord => {
     const existing = codexThreads.get(input.codexThreadId);
     const record = codexThreadRecord({
@@ -2664,6 +2688,7 @@ function createRepository(initial?: ConversationRecord, options: {
       conversationKey: input.conversationKey,
       larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
       role: input.role,
+      codexThreadHasRollout: existing?.codexThreadHasRollout === true || input.codexThreadHasRollout === true,
       createdAt: existing?.createdAt ?? Date.now(),
       updatedAt: Date.now()
     });
@@ -2673,7 +2698,7 @@ function createRepository(initial?: ConversationRecord, options: {
   const replaceCodexThreadForLarkThread = (
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; role: "owner" | "guest" }
+    update: { codexThreadId: string; role: "owner" | "guest"; codexThreadHasRollout?: boolean }
   ): CodexThreadRecord => {
     const existing = getCodexThreadByLarkThread(conversationKey, larkThreadId);
     if (existing) {
@@ -2685,6 +2710,7 @@ function createRepository(initial?: ConversationRecord, options: {
       conversationKey,
       larkThreadId,
       role: update.role,
+      codexThreadHasRollout: update.codexThreadHasRollout ?? false,
       totalTokens: 0,
       tokenUsageJson: "{}",
       createdAt: existing?.createdAt ?? Date.now(),
@@ -2697,7 +2723,8 @@ function createRepository(initial?: ConversationRecord, options: {
     putCodexThread({
       codexThreadId: row.codexThreadId,
       conversationKey: row.conversationKey,
-      role: row.role
+      role: row.role,
+      codexThreadHasRollout: options.mainThreadHasRollout ?? true
     });
   }
   return {
@@ -2706,16 +2733,7 @@ function createRepository(initial?: ConversationRecord, options: {
     },
     repository: {
       findByConversationKey: () => row ?? null,
-      getCodexThreadById: vi.fn((codexThreadId) =>
-        codexThreads.get(codexThreadId) ?? codexThreadRecord({
-          id: nextCodexThreadId++,
-          codexThreadId,
-          conversationKey: row?.conversationKey ?? "p2p_ou_guest",
-          role: row?.role ?? "guest",
-          createdAt: Date.now(),
-          updatedAt: Date.now()
-        })
-      ),
+      getCodexThreadById: vi.fn((codexThreadId) => codexThreads.get(codexThreadId)),
       getCodexThreadByConversationAndLarkThread: vi.fn(getCodexThreadByLarkThread),
       getLarkMessageById: vi.fn((larkMessageId) =>
         larkMessages.get(larkMessageId) ?? (larkMessageIds.has(larkMessageId) ? { larkMessageId } : undefined)
@@ -2730,9 +2748,14 @@ function createRepository(initial?: ConversationRecord, options: {
           createdAt: Date.now(),
           updatedAt: Date.now(),
           ...record,
-          responseMode: record.responseMode ?? (record.type === "p2p" ? "all" : "none"),
-          codexThreadHasRollout: record.codexThreadHasRollout ?? true
+          responseMode: record.responseMode ?? (record.type === "p2p" ? "all" : "none")
         };
+        putCodexThread({
+          codexThreadId: row.codexThreadId,
+          conversationKey: row.conversationKey,
+          role: row.role,
+          codexThreadHasRollout: false
+        });
         return row;
       },
       updateThreadBinding: (_key, update) => {
@@ -2750,9 +2773,10 @@ function createRepository(initial?: ConversationRecord, options: {
         return row;
       },
       markThreadHasRollout: (_key, codexThreadId) => {
-        if (row?.codexThreadId === codexThreadId) {
-          row.codexThreadHasRollout = true;
-          row.updatedAt = Date.now();
+        const thread = codexThreads.get(codexThreadId);
+        if (thread) {
+          thread.codexThreadHasRollout = true;
+          thread.updatedAt = Date.now();
         }
       },
       upsertCodexThread: vi.fn(putCodexThread),
@@ -2771,6 +2795,7 @@ function createRepository(initial?: ConversationRecord, options: {
           totalTokens: input.totalTokens,
           contextTokens: input.contextTokens,
           contextWindow: input.contextWindow,
+          codexThreadHasRollout: true,
           tokenUsageJson: input.tokenUsageJson,
           updatedAt: Date.now()
         });
@@ -2787,6 +2812,7 @@ function createRepository(initial?: ConversationRecord, options: {
           role: input.role,
           creatorOpenId: input.creatorOpenId ?? existing?.creatorOpenId,
           cardMessageId: input.cardMessageId ?? existing?.cardMessageId,
+          codexThreadHasRollout: existing?.codexThreadHasRollout ?? false,
           updatedAt: Date.now()
         });
         codexThreads.set(record.codexThreadId, record);
@@ -2854,7 +2880,21 @@ function createRepository(initial?: ConversationRecord, options: {
         existing.updatedAt = Date.now();
         return true;
       }),
-      markLarkMessagesProcessing: vi.fn(),
+      markLarkMessagesProcessing: vi.fn((messageIds, update = {}) => {
+        const now = Date.now();
+        for (const messageId of messageIds) {
+          const existing = larkMessages.get(messageId);
+          if (!existing) {
+            continue;
+          }
+          existing.status = "processing";
+          existing.conversationKey = update.conversationKey ?? existing.conversationKey;
+          existing.codexThreadId = update.codexThreadId ?? existing.codexThreadId;
+          existing.codexTurnId = update.codexTurnId ?? existing.codexTurnId;
+          existing.processingStartedAt = existing.processingStartedAt ?? now;
+          existing.updatedAt = now;
+        }
+      }),
       markLarkMessagesSteered: vi.fn(),
       markLarkMessagesCompleted: vi.fn(),
       markLarkMessagesFailed: vi.fn(),
@@ -2874,7 +2914,6 @@ function conversationRecord(overrides: Partial<ConversationRecord> = {}): Conver
     responseMode: "all",
     role: "guest",
     codexThreadId: "thread_1",
-    codexThreadHasRollout: true,
     workspace: "/tmp/twinny/workspaces/p2p_ou_guest",
     roleCodexHome: "/tmp/twinny/roles/guest/codex",
     createdAt: 100,
@@ -2910,6 +2949,7 @@ function codexThreadRecord(overrides: Partial<CodexThreadRecord> = {}): CodexThr
     contextTokens: 0,
     contextWindow: 0,
     tokenUsageJson: "{}",
+    codexThreadHasRollout: true,
     createdAt: 100,
     updatedAt: 100,
     ...overrides

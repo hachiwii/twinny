@@ -99,7 +99,6 @@ export interface ConversationRecord {
   responseMode: ConversationResponseMode;
   role: RoleName;
   codexThreadId: string;
-  codexThreadHasRollout: boolean;
   workspace: string;
   roleCodexHome: string;
   createdAt: number;
@@ -115,7 +114,6 @@ export interface NewConversationRecord {
   responseMode?: ConversationResponseMode;
   role: RoleName;
   codexThreadId: string;
-  codexThreadHasRollout?: boolean;
   workspace: string;
   roleCodexHome: string;
 }
@@ -130,6 +128,7 @@ export interface CodexThreadRecord {
   forkedAt?: number;
   creatorOpenId?: string;
   cardMessageId?: string;
+  codexThreadHasRollout: boolean;
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
