@@ -564,7 +564,19 @@ export class ConversationManager {
       const context = contextForRecoveredRecord(record);
       const state = this.getState(context.stateKey);
       recoverableStates.set(context.stateKey, { state, context });
-      const message = await this.toRecoveredPendingMessage(record, context);
+      const message = await this.toRecoveredPendingMessage(record, context).catch(async (error: unknown) => {
+        this.log.warn(
+          { error, eventId: record.eventId, messageId: record.larkMessageId },
+          "failed to recover unfinished Lark message; marking failed"
+        );
+        if (record.larkMessageId) {
+          await this.markMessagesFailedBestEffort([record.larkMessageId]);
+        }
+        return undefined;
+      });
+      if (!message) {
+        continue;
+      }
       if (record.status === "processing") {
         const group = processingGroups.get(context.stateKey) ?? { state, context, records: [], messages: [] };
         group.records.push(record);
@@ -587,7 +599,7 @@ export class ConversationManager {
 
   private async toRecoveredPendingMessage(record: LarkMessageRecord, context: MessageContext): Promise<PendingMessage> {
     const raw = parseStoredRawEvent(record.rawEventJson);
-    const normalized = normalizeIncomingLarkMessage(raw);
+    const normalized = normalizeIncomingLarkMessage(raw) ?? recoverLarkMessageFromRecord(record, context);
     if (!normalized) {
       throw new TwinnyError(
         `Cannot recover Lark message ${record.larkMessageId} from raw event JSON`,
@@ -4130,6 +4142,7 @@ function createThreadReplyMessage(
   larkThreadId: string,
   text: string
 ): IncomingLarkMessage {
+  const createTime = message.createTime ?? Date.now();
   return {
     ...message,
     eventId: `thread_reply:${message.eventId}`,
@@ -4139,6 +4152,48 @@ function createThreadReplyMessage(
     larkGroupId: message.larkGroupId ?? message.chatId,
     larkThreadId,
     text,
+    createTime,
+    raw: {
+      event_id: `thread_reply:${message.eventId}`,
+      sender: {
+        sender_id: { open_id: message.senderOpenId },
+        sender_type: "user",
+        name: message.senderName
+      },
+      message: {
+        message_id: replyMessageId,
+        create_time: String(createTime),
+        chat_id: message.larkGroupId ?? message.chatId,
+        chat_type: "topic_group",
+        message_type: "text",
+        thread_id: larkThreadId,
+        mentions: message.mentions,
+        content: JSON.stringify({ text })
+      }
+    }
+  };
+}
+
+function recoverLarkMessageFromRecord(record: LarkMessageRecord, context: MessageContext): IncomingLarkMessage | null {
+  if (!record.larkMessageId || !record.larkUserId) {
+    return null;
+  }
+  const chatType: ConversationType = context.larkThreadId ? "topic_group" : context.type;
+  const chatId = chatType === "p2p" ? record.larkUserId : record.larkGroupId;
+  if (!chatId) {
+    return null;
+  }
+  return {
+    eventId: record.eventId,
+    messageId: record.larkMessageId,
+    chatId,
+    chatType,
+    messageType: "text",
+    senderOpenId: record.larkUserId,
+    larkGroupId: chatType === "p2p" ? undefined : chatId,
+    larkThreadId: context.larkThreadId,
+    text: record.text,
+    createTime: record.larkCreateTime ?? record.receivedAt,
     raw: {}
   };
 }

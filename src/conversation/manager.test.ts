@@ -1112,6 +1112,20 @@ describe("ConversationManager", () => {
         text: "topic first"
       })
     );
+    const storedThreadReply = vi
+      .mocked(repository.insertLarkMessage)
+      .mock.calls.find(([input]) => input.larkMessageId === "reply_thread_1")?.[0];
+    expect(JSON.parse(storedThreadReply?.rawEventJson ?? "{}")).toMatchObject({
+      event_id: "thread_reply:e_g_thread",
+      sender: { sender_id: { open_id: "ou_guest" } },
+      message: {
+        message_id: "reply_thread_1",
+        chat_id: "oc_group",
+        chat_type: "topic_group",
+        message_type: "text",
+        thread_id: cardThreadId
+      }
+    });
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_thread"]);
     await waitForExpect(() =>
       expect(lark.patchCard).toHaveBeenCalledWith(
@@ -2828,6 +2842,44 @@ describe("ConversationManager", () => {
           "</lark_message>"
       })
     );
+  });
+
+  it("recovers processing thread replies from persisted DB fields when raw event JSON is missing", async () => {
+    const row = groupConversationRecord({ role: "owner", codexThreadId: "thread_recovered" });
+    const record = larkMessageRecord({
+      larkMessageId: "m_thread_reply",
+      eventId: "thread_reply:e_original",
+      larkUserId: "ou_owner",
+      larkGroupId: "oc_group",
+      larkThreadId: "omt_recovered",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread_recovered",
+      status: "processing",
+      text: "recover from stored fields",
+      rawEventJson: "{}"
+    });
+    const { repository } = createRepository(row, {
+      larkMessages: [record],
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_recovered",
+          conversationKey: "group_oc_group",
+          larkThreadId: "omt_recovered",
+          role: "owner"
+        })
+      ]
+    });
+    const codex = createCodex();
+    const manager = createManager({ repository, codex });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    expect(codex.resumeThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_recovered" }));
+    expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m_thread_reply"], {
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread_recovered"
+    });
   });
 
   it("recovers queued file messages from raw Lark event JSON and downloads resources", async () => {

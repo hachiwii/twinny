@@ -263,7 +263,7 @@ export class TurnOutputAccumulator {
         return;
       }
       if (notification.method === "turn/plan/updated") {
-        this.recordPlanUpdated(notification.params);
+        // Temporarily ignore this event until its app-server semantics match the plan confirmation flow.
         return;
       }
       if (notification.method === "error") {

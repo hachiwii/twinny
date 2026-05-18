@@ -69,97 +69,119 @@ export class TwinnyRuntime {
   }
 
   async start(): Promise<void> {
-    this.lock = await acquireTwinnyLock(this.paths, { stale: 30_000, update: 10_000 });
-    this.db = openRuntimeDatabase(this.paths);
+    try {
+      this.lock = await acquireTwinnyLock(this.paths, { stale: 30_000, update: 10_000 });
+      this.db = openRuntimeDatabase(this.paths);
 
-    const appSecret = await resolveSecretRef(this.config.lark.appSecretRef, this.secretStore);
-    if (!appSecret) {
-      throw new Error(`Lark app secret is missing: ${this.config.lark.appSecretRef}`);
-    }
-    this.codexPool = new RoleCodexAppServerPool({
-      binary: this.config.codex.binary,
-      roles: this.config.roles,
-      requestTimeoutMs: this.options.requestTimeoutMs ?? 10 * 60 * 1000
-    });
-    for (const role of ["owner", "guest"] as RoleName[]) {
-      this.codexPool.get(role).on("stderr", (chunk) => {
-        this.log.debug({ role, stream: "stderr", chunk }, "codex app-server stderr");
+      const appSecret = await resolveSecretRef(this.config.lark.appSecretRef, this.secretStore);
+      if (!appSecret) {
+        throw new Error(`Lark app secret is missing: ${this.config.lark.appSecretRef}`);
+      }
+      this.codexPool = new RoleCodexAppServerPool({
+        binary: this.config.codex.binary,
+        roles: this.config.roles,
+        requestTimeoutMs: this.options.requestTimeoutMs ?? 10 * 60 * 1000
       });
-      this.codexPool.get(role).on("exit", (code, signal) => {
-        this.log.error({ role, code, signal }, "codex app-server exited");
+      for (const role of ["owner", "guest"] as RoleName[]) {
+        this.codexPool.get(role).on("stderr", (chunk) => {
+          this.log.debug({ role, stream: "stderr", chunk }, "codex app-server stderr");
+        });
+        this.codexPool.get(role).on("exit", (code, signal) => {
+          this.log.error({ role, code, signal }, "codex app-server exited");
+        });
+      }
+      await this.codexPool.startAll();
+
+      const tokenManager = new TenantAccessTokenManager({
+        appId: this.config.lark.appId,
+        appSecret
       });
+      const openApiClient = new LarkOpenApiClient({ tokenManager });
+      const larkSender = new LarkMessageSender({ openApiClient, logger: this.log });
+      const larkMessages = new LarkMessageReader({ openApiClient });
+      const larkUsers = new LarkUserDirectory({ openApiClient });
+      const larkChats = new LarkChatDirectory({ openApiClient });
+      const larkBot = new LarkBotDirectory({ openApiClient });
+      const botOpenId = await larkBot.getBotOpenId().catch((error) => {
+        this.log.warn({ error }, "failed to resolve lark bot open_id; group @mention matching will be unavailable");
+        return undefined;
+      });
+      const larkFiles = new LarkFileDownloader({ openApiClient });
+      await this.provisionLarkIconImageKey(larkFiles);
+      const systemNotifier = new TwinnySystemNotifier({
+        ownerOpenId: this.config.owner.openId,
+        sender: larkSender,
+        logger: this.log
+      });
+      this.systemNotifier = systemNotifier;
+      const repository = createConversationRepository(this.db);
+      const workspaceManager = WorkspaceManager.fromRuntimePaths(this.paths);
+      const conversation = new ConversationManager({
+        config: this.config,
+        repository: adaptConversationRepository(repository),
+        workspaces: workspaceManager,
+        codex: adaptCodexPool(this.codexPool),
+        lark: adaptLarkSender(
+          larkSender,
+          this.config.lark.workingReaction,
+          this.config.lark.completedReaction,
+          this.config.lark.queuedReaction
+        ),
+        larkUsers,
+        larkChats,
+        larkFiles,
+        larkMessages,
+        botOpenId,
+        roles: { codexHomeFor: (role) => getRoleCodexHome(this.config, role) },
+        logger: this.log
+      });
+      this.conversation = conversation;
+      await conversation.recoverUnfinishedMessages();
+
+      this.larkConsumer = new LarkEventConsumer({
+        appId: this.config.lark.appId,
+        appSecret,
+        botOpenId,
+        logger: this.log,
+        maxMessageAgeMs: this.config.lark.maxMessageAgeSeconds * 1000,
+        onMessage: (message) => {
+          conversation.submitIncoming(message);
+        },
+        onMessageRecall: (recall) => {
+          conversation.submitMessageRecall(recall);
+        },
+        onBotMenu: (action) => {
+          conversation.submitBotMenuAction(action);
+        },
+        onCardAction: (action) => {
+          conversation.submitCardAction(action);
+        },
+        onIgnored: (reason) => this.log.debug({ reason }, "lark event ignored")
+      });
+      await this.larkConsumer.start();
+      await this.systemNotifier.notifyInitialized({ home: this.config.home, appId: this.config.lark.appId });
+      this.log.info({ home: this.config.home }, "twinny daemon started");
+    } catch (error) {
+      await this.cleanupAfterStartFailure(error);
+      throw error;
     }
-    await this.codexPool.startAll();
+  }
 
-    const tokenManager = new TenantAccessTokenManager({
-      appId: this.config.lark.appId,
-      appSecret
-    });
-    const openApiClient = new LarkOpenApiClient({ tokenManager });
-    const larkSender = new LarkMessageSender({ openApiClient, logger: this.log });
-    const larkMessages = new LarkMessageReader({ openApiClient });
-    const larkUsers = new LarkUserDirectory({ openApiClient });
-    const larkChats = new LarkChatDirectory({ openApiClient });
-    const larkBot = new LarkBotDirectory({ openApiClient });
-    const botOpenId = await larkBot.getBotOpenId().catch((error) => {
-      this.log.warn({ error }, "failed to resolve lark bot open_id; group @mention matching will be unavailable");
-      return undefined;
-    });
-    const larkFiles = new LarkFileDownloader({ openApiClient });
-    await this.provisionLarkIconImageKey(larkFiles);
-    const systemNotifier = new TwinnySystemNotifier({
-      ownerOpenId: this.config.owner.openId,
-      sender: larkSender,
-      logger: this.log
-    });
-    this.systemNotifier = systemNotifier;
-    const repository = createConversationRepository(this.db);
-    const workspaceManager = WorkspaceManager.fromRuntimePaths(this.paths);
-    const conversation = new ConversationManager({
-      config: this.config,
-      repository: adaptConversationRepository(repository),
-      workspaces: workspaceManager,
-      codex: adaptCodexPool(this.codexPool),
-      lark: adaptLarkSender(
-        larkSender,
-        this.config.lark.workingReaction,
-        this.config.lark.completedReaction,
-        this.config.lark.queuedReaction
-      ),
-      larkUsers,
-      larkChats,
-      larkFiles,
-      larkMessages,
-      botOpenId,
-      roles: { codexHomeFor: (role) => getRoleCodexHome(this.config, role) },
-      logger: this.log
-    });
-    this.conversation = conversation;
-    await conversation.recoverUnfinishedMessages();
-
-    this.larkConsumer = new LarkEventConsumer({
-      appId: this.config.lark.appId,
-      appSecret,
-      botOpenId,
-      logger: this.log,
-      maxMessageAgeMs: this.config.lark.maxMessageAgeSeconds * 1000,
-      onMessage: (message) => {
-        conversation.submitIncoming(message);
-      },
-      onMessageRecall: (recall) => {
-        conversation.submitMessageRecall(recall);
-      },
-      onBotMenu: (action) => {
-        conversation.submitBotMenuAction(action);
-      },
-      onCardAction: (action) => {
-        conversation.submitCardAction(action);
-      },
-      onIgnored: (reason) => this.log.debug({ reason }, "lark event ignored")
-    });
-    await this.larkConsumer.start();
-    await this.systemNotifier.notifyInitialized({ home: this.config.home, appId: this.config.lark.appId });
-    this.log.info({ home: this.config.home }, "twinny daemon started");
+  private async cleanupAfterStartFailure(error: unknown): Promise<void> {
+    if (this.stopped) {
+      return;
+    }
+    this.stopped = true;
+    this.log.error({ error }, "twinny daemon failed to start; cleaning up");
+    try {
+      await this.shutdownConversation();
+      await this.stopLarkConsumer();
+      await this.stopCodexPool("SIGTERM");
+      this.closeDatabase();
+    } finally {
+      await this.releaseLock();
+      this.resolveStopped();
+    }
   }
 
   async stop(signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
