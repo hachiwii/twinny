@@ -376,8 +376,8 @@ function adaptLarkSender(
       sender.createReaction(messageId, completedReaction),
     addQueuedReaction: (messageId: string): Promise<LarkReactionHandle | null> => sender.createReaction(messageId, queuedReaction),
     removeReaction: (handle: LarkReactionHandle): Promise<void> => sender.deleteReaction(handle),
-    replyText: async (messageId: string, text: string): Promise<void> => {
-      await sender.replyText(messageId, text);
+    replyText: async (messageId: string, text: string): Promise<{ messageId?: string }> => {
+      return sender.replyText(messageId, text);
     },
     replyMarkdown: async (messageId: string, markdown: string): Promise<{ messageId?: string }> => {
       return sender.replyMarkdown(messageId, markdown);

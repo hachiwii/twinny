@@ -160,14 +160,6 @@ export interface LarkChatDirectory {
     groupMessageType?: LarkGroupMessageType;
   } | undefined>;
   getChatName?(chatId: string): Promise<string | undefined>;
-  createChat?(input: {
-    name: string;
-    ownerOpenId?: string;
-    userOpenIds?: string[];
-    groupMessageType?: LarkGroupMessageType;
-    uuid?: string;
-    setBotManager?: boolean;
-  }): Promise<{ chatId?: string; raw: unknown }>;
 }
 
 export interface LarkFileDownloader {
@@ -246,7 +238,7 @@ export interface LarkResponder {
   addCompletedReaction(messageId: string): Promise<LarkReactionHandle | null>;
   addQueuedReaction(messageId: string): Promise<LarkReactionHandle | null>;
   removeReaction(handle: LarkReactionHandle): Promise<void>;
-  replyText(messageId: string, text: string): Promise<void>;
+  replyText(messageId: string, text: string): Promise<{ messageId?: string } | void>;
   replyMarkdown(messageId: string, markdown: string): Promise<{ messageId?: string } | void>;
   replyRawMessage(
     messageId: string,
@@ -394,8 +386,7 @@ type ParsedCommand =
   | { kind: "steer" }
   | { kind: "status" }
   | { kind: "new" }
-  | { kind: "new_topic" }
-  | { kind: "project"; name: string }
+  | { kind: "thread"; text: string }
   | { kind: "activate"; text: string }
   | { kind: "deactivate" }
   | { kind: "help" };
@@ -827,9 +818,6 @@ export class ConversationManager {
 
     await this.prepareMessageResources(context.conversationKey, message);
     const preparedParsed: ParsedCommand = parsed.kind === "message" ? { kind: "message", text: message.text } : parsed;
-    if (await this.redirectProjectTopicMessageIfNeeded(context, message, preparedParsed, routed.conversation)) {
-      return;
-    }
     await this.recordIncomingMessage(state, context, message, preparedParsed);
     if (preparedParsed.kind === "help") {
       await this.handleHelpCommand(context, message);
@@ -837,10 +825,6 @@ export class ConversationManager {
     }
     if (preparedParsed.kind === "status") {
       await this.handleStatusCommand(state, context, message);
-      return;
-    }
-    if (preparedParsed.kind === "project") {
-      await this.handleProjectCommand(context, message, preparedParsed.name);
       return;
     }
     if (preparedParsed.kind === "stop") {
@@ -859,8 +843,8 @@ export class ConversationManager {
       await this.handleNewCommand(state, context, message);
       return;
     }
-    if (preparedParsed.kind === "new_topic") {
-      await this.handleNewTopicCommand(context, message);
+    if (preparedParsed.kind === "thread") {
+      await this.handleThreadCommand(context, message, preparedParsed.text);
       return;
     }
     if (preparedParsed.kind === "deactivate") {
@@ -897,94 +881,6 @@ export class ConversationManager {
       larkCreateTime: message.createTime,
       rawEventJson: safeJsonStringify(message.raw)
     });
-  }
-
-  private async redirectProjectTopicMessageIfNeeded(
-    context: MessageContext,
-    message: IncomingLarkMessage,
-    parsed: ParsedCommand,
-    conversation: ConversationRecord | null | undefined
-  ): Promise<boolean> {
-    if (conversation?.type !== "project" || !context.larkThreadId) {
-      return false;
-    }
-
-    const existingThread = await this.options.repository.getCodexThreadByConversationAndLarkThread(
-      context.conversationKey,
-      context.larkThreadId
-    );
-    if (existingThread) {
-      return false;
-    }
-    if (!isNewLarkThreadRootMessage(message)) {
-      this.log.debug(
-        {
-          messageId: message.messageId,
-          conversationKey: context.conversationKey,
-          larkThreadId: context.larkThreadId
-        },
-        "ignored non-root message in unknown project topic"
-      );
-      return true;
-    }
-    if (isTextOrPostMessage(message) && parsed.kind !== "message") {
-      return false;
-    }
-
-    const chatId = nonEmptyString(message.larkGroupId) ?? nonEmptyString(message.chatId);
-    if (!chatId) {
-      throw new TwinnyError("Project topic message is missing chat_id", "LARK_MESSAGE_MALFORMED");
-    }
-
-    const topic = await this.createNewSessionTopic(context, {
-      chatId,
-      operatorOpenId: message.senderOpenId,
-      eventId: message.eventId
-    });
-    if (!topic) {
-      throw new TwinnyError("Project topic replacement was not created", "LARK_TOPIC_CREATE_FAILED");
-    }
-
-    const proxyMessageId = await this.sendProjectTopicProxyMessage(topic.cardMessageId, message);
-    await this.replyProjectTopicRedirectNoticeBestEffort(message, topic.larkThreadId, context.larkThreadId);
-
-    const proxyContext = createProjectTopicProxyContext(context, topic.larkThreadId);
-    const proxyMessage = createProjectTopicProxyMessage(message, proxyMessageId, topic.larkThreadId);
-    const proxyState = this.getState(proxyContext.stateKey);
-    const proxyParsed: ParsedCommand = { kind: "message", text: proxyMessage.text };
-    await this.recordIncomingMessage(proxyState, proxyContext, proxyMessage, proxyParsed);
-    await this.handleUserMessage(proxyState, proxyContext, proxyMessage, proxyMessage.text);
-    return true;
-  }
-
-  private async sendProjectTopicProxyMessage(
-    anchorMessageId: string,
-    message: IncomingLarkMessage
-  ): Promise<string> {
-    const result = await this.options.lark.replyRawMessage(anchorMessageId, rawMessageForLarkReply(message));
-    const proxyMessageId = nonEmptyString(result?.messageId);
-    if (!proxyMessageId) {
-      throw new TwinnyError("Lark project topic proxy response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
-    }
-    return proxyMessageId;
-  }
-
-  private async replyProjectTopicRedirectNoticeBestEffort(
-    message: IncomingLarkMessage,
-    agentThreadId: string,
-    originalThreadId: string
-  ): Promise<void> {
-    try {
-      await this.options.lark.replyText(message.messageId, "已创建 Agent 话题");
-      await this.options.lark.forwardThreadToThread(agentThreadId, originalThreadId, {
-        uuid: createLarkUuid("twinny-project-topic-forward", message.messageId, agentThreadId, originalThreadId)
-      });
-    } catch (error) {
-      this.log.warn(
-        { error, messageId: message.messageId, agentThreadId, originalThreadId },
-        "failed to reply with project topic redirect notice"
-      );
-    }
   }
 
   private async prepareMessageResources(conversationKey: string, message: IncomingLarkMessage): Promise<void> {
@@ -1033,9 +929,10 @@ export class ConversationManager {
     const senderRole = roleForSender(this.options.config, message.senderOpenId);
     const hasBotMention = messageMentionsBot(message, this.options.botOpenId);
     const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
-    const isOwnerOnlyGroupCommand = parsed.kind === "activate" || parsed.kind === "new_topic";
+    const isInactiveGroupCommandAllowed =
+      parsed.kind === "thread" || (parsed.kind === "activate" && senderRole === "owner");
     if (!conversation || conversation.responseMode === "none") {
-      if (isOwnerOnlyGroupCommand && senderRole === "owner") {
+      if (isInactiveGroupCommandAllowed) {
         return { kind: "allow", text, parsed, conversation };
       }
       return hasBotMention ? { kind: "unauthorized" } : { kind: "ignored" };
@@ -1044,7 +941,7 @@ export class ConversationManager {
     if (
       conversation.responseMode === "at" &&
       !hasBotMention &&
-      !(parsed.kind === "new_topic" && senderRole === "owner")
+      parsed.kind !== "thread"
     ) {
       return { kind: "ignored" };
     }
@@ -1228,96 +1125,6 @@ export class ConversationManager {
     };
   }
 
-  private async handleProjectCommand(
-    _context: MessageContext,
-    message: IncomingLarkMessage,
-    projectName: string
-  ): Promise<void> {
-    if (roleForSender(this.options.config, message.senderOpenId) !== "owner") {
-      await this.replyControlBestEffort(message.messageId, "只有 owner 可以创建 project 群。");
-      await this.markMessagesCompletedBestEffort([message.messageId]);
-      return;
-    }
-    const projectDisplayName = projectName.trim();
-    if (!projectDisplayName) {
-      await this.replyControlBestEffort(message.messageId, "用法：/project <name>");
-      await this.markMessagesCompletedBestEffort([message.messageId]);
-      return;
-    }
-    if (!this.options.larkChats?.createChat) {
-      await this.replyControlBestEffort(message.messageId, "Lark 群创建能力未配置。");
-      await this.markMessagesCompletedBestEffort([message.messageId]);
-      return;
-    }
-
-    const created = await this.options.larkChats.createChat({
-      name: projectDisplayName,
-      ownerOpenId: this.options.config.owner.openId,
-      userOpenIds: [this.options.config.owner.openId],
-      groupMessageType: "thread",
-      setBotManager: true,
-      uuid: createLarkUuid("twinny-project", message.messageId)
-    });
-    const chatId = nonEmptyString(created.chatId);
-    if (!chatId) {
-      throw new TwinnyError("Lark create chat response did not include chat_id", "LARK_CHAT_CREATE_FAILED");
-    }
-
-    const conversationKey = conversationKeyForGroup(chatId);
-    const existing = await this.options.repository.findByConversationKey(conversationKey);
-    const workspace = existing?.workspace ?? await this.options.workspaces.ensureWorkspace(conversationKey);
-    const role: RoleName = "owner";
-    const thread = await this.options.codex.startThread({
-      role,
-      cwd: workspace,
-      approvalPolicy: "never"
-    });
-    if (existing) {
-      await this.options.repository.updateConversationSettings(conversationKey, {
-        type: "project",
-        name: projectDisplayName,
-        chatMode: "group",
-        responseMode: "all"
-      });
-      await this.options.repository.updateThreadBinding(conversationKey, {
-        codexThreadId: thread.threadId,
-        role,
-        roleCodexHome: this.options.roles.codexHomeFor(role),
-        workspace
-      });
-    } else {
-      await this.options.repository.create({
-        conversationKey,
-        type: "project",
-        chatId,
-        name: projectDisplayName,
-        chatMode: "group",
-        responseMode: "all",
-        role,
-        codexThreadId: thread.threadId,
-        workspace,
-        roleCodexHome: this.options.roles.codexHomeFor(role)
-      });
-    }
-    await this.recordCodexThreadBestEffort({
-      conversationKey,
-      codexThreadId: thread.threadId,
-      role,
-      codexThreadHasRollout: false
-    });
-    await this.replyControlBestEffort(
-      message.messageId,
-      [
-        `已创建 project 群：${projectDisplayName}`,
-        `Project：${projectDisplayName}`,
-        "消息模式：话题",
-        `Conversation Key：${conversationKey}`,
-        `Codex Thread ID：${thread.threadId}`
-      ].filter(Boolean).join("\n")
-    );
-    await this.markMessagesCompletedBestEffort([message.messageId]);
-  }
-
   private async handleNewSessionMenuAction(
     context: MessageContext,
     action: IncomingLarkBotMenuAction
@@ -1333,29 +1140,61 @@ export class ConversationManager {
     });
   }
 
-  private async handleNewTopicCommand(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
-    if (!isGroupConversationType(context.type)) {
-      await this.replyControlBestEffort(message.messageId, "new_topic 只能在群里用。");
+  private async handleThreadCommand(
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    if (context.larkThreadId) {
+      await this.replyControlBestEffort(message.messageId, "不能在话题中使用此功能");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
-    if (roleForSender(this.options.config, message.senderOpenId) !== "owner") {
-      await this.replyControlBestEffort(message.messageId, "只有 owner 可以创建新话题。");
+    if (!isGroupConversationType(context.type)) {
+      await this.replyControlBestEffort(message.messageId, "thread 只能在群里用。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
     const chatId = nonEmptyString(message.larkGroupId) ?? nonEmptyString(message.chatId);
     if (!chatId) {
-      await this.replyControlBestEffort(message.messageId, "new_topic 只能在群里用。");
+      await this.replyControlBestEffort(message.messageId, "thread 只能在群里用。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
-    await this.createNewSessionTopic(context, {
+    const topic = await this.createNewSessionTopic(context, {
       chatId,
       operatorOpenId: message.senderOpenId,
       eventId: message.eventId
     });
+    if (!topic) {
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const threadText = text.trim();
+    if (!threadText) {
+      await this.replyControlBestEffort(topic.cardMessageId, "新话题已创建");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const proxyMessageId = await this.replyThreadTextMessage(topic.cardMessageId, threadText);
+    const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
+    const proxyMessage = createThreadReplyMessage(message, proxyMessageId, topic.larkThreadId, threadText);
+    const proxyState = this.getState(proxyContext.stateKey);
+    const proxyParsed: ParsedCommand = { kind: "message", text: proxyMessage.text };
+    await this.recordIncomingMessage(proxyState, proxyContext, proxyMessage, proxyParsed);
+    await this.handleUserMessage(proxyState, proxyContext, proxyMessage, proxyMessage.text);
     await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async replyThreadTextMessage(anchorMessageId: string, text: string): Promise<string> {
+    const result = await this.options.lark.replyText(anchorMessageId, text);
+    const replyMessageId = nonEmptyString(result?.messageId);
+    if (!replyMessageId) {
+      throw new TwinnyError("Lark thread reply response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
+    }
+    return replyMessageId;
   }
 
   private async createNewSessionTopic(
@@ -3572,11 +3411,8 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "new") {
     return { kind: "new" };
   }
-  if (command === "new_topic") {
-    return { kind: "new_topic" };
-  }
-  if (command === "project") {
-    return { kind: "project", name: rest };
+  if (command === "thread") {
+    return { kind: "thread", text: rest };
   }
   if (command === "help") {
     return { kind: "help" };
@@ -3662,7 +3498,7 @@ function createMessageContext(type: ConversationType, message: IncomingLarkMessa
   };
 }
 
-function createProjectTopicProxyContext(context: MessageContext, larkThreadId: string): MessageContext {
+function createThreadReplyContext(context: MessageContext, larkThreadId: string): MessageContext {
   return {
     type: "topic_group",
     conversationKey: context.conversationKey,
@@ -3671,63 +3507,23 @@ function createProjectTopicProxyContext(context: MessageContext, larkThreadId: s
   };
 }
 
-function createProjectTopicProxyMessage(
+function createThreadReplyMessage(
   message: IncomingLarkMessage,
-  proxyMessageId: string,
-  larkThreadId: string
+  replyMessageId: string,
+  larkThreadId: string,
+  text: string
 ): IncomingLarkMessage {
   return {
     ...message,
-    messageId: proxyMessageId,
+    eventId: `thread_reply:${message.eventId}`,
+    messageId: replyMessageId,
     chatType: "topic_group",
+    messageType: "text",
     larkGroupId: message.larkGroupId ?? message.chatId,
-    larkThreadId
+    larkThreadId,
+    text,
+    raw: {}
   };
-}
-
-function isTextOrPostMessage(message: IncomingLarkMessage): boolean {
-  const messageType = message.messageType.toLowerCase();
-  return messageType === "text" || messageType === "post";
-}
-
-function isNewLarkThreadRootMessage(message: IncomingLarkMessage): boolean {
-  const rawMessage = rawLarkMessageRecord(message.raw);
-  const rootMessageId = nonEmptyString(message.larkRootMessageId) ?? nonEmptyString(rawStringField(rawMessage, "root_id"));
-  const parentMessageId = nonEmptyString(message.larkParentMessageId) ?? nonEmptyString(rawStringField(rawMessage, "parent_id"));
-
-  if (parentMessageId && parentMessageId !== message.messageId) {
-    return false;
-  }
-  if (rootMessageId && rootMessageId !== message.messageId) {
-    return false;
-  }
-  return true;
-}
-
-function rawMessageForLarkReply(message: IncomingLarkMessage): { messageType: string; content: unknown } {
-  const rawMessage = rawLarkMessageRecord(message.raw);
-  const messageType = nonEmptyString(
-    rawStringField(rawMessage, "message_type") ?? rawStringField(rawMessage, "msg_type") ?? message.messageType
-  );
-  const body = isRecord(rawMessage?.body) ? rawMessage.body : undefined;
-  const content = rawMessage?.content ?? body?.content;
-  if (!messageType || content === undefined) {
-    throw new TwinnyError("Project topic proxy message raw content is missing", "LARK_MESSAGE_MALFORMED");
-  }
-  return { messageType, content };
-}
-
-function rawLarkMessageRecord(raw: unknown): Record<string, unknown> | undefined {
-  if (!isRecord(raw)) {
-    return undefined;
-  }
-  const event = isRecord(raw.event) ? raw.event : raw;
-  return isRecord(event.message) ? event.message : event;
-}
-
-function rawStringField(record: Record<string, unknown> | undefined, field: string): string | undefined {
-  const value = record?.[field];
-  return typeof value === "string" ? value : undefined;
 }
 
 function createBotMenuContext(operatorOpenId: string): MessageContext {
@@ -3819,12 +3615,11 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/next - 打断当前任务，并执行队列中的下一条消息",
     "/steer - 将队列中的下一批消息注入当前任务",
     "/queue <message> - 将消息加入下一轮队列，不注入当前任务",
-    "/project <name> - owner 创建 twinny 项目群"
+    "/thread [message] - 创建新话题"
   ];
   if (isGroupConversationType(context.type) && roleForSender(config, message.senderOpenId) === "owner") {
     lines.push(
       "/activate [all|at] [guest|owner] - 激活群聊、设置响应模式并刷新群名",
-      "/new_topic - 在当前群内创建一个新的会话话题",
       "/deactivate - 停用当前群聊"
     );
   }
@@ -3846,8 +3641,7 @@ function classifyInitialRoute(
     parsed.kind === "next" ||
     parsed.kind === "steer" ||
     parsed.kind === "new" ||
-    parsed.kind === "new_topic" ||
-    parsed.kind === "project" ||
+    parsed.kind === "thread" ||
     parsed.kind === "activate" ||
     parsed.kind === "deactivate" ||
     parsed.kind === "queue"

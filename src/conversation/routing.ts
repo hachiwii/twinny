@@ -58,5 +58,5 @@ export function conversationKeyForChat(type: ConversationType, message: { chatId
 }
 
 export function isGroupConversationType(type: ConversationType): boolean {
-  return type === "group" || type === "topic_group" || type === "project";
+  return type === "group" || type === "topic_group";
 }

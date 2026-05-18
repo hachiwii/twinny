@@ -209,6 +209,55 @@ describe("store migrations", () => {
     }
   });
 
+  it("converts legacy project conversations into group conversations", () => {
+    const db = new Database(":memory:");
+    try {
+      const migrationsToV10 = loadStoreMigrations().filter((migration) => migration.version <= 10);
+      expect(runStoreMigrations(db, { migrations: migrationsToV10 })).toBe(10);
+
+      db.prepare(`
+        INSERT INTO conversations (
+          conversation_key,
+          type,
+          chat_id,
+          name,
+          role,
+          thread_id,
+          workspace,
+          role_codex_home,
+          created_at,
+          updated_at,
+          response_mode,
+          chat_mode
+        ) VALUES (
+          'group_oc_project',
+          'project',
+          'oc_project',
+          'Legacy Project',
+          'owner',
+          'thread_project',
+          '/tmp/twinny/workspaces/group_oc_project',
+          '/tmp/twinny/roles/owner/codex',
+          100,
+          100,
+          'all',
+          NULL
+        )
+      `).run();
+
+      expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
+      expect(
+        db.prepare<[], { type: string; chat_mode: string | null }>(`
+          SELECT type, chat_mode
+          FROM conversations
+          WHERE conversation_key = 'group_oc_project'
+        `).get()
+      ).toEqual({ type: "group", chat_mode: null });
+    } finally {
+      db.close();
+    }
+  });
+
   it("moves rollout state from conversations into thread rows", () => {
     const db = new Database(":memory:");
     try {

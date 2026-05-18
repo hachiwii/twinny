@@ -1199,7 +1199,7 @@ function conversationKeyForTypeAndChatId(type: ConversationType, chatId: string)
 }
 
 function assertValidConversationType(type: ConversationType): void {
-  if (type !== "p2p" && type !== "group" && type !== "topic_group" && type !== "project") {
+  if (type !== "p2p" && type !== "group" && type !== "topic_group") {
     throw new TwinnyError(`Unsupported conversation type: ${type}`, "CONVERSATION_TYPE_INVALID");
   }
 }

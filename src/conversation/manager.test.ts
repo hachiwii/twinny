@@ -631,84 +631,6 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m1"]);
   });
 
-  it("lets the owner create a thread-message project group with the requested name", async () => {
-    const { repository } = createRepository();
-    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_project" })) });
-    const lark = createLarkResponder();
-    const larkChats: LarkChatDirectory = {
-      createChat: vi.fn(async () => ({ chatId: "oc_project", raw: {} }))
-    };
-    const manager = createManager({
-      repository,
-      codex,
-      lark,
-      larkChats
-    });
-
-    manager.submitIncoming(message("m1", "/project Alpha", { senderOpenId: "ou_owner", senderName: "Owner" }));
-
-    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("已创建 project 群：Alpha")));
-    expect(larkChats.createChat).toHaveBeenCalledWith({
-      name: "Alpha",
-      ownerOpenId: "ou_owner",
-      userOpenIds: ["ou_owner"],
-      groupMessageType: "thread",
-      setBotManager: true,
-      uuid: expect.stringMatching(UUID_PATTERN)
-    });
-    expect(repository.findByConversationKey("group_oc_project")).toMatchObject({
-      conversationKey: "group_oc_project",
-      type: "project",
-      chatId: "oc_project",
-      name: "Alpha",
-      chatMode: "group",
-      responseMode: "all",
-      role: "owner",
-      codexThreadId: "thread_project"
-    });
-  });
-
-  it("keeps generated Lark uuid values within the OpenAPI limit for project groups", async () => {
-    const longOwnerOpenId = `ou_${"a".repeat(64)}`;
-    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_project" })) });
-    const larkChats: LarkChatDirectory = {
-      createChat: vi.fn(async () => ({ chatId: "oc_project", raw: {} }))
-    };
-    const manager = createManager({
-      codex,
-      larkChats,
-      config: {
-        ...config,
-        owner: { ...config.owner, openId: longOwnerOpenId }
-      }
-    });
-
-    manager.submitIncoming(message("m1", `/project ${"alpha".repeat(20)}`, { senderOpenId: longOwnerOpenId }));
-
-    await waitForExpect(() => expect(larkChats.createChat).toHaveBeenCalledTimes(1));
-    const uuid = vi.mocked(larkChats.createChat!).mock.calls[0]![0].uuid;
-    expect(uuid).toMatch(UUID_PATTERN);
-    expect(uuid).toHaveLength(36);
-  });
-
-  it("uses the Lark message id for project group idempotency", async () => {
-    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_project" })) });
-    const larkChats: LarkChatDirectory = {
-      createChat: vi.fn(async ({ uuid }) => ({ chatId: `oc_${uuid}`, raw: {} }))
-    };
-    const manager = createManager({ codex, larkChats });
-
-    manager.submitIncoming(message("m1", "/project Alpha", { senderOpenId: "ou_owner" }));
-    manager.submitIncoming(message("m2", "/project Alpha", { senderOpenId: "ou_owner" }));
-
-    await waitForExpect(() => expect(larkChats.createChat).toHaveBeenCalledTimes(2));
-    const firstUuid = vi.mocked(larkChats.createChat!).mock.calls[0]![0].uuid;
-    const secondUuid = vi.mocked(larkChats.createChat!).mock.calls[1]![0].uuid;
-    expect(firstUuid).toMatch(UUID_PATTERN);
-    expect(secondUuid).toMatch(UUID_PATTERN);
-    expect(firstUuid).not.toBe(secondUuid);
-  });
-
   it("includes account usage windows in /status for the owner", async () => {
     const row = conversationRecord({
       conversationKey: "p2p_ou_owner",
@@ -1041,17 +963,14 @@ describe("ConversationManager", () => {
     expect(options?.uuid).toHaveLength(36);
   });
 
-  it("lets the owner create a new topic card with /new_topic in a group", async () => {
+  it("lets any group user create an empty thread card with /thread", async () => {
     const row = groupConversationRecord({ role: "owner", responseMode: "at" });
     const { repository } = createRepository(row);
-    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_new_topic" })) });
+    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_empty" })) });
     const lark = createLarkResponder();
     const manager = createManager({ repository, codex, lark });
 
-    manager.submitIncoming(groupMessage("g_new_topic", "/new_topic", {
-      senderOpenId: "ou_owner",
-      senderName: "Owner"
-    }));
+    manager.submitIncoming(groupMessage("g_thread", "/thread", { senderOpenId: "ou_guest" }));
 
     await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
     expect(codex.startThread).toHaveBeenCalledWith({
@@ -1071,20 +990,22 @@ describe("ConversationManager", () => {
     );
     expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
       conversationKey: "group_oc_group",
-      codexThreadId: "thread_new_topic",
+      codexThreadId: "thread_empty",
       role: "owner",
       larkThreadId: "card_oc_group_1",
-      creatorOpenId: "ou_owner",
+      creatorOpenId: "ou_guest",
       cardMessageId: "card_oc_group_1"
     });
-    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_new_topic"]);
+    expect(lark.replyText).toHaveBeenCalledWith("card_oc_group_1", "新话题已创建");
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_thread"]);
   });
 
-  it("starts the first new topic message without resuming an empty card thread", async () => {
+  it("starts /thread initial text from the bot in-thread reply without resuming an empty card thread", async () => {
     const row = groupConversationRecord({ role: "owner", responseMode: "at" });
     const { repository } = createRepository(row);
     const codex = createCodex({
-      startThread: vi.fn(async () => ({ threadId: "thread_new_topic" })),
+      startThread: vi.fn(async () => ({ threadId: "thread_initial" })),
       resumeThread: vi.fn(async ({ threadId }) => ({ threadId })),
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onTokenUsage }) => {
         await onTurnStarted?.("turn_1");
@@ -1108,44 +1029,48 @@ describe("ConversationManager", () => {
       messageId: cardMessageId,
       raw: { data: { thread_id: cardThreadId } }
     });
+    vi.mocked(lark.replyText).mockResolvedValueOnce({ messageId: "reply_thread_1" });
     const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
 
-    manager.submitIncoming(groupMessage("g_new_topic", "/new_topic", {
-      senderOpenId: "ou_owner",
-      senderName: "Owner"
+    manager.submitIncoming(groupMessage("g_thread", "/thread topic first", {
+      senderOpenId: "ou_guest",
+      senderName: "Guest User"
     }));
-    await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     await waitForExpect(() =>
       expect(repository.updateCodexThreadCard).toHaveBeenCalledWith({
         conversationKey: "group_oc_group",
-        codexThreadId: "thread_new_topic",
+        codexThreadId: "thread_initial",
         role: "owner",
         larkThreadId: cardThreadId,
-        creatorOpenId: "ou_owner",
+        creatorOpenId: "ou_guest",
         cardMessageId: "card_oc_group_1"
       })
     );
-
-    manager.submitIncoming(groupMessage("g_topic_msg", "@_bot topic first", {
-      senderOpenId: "ou_owner",
-      chatType: "topic_group",
-      larkThreadId: cardThreadId,
-      mentions: [botMention()]
-    }));
-    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(lark.replyText).toHaveBeenCalledWith(cardMessageId, "topic first");
     expect(codex.resumeThread).not.toHaveBeenCalled();
     expect(codex.startThread).toHaveBeenCalledTimes(1);
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        threadId: "thread_new_topic",
-        input: wrappedMessage("topic first", "g_topic_msg", "ou_owner")
+        threadId: "thread_initial",
+        input: wrappedMessage("topic first", "reply_thread_1", "ou_guest")
       })
     );
     expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith("group_oc_group", cardThreadId);
-    expect(lark.replyText).not.toHaveBeenCalledWith(
-      "g_topic_msg",
-      expect.stringContaining("Codex thread state was missing")
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "reply_thread_1",
+        eventId: "thread_reply:e_g_thread",
+        larkUserId: "ou_guest",
+        larkGroupId: "oc_group",
+        larkThreadId: cardThreadId,
+        conversationKey: "group_oc_group",
+        routeKind: "message",
+        status: "processing",
+        text: "topic first"
+      })
     );
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_thread"]);
     await waitForExpect(() =>
       expect(lark.patchCard).toHaveBeenCalledWith(
         cardMessageId,
@@ -1168,233 +1093,54 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
     expect(codex.resumeThread).toHaveBeenCalledWith({
       role: "owner",
-      threadId: "thread_new_topic",
+      threadId: "thread_initial",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
       approvalPolicy: "never"
     });
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        threadId: "thread_new_topic",
+        threadId: "thread_initial",
         input: wrappedMessage("topic second", "g_topic_msg_2", "ou_owner")
       })
     );
   });
 
-  it("keeps user-created project topics and links them to a bot topic proxy message", async () => {
-    const row = groupConversationRecord({
-      type: "project",
-      role: "owner",
-      responseMode: "all",
-      codexThreadId: "thread_project"
-    });
-    const { repository } = createRepository(row);
-    const codex = createCodex({
-      startThread: vi.fn(async () => ({ threadId: "thread_proxy_topic" })),
-      startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
-        await onTurnStarted?.("turn_1");
-        return completed(threadId, "turn_1");
-      })
-    });
-    const lark = createLarkResponder();
-    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
-      messageId: "card_project_1",
-      raw: { data: { thread_id: "bot_topic_1" } }
-    });
-    vi.mocked(lark.replyRawMessage).mockResolvedValueOnce({ messageId: "proxy_project_1" });
-    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
-
-    manager.submitIncoming(groupMessage("user_topic_root", "please handle this", {
-      senderOpenId: "ou_guest",
-      senderName: "Guest User",
-      chatType: "topic_group",
-      larkThreadId: "user_topic_1",
-      raw: rawReceiveEvent("user_topic_root", "please handle this", {
-        chat_id: "oc_group",
-        chat_type: "topic_group",
-        thread_id: "user_topic_1"
-      })
-    }));
-
-    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
-    expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith("group_oc_group", "user_topic_1");
-    expect(lark.sendCardToChatId).toHaveBeenCalledWith(
-      "oc_group",
-      expect.objectContaining({
-        header: expect.objectContaining({
-          title: { tag: "plain_text", content: "新会话" }
-        })
-      }),
-      { uuid: expect.stringMatching(UUID_PATTERN) }
-    );
-    expect(lark.replyRawMessage).toHaveBeenCalledWith(
-      "card_project_1",
-      {
-        messageType: "text",
-        content: JSON.stringify({ text: "please handle this" })
-      }
-    );
-    expect(lark.replyText).toHaveBeenCalledWith("user_topic_root", "已创建 Agent 话题");
-    expect(lark.forwardThreadToThread).toHaveBeenCalledWith(
-      "bot_topic_1",
-      "user_topic_1",
-      { uuid: expect.stringMatching(UUID_PATTERN) }
-    );
-    const noticeCallOrder = vi.mocked(lark.replyText).mock.invocationCallOrder[0]!;
-    const forwardCallOrder = vi.mocked(lark.forwardThreadToThread).mock.invocationCallOrder[0]!;
-    expect(noticeCallOrder).toBeLessThan(forwardCallOrder);
-    expect(lark.replyMarkdown).not.toHaveBeenCalledWith("card_project_1", expect.stringContaining("来自"));
-    expect(lark.recallMessage).not.toHaveBeenCalled();
-    expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
-      conversationKey: "group_oc_group",
-      codexThreadId: "thread_proxy_topic",
-      role: "owner",
-      larkThreadId: "bot_topic_1",
-      creatorOpenId: "ou_guest",
-      cardMessageId: "card_project_1"
-    });
-    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        larkMessageId: "proxy_project_1",
-        eventId: "e_user_topic_root",
-        larkUserId: "ou_guest",
-        larkGroupId: "oc_group",
-        larkThreadId: "bot_topic_1",
-        conversationKey: "group_oc_group",
-        routeKind: "message",
-        status: "processing",
-        text: "please handle this",
-        rawEventJson: JSON.stringify(rawReceiveEvent("user_topic_root", "please handle this", {
-          chat_id: "oc_group",
-          chat_type: "topic_group",
-          thread_id: "user_topic_1"
-        }))
-      })
-    );
-    expect(repository.getLarkMessageById("user_topic_root")).toBeUndefined();
-    expect(codex.startTurn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        role: "owner",
-        threadId: "thread_proxy_topic",
-        cwd: "/tmp/twinny/workspaces/group_oc_group",
-        input: wrappedMessage("please handle this", "proxy_project_1", "ou_guest")
-      })
-    );
-    expect(repository.upsertCodexThread).not.toHaveBeenCalledWith(
-      expect.objectContaining({
-        conversationKey: "group_oc_group",
-        larkThreadId: "user_topic_1"
-      })
-    );
-  });
-
-  it("ignores non-root messages in unseen project topics before persistence", async () => {
-    const row = groupConversationRecord({
-      type: "project",
-      role: "owner",
-      responseMode: "all",
-      codexThreadId: "thread_project"
-    });
+  it("rejects /thread inside Lark thread contexts", async () => {
+    const row = groupConversationRecord({ responseMode: "all" });
     const { repository } = createRepository(row);
     const codex = createCodex();
     const lark = createLarkResponder();
-    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+    const manager = createManager({ repository, codex, lark });
 
-    manager.submitIncoming(groupMessage("user_topic_reply", "/status", {
-      senderOpenId: "ou_guest",
-      senderName: "Guest User",
+    manager.submitIncoming(groupMessage("g_thread_nested", "/thread nested", {
       chatType: "topic_group",
-      larkThreadId: "unknown_topic_1",
-      larkRootMessageId: "unknown_topic_root",
-      larkParentMessageId: "unknown_topic_root",
-      raw: rawReceiveEvent("user_topic_reply", "/status", {
-        chat_id: "oc_group",
-        chat_type: "topic_group",
-        thread_id: "unknown_topic_1",
-        root_id: "unknown_topic_root",
-        parent_id: "unknown_topic_root"
-      })
+      larkThreadId: "topic_thread_1"
     }));
 
     await waitForExpect(() =>
-      expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith("group_oc_group", "unknown_topic_1")
+      expect(lark.replyText).toHaveBeenCalledWith("g_thread_nested", "不能在话题中使用此功能")
     );
-    await waitForDelay();
-    expect(repository.insertLarkMessage).not.toHaveBeenCalled();
     expect(lark.sendCardToChatId).not.toHaveBeenCalled();
-    expect(lark.replyRawMessage).not.toHaveBeenCalled();
-    expect(lark.replyText).not.toHaveBeenCalled();
-    expect(lark.forwardThreadToThread).not.toHaveBeenCalled();
-    expect(lark.recallMessage).not.toHaveBeenCalled();
-    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(codex.startThread).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_thread_nested"]);
   });
 
-  it("handles slash commands in new project topics without proxying them", async () => {
-    const row = groupConversationRecord({
-      type: "project",
-      role: "owner",
-      responseMode: "all",
-      codexThreadId: "thread_project"
-    });
-    const { repository } = createRepository(row);
-    const codex = createCodex();
-    const lark = createLarkResponder();
-    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
-
-    manager.submitIncoming(groupMessage("user_topic_status", "/status", {
-      senderOpenId: "ou_owner",
-      senderName: "Owner",
-      chatType: "topic_group",
-      larkThreadId: "user_topic_cmd"
-    }));
-
-    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("user_topic_status", expect.stringContaining("Conversation Key: group_oc_group")));
-    expect(lark.sendCardToChatId).not.toHaveBeenCalled();
-    expect(lark.replyRawMessage).not.toHaveBeenCalled();
-    expect(lark.recallMessage).not.toHaveBeenCalled();
-    expect(codex.startTurn).not.toHaveBeenCalled();
-    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        larkMessageId: "user_topic_status",
-        larkThreadId: "user_topic_cmd",
-        routeKind: "control_message",
-        text: "/status"
-      })
-    );
-  });
-
-  it("rejects /new_topic outside group conversations", async () => {
+  it("rejects /thread outside group conversations", async () => {
     const row = conversationRecord({ role: "owner", chatId: "ou_owner", codexThreadId: "thread_owner" });
     const { repository } = createRepository(row);
     const codex = createCodex();
     const lark = createLarkResponder();
     const manager = createManager({ repository, codex, lark });
 
-    manager.submitIncoming(message("m_new_topic", "/new_topic", { senderOpenId: "ou_owner" }));
+    manager.submitIncoming(message("m_thread", "/thread hello", { senderOpenId: "ou_owner" }));
 
     await waitForExpect(() =>
-      expect(lark.replyText).toHaveBeenCalledWith("m_new_topic", "new_topic 只能在群里用。")
+      expect(lark.replyText).toHaveBeenCalledWith("m_thread", "thread 只能在群里用。")
     );
     expect(lark.sendCardToChatId).not.toHaveBeenCalled();
     expect(codex.startThread).not.toHaveBeenCalled();
-    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m_new_topic"]);
-  });
-
-  it("requires owner for /new_topic in groups", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "all" });
-    const { repository } = createRepository(row);
-    const codex = createCodex();
-    const lark = createLarkResponder();
-    const manager = createManager({ repository, codex, lark });
-
-    manager.submitIncoming(groupMessage("g_new_topic", "/new_topic", { senderOpenId: "ou_guest" }));
-
-    await waitForExpect(() =>
-      expect(lark.replyText).toHaveBeenCalledWith("g_new_topic", "只有 owner 可以创建新话题。")
-    );
-    expect(lark.sendCardToChatId).not.toHaveBeenCalled();
-    expect(codex.startThread).not.toHaveBeenCalled();
-    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_new_topic"]);
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m_thread"]);
   });
 
   it("interrupts active turns and binds a fresh thread on /new", async () => {
