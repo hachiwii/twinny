@@ -141,6 +141,8 @@ export function normalizeIncomingLarkMessageWithReason(
       senderName,
       larkGroupId: chatType === "p2p" ? undefined : chatId,
       larkThreadId: larkThreadIdForMessage(message, messageId, chatType),
+      larkRootMessageId: firstStringValue(message.root_id),
+      larkParentMessageId: firstStringValue(message.parent_id),
       mentions: normalizeMentions(message.mentions),
       resources: resources.length > 0 ? resources : undefined,
       rawForCodex: rawForCodex ? true : undefined,

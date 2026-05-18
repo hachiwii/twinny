@@ -180,6 +180,8 @@ export interface IncomingLarkMessage {
   chatName?: string;
   larkGroupId?: string;
   larkThreadId?: string;
+  larkRootMessageId?: string;
+  larkParentMessageId?: string;
   mentions?: IncomingLarkMention[];
   resources?: IncomingLarkMessageResource[];
   downloadedFiles?: DownloadedLarkFile[];

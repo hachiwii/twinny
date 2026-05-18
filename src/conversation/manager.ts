@@ -897,15 +897,26 @@ export class ConversationManager {
     if (conversation?.type !== "project" || !context.larkThreadId) {
       return false;
     }
-    if (isTextOrPostMessage(message) && parsed.kind !== "message") {
-      return false;
-    }
 
     const existingThread = await this.options.repository.getCodexThreadByConversationAndLarkThread(
       context.conversationKey,
       context.larkThreadId
     );
     if (existingThread) {
+      return false;
+    }
+    if (!isNewLarkThreadRootMessage(message)) {
+      this.log.debug(
+        {
+          messageId: message.messageId,
+          conversationKey: context.conversationKey,
+          larkThreadId: context.larkThreadId
+        },
+        "ignored non-root message in unknown project topic"
+      );
+      return true;
+    }
+    if (isTextOrPostMessage(message) && parsed.kind !== "message") {
       return false;
     }
 
@@ -3567,6 +3578,20 @@ function createProjectTopicProxyMessage(
 function isTextOrPostMessage(message: IncomingLarkMessage): boolean {
   const messageType = message.messageType.toLowerCase();
   return messageType === "text" || messageType === "post";
+}
+
+function isNewLarkThreadRootMessage(message: IncomingLarkMessage): boolean {
+  const rawMessage = rawLarkMessageRecord(message.raw);
+  const rootMessageId = nonEmptyString(message.larkRootMessageId) ?? nonEmptyString(rawStringField(rawMessage, "root_id"));
+  const parentMessageId = nonEmptyString(message.larkParentMessageId) ?? nonEmptyString(rawStringField(rawMessage, "parent_id"));
+
+  if (parentMessageId && parentMessageId !== message.messageId) {
+    return false;
+  }
+  if (rootMessageId && rootMessageId !== message.messageId) {
+    return false;
+  }
+  return true;
 }
 
 function rawMessageForLarkReply(message: IncomingLarkMessage): { messageType: string; content: unknown } {

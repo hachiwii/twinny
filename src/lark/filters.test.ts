@@ -201,7 +201,13 @@ describe("normalizeIncomingLarkMessage", () => {
           }
         })
       )
-    ).toMatchObject({ chatId: "oc_group", chatType: "topic_group", larkThreadId: "omt_thread" });
+    ).toMatchObject({
+      chatId: "oc_group",
+      chatType: "topic_group",
+      larkThreadId: "omt_thread",
+      larkRootMessageId: "om_root",
+      larkParentMessageId: "om_parent"
+    });
     expect(
       normalizeIncomingLarkMessage(
         receiveEvent({

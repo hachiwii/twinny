@@ -1288,6 +1288,47 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("ignores non-root messages in unseen project topics before persistence", async () => {
+    const row = groupConversationRecord({
+      type: "project",
+      role: "owner",
+      responseMode: "all",
+      codexThreadId: "thread_project"
+    });
+    const { repository } = createRepository(row);
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("user_topic_reply", "/status", {
+      senderOpenId: "ou_guest",
+      senderName: "Guest User",
+      chatType: "topic_group",
+      larkThreadId: "unknown_topic_1",
+      larkRootMessageId: "unknown_topic_root",
+      larkParentMessageId: "unknown_topic_root",
+      raw: rawReceiveEvent("user_topic_reply", "/status", {
+        chat_id: "oc_group",
+        chat_type: "topic_group",
+        thread_id: "unknown_topic_1",
+        root_id: "unknown_topic_root",
+        parent_id: "unknown_topic_root"
+      })
+    }));
+
+    await waitForExpect(() =>
+      expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith("group_oc_group", "unknown_topic_1")
+    );
+    await waitForDelay();
+    expect(repository.insertLarkMessage).not.toHaveBeenCalled();
+    expect(lark.sendCardToChatId).not.toHaveBeenCalled();
+    expect(lark.replyRawMessage).not.toHaveBeenCalled();
+    expect(lark.replyText).not.toHaveBeenCalled();
+    expect(lark.forwardThreadToThread).not.toHaveBeenCalled();
+    expect(lark.recallMessage).not.toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+  });
+
   it("handles slash commands in new project topics without proxying them", async () => {
     const row = groupConversationRecord({
       type: "project",
