@@ -108,6 +108,22 @@ describe("renderTwinnyAgentCard", () => {
     expect(JSON.stringify(card)).not.toContain("**↓**");
   });
 
+  it("shows service restart recovery copy in paused-card subtitle", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "paused",
+      elapsedMs: 150_000
+    }));
+    const serialized = JSON.stringify(card);
+
+    expect(card.header).toMatchObject({
+      title: { tag: "plain_text", content: "工作中断" },
+      subtitle: { tag: "plain_text", content: "服务重启中，任务将在重启后自动恢复" },
+      template: "grey"
+    });
+    expect(serialized).toContain("已工作 2m30s");
+    expect(serialized).not.toContain("已暂停，服务重启后继续");
+  });
+
   it("puts completed-card mentions at the start of the body", () => {
     const card = renderTwinnyAgentCard(createOptions({
       status: "finished",

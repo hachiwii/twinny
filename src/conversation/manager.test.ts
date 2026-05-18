@@ -2736,14 +2736,15 @@ describe("ConversationManager", () => {
         expect.objectContaining({
           header: expect.objectContaining({
             template: "grey",
-            title: { tag: "plain_text", content: "工作中断" }
+            title: { tag: "plain_text", content: "工作中断" },
+            subtitle: { tag: "plain_text", content: "服务重启中，任务将在重启后自动恢复" }
           })
         })
       )
     );
     const pausedCard = vi.mocked(lark.patchCard).mock.calls.at(-1)![1] as Record<string, unknown>;
     const serialized = JSON.stringify(pausedCard);
-    expect(serialized).toContain("已暂停，服务重启后继续");
+    expect(serialized).not.toContain("已暂停，服务重启后继续");
     expect(serialized).not.toContain("\"tag\":\"button\"");
     expect(serialized).not.toContain("停止");
     expect(serialized).not.toContain("打断并处理队列中消息");

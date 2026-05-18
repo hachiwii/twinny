@@ -57,11 +57,11 @@ export interface RenderTwinnyThreadSummaryCardOptions {
   iconImageKey?: string;
 }
 
-const STATUS_HEADER: Record<TwinnyAgentCardStatus, { title: string; template: string }> = {
+const STATUS_HEADER: Record<TwinnyAgentCardStatus, { title: string; subtitle?: string; template: string }> = {
   working: { title: "工作中...", template: "purple" },
   finished: { title: "已完成", template: "green" },
   interrupted: { title: "已中断", template: "grey" },
-  paused: { title: "工作中断", template: "grey" },
+  paused: { title: "工作中断", subtitle: "服务重启中，任务将在重启后自动恢复", template: "grey" },
   failed: { title: "发生错误", template: "red" }
 };
 
@@ -105,7 +105,7 @@ export function renderTwinnyAgentCard(options: RenderTwinnyAgentCardOptions): La
       },
       subtitle: {
         tag: "plain_text",
-        content: ""
+        content: header.subtitle ?? ""
       },
       template: header.template,
       ...(options.iconImageKey
@@ -216,12 +216,12 @@ function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] 
       ...finishedMentionElements(options.mentionOpenIds),
       ...finishedProcessPanelElements(options.messages),
       ...(options.finalElements?.length ? options.finalElements : [markdownElement("")]),
-      elapsedElement(options.elapsedMs, options.status, options.runtimeStats)
+      elapsedElement(options.elapsedMs, options.runtimeStats)
     ];
   }
 
   const elements = workingProcessElements(options.messages);
-  elements.push(elapsedElement(options.elapsedMs, options.status, options.runtimeStats));
+  elements.push(elapsedElement(options.elapsedMs, options.runtimeStats));
   if (options.status === "failed" && options.error) {
     elements.push(markdownElement(`- ${sanitizeProcessText(options.error)}`, { text_color: "red" }));
   }
@@ -371,14 +371,13 @@ function buttonElement(label: string, type: string, value: TwinnyAgentCardAction
 
 function elapsedElement(
   elapsedMs: number,
-  status: TwinnyAgentCardStatus,
   runtimeStats: TwinnyAgentCardRuntimeStats | undefined
 ): LarkCardElement {
   return {
     tag: "div",
     text: {
       tag: "plain_text",
-      content: elapsedText(elapsedMs, status, runtimeStats),
+      content: elapsedText(elapsedMs, runtimeStats),
       text_size: "notation",
       text_align: "left",
       text_color: "grey"
@@ -389,15 +388,10 @@ function elapsedElement(
 
 function elapsedText(
   elapsedMs: number,
-  status: TwinnyAgentCardStatus,
   runtimeStats: TwinnyAgentCardRuntimeStats | undefined
 ): string {
   const parts = [`已工作 ${formatElapsed(elapsedMs)}`, ...runtimeStatParts(runtimeStats)];
-  const elapsed = parts.join(" · ");
-  if (status === "paused") {
-    return `${elapsed}，已暂停，服务重启后继续`;
-  }
-  return elapsed;
+  return parts.join(" · ");
 }
 
 function renderProcessItems(messages: TwinnyAgentCardMessage[]): string[] {
