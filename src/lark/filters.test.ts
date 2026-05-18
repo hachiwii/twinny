@@ -340,7 +340,7 @@ describe("normalizeLarkBotMenuWithReason", () => {
     });
   });
 
-  it("normalizes group new-session shortcut events with chat ids", () => {
+  it("normalizes group new-session menu events with chat ids", () => {
     expect(
       normalizeLarkBotMenuWithReason({
         header: { event_id: "event-new-session" },

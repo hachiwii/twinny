@@ -10,7 +10,6 @@ export interface LarkChatInfo {
   name?: string;
   chatMode?: LarkChatMode;
   groupMessageType?: LarkGroupMessageType;
-  toolkitIds?: string[];
 }
 
 export interface CreateLarkChatInput {
@@ -18,14 +17,8 @@ export interface CreateLarkChatInput {
   ownerOpenId?: string;
   userOpenIds?: string[];
   groupMessageType?: LarkGroupMessageType;
-  toolkitIds?: string[];
   uuid?: string;
   setBotManager?: boolean;
-}
-
-export interface UpdateLarkChatInput {
-  groupMessageType?: LarkGroupMessageType;
-  toolkitIds?: string[];
 }
 
 export interface LarkChatCreateResult {
@@ -63,8 +56,7 @@ export class LarkChatDirectory {
         chat_type: "private",
         group_message_type: input.groupMessageType ?? "chat",
         ...(input.ownerOpenId ? { owner_id: input.ownerOpenId } : {}),
-        ...(input.userOpenIds?.length ? { user_id_list: input.userOpenIds } : {}),
-        ...(input.toolkitIds?.length ? { toolkit_ids: input.toolkitIds } : {})
+        ...(input.userOpenIds?.length ? { user_id_list: input.userOpenIds } : {})
       }
     });
     return {
@@ -85,20 +77,6 @@ export class LarkChatDirectory {
 
   async getChatName(chatId: string): Promise<string | undefined> {
     return (await this.getChatInfo(chatId)).name;
-  }
-
-  async updateChatInfo(chatId: string, input: UpdateLarkChatInput): Promise<LarkChatInfo> {
-    const raw = await this.options.openApiClient.request(`/im/v1/chats/${encodePathSegment(chatId)}`, {
-      method: "PUT",
-      query: {
-        user_id_type: "open_id"
-      },
-      body: {
-        ...(input.groupMessageType ? { group_message_type: input.groupMessageType } : {}),
-        ...(input.toolkitIds ? { toolkit_ids: input.toolkitIds } : {})
-      }
-    });
-    return extractChatInfo(raw);
   }
 }
 
@@ -122,13 +100,11 @@ function extractUserName(raw: unknown): string | undefined {
 function extractChatInfo(raw: unknown): LarkChatInfo {
   const data = getRecord(raw, "data");
   const chat = getRecord(data, "chat");
-  const toolkitIds = arrayOfStrings(chat.toolkit_ids) ?? arrayOfStrings(data.toolkit_ids);
   return {
     chatId: firstNonEmptyString(chat.chat_id, data.chat_id),
     name: firstNonEmptyString(chat.name, chat.chat_name, chat.title, data.name, data.chat_name, data.title),
     chatMode: normalizeLarkChatMode(firstNonEmptyString(chat.chat_mode, data.chat_mode)),
-    groupMessageType: normalizeLarkGroupMessageType(firstNonEmptyString(chat.group_message_type, data.group_message_type)),
-    toolkitIds
+    groupMessageType: normalizeLarkGroupMessageType(firstNonEmptyString(chat.group_message_type, data.group_message_type))
   };
 }
 
@@ -173,14 +149,6 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
     }
   }
   return undefined;
-}
-
-function arrayOfStrings(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const strings = value.filter((item): item is string => typeof item === "string" && item.trim() !== "");
-  return strings.length > 0 ? strings : undefined;
 }
 
 function encodePathSegment(value: string): string {

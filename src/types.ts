@@ -55,7 +55,6 @@ export interface LarkConfig {
   maxMessageAgeSeconds: number;
   agentMessageMode: AgentMessageMode;
   iconImageKey?: string;
-  newSessionToolkitId?: string;
 }
 
 export interface CodexConfig {

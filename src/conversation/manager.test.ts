@@ -636,16 +636,13 @@ describe("ConversationManager", () => {
     const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_project" })) });
     const lark = createLarkResponder();
     const larkChats: LarkChatDirectory = {
-      createChat: vi.fn(async () => ({ chatId: "oc_project", raw: {} })),
-      getChatInfo: vi.fn(async () => ({ toolkitIds: [] })),
-      updateChatInfo: vi.fn(async () => ({ toolkitIds: ["toolkit_new_session"] }))
+      createChat: vi.fn(async () => ({ chatId: "oc_project", raw: {} }))
     };
     const manager = createManager({
       repository,
       codex,
       lark,
-      larkChats,
-      config: { ...config, lark: { ...config.lark, newSessionToolkitId: "toolkit_new_session" } }
+      larkChats
     });
 
     manager.submitIncoming(message("m1", "/project Alpha", { senderOpenId: "ou_owner", senderName: "Owner" }));
@@ -656,11 +653,9 @@ describe("ConversationManager", () => {
       ownerOpenId: "ou_owner",
       userOpenIds: ["ou_owner"],
       groupMessageType: "thread",
-      toolkitIds: ["toolkit_new_session"],
       setBotManager: true,
       uuid: expect.stringMatching(UUID_PATTERN)
     });
-    expect(larkChats.updateChatInfo).toHaveBeenCalledWith("oc_project", { toolkitIds: ["toolkit_new_session"] });
     expect(repository.findByConversationKey("group_oc_project")).toMatchObject({
       conversationKey: "group_oc_project",
       type: "group",
@@ -957,7 +952,7 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).not.toHaveBeenCalled();
   });
 
-  it("creates a new topic card when the group new-session shortcut is clicked", async () => {
+  it("creates a new topic card when the group new-session menu is clicked", async () => {
     const row = groupConversationRecord({ role: "owner", responseMode: "all" });
     const { repository } = createRepository(row);
     const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_new_session" })) });
@@ -1295,7 +1290,6 @@ describe("ConversationManager", () => {
         expect.stringContaining("已激活群聊：Team Room\n响应模式：at\nRole：guest")
       )
     );
-    expect(lark.replyText).toHaveBeenCalledWith("g1", expect.stringContaining("缺少 lark.new_session_toolkit_id 配置"));
     expect(row).toBeUndefined();
     expect(repository.findByConversationKey("group_oc_group")).toBeDefined();
     expect(codex.startThread).toHaveBeenCalledWith({
@@ -1322,35 +1316,6 @@ describe("ConversationManager", () => {
       role: "guest",
       workspace: "/tmp/twinny/workspaces/group_oc_group"
     });
-  });
-
-  it("attaches the configured new-session shortcut when a group is activated", async () => {
-    const { repository } = createRepository();
-    const lark = createLarkResponder();
-    const larkChats: LarkChatDirectory = {
-      getChatInfo: vi.fn(async () => ({
-        name: "Team Room",
-        chatMode: "topic" as const,
-        toolkitIds: ["toolkit_existing"]
-      })),
-      updateChatInfo: vi.fn(async () => ({ toolkitIds: ["toolkit_existing", "toolkit_new_session"] }))
-    };
-    const manager = createManager({
-      repository,
-      lark,
-      larkChats,
-      botOpenId: "ou_bot",
-      config: { ...config, lark: { ...config.lark, newSessionToolkitId: "toolkit_new_session" } }
-    });
-
-    manager.submitIncoming(groupMessage("g1", "/activate", { senderOpenId: "ou_owner", senderName: "Owner" }));
-
-    await waitForExpect(() =>
-      expect(larkChats.updateChatInfo).toHaveBeenCalledWith("oc_group", {
-        toolkitIds: ["toolkit_existing", "toolkit_new_session"]
-      })
-    );
-    expect(lark.replyText).toHaveBeenCalledWith("g1", expect.stringContaining("新会话快捷指令：已挂载"));
   });
 
   it("keeps a group's first activated role immutable while allowing mode and name refreshes", async () => {

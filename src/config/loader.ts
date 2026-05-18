@@ -34,8 +34,7 @@ const rawConfigSchema = z.object({
       queued_reaction: z.string().optional(),
       max_message_age_seconds: z.number().optional(),
       agent_message_mode: z.enum(["plain", "card"]).optional(),
-      icon_image_key: z.string().optional(),
-      new_session_toolkit_id: z.string().optional()
+      icon_image_key: z.string().optional()
     })
     .optional(),
   owner: z
@@ -66,7 +65,6 @@ export interface CreateTwinnyConfigInput {
     maxMessageAgeSeconds?: number;
     agentMessageMode?: AgentMessageMode;
     iconImageKey?: string;
-    newSessionToolkitId?: string;
   };
   owner: {
     openId: string;
@@ -114,8 +112,7 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
       queuedReaction: normalizeOptionalString(input.lark.queuedReaction) ?? DEFAULT_LARK_QUEUED_REACTION,
       maxMessageAgeSeconds: input.lark.maxMessageAgeSeconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
       agentMessageMode: input.lark.agentMessageMode ?? DEFAULT_AGENT_MESSAGE_MODE,
-      iconImageKey: normalizeOptionalString(input.lark.iconImageKey),
-      newSessionToolkitId: normalizeOptionalString(input.lark.newSessionToolkitId)
+      iconImageKey: normalizeOptionalString(input.lark.iconImageKey)
     },
     owner: {
       openId: input.owner.openId,
@@ -195,8 +192,7 @@ export function parseTwinnyConfig(rawToml: string, options: LoadConfigOptions = 
       queuedReaction: normalizeOptionalString(parsed.lark?.queued_reaction) ?? DEFAULT_LARK_QUEUED_REACTION,
       maxMessageAgeSeconds: parsed.lark?.max_message_age_seconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
       agentMessageMode: parsed.lark?.agent_message_mode ?? DEFAULT_AGENT_MESSAGE_MODE,
-      iconImageKey: normalizeOptionalString(parsed.lark?.icon_image_key),
-      newSessionToolkitId: normalizeOptionalString(parsed.lark?.new_session_toolkit_id)
+      iconImageKey: normalizeOptionalString(parsed.lark?.icon_image_key)
     },
     owner: {
       openId: parsed.owner?.open_id ?? "",
@@ -313,8 +309,7 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
       queued_reaction: config.lark.queuedReaction,
       max_message_age_seconds: config.lark.maxMessageAgeSeconds,
       agent_message_mode: config.lark.agentMessageMode,
-      ...(config.lark.iconImageKey ? { icon_image_key: config.lark.iconImageKey } : {}),
-      ...(config.lark.newSessionToolkitId ? { new_session_toolkit_id: config.lark.newSessionToolkitId } : {})
+      ...(config.lark.iconImageKey ? { icon_image_key: config.lark.iconImageKey } : {})
     },
     owner,
     roles: {
