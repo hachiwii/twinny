@@ -2267,7 +2267,10 @@ export class ConversationManager {
     }
   }
 
-  private async renderThreadSummaryCard(thread: CodexThreadRecord): Promise<LarkCardJson> {
+  private async renderThreadSummaryCard(
+    thread: CodexThreadRecord,
+    options: { additionalWorkDurationMs?: number } = {}
+  ): Promise<LarkCardJson> {
     const stats = await this.options.repository.getCodexThreadWorkStats(thread.codexThreadId);
     return renderTwinnyThreadSummaryCard({
       creatorOpenId: thread.creatorOpenId,
@@ -2279,20 +2282,28 @@ export class ConversationManager {
       cachedInputTokens: thread.cachedInputTokens,
       reasoningOutputTokens: thread.reasoningOutputTokens,
       totalTokens: thread.totalTokens,
-      totalWorkDurationMs: stats.totalWorkDurationMs,
+      totalWorkDurationMs: stats.totalWorkDurationMs + (options.additionalWorkDurationMs ?? 0),
       contextTokens: thread.contextTokens,
       contextWindow: thread.contextWindow,
       iconImageKey: this.options.config.lark.iconImageKey
     });
   }
 
-  private async updateThreadSummaryCardBestEffort(codexThreadId: string): Promise<void> {
+  private async updateThreadSummaryCardBestEffort(
+    codexThreadId: string,
+    options: { active?: ActiveTurn } = {}
+  ): Promise<void> {
     try {
       const thread = await this.options.repository.getCodexThreadById(codexThreadId);
       if (!thread?.cardMessageId) {
         return;
       }
-      await this.options.lark.patchCard(thread.cardMessageId, await this.renderThreadSummaryCard(thread));
+      await this.options.lark.patchCard(
+        thread.cardMessageId,
+        await this.renderThreadSummaryCard(thread, {
+          additionalWorkDurationMs: activeTurnWorkDurationMs(codexThreadId, options.active)
+        })
+      );
     } catch (error) {
       this.log.warn({ error, codexThreadId }, "failed to update thread summary card");
     }
@@ -2317,7 +2328,7 @@ export class ConversationManager {
         contextWindow: tokenUsage.contextWindow,
         tokenUsageJson: safeJsonStringify(usage.raw) ?? "{}"
       });
-      await this.updateThreadSummaryCardBestEffort(usage.threadId);
+      await this.updateThreadSummaryCardBestEffort(usage.threadId, { active });
     } catch (error) {
       this.log.warn({ error, threadId: usage.threadId, totalTokens: usage.totalTokens }, "failed to record token usage");
     }
@@ -3405,6 +3416,14 @@ function parseTwinnyCardAction(value: Record<string, unknown>): ParsedCardAction
     runId,
     text: action === "stop" ? "/stop" : action === "next" ? "/next" : "/queue"
   };
+}
+
+function activeTurnWorkDurationMs(codexThreadId: string, active: ActiveTurn | undefined, now = Date.now()): number {
+  if (!active || active.threadId !== codexThreadId || active.cancelRequested || active.completedStatus !== undefined) {
+    return 0;
+  }
+  const durationMs = now - active.startedAt;
+  return Number.isFinite(durationMs) && durationMs > 0 ? Math.trunc(durationMs) : 0;
 }
 
 function parseActivateCommand(

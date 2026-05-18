@@ -146,6 +146,89 @@ describe("ConversationManager", () => {
     });
   });
 
+  it("adds the active turn duration when token usage refreshes a bound thread card", async () => {
+    let now = 1_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const turn = deferred<CodexTurnResult>();
+    let turnParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
+    let resolveStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const codex = createCodex({
+      startTurn: vi.fn((params) => {
+        turnParams = params;
+        void params.onTurnStarted?.("turn_1");
+        resolveStarted();
+        return turn.promise;
+      })
+    });
+    const { repository } = createRepository(undefined, {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_1",
+          conversationKey: "p2p_ou_guest",
+          cardMessageId: "card_thread_1"
+        })
+      ],
+      larkMessages: [
+        larkMessageRecord({
+          larkMessageId: "m_old",
+          codexThreadId: "thread_1",
+          codexTurnId: "turn_old",
+          status: "completed",
+          processingStartedAt: 100,
+          completedAt: 2_100
+        })
+      ]
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+    let startTimeout: NodeJS.Timeout | undefined;
+
+    try {
+      manager.submitIncoming(message("m1", "hello"));
+      await Promise.race([
+        started,
+        new Promise<never>((_, reject) => {
+          startTimeout = setTimeout(() => reject(new Error("timed out waiting for startTurn")), 1_000);
+        })
+      ]);
+      if (startTimeout) {
+        clearTimeout(startTimeout);
+        startTimeout = undefined;
+      }
+
+      now = 6_000;
+      await turnParams?.onTokenUsage?.({
+        threadId: "thread_1",
+        turnId: "turn_1",
+        totalTokens: 42,
+        raw: {
+          threadId: "thread_1",
+          turnId: "turn_1",
+          usage: { total: { totalTokens: 42 } }
+        }
+      });
+
+      const summaryCard = vi.mocked(lark.patchCard).mock.calls.find(([messageId]) => messageId === "card_thread_1")?.[1];
+      expect(summaryCard).toBeDefined();
+      const serialized = JSON.stringify(summaryCard);
+      expect(serialized).toContain("Total Token");
+      expect(serialized).toContain("42");
+      expect(serialized).toContain("总工作时间");
+      expect(serialized).toContain("7s");
+    } finally {
+      if (startTimeout) {
+        clearTimeout(startTimeout);
+      }
+      turn.resolve(completed("thread_1", "turn_1"));
+      await turn.promise;
+      await waitForDelay();
+      nowSpy.mockRestore();
+    }
+  });
+
   it("records steered messages against the active Codex turn", async () => {
     const { repository } = createRepository();
     const { codex, turns } = createDeferredCodex();
