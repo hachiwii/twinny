@@ -61,33 +61,6 @@ describe("LarkMessageSender", () => {
     });
   });
 
-  it("replies by reusing an original raw message payload", async () => {
-    const fetch = sequenceFetch([
-      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
-      { code: 0, data: { message_id: "om_reply" } }
-    ]);
-    const sender = createSender(fetch);
-    const content = JSON.stringify({ text: "original text" });
-
-    await expect(sender.replyRawMessage("om_source", { messageType: "text", content }, { uuid: "uuid-raw" })).resolves.toMatchObject({
-      messageId: "om_reply"
-    });
-
-    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/messages/om_source/reply", {
-      method: "POST",
-      headers: {
-        authorization: "Bearer tenant-token",
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        content,
-        msg_type: "text",
-        uuid: "uuid-raw"
-      }),
-      signal: undefined
-    });
-  });
-
   it("replies with a rich post containing uploaded media nodes", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },

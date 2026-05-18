@@ -240,14 +240,7 @@ export interface LarkResponder {
   removeReaction(handle: LarkReactionHandle): Promise<void>;
   replyText(messageId: string, text: string): Promise<{ messageId?: string } | void>;
   replyMarkdown(messageId: string, markdown: string): Promise<{ messageId?: string } | void>;
-  replyRawMessage(
-    messageId: string,
-    message: { messageType: string; content: unknown }
-  ): Promise<{ messageId?: string } | void>;
-  replyPost(
-    messageId: string,
-    content: Array<Array<{ tag: "md"; text: string } | { tag: "img"; image_key: string } | { tag: "media"; file_key: string }>>
-  ): Promise<{ messageId?: string } | void>;
+  replyPost(messageId: string, content: LarkPostContent): Promise<{ messageId?: string } | void>;
   replyFile(messageId: string, fileKey: string): Promise<{ messageId?: string } | void>;
   sendTextToOpenId(openId: string, text: string): Promise<void>;
   sendCardToChatId(
@@ -1155,6 +1148,11 @@ export class ConversationManager {
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
+    if (!isThreadCommandMessageType(message.messageType)) {
+      await this.replyControlBestEffort(message.messageId, "thread 只支持 text/post 消息。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
     const chatId = nonEmptyString(message.larkGroupId) ?? nonEmptyString(message.chatId);
     if (!chatId) {
       await this.replyControlBestEffort(message.messageId, "thread 只能在群里用。");
@@ -1178,9 +1176,9 @@ export class ConversationManager {
       return;
     }
 
-    const proxyMessageId = await this.replyThreadTextMessage(topic.cardMessageId, threadText);
+    const proxy = await this.replyThreadCommandMessage(topic.cardMessageId, message, threadText);
     const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
-    const proxyMessage = createThreadReplyMessage(message, proxyMessageId, topic.larkThreadId, threadText);
+    const proxyMessage = createThreadReplyMessage(message, proxy.messageId, topic.larkThreadId, proxy.text);
     const proxyState = this.getState(proxyContext.stateKey);
     const proxyParsed: ParsedCommand = { kind: "message", text: proxyMessage.text };
     await this.recordIncomingMessage(proxyState, proxyContext, proxyMessage, proxyParsed);
@@ -1188,13 +1186,20 @@ export class ConversationManager {
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
-  private async replyThreadTextMessage(anchorMessageId: string, text: string): Promise<string> {
-    const result = await this.options.lark.replyText(anchorMessageId, text);
+  private async replyThreadCommandMessage(
+    anchorMessageId: string,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<{ messageId: string; text: string }> {
+    const codexText = replaceMentionKeysForCodex(text, message.mentions);
+    const result = message.messageType === "post"
+      ? await this.options.lark.replyPost(anchorMessageId, postContentForThreadReply(text, message.mentions))
+      : await this.options.lark.replyText(anchorMessageId, textForLarkReply(text, message.mentions));
     const replyMessageId = nonEmptyString(result?.messageId);
     if (!replyMessageId) {
       throw new TwinnyError("Lark thread reply response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
     }
-    return replyMessageId;
+    return { messageId: replyMessageId, text: codexText };
   }
 
   private async createNewSessionTopic(
@@ -3253,7 +3258,12 @@ export class ConversationManager {
   }
 }
 
-type LarkPostNode = { tag: "md"; text: string } | { tag: "img"; image_key: string } | { tag: "media"; file_key: string };
+type LarkPostNode =
+  | { tag: "md"; text: string }
+  | { tag: "text"; text: string }
+  | { tag: "at"; user_id: string; user_name?: string }
+  | { tag: "img"; image_key: string }
+  | { tag: "media"; file_key: string };
 type LarkPostContent = LarkPostNode[][];
 
 interface PreparedLarkFileReply {
@@ -3524,6 +3534,109 @@ function createThreadReplyMessage(
     text,
     raw: {}
   };
+}
+
+function isThreadCommandMessageType(messageType: string): boolean {
+  const normalized = messageType.trim().toLowerCase();
+  return normalized === "text" || normalized === "post";
+}
+
+function textForLarkReply(text: string, mentions: IncomingLarkMessage["mentions"]): string {
+  return splitTextByMentions(text, mentions)
+    .map((part) => {
+      if (part.kind === "text") {
+        return part.text;
+      }
+      return `<at user_id="${escapeLarkTextAttribute(part.id)}">${escapeLarkText(part.name ?? part.id)}</at>`;
+    })
+    .join("");
+}
+
+function postContentForThreadReply(text: string, mentions: IncomingLarkMessage["mentions"]): LarkPostContent {
+  const paragraphs = text.split(/\r?\n/).map((line) => postParagraphForThreadReply(line, mentions));
+  return paragraphs.length > 0 ? paragraphs : [[{ tag: "text", text: "" }]];
+}
+
+function postParagraphForThreadReply(text: string, mentions: IncomingLarkMessage["mentions"]): LarkPostNode[] {
+  const nodes = splitTextByMentions(text, mentions).map((part): LarkPostNode => {
+    if (part.kind === "text") {
+      return { tag: "text", text: part.text };
+    }
+    return {
+      tag: "at",
+      user_id: part.id,
+      ...(part.name ? { user_name: part.name } : {})
+    };
+  });
+  return nodes.length > 0 ? nodes : [{ tag: "text", text: "" }];
+}
+
+function replaceMentionKeysForCodex(text: string, mentions: IncomingLarkMessage["mentions"]): string {
+  return splitTextByMentions(text, mentions)
+    .map((part) => part.kind === "text" ? part.text : `@${part.name ?? part.id}`)
+    .join("");
+}
+
+type ThreadMentionRef = { key: string; id: string; name?: string };
+
+type ThreadTextPart =
+  | { kind: "text"; text: string }
+  | { kind: "mention"; id: string; name?: string };
+
+function splitTextByMentions(text: string, mentions: IncomingLarkMessage["mentions"]): ThreadTextPart[] {
+  const refs = threadMentionRefs(mentions);
+  if (refs.length === 0 || text.length === 0) {
+    return text.length > 0 ? [{ kind: "text", text }] : [];
+  }
+
+  const parts: ThreadTextPart[] = [];
+  let index = 0;
+  while (index < text.length) {
+    const ref = refs.find((candidate) => text.startsWith(candidate.key, index));
+    if (!ref) {
+      const nextIndex = index + 1;
+      const previous = parts[parts.length - 1];
+      const char = text.slice(index, nextIndex);
+      if (previous?.kind === "text") {
+        previous.text += char;
+      } else {
+        parts.push({ kind: "text", text: char });
+      }
+      index = nextIndex;
+      continue;
+    }
+    parts.push({ kind: "mention", id: ref.id, ...(ref.name ? { name: ref.name } : {}) });
+    index += ref.key.length;
+  }
+  return parts;
+}
+
+function threadMentionRefs(mentions: IncomingLarkMessage["mentions"]): ThreadMentionRef[] {
+  const refs: ThreadMentionRef[] = [];
+  for (const mention of mentions ?? []) {
+    const key = nonEmptyString(mention.key);
+    const id = nonEmptyString(mention.openId) ?? nonEmptyString(mention.userId) ?? nonEmptyString(mention.unionId);
+    if (!key || !id) {
+      continue;
+    }
+    refs.push({
+      key,
+      id,
+      ...(mention.name ? { name: mention.name } : {})
+    });
+  }
+  return refs.sort((left, right) => right.key.length - left.key.length);
+}
+
+function escapeLarkText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeLarkTextAttribute(value: string): string {
+  return escapeLarkText(value).replace(/"/g, "&quot;");
 }
 
 function createBotMenuContext(operatorOpenId: string): MessageContext {

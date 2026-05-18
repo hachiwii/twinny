@@ -1106,6 +1106,96 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("rebuilds /thread text replies with send-side at mentions", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_text_mention" })),
+      startTurn: vi.fn(async ({ threadId }) => completed(threadId, "turn_1"))
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: "card_oc_group_1",
+      raw: { data: { thread_id: "topic_thread_1" } }
+    });
+    vi.mocked(lark.replyText).mockResolvedValueOnce({ messageId: "reply_thread_1" });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_thread_mention", "/thread hi @_user_1", {
+      senderOpenId: "ou_guest",
+      mentions: [{ key: "@_user_1", openId: "ou_alice", name: "Alice" }]
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "card_oc_group_1",
+      "hi <at user_id=\"ou_alice\">Alice</at>"
+    );
+    expect(lark.replyPost).not.toHaveBeenCalled();
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: wrappedMessage("hi @Alice", "reply_thread_1", "ou_guest")
+      })
+    );
+  });
+
+  it("rebuilds /thread post replies as send-side post content", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_post" })),
+      startTurn: vi.fn(async ({ threadId }) => completed(threadId, "turn_1"))
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: "card_oc_group_1",
+      raw: { data: { thread_id: "topic_thread_1" } }
+    });
+    vi.mocked(lark.replyPost).mockResolvedValueOnce({ messageId: "reply_post_1" });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_thread_post", "/thread post hi @_user_1\nsecond line", {
+      messageType: "post",
+      senderOpenId: "ou_guest",
+      mentions: [{ key: "@_user_1", openId: "ou_alice", name: "Alice" }]
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(lark.replyText).not.toHaveBeenCalledWith("card_oc_group_1", expect.any(String));
+    expect(lark.replyPost).toHaveBeenCalledWith("card_oc_group_1", [
+      [
+        { tag: "text", text: "post hi " },
+        { tag: "at", user_id: "ou_alice", user_name: "Alice" }
+      ],
+      [{ tag: "text", text: "second line" }]
+    ]);
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: wrappedMessage("post hi @Alice\nsecond line", "reply_post_1", "ou_guest")
+      })
+    );
+  });
+
+  it("rejects /thread forwarding from non-text and non-post messages", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_thread_image", "/thread image", {
+      messageType: "image",
+      senderOpenId: "ou_guest"
+    }));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith("g_thread_image", "thread 只支持 text/post 消息。")
+    );
+    expect(lark.sendCardToChatId).not.toHaveBeenCalled();
+    expect(codex.startThread).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_thread_image"]);
+  });
+
   it("rejects /thread inside Lark thread contexts", async () => {
     const row = groupConversationRecord({ responseMode: "all" });
     const { repository } = createRepository(row);
@@ -2790,7 +2880,6 @@ function createLarkResponder(): LarkResponder {
     removeReaction: vi.fn(async () => undefined),
     replyText: vi.fn(async () => undefined),
     replyMarkdown: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
-    replyRawMessage: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     replyPost: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     replyFile: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     sendTextToOpenId: vi.fn(async () => undefined),

@@ -51,6 +51,8 @@ export interface MessageReadUsersOptions {
 
 export type LarkPostNode =
   | { tag: "md"; text: string }
+  | { tag: "text"; text: string }
+  | { tag: "at"; user_id: string; user_name?: string }
   | { tag: "img"; image_key: string }
   | { tag: "media"; file_key: string; image_key?: string };
 
@@ -74,26 +76,6 @@ export class LarkMessageSender {
       body: {
         content: JSON.stringify({ text }),
         msg_type: "text",
-        ...(options.uuid ? { uuid: options.uuid } : {})
-      }
-    });
-    return {
-      messageId: extractMessageId(raw),
-      raw
-    };
-  }
-
-  async replyRawMessage(
-    messageId: string,
-    message: { messageType: string; content: unknown },
-    options: TextMessageOptions = {}
-  ): Promise<LarkSendMessageResult> {
-    const raw = await this.openApiClient.request(`/im/v1/messages/${encodePathSegment(messageId)}/reply`, {
-      method: "POST",
-      signal: options.signal,
-      body: {
-        content: serializeRawMessageContent(message.content),
-        msg_type: message.messageType,
         ...(options.uuid ? { uuid: options.uuid } : {})
       }
     });
@@ -400,10 +382,6 @@ function extractMessageId(raw: unknown): string | undefined {
   const data = getData(raw);
   const messageId = data.message_id;
   return typeof messageId === "string" ? messageId : undefined;
-}
-
-function serializeRawMessageContent(content: unknown): string {
-  return typeof content === "string" ? content : JSON.stringify(content ?? {});
 }
 
 function createPostContent(content: LarkPostParagraph[]) {

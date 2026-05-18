@@ -382,12 +382,6 @@ function adaptLarkSender(
     replyMarkdown: async (messageId: string, markdown: string): Promise<{ messageId?: string }> => {
       return sender.replyMarkdown(messageId, markdown);
     },
-    replyRawMessage: async (
-      messageId: string,
-      message: Parameters<LarkMessageSender["replyRawMessage"]>[1]
-    ): Promise<{ messageId?: string }> => {
-      return sender.replyRawMessage(messageId, message);
-    },
     replyPost: async (
       messageId: string,
       content: Parameters<LarkMessageSender["replyPost"]>[1]
