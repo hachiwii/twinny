@@ -214,6 +214,7 @@ function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] 
   }
   if (options.status === "working") {
     elements.push(buttonsElement(options));
+    elements.push(queueModeHintElement(options));
   }
   return elements;
 }
@@ -307,6 +308,25 @@ function buttonsElement(options: RenderTwinnyAgentCardOptions): LarkCardElement 
       vertical_align: "top"
     })),
     margin: "0px 0px 0px 0px"
+  };
+}
+
+function queueModeHintElement(options: RenderTwinnyAgentCardOptions): LarkCardElement {
+  const hint = options.queueNextMessage
+    ? "排队模式：新消息将等待当前任务完成后发送。"
+    : options.queueDepth > 0
+      ? "追加模式：新消息将和排队消息一起发送。"
+      : "追加模式：新消息将被追加至当前任务。";
+  return {
+    tag: "div",
+    text: {
+      tag: "plain_text",
+      content: hint,
+      text_size: "notation",
+      text_align: "left",
+      text_color: "grey"
+    },
+    margin: "4px 0px 0px 0px"
   };
 }
 

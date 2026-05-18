@@ -2067,6 +2067,7 @@ describe("ConversationManager", () => {
 
     const initialCard = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
     expect(JSON.stringify(initialCard)).toContain("开启排队");
+    expect(JSON.stringify(initialCard)).toContain("追加模式：新消息将被追加至当前任务。");
 
     manager.submitCardAction({
       eventId: "event_card_queue_1",
@@ -2087,6 +2088,7 @@ describe("ConversationManager", () => {
       const card = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
       expect(card).toBeDefined();
       expect(JSON.stringify(card)).toContain("关闭排队");
+      expect(JSON.stringify(card)).toContain("排队模式：新消息将等待当前任务完成后发送。");
     });
 
     manager.submitCardAction({
@@ -2108,6 +2110,7 @@ describe("ConversationManager", () => {
       const card = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
       expect(card).toBeDefined();
       expect(JSON.stringify(card)).toContain("开启排队");
+      expect(JSON.stringify(card)).toContain("追加模式：新消息将被追加至当前任务。");
     });
 
     manager.submitCardAction({
