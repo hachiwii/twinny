@@ -91,11 +91,13 @@ describe("ConversationRepository", () => {
 
     now = 2000;
     const updated = repo.updateConversationSettings("group_oc_group", {
+      type: "project",
       name: "Renamed Group",
       chatMode: "group",
       responseMode: "none"
     });
     expect(updated).toMatchObject({
+      type: "project",
       name: "Renamed Group",
       chatMode: "group",
       responseMode: "none",

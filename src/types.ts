@@ -1,6 +1,6 @@
 export type RoleName = "owner" | "guest";
 
-export type ConversationType = "p2p" | "group" | "topic_group";
+export type ConversationType = "p2p" | "group" | "topic_group" | "project";
 
 export type LarkChatMode = "group" | "topic";
 

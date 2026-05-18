@@ -169,6 +169,7 @@ export interface UpdateConversationThreadBinding {
 }
 
 export interface UpdateConversationSettingsInput {
+  type?: ConversationType;
   name?: string;
   chatMode?: LarkChatMode;
   responseMode?: ConversationResponseMode;
@@ -186,7 +187,7 @@ export class ConversationRepository {
   private readonly selectByTypeAndChatId: Database.Statement<[ConversationType, string], ConversationRow>;
   private readonly selectByCodexThreadId: Database.Statement<[string], ConversationRow>;
   private readonly selectAll: Database.Statement<[], ConversationRow>;
-  private readonly updateSettings: Database.Statement<[string, string | null, string, number, string]>;
+  private readonly updateSettings: Database.Statement<[ConversationType, string, string | null, string, number, string]>;
   private readonly updateThread: Database.Statement<[
     string,
     RoleName,
@@ -280,7 +281,8 @@ export class ConversationRepository {
     `);
     this.updateSettings = this.db.prepare(`
       UPDATE conversations
-      SET name = ?,
+      SET type = ?,
+          name = ?,
           chat_mode = ?,
           response_mode = ?,
           updated_at = ?
@@ -671,6 +673,9 @@ export class ConversationRepository {
 
   updateConversationSettings(conversationKey: string, update: UpdateConversationSettingsInput): ConversationRecord {
     assertValidConversationKey(conversationKey);
+    if (update.type !== undefined) {
+      assertValidConversationType(update.type);
+    }
     if (update.name !== undefined) {
       assertNonEmpty(update.name, "name");
     }
@@ -683,10 +688,12 @@ export class ConversationRepository {
 
     const updateSettings = this.db.transaction(() => {
       const existing = this.requireByConversationKey(conversationKey);
+      const type = update.type ?? existing.type;
+      assertExpectedConversationKey(conversationKey, type, existing.chatId);
       const name = update.name ?? existing.name;
       const chatMode = update.chatMode ?? existing.chatMode ?? null;
       const responseMode = update.responseMode ?? existing.responseMode;
-      this.updateSettings.run(name, chatMode, responseMode, this.now(), conversationKey);
+      this.updateSettings.run(type, name, chatMode, responseMode, this.now(), conversationKey);
       return this.requireByConversationKey(conversationKey);
     });
 
@@ -1209,7 +1216,7 @@ function conversationKeyForTypeAndChatId(type: ConversationType, chatId: string)
 }
 
 function assertValidConversationType(type: ConversationType): void {
-  if (type !== "p2p" && type !== "group" && type !== "topic_group") {
+  if (type !== "p2p" && type !== "group" && type !== "topic_group" && type !== "project") {
     throw new TwinnyError(`Unsupported conversation type: ${type}`, "CONVERSATION_TYPE_INVALID");
   }
 }

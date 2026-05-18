@@ -65,7 +65,7 @@ export interface ConversationRepository {
   ): Promise<ConversationRecord> | ConversationRecord;
   updateConversationSettings(
     conversationKey: string,
-    update: { name?: string; chatMode?: LarkChatMode; responseMode?: ConversationResponseMode }
+    update: { type?: ConversationType; name?: string; chatMode?: LarkChatMode; responseMode?: ConversationResponseMode }
   ): Promise<ConversationRecord> | ConversationRecord;
   markThreadHasRollout(conversationKey: string, codexThreadId: string): Promise<void> | void;
   getCodexThreadById(codexThreadId: string): Promise<CodexThreadRecord | undefined> | CodexThreadRecord | undefined;
@@ -296,6 +296,12 @@ interface NewSessionTopicRequest {
   chatId: string;
   operatorOpenId: string;
   eventId: string;
+}
+
+interface CreatedSessionTopic {
+  codexThreadId: string;
+  larkThreadId: string;
+  cardMessageId: string;
 }
 
 interface MessageContext {
@@ -729,7 +735,7 @@ export class ConversationManager {
 
     state.processingMessage = message;
     try {
-      if (await this.isPersistedDuplicateMessage(message.messageId)) {
+      if (await this.isPersistedDuplicateMessage(message)) {
         return;
       }
       await this.routeMessage(state, context, message);
@@ -751,12 +757,17 @@ export class ConversationManager {
     await this.replyErrorBestEffort(message.messageId, error);
   }
 
-  private async isPersistedDuplicateMessage(larkMessageId: string): Promise<boolean> {
-    const existing = await this.options.repository.getLarkMessageById(larkMessageId);
+  private async isPersistedDuplicateMessage(message: IncomingLarkMessage): Promise<boolean> {
+    const existing = await this.options.repository.getLarkMessageById(message.messageId);
     if (!existing) {
-      return false;
+      const existingEvent = await this.options.repository.getLarkMessageByEventId?.(message.eventId);
+      if (!existingEvent) {
+        return false;
+      }
+      this.log.debug({ eventId: message.eventId, messageId: message.messageId }, "persisted duplicate lark event ignored");
+      return true;
     }
-    this.log.debug({ messageId: larkMessageId }, "persisted duplicate lark message ignored");
+    this.log.debug({ messageId: message.messageId }, "persisted duplicate lark message ignored");
     return true;
   }
 
@@ -806,6 +817,7 @@ export class ConversationManager {
       return;
     }
 
+    const proxyDisplayText = routed.text;
     message.text = routed.text;
     const parsed = routed.parsed;
     if (parsed.kind === "activate") {
@@ -815,6 +827,9 @@ export class ConversationManager {
 
     await this.prepareMessageResources(context.conversationKey, message);
     const preparedParsed: ParsedCommand = parsed.kind === "message" ? { kind: "message", text: message.text } : parsed;
+    if (await this.redirectProjectTopicMessageIfNeeded(context, message, routed.conversation, proxyDisplayText)) {
+      return;
+    }
     await this.recordIncomingMessage(state, context, message, preparedParsed);
     if (preparedParsed.kind === "help") {
       await this.handleHelpCommand(context, message);
@@ -882,6 +897,74 @@ export class ConversationManager {
       larkCreateTime: message.createTime,
       rawEventJson: safeJsonStringify(message.raw)
     });
+  }
+
+  private async redirectProjectTopicMessageIfNeeded(
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    conversation: ConversationRecord | null | undefined,
+    displayText: string
+  ): Promise<boolean> {
+    if (conversation?.type !== "project" || !context.larkThreadId) {
+      return false;
+    }
+
+    const existingThread = await this.options.repository.getCodexThreadByConversationAndLarkThread(
+      context.conversationKey,
+      context.larkThreadId
+    );
+    if (existingThread) {
+      return false;
+    }
+
+    const chatId = nonEmptyString(message.larkGroupId) ?? nonEmptyString(message.chatId);
+    if (!chatId) {
+      throw new TwinnyError("Project topic message is missing chat_id", "LARK_MESSAGE_MALFORMED");
+    }
+
+    const topic = await this.createNewSessionTopic(context, {
+      chatId,
+      operatorOpenId: message.senderOpenId,
+      eventId: message.eventId
+    });
+    if (!topic) {
+      throw new TwinnyError("Project topic replacement was not created", "LARK_TOPIC_CREATE_FAILED");
+    }
+
+    const proxyMessageId = await this.sendProjectTopicProxyMessage(topic.cardMessageId, message, displayText);
+    await this.recallProjectTopicOriginalBestEffort(message.messageId);
+
+    const proxyContext = createProjectTopicProxyContext(context, topic.larkThreadId);
+    const proxyMessage = createProjectTopicProxyMessage(message, proxyMessageId, topic.larkThreadId);
+    const proxyState = this.getState(proxyContext.stateKey);
+    const proxyParsed: ParsedCommand = { kind: "message", text: proxyMessage.text };
+    await this.recordIncomingMessage(proxyState, proxyContext, proxyMessage, proxyParsed);
+    await this.handleUserMessage(proxyState, proxyContext, proxyMessage, proxyMessage.text);
+    return true;
+  }
+
+  private async sendProjectTopicProxyMessage(
+    anchorMessageId: string,
+    message: IncomingLarkMessage,
+    displayText: string
+  ): Promise<string> {
+    const result = await this.options.lark.replyMarkdown(
+      anchorMessageId,
+      formatProjectTopicProxyMessage(message, displayText)
+    );
+    const proxyMessageId = nonEmptyString(result?.messageId);
+    if (!proxyMessageId) {
+      throw new TwinnyError("Lark project topic proxy response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
+    }
+    return proxyMessageId;
+  }
+
+  private async recallProjectTopicOriginalBestEffort(messageId: string): Promise<void> {
+    try {
+      await this.options.lark.recallMessage(messageId);
+    } catch (error) {
+      this.log.warn({ error, messageId }, "failed to recall user-created project topic message");
+    }
   }
 
   private async prepareMessageResources(conversationKey: string, message: IncomingLarkMessage): Promise<void> {
@@ -1171,6 +1254,7 @@ export class ConversationManager {
     });
     if (existing) {
       await this.options.repository.updateConversationSettings(conversationKey, {
+        type: "project",
         name: projectDisplayName,
         chatMode: "group",
         responseMode: "all"
@@ -1184,7 +1268,7 @@ export class ConversationManager {
     } else {
       await this.options.repository.create({
         conversationKey,
-        type: "group",
+        type: "project",
         chatId,
         name: projectDisplayName,
         chatMode: "group",
@@ -1254,7 +1338,10 @@ export class ConversationManager {
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
-  private async createNewSessionTopic(context: MessageContext, request: NewSessionTopicRequest): Promise<void> {
+  private async createNewSessionTopic(
+    context: MessageContext,
+    request: NewSessionTopicRequest
+  ): Promise<CreatedSessionTopic | undefined> {
     const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
     if (!conversation || conversation.responseMode === "none") {
       await this.sendDirectControlBestEffort(request.operatorOpenId, "请先由 owner 在群内执行 /activate。");
@@ -1289,7 +1376,7 @@ export class ConversationManager {
     if (!cardMessageId) {
       throw new TwinnyError("Lark new-session card response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
     }
-    const cardThreadId = extractLarkMessageThreadId(result?.raw);
+    const cardThreadId = extractLarkMessageThreadId(result?.raw) ?? cardMessageId;
     await this.options.repository.updateCodexThreadCard({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
@@ -1298,6 +1385,11 @@ export class ConversationManager {
       creatorOpenId: request.operatorOpenId,
       cardMessageId
     });
+    return {
+      codexThreadId: thread.threadId,
+      larkThreadId: cardThreadId,
+      cardMessageId
+    };
   }
 
   private async handleDeactivateCommand(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
@@ -3412,6 +3504,29 @@ function createMessageContext(type: ConversationType, message: IncomingLarkMessa
   };
 }
 
+function createProjectTopicProxyContext(context: MessageContext, larkThreadId: string): MessageContext {
+  return {
+    type: "topic_group",
+    conversationKey: context.conversationKey,
+    stateKey: `${context.conversationKey}_thread_${safePathSegment(larkThreadId)}`,
+    larkThreadId
+  };
+}
+
+function createProjectTopicProxyMessage(
+  message: IncomingLarkMessage,
+  proxyMessageId: string,
+  larkThreadId: string
+): IncomingLarkMessage {
+  return {
+    ...message,
+    messageId: proxyMessageId,
+    chatType: "topic_group",
+    larkGroupId: message.larkGroupId ?? message.chatId,
+    larkThreadId
+  };
+}
+
 function createBotMenuContext(operatorOpenId: string): MessageContext {
   const conversationKey = conversationKeyForP2p(operatorOpenId);
   return {
@@ -3489,6 +3604,12 @@ function stripBotMention(text: string, message: IncomingLarkMessage, botOpenId: 
     }
   }
   return stripped.trimStart();
+}
+
+function formatProjectTopicProxyMessage(message: IncomingLarkMessage, displayText: string): string {
+  const sender = `<at id=${message.senderOpenId}></at>`;
+  const body = displayText.trim() || "(空消息)";
+  return `来自 ${sender} 的消息：\n${body}`;
 }
 
 function helpTextFor(message: IncomingLarkMessage, context: MessageContext, config: TwinnyConfig): string {

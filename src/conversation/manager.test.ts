@@ -658,7 +658,7 @@ describe("ConversationManager", () => {
     });
     expect(repository.findByConversationKey("group_oc_project")).toMatchObject({
       conversationKey: "group_oc_project",
-      type: "group",
+      type: "project",
       chatId: "oc_project",
       name: "Alpha",
       chatMode: "group",
@@ -987,7 +987,7 @@ describe("ConversationManager", () => {
       conversationKey: "group_oc_group",
       codexThreadId: "thread_new_session",
       role: "owner",
-      larkThreadId: undefined,
+      larkThreadId: "card_oc_group_1",
       creatorOpenId: "ou_owner",
       cardMessageId: "card_oc_group_1"
     });
@@ -1044,7 +1044,7 @@ describe("ConversationManager", () => {
       conversationKey: "group_oc_group",
       codexThreadId: "thread_new_topic",
       role: "owner",
-      larkThreadId: undefined,
+      larkThreadId: "card_oc_group_1",
       creatorOpenId: "ou_owner",
       cardMessageId: "card_oc_group_1"
     });
@@ -1148,6 +1148,91 @@ describe("ConversationManager", () => {
       expect.objectContaining({
         threadId: "thread_new_topic",
         input: wrappedMessage("topic second", "g_topic_msg_2", "ou_owner")
+      })
+    );
+  });
+
+  it("replaces user-created project topics with a bot topic proxy message", async () => {
+    const row = groupConversationRecord({
+      type: "project",
+      role: "owner",
+      responseMode: "all",
+      codexThreadId: "thread_project"
+    });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_proxy_topic" })),
+      startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
+        await onTurnStarted?.("turn_1");
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: "card_project_1",
+      raw: { data: { thread_id: "bot_topic_1" } }
+    });
+    vi.mocked(lark.replyMarkdown).mockResolvedValueOnce({ messageId: "proxy_project_1" });
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("user_topic_root", "please handle this", {
+      senderOpenId: "ou_guest",
+      senderName: "Guest User",
+      chatType: "topic_group",
+      larkThreadId: "user_topic_1"
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith("group_oc_group", "user_topic_1");
+    expect(lark.sendCardToChatId).toHaveBeenCalledWith(
+      "oc_group",
+      expect.objectContaining({
+        header: expect.objectContaining({
+          title: { tag: "plain_text", content: "新会话" }
+        })
+      }),
+      { uuid: expect.stringMatching(UUID_PATTERN) }
+    );
+    expect(lark.replyMarkdown).toHaveBeenCalledWith(
+      "card_project_1",
+      "来自 <at id=ou_guest></at> 的消息：\nplease handle this"
+    );
+    expect(lark.recallMessage).toHaveBeenCalledWith("user_topic_root");
+    expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread_proxy_topic",
+      role: "owner",
+      larkThreadId: "bot_topic_1",
+      creatorOpenId: "ou_guest",
+      cardMessageId: "card_project_1"
+    });
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "proxy_project_1",
+        eventId: "e_user_topic_root",
+        larkUserId: "ou_guest",
+        larkGroupId: "oc_group",
+        larkThreadId: "bot_topic_1",
+        conversationKey: "group_oc_group",
+        routeKind: "message",
+        status: "processing",
+        text: "please handle this",
+        rawEventJson: "{}"
+      })
+    );
+    expect(repository.getLarkMessageById("user_topic_root")).toBeUndefined();
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "owner",
+        threadId: "thread_proxy_topic",
+        cwd: "/tmp/twinny/workspaces/group_oc_group",
+        input: wrappedMessage("please handle this", "proxy_project_1", "ou_guest")
+      })
+    );
+    expect(repository.upsertCodexThread).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationKey: "group_oc_group",
+        larkThreadId: "user_topic_1"
       })
     );
   });
