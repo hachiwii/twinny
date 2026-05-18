@@ -921,6 +921,20 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_1", "turn_2"));
   });
 
+  it("dedupes bot menu events in memory without recording them as lark messages", async () => {
+    const { repository } = createRepository();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, lark });
+
+    manager.submitBotMenuAction(botMenuAction("menu-dup", "queue"));
+    await waitForExpect(() => expect(lark.sendTextToOpenId).toHaveBeenCalledTimes(1));
+    manager.submitBotMenuAction(botMenuAction("menu-dup", "queue"));
+    await waitForDelay();
+
+    expect(lark.sendTextToOpenId).toHaveBeenCalledTimes(1);
+    expect(repository.insertLarkMessage).not.toHaveBeenCalled();
+  });
+
   it("handles bot menu status and help as direct p2p replies", async () => {
     const row = conversationRecord({ codexThreadId: "thread_status" });
     const { repository } = createRepository(row);
@@ -1756,21 +1770,23 @@ describe("ConversationManager", () => {
     );
   });
 
-  it("ignores duplicate message ids", async () => {
+  it("ignores duplicate event ids", async () => {
     const codex = createCodex();
     const manager = createManager({ codex });
 
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
-    manager.submitIncoming(message("m1", "first again"));
+    manager.submitIncoming(message("m2", "first again", { eventId: "e_m1" }));
     await waitForDelay();
 
     expect(codex.startTurn).toHaveBeenCalledTimes(1);
   });
 
-  it("ignores message ids already persisted in the local message table", async () => {
+  it("ignores event ids already persisted in the local message table", async () => {
     const codex = createCodex();
-    const { repository } = createRepository(undefined, { larkMessageIds: ["m1"] });
+    const { repository } = createRepository(undefined, {
+      larkMessages: [larkMessageRecord({ larkMessageId: "proxy_m1", eventId: "e_m1" })]
+    });
     const larkFiles: LarkFileDownloader = {
       downloadMessageResource: vi.fn(async ({ outputDir }) => ({
         path: `${outputDir}/report.txt`,
@@ -1789,7 +1805,7 @@ describe("ConversationManager", () => {
     );
     await waitForDelay();
 
-    expect(repository.getLarkMessageById).toHaveBeenCalledWith("m1");
+    expect(repository.getLarkMessageByEventId).toHaveBeenCalledWith("e_m1");
     expect(codex.startTurn).not.toHaveBeenCalled();
     expect(larkFiles.downloadMessageResource).not.toHaveBeenCalled();
     expect(repository.insertLarkMessage).not.toHaveBeenCalled();
@@ -3052,6 +3068,10 @@ function createRepository(initial?: ConversationRecord, options: {
         };
       }),
       insertLarkMessage: vi.fn((input) => {
+        const existing = larkMessagesByEventId.get(input.eventId);
+        if (existing) {
+          return existing;
+        }
         const record = larkMessageRecord({
           larkMessageId: input.larkMessageId,
           eventId: input.eventId,

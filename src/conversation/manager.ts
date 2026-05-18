@@ -74,7 +74,7 @@ export interface ConversationRepository {
     larkThreadId: string
   ): Promise<CodexThreadRecord | undefined> | CodexThreadRecord | undefined;
   getLarkMessageById(larkMessageId: string): Promise<unknown | undefined> | unknown | undefined;
-  getLarkMessageByEventId?(eventId: string): Promise<unknown | undefined> | unknown | undefined;
+  getLarkMessageByEventId(eventId: string): Promise<unknown | undefined> | unknown | undefined;
   listUnfinishedLarkMessages(): Promise<LarkMessageRecord[]> | LarkMessageRecord[];
   upsertCodexThread(input: {
     codexThreadId: string;
@@ -402,14 +402,14 @@ export class ConversationManager {
   private static readonly recoveryPrompt = "Twinny daemon has beed reloaded, continue with the unfinished work.";
 
   private readonly states = new Map<string, ConversationState>();
-  private readonly dedupe: LRUCache<string, true>;
+  private readonly botMenuDedupe: LRUCache<string, true>;
   private readonly nameLookupFailureCache = new Map<string, number>();
   private readonly log: Logger;
   private shuttingDown = false;
 
   constructor(private readonly options: ConversationManagerOptions) {
     this.log = options.logger ?? defaultLogger;
-    this.dedupe = new LRUCache<string, true>({
+    this.botMenuDedupe = new LRUCache<string, true>({
       max: options.dedupeMax ?? 1000,
       ttl: options.dedupeTtlMs ?? 10 * 60 * 1000
     });
@@ -419,12 +419,6 @@ export class ConversationManager {
     if (this.shuttingDown) {
       throw new TwinnyError("Conversation manager is shutting down", "CONVERSATION_MANAGER_SHUTTING_DOWN");
     }
-    if (this.dedupe.has(message.messageId)) {
-      this.log.debug({ messageId: message.messageId }, "duplicate lark message ignored");
-      return;
-    }
-    this.dedupe.set(message.messageId, true);
-
     const type = conversationTypeForChat(message.chatType);
     if (!type) {
       this.log.debug({ messageId: message.messageId, chatType: message.chatType }, "unsupported lark message chat type ignored");
@@ -459,11 +453,11 @@ export class ConversationManager {
     }
 
     const dedupeKey = `bot_menu:${action.eventId}`;
-    if (this.dedupe.has(dedupeKey)) {
+    if (this.botMenuDedupe.has(dedupeKey)) {
       this.log.debug({ eventId: action.eventId, eventKey: action.eventKey }, "duplicate lark bot menu event ignored");
       return;
     }
-    this.dedupe.set(dedupeKey, true);
+    this.botMenuDedupe.set(dedupeKey, true);
 
     const context = action.action === "new_session" && action.chatId
       ? createBotMenuGroupContext(action.chatId)
@@ -536,9 +530,6 @@ export class ConversationManager {
       const context = contextForRecoveredRecord(record);
       const state = this.getState(context.stateKey);
       recoverableStates.set(context.stateKey, { state, context });
-      if (record.larkMessageId) {
-        this.dedupe.set(record.larkMessageId, true);
-      }
       const message = await this.toRecoveredPendingMessage(record, context);
       if (record.status === "processing") {
         const group = processingGroups.get(context.stateKey) ?? { state, context, records: [], messages: [] };
@@ -762,16 +753,11 @@ export class ConversationManager {
   }
 
   private async isPersistedDuplicateMessage(message: IncomingLarkMessage): Promise<boolean> {
-    const existing = await this.options.repository.getLarkMessageById(message.messageId);
+    const existing = await this.options.repository.getLarkMessageByEventId(message.eventId);
     if (!existing) {
-      const existingEvent = await this.options.repository.getLarkMessageByEventId?.(message.eventId);
-      if (!existingEvent) {
-        return false;
-      }
-      this.log.debug({ eventId: message.eventId, messageId: message.messageId }, "persisted duplicate lark event ignored");
-      return true;
+      return false;
     }
-    this.log.debug({ messageId: message.messageId }, "persisted duplicate lark message ignored");
+    this.log.debug({ eventId: message.eventId, messageId: message.messageId }, "persisted duplicate lark event ignored");
     return true;
   }
 
@@ -1585,7 +1571,7 @@ export class ConversationManager {
     action: IncomingLarkCardAction,
     command: ParsedCardActionCommand
   ): Promise<void> {
-    const existing = await this.options.repository.getLarkMessageByEventId?.(action.eventId);
+    const existing = await this.options.repository.getLarkMessageByEventId(action.eventId);
     if (existing) {
       return;
     }

@@ -139,6 +139,7 @@ describe("store migrations", () => {
         .map((row) => row.name);
       expect(messageIndexes).toEqual([
         "idx_lark_messages_card_action_event_id",
+        "idx_lark_messages_event_id",
         "idx_lark_messages_lark_message_id",
         "idx_lark_messages_thread_turn"
       ]);
@@ -160,6 +161,49 @@ describe("store migrations", () => {
         .all()
         .map((row) => row.name);
       expect(tables).toEqual(["conversations", "lark_messages", "threads"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("deduplicates existing lark messages by event id before adding the unique event index", () => {
+    const db = new Database(":memory:");
+    try {
+      const migrationsToV9 = loadStoreMigrations().filter((migration) => migration.version <= 9);
+      expect(runStoreMigrations(db, { migrations: migrationsToV9 })).toBe(9);
+
+      const insert = db.prepare(`
+        INSERT INTO lark_messages (
+          lark_message_id,
+          event_id,
+          lark_user_id,
+          route_kind,
+          status,
+          text,
+          received_at,
+          updated_at
+        ) VALUES (?, ?, 'ou_user', 'message', 'completed', ?, ?, ?)
+      `);
+      insert.run("om_1", "event_dup", "first", 1000, 1000);
+      insert.run("om_2", "event_dup", "second", 1100, 1100);
+
+      expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
+      expect(
+        db.prepare<[], { text: string }>("SELECT text FROM lark_messages WHERE event_id = 'event_dup'").all()
+      ).toEqual([{ text: "first" }]);
+      const insertAfterMigration = db.prepare(`
+        INSERT INTO lark_messages (
+          lark_message_id,
+          event_id,
+          lark_user_id,
+          route_kind,
+          status,
+          text,
+          received_at,
+          updated_at
+        ) VALUES (?, ?, 'ou_user', 'message', 'completed', ?, ?, ?)
+      `);
+      expect(() => insertAfterMigration.run("om_3", "event_dup", "third", 1200, 1200)).toThrow(/UNIQUE/);
     } finally {
       db.close();
     }

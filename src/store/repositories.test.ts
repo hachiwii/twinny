@@ -213,6 +213,7 @@ describe("ConversationRepository", () => {
     expect(message).toMatchObject({
       id: 1,
       larkMessageId: "om_1",
+      eventId: "event_1",
       larkUserId: "ou_456",
       conversationKey: "p2p_ou_456",
       routeKind: "queued_message",
@@ -221,6 +222,17 @@ describe("ConversationRepository", () => {
       receivedAt: 1300,
       updatedAt: 1300
     });
+    const duplicateEvent = repo.insertLarkMessage({
+      larkMessageId: "om_duplicate_event",
+      eventId: "event_1",
+      larkUserId: "ou_456",
+      conversationKey: "p2p_ou_456",
+      routeKind: "message",
+      status: "processing",
+      text: "duplicate",
+      rawEventJson: "{}"
+    });
+    expect(duplicateEvent).toEqual(message);
 
     now = 1350;
     expect(repo.updateQueuedLarkMessage("om_1", { text: "edited", rawEventJson: '{"edited":true}' })).toBe(true);

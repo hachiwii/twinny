@@ -15,7 +15,7 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 9;
+export const currentStoreSchemaVersion = 10;
 
 const initialMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const threadRolloutMigrationFile = fileURLToPath(new URL("../../migrations/0002_codex_thread_rollout.sql", import.meta.url));
@@ -26,6 +26,7 @@ const conversationChatModeMigrationFile = fileURLToPath(new URL("../../migration
 const conversationKeyMigrationFile = fileURLToPath(new URL("../../migrations/0007_conversation_keys.sql", import.meta.url));
 const threadsSummaryMigrationFile = fileURLToPath(new URL("../../migrations/0008_threads_summary.sql", import.meta.url));
 const threadRolloutStateMigrationFile = fileURLToPath(new URL("../../migrations/0009_thread_rollout.sql", import.meta.url));
+const larkMessageEventDedupeMigrationFile = fileURLToPath(new URL("../../migrations/0010_lark_message_event_dedupe.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -73,6 +74,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 9,
       name: "0009_thread_rollout",
       sql: fs.readFileSync(threadRolloutStateMigrationFile, "utf8")
+    },
+    {
+      version: 10,
+      name: "0010_lark_message_event_dedupe",
+      sql: fs.readFileSync(larkMessageEventDedupeMigrationFile, "utf8")
     }
   ];
 }

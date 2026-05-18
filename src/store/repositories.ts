@@ -208,7 +208,6 @@ export class ConversationRepository {
   private readonly insertLarkMessageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly selectLarkMessageById: Database.Statement<[string], LarkMessageRow>;
   private readonly selectLarkMessageByEventId: Database.Statement<[string], LarkMessageRow>;
-  private readonly selectCardActionByEventId: Database.Statement<[string], LarkMessageRow>;
   private readonly selectUnfinishedLarkMessages: Database.Statement<[], LarkMessageRow>;
   private readonly updateLarkMessageProcessingStatement: Database.Statement<[
     string | null,
@@ -469,7 +468,7 @@ export class ConversationRepository {
       )
     `);
     this.insertLarkMessageStatement = this.db.prepare(`
-      INSERT OR IGNORE INTO lark_messages (
+      INSERT INTO lark_messages (
         lark_message_id,
         event_id,
         lark_user_id,
@@ -502,6 +501,7 @@ export class ConversationRepository {
         @updatedAt,
         @rawEventJson
       )
+      ON CONFLICT(event_id) DO NOTHING
     `);
     this.selectLarkMessageById = this.db.prepare(`
       SELECT * FROM lark_messages WHERE lark_message_id = ?
@@ -509,13 +509,6 @@ export class ConversationRepository {
     this.selectLarkMessageByEventId = this.db.prepare(`
       SELECT * FROM lark_messages
       WHERE event_id = ?
-      ORDER BY id ASC
-      LIMIT 1
-    `);
-    this.selectCardActionByEventId = this.db.prepare(`
-      SELECT * FROM lark_messages
-      WHERE route_kind = 'card_action'
-        AND event_id = ?
       ORDER BY id ASC
       LIMIT 1
     `);
@@ -876,9 +869,7 @@ export class ConversationRepository {
       updatedAt: now,
       rawEventJson: input.rawEventJson ?? null
     });
-    return input.larkMessageId
-      ? this.requireLarkMessageById(input.larkMessageId)
-      : this.requireCardActionByEventId(input.eventId);
+    return this.requireLarkMessageByEventId(input.eventId);
   }
 
   getLarkMessageById(larkMessageId: string): LarkMessageRecord | undefined {
@@ -1011,18 +1002,10 @@ export class ConversationRepository {
     return record;
   }
 
-  private requireLarkMessageById(larkMessageId: string): LarkMessageRecord {
-    const record = this.getLarkMessageById(larkMessageId);
+  private requireLarkMessageByEventId(eventId: string): LarkMessageRecord {
+    const record = this.getLarkMessageByEventId(eventId);
     if (!record) {
-      throw new TwinnyError(`Lark message ${larkMessageId} was not found`, "LARK_MESSAGE_NOT_FOUND");
-    }
-    return record;
-  }
-
-  private requireCardActionByEventId(eventId: string): LarkMessageRecord {
-    const record = mapLarkMessageRow(this.selectCardActionByEventId.get(eventId));
-    if (!record) {
-      throw new TwinnyError(`Lark card action event ${eventId} was not found`, "LARK_CARD_ACTION_NOT_FOUND");
+      throw new TwinnyError(`Lark event ${eventId} was not found`, "LARK_MESSAGE_NOT_FOUND");
     }
     return record;
   }
