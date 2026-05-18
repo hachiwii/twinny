@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { LRUCache } from "lru-cache";
 import type { Logger } from "pino";
 import { TwinnyError, toErrorMessage } from "../errors.js";
 import {
@@ -285,8 +284,6 @@ export interface ConversationManagerOptions {
   roles: RoleHomeResolver;
   logger?: Logger;
   nameLookupFailureTtlMs?: number;
-  dedupeTtlMs?: number;
-  dedupeMax?: number;
 }
 
 interface ActiveThreadResolution {
@@ -402,17 +399,12 @@ export class ConversationManager {
   private static readonly recoveryPrompt = "Twinny daemon has beed reloaded, continue with the unfinished work.";
 
   private readonly states = new Map<string, ConversationState>();
-  private readonly botMenuDedupe: LRUCache<string, true>;
   private readonly nameLookupFailureCache = new Map<string, number>();
   private readonly log: Logger;
   private shuttingDown = false;
 
   constructor(private readonly options: ConversationManagerOptions) {
     this.log = options.logger ?? defaultLogger;
-    this.botMenuDedupe = new LRUCache<string, true>({
-      max: options.dedupeMax ?? 1000,
-      ttl: options.dedupeTtlMs ?? 10 * 60 * 1000
-    });
   }
 
   submitIncoming(message: IncomingLarkMessage): void {
@@ -451,13 +443,6 @@ export class ConversationManager {
     if (this.shuttingDown) {
       throw new TwinnyError("Conversation manager is shutting down", "CONVERSATION_MANAGER_SHUTTING_DOWN");
     }
-
-    const dedupeKey = `bot_menu:${action.eventId}`;
-    if (this.botMenuDedupe.has(dedupeKey)) {
-      this.log.debug({ eventId: action.eventId, eventKey: action.eventKey }, "duplicate lark bot menu event ignored");
-      return;
-    }
-    this.botMenuDedupe.set(dedupeKey, true);
 
     const context = action.action === "new_session" && action.chatId
       ? createBotMenuGroupContext(action.chatId)
@@ -660,57 +645,71 @@ export class ConversationManager {
     context: MessageContext,
     action: IncomingLarkBotMenuAction
   ): Promise<void> {
-    switch (action.action) {
-      case "queue": {
-        state.queueNextMessage = !state.queueNextMessage;
-        if (state.active) {
-          await this.patchAgentCardBestEffort(state, state.active, "working");
+    const existing = await this.options.repository.getLarkMessageByEventId(action.eventId);
+    if (existing) {
+      return;
+    }
+
+    const active = state.active;
+    let status: LarkMessageStatus = "completed";
+    try {
+      switch (action.action) {
+        case "queue": {
+          state.queueNextMessage = !state.queueNextMessage;
+          if (state.active) {
+            await this.patchAgentCardBestEffort(state, state.active, "working");
+          }
+          await this.sendDirectControlBestEffort(
+            action.operatorOpenId,
+            state.queueNextMessage
+              ? "开启排队模式：你的下一条消息会排队等待当前工作结束。"
+              : "退出排队模式：下一条消息会即时提交给模型。"
+          );
+          return;
         }
-        await this.sendDirectControlBestEffort(
-          action.operatorOpenId,
-          state.queueNextMessage
-            ? "开启排队模式：你的下一条消息会排队等待当前工作结束。"
-            : "退出排队模式：下一条消息会即时提交给模型。"
-        );
-        return;
+        case "stop": {
+          const { cleared, interrupted } = await this.stopConversationState(state);
+          await this.sendDirectControlBestEffort(
+            action.operatorOpenId,
+            interrupted
+              ? `已停止当前任务，清空 ${cleared} 条待处理消息。`
+              : `当前没有正在运行的任务，清空 ${cleared} 条待处理消息。`
+          );
+          return;
+        }
+        case "new": {
+          const threadId = await this.openNewThreadForMessage(state, context, messageForBotMenuAction(action));
+          await this.sendDirectControlBestEffort(action.operatorOpenId, `已新开 Codex thread：${threadId}`);
+          return;
+        }
+        case "new_session": {
+          await this.handleNewSessionMenuAction(context, action);
+          return;
+        }
+        case "status": {
+          await this.sendDirectControlBestEffort(
+            action.operatorOpenId,
+            await this.formatStatusText(state, context, {
+              senderOpenId: action.operatorOpenId,
+              senderName: action.operatorName,
+              chatId: action.operatorOpenId
+            })
+          );
+          return;
+        }
+        case "help": {
+          await this.sendDirectControlBestEffort(
+            action.operatorOpenId,
+            helpTextFor(messageForBotMenuAction(action), context, this.options.config)
+          );
+          return;
+        }
       }
-      case "stop": {
-        const { cleared, interrupted } = await this.stopConversationState(state);
-        await this.sendDirectControlBestEffort(
-          action.operatorOpenId,
-          interrupted
-            ? `已停止当前任务，清空 ${cleared} 条待处理消息。`
-            : `当前没有正在运行的任务，清空 ${cleared} 条待处理消息。`
-        );
-        return;
-      }
-      case "new": {
-        const threadId = await this.openNewThreadForMessage(state, context, messageForBotMenuAction(action));
-        await this.sendDirectControlBestEffort(action.operatorOpenId, `已新开 Codex thread：${threadId}`);
-        return;
-      }
-      case "new_session": {
-        await this.handleNewSessionMenuAction(context, action);
-        return;
-      }
-      case "status": {
-        await this.sendDirectControlBestEffort(
-          action.operatorOpenId,
-          await this.formatStatusText(state, context, {
-            senderOpenId: action.operatorOpenId,
-            senderName: action.operatorName,
-            chatId: action.operatorOpenId
-          })
-        );
-        return;
-      }
-      case "help": {
-        await this.sendDirectControlBestEffort(
-          action.operatorOpenId,
-          helpTextFor(messageForBotMenuAction(action), context, this.options.config)
-        );
-        return;
-      }
+    } catch (error) {
+      status = "failed";
+      throw error;
+    } finally {
+      await this.recordMenuActionBestEffort(action, context, status, active);
     }
   }
 
@@ -1619,6 +1618,31 @@ export class ConversationManager {
   private async executeQueueAction(state: ConversationState, active: ActiveTurn): Promise<void> {
     state.queueNextMessage = !state.queueNextMessage;
     await this.patchAgentCardBestEffort(state, active, "working");
+  }
+
+  private async recordMenuActionBestEffort(
+    action: IncomingLarkBotMenuAction,
+    context: MessageContext,
+    status: LarkMessageStatus,
+    active?: ActiveTurn
+  ): Promise<void> {
+    try {
+      await this.options.repository.insertLarkMessage({
+        eventId: action.eventId,
+        larkUserId: action.operatorOpenId,
+        larkGroupId: action.chatId,
+        larkThreadId: active?.context.larkThreadId,
+        conversationKey: context.conversationKey,
+        codexThreadId: active?.threadId,
+        codexTurnId: active?.turnId,
+        routeKind: "menu_action",
+        status,
+        text: action.eventKey,
+        rawEventJson: safeJsonStringify(action.raw)
+      });
+    } catch (error) {
+      this.log.warn({ error, eventId: action.eventId }, "failed to record menu action message");
+    }
   }
 
   private async recordCardActionBestEffort(

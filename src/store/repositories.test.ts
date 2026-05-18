@@ -376,7 +376,7 @@ describe("ConversationRepository", () => {
     });
   });
 
-  it("records card actions without Lark message ids and dedupes by event id", () => {
+  it("records non-message actions without Lark message ids and dedupes by event id", () => {
     const repo = createConversationRepository(db, { now: () => now });
 
     const action = repo.insertLarkMessage({
@@ -419,6 +419,32 @@ describe("ConversationRepository", () => {
     });
     expect(duplicate).toEqual(action);
     expect(repo.getLarkMessageByEventId("event_card_1")).toEqual(action);
+
+    const menuAction = repo.insertLarkMessage({
+      eventId: "event_menu_1",
+      larkUserId: "ou_operator",
+      conversationKey: "p2p_ou_operator",
+      routeKind: "menu_action",
+      status: "completed",
+      text: "queue",
+      rawEventJson: "{}"
+    });
+    const duplicateMenuAction = repo.insertLarkMessage({
+      eventId: "event_menu_1",
+      larkUserId: "ou_operator",
+      conversationKey: "p2p_ou_operator",
+      routeKind: "menu_action",
+      status: "completed",
+      text: "status",
+      rawEventJson: "{}"
+    });
+    expect(menuAction).toMatchObject({
+      larkMessageId: undefined,
+      eventId: "event_menu_1",
+      routeKind: "menu_action",
+      text: "queue"
+    });
+    expect(duplicateMenuAction).toEqual(menuAction);
     expect(() =>
       repo.insertLarkMessage({
         eventId: "event_message_1",

@@ -18,7 +18,13 @@ export interface CodexAgentMessage {
   phase?: AgentMessagePhase | null;
 }
 
-export type LarkMessageRouteKind = "message" | "steered_message" | "queued_message" | "control_message" | "card_action";
+export type LarkMessageRouteKind =
+  | "message"
+  | "steered_message"
+  | "queued_message"
+  | "control_message"
+  | "card_action"
+  | "menu_action";
 
 export type LarkMessageStatus =
   | "queued"

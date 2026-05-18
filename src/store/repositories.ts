@@ -1155,7 +1155,7 @@ function validateReplaceCodexThreadForLarkThread(input: ReplaceCodexThreadForLar
 }
 
 function validateLarkMessageInput(input: InsertLarkMessageInput): void {
-  if (input.routeKind === "card_action") {
+  if (input.routeKind === "card_action" || input.routeKind === "menu_action") {
     if (input.larkMessageId !== undefined) {
       assertNonEmpty(input.larkMessageId, "larkMessageId");
     }
@@ -1228,7 +1228,8 @@ function assertValidRouteKind(routeKind: LarkMessageRouteKind): void {
     routeKind !== "steered_message" &&
     routeKind !== "queued_message" &&
     routeKind !== "control_message" &&
-    routeKind !== "card_action"
+    routeKind !== "card_action" &&
+    routeKind !== "menu_action"
   ) {
     throw new TwinnyError(`Unsupported Lark message route kind: ${routeKind}`, "LARK_MESSAGE_ROUTE_KIND_INVALID");
   }

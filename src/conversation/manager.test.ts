@@ -921,7 +921,7 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_1", "turn_2"));
   });
 
-  it("dedupes bot menu events in memory without recording them as lark messages", async () => {
+  it("records bot menu events as menu actions and dedupes them by event id", async () => {
     const { repository } = createRepository();
     const lark = createLarkResponder();
     const manager = createManager({ repository, lark });
@@ -932,7 +932,22 @@ describe("ConversationManager", () => {
     await waitForDelay();
 
     expect(lark.sendTextToOpenId).toHaveBeenCalledTimes(1);
-    expect(repository.insertLarkMessage).not.toHaveBeenCalled();
+    const menuActionInputs = vi
+      .mocked(repository.insertLarkMessage)
+      .mock.calls
+      .map(([input]) => input)
+      .filter((input) => input.routeKind === "menu_action");
+    expect(menuActionInputs).toHaveLength(1);
+    expect(menuActionInputs[0]).toMatchObject({
+      eventId: "menu-dup",
+      larkUserId: "ou_guest",
+      conversationKey: "p2p_ou_guest",
+      routeKind: "menu_action",
+      status: "completed",
+      text: "queue",
+      rawEventJson: JSON.stringify(botMenuAction("menu-dup", "queue").raw)
+    });
+    expect(menuActionInputs[0]).not.toHaveProperty("larkMessageId");
   });
 
   it("handles bot menu status and help as direct p2p replies", async () => {
