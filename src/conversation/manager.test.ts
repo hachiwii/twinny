@@ -968,6 +968,10 @@ describe("ConversationManager", () => {
     const { repository } = createRepository(row);
     const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_empty" })) });
     const lark = createLarkResponder();
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_empty_1",
+      raw: { data: { thread_id: "topic_thread_empty" } }
+    });
     const manager = createManager({ repository, codex, lark });
 
     manager.submitIncoming(groupMessage("g_thread", "/thread", { senderOpenId: "ou_guest" }));
@@ -992,11 +996,11 @@ describe("ConversationManager", () => {
       conversationKey: "group_oc_group",
       codexThreadId: "thread_empty",
       role: "owner",
-      larkThreadId: "card_oc_group_1",
+      larkThreadId: "topic_thread_empty",
       creatorOpenId: "ou_guest",
       cardMessageId: "card_oc_group_1"
     });
-    expect(lark.replyText).toHaveBeenCalledWith("card_oc_group_1", "新话题已创建");
+    expect(lark.replyText).toHaveBeenCalledWith("card_oc_group_1", "新话题已创建", { replyInThread: true });
     expect(codex.startTurn).not.toHaveBeenCalled();
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_thread"]);
   });
@@ -1027,9 +1031,12 @@ describe("ConversationManager", () => {
     const cardThreadId = "topic_thread_1";
     vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
       messageId: cardMessageId,
+      raw: {}
+    });
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_thread_1",
       raw: { data: { thread_id: cardThreadId } }
     });
-    vi.mocked(lark.replyText).mockResolvedValueOnce({ messageId: "reply_thread_1" });
     const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
 
     manager.submitIncoming(groupMessage("g_thread", "/thread topic first", {
@@ -1047,7 +1054,7 @@ describe("ConversationManager", () => {
         cardMessageId: "card_oc_group_1"
       })
     );
-    expect(lark.replyText).toHaveBeenCalledWith(cardMessageId, "topic first");
+    expect(lark.replyText).toHaveBeenCalledWith(cardMessageId, "topic first", { replyInThread: true });
     expect(codex.resumeThread).not.toHaveBeenCalled();
     expect(codex.startThread).toHaveBeenCalledTimes(1);
     expect(codex.startTurn).toHaveBeenCalledWith(
@@ -1129,7 +1136,8 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     expect(lark.replyText).toHaveBeenCalledWith(
       "card_oc_group_1",
-      "hi <at user_id=\"ou_alice\">Alice</at>"
+      "hi <at user_id=\"ou_alice\">Alice</at>",
+      { replyInThread: true }
     );
     expect(lark.replyPost).not.toHaveBeenCalled();
     expect(codex.startTurn).toHaveBeenCalledWith(
@@ -1162,13 +1170,17 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     expect(lark.replyText).not.toHaveBeenCalledWith("card_oc_group_1", expect.any(String));
-    expect(lark.replyPost).toHaveBeenCalledWith("card_oc_group_1", [
+    expect(lark.replyPost).toHaveBeenCalledWith(
+      "card_oc_group_1",
       [
-        { tag: "text", text: "post hi " },
-        { tag: "at", user_id: "ou_alice", user_name: "Alice" }
+        [
+          { tag: "text", text: "post hi " },
+          { tag: "at", user_id: "ou_alice", user_name: "Alice" }
+        ],
+        [{ tag: "text", text: "second line" }]
       ],
-      [{ tag: "text", text: "second line" }]
-    ]);
+      { replyInThread: true }
+    );
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         input: wrappedMessage("post hi @Alice\nsecond line", "reply_post_1", "ou_guest")

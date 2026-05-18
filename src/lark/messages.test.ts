@@ -31,6 +31,33 @@ describe("LarkMessageSender", () => {
     });
   });
 
+  it("marks replies as in-thread when requested", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { message_id: "om_reply", thread_id: "omt_thread" } }
+    ]);
+    const sender = createSender(fetch);
+
+    await expect(sender.replyText("om_source", "hello thread", { replyInThread: true })).resolves.toMatchObject({
+      messageId: "om_reply",
+      raw: { data: { thread_id: "omt_thread" } }
+    });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/messages/om_source/reply", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        content: JSON.stringify({ text: "hello thread" }),
+        msg_type: "text",
+        reply_in_thread: true
+      }),
+      signal: undefined
+    });
+  });
+
   it("replies with a markdown post through OpenAPI", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },

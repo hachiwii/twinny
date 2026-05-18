@@ -32,6 +32,7 @@ export function isLarkMessageUnavailableError(error: unknown): error is LarkMess
 
 export interface TextMessageOptions {
   uuid?: string;
+  replyInThread?: boolean;
   signal?: AbortSignal;
 }
 
@@ -76,6 +77,7 @@ export class LarkMessageSender {
       body: {
         content: JSON.stringify({ text }),
         msg_type: "text",
+        ...(options.replyInThread ? { reply_in_thread: true } : {}),
         ...(options.uuid ? { uuid: options.uuid } : {})
       }
     });
@@ -104,6 +106,7 @@ export class LarkMessageSender {
       body: {
         content: JSON.stringify(createPostContent(content)),
         msg_type: "post",
+        ...(options.replyInThread ? { reply_in_thread: true } : {}),
         ...(options.uuid ? { uuid: options.uuid } : {})
       }
     });

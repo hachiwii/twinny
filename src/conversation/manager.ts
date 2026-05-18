@@ -238,9 +238,9 @@ export interface LarkResponder {
   addCompletedReaction(messageId: string): Promise<LarkReactionHandle | null>;
   addQueuedReaction(messageId: string): Promise<LarkReactionHandle | null>;
   removeReaction(handle: LarkReactionHandle): Promise<void>;
-  replyText(messageId: string, text: string): Promise<{ messageId?: string } | void>;
-  replyMarkdown(messageId: string, markdown: string): Promise<{ messageId?: string } | void>;
-  replyPost(messageId: string, content: LarkPostContent): Promise<{ messageId?: string } | void>;
+  replyText(messageId: string, text: string, options?: LarkReplyOptions): Promise<LarkReplyResult | void>;
+  replyMarkdown(messageId: string, markdown: string, options?: LarkReplyOptions): Promise<LarkReplyResult | void>;
+  replyPost(messageId: string, content: LarkPostContent, options?: LarkReplyOptions): Promise<LarkReplyResult | void>;
   replyFile(messageId: string, fileKey: string): Promise<{ messageId?: string } | void>;
   sendTextToOpenId(openId: string, text: string): Promise<void>;
   sendCardToChatId(
@@ -290,8 +290,19 @@ interface NewSessionTopicRequest {
 
 interface CreatedSessionTopic {
   codexThreadId: string;
+  role: RoleName;
   larkThreadId: string;
   cardMessageId: string;
+  creatorOpenId: string;
+}
+
+interface LarkReplyOptions {
+  replyInThread?: boolean;
+}
+
+interface LarkReplyResult {
+  messageId?: string;
+  raw?: unknown;
 }
 
 interface MessageContext {
@@ -1159,7 +1170,7 @@ export class ConversationManager {
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
-    const topic = await this.createNewSessionTopic(context, {
+    let topic = await this.createNewSessionTopic(context, {
       chatId,
       operatorOpenId: message.senderOpenId,
       eventId: message.eventId
@@ -1171,12 +1182,14 @@ export class ConversationManager {
 
     const threadText = text.trim();
     if (!threadText) {
-      await this.replyControlBestEffort(topic.cardMessageId, "新话题已创建");
+      const reply = await this.replyThreadTextMessage(topic.cardMessageId, "新话题已创建");
+      await this.updateSessionTopicThreadId(context, topic, reply.larkThreadId);
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
 
     const proxy = await this.replyThreadCommandMessage(topic.cardMessageId, message, threadText);
+    topic = await this.updateSessionTopicThreadId(context, topic, proxy.larkThreadId);
     const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
     const proxyMessage = createThreadReplyMessage(message, proxy.messageId, topic.larkThreadId, proxy.text);
     const proxyState = this.getState(proxyContext.stateKey);
@@ -1190,16 +1203,48 @@ export class ConversationManager {
     anchorMessageId: string,
     message: IncomingLarkMessage,
     text: string
-  ): Promise<{ messageId: string; text: string }> {
+  ): Promise<{ messageId: string; text: string; larkThreadId?: string }> {
     const codexText = replaceMentionKeysForCodex(text, message.mentions);
     const result = message.messageType === "post"
-      ? await this.options.lark.replyPost(anchorMessageId, postContentForThreadReply(text, message.mentions))
-      : await this.options.lark.replyText(anchorMessageId, textForLarkReply(text, message.mentions));
+      ? await this.options.lark.replyPost(anchorMessageId, postContentForThreadReply(text, message.mentions), { replyInThread: true })
+      : await this.options.lark.replyText(anchorMessageId, textForLarkReply(text, message.mentions), { replyInThread: true });
     const replyMessageId = nonEmptyString(result?.messageId);
     if (!replyMessageId) {
       throw new TwinnyError("Lark thread reply response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
     }
-    return { messageId: replyMessageId, text: codexText };
+    return { messageId: replyMessageId, text: codexText, larkThreadId: extractLarkMessageThreadId(result?.raw) };
+  }
+
+  private async replyThreadTextMessage(
+    anchorMessageId: string,
+    text: string
+  ): Promise<{ messageId: string; larkThreadId?: string }> {
+    const result = await this.options.lark.replyText(anchorMessageId, text, { replyInThread: true });
+    const replyMessageId = nonEmptyString(result?.messageId);
+    if (!replyMessageId) {
+      throw new TwinnyError("Lark thread reply response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
+    }
+    return { messageId: replyMessageId, larkThreadId: extractLarkMessageThreadId(result?.raw) };
+  }
+
+  private async updateSessionTopicThreadId(
+    context: MessageContext,
+    topic: CreatedSessionTopic,
+    larkThreadId: string | undefined
+  ): Promise<CreatedSessionTopic> {
+    const resolvedThreadId = nonEmptyString(larkThreadId);
+    if (!resolvedThreadId || resolvedThreadId === topic.larkThreadId) {
+      return topic;
+    }
+    await this.options.repository.updateCodexThreadCard({
+      conversationKey: context.conversationKey,
+      codexThreadId: topic.codexThreadId,
+      role: topic.role,
+      larkThreadId: resolvedThreadId,
+      creatorOpenId: topic.creatorOpenId,
+      cardMessageId: topic.cardMessageId
+    });
+    return { ...topic, larkThreadId: resolvedThreadId };
   }
 
   private async createNewSessionTopic(
@@ -1251,8 +1296,10 @@ export class ConversationManager {
     });
     return {
       codexThreadId: thread.threadId,
+      role,
       larkThreadId: cardThreadId,
-      cardMessageId
+      cardMessageId,
+      creatorOpenId: request.operatorOpenId
     };
   }
 

@@ -376,17 +376,26 @@ function adaptLarkSender(
       sender.createReaction(messageId, completedReaction),
     addQueuedReaction: (messageId: string): Promise<LarkReactionHandle | null> => sender.createReaction(messageId, queuedReaction),
     removeReaction: (handle: LarkReactionHandle): Promise<void> => sender.deleteReaction(handle),
-    replyText: async (messageId: string, text: string): Promise<{ messageId?: string }> => {
-      return sender.replyText(messageId, text);
+    replyText: async (
+      messageId: string,
+      text: string,
+      options?: { replyInThread?: boolean }
+    ): Promise<{ messageId?: string; raw?: unknown }> => {
+      return sender.replyText(messageId, text, options);
     },
-    replyMarkdown: async (messageId: string, markdown: string): Promise<{ messageId?: string }> => {
-      return sender.replyMarkdown(messageId, markdown);
+    replyMarkdown: async (
+      messageId: string,
+      markdown: string,
+      options?: { replyInThread?: boolean }
+    ): Promise<{ messageId?: string; raw?: unknown }> => {
+      return sender.replyMarkdown(messageId, markdown, options);
     },
     replyPost: async (
       messageId: string,
-      content: Parameters<LarkMessageSender["replyPost"]>[1]
-    ): Promise<{ messageId?: string }> => {
-      return sender.replyPost(messageId, content);
+      content: Parameters<LarkMessageSender["replyPost"]>[1],
+      options?: { replyInThread?: boolean }
+    ): Promise<{ messageId?: string; raw?: unknown }> => {
+      return sender.replyPost(messageId, content, options);
     },
     replyFile: async (messageId: string, fileKey: string): Promise<{ messageId?: string }> => {
       return sender.replyFile(messageId, fileKey);
