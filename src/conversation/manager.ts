@@ -356,6 +356,7 @@ interface ActiveTurn {
   sawAgentMessagePhase?: boolean;
   card?: ActiveTurnCardState;
   pendingSteers: PendingMessage[];
+  messagesById: Map<string, PendingMessage>;
   messageIds: Set<string>;
   processingMessageIds: Set<string>;
   steeredMessageIds: Set<string>;
@@ -1685,6 +1686,7 @@ export class ConversationManager {
     await this.markActiveProcessingMessagesSteered(active);
     const messageIds = batch.map((queued) => queued.messageId);
     for (const queued of batch) {
+      active.messagesById.set(queued.messageId, queued);
       active.messageIds.add(queued.messageId);
       active.processingMessageIds.add(queued.messageId);
     }
@@ -1785,6 +1787,7 @@ export class ConversationManager {
     if (!active.turnId) {
       await this.markActiveProcessingMessagesSteered(active);
       active.pendingSteers.push(message);
+      active.messagesById.set(message.messageId, message);
       active.messageIds.add(message.messageId);
       active.processingMessageIds.add(message.messageId);
       await this.markMessagesProcessingBestEffort([message.messageId], {
@@ -1807,6 +1810,7 @@ export class ConversationManager {
         approvalPolicy: "never"
       });
       await this.markActiveProcessingMessagesSteered(active);
+      active.messagesById.set(message.messageId, message);
       active.messageIds.add(message.messageId);
       active.processingMessageIds.add(message.messageId);
       await this.markMessagesProcessingBestEffort([message.messageId], {
@@ -1992,6 +1996,7 @@ export class ConversationManager {
             }
           : undefined,
       pendingSteers: [],
+      messagesById: new Map(params.messages.map((message) => [message.messageId, message])),
       messageIds: new Set(params.messages.map((message) => message.messageId)),
       processingMessageIds: new Set(params.messages.map((message) => message.messageId)),
       steeredMessageIds: new Set(),
@@ -2084,6 +2089,7 @@ export class ConversationManager {
       if (state.active !== active || active.cancelRequested || !active.turnId) {
         const remaining = pending.slice(index);
         for (const message of remaining) {
+          active.messagesById.delete(message.messageId);
           active.messageIds.delete(message.messageId);
           active.processingMessageIds.delete(message.messageId);
           active.steeredMessageIds.delete(message.messageId);
@@ -2120,6 +2126,7 @@ export class ConversationManager {
         );
         const remaining = pending.slice(index);
         for (const queued of remaining) {
+          active.messagesById.delete(queued.messageId);
           active.messageIds.delete(queued.messageId);
           active.processingMessageIds.delete(queued.messageId);
           active.steeredMessageIds.delete(queued.messageId);
@@ -2901,8 +2908,21 @@ export class ConversationManager {
       );
       const output = await this.prepareAgentFinalCardOutputForLark(final.text, active.workspace);
       const rendered = this.renderAgentCard(state, active, "finished", output.elements, undefined, final.processMessages, final.text);
-      await this.options.lark.patchCard(card.messageId, rendered);
+      const previousMessageId = card.messageId;
+      const result = await this.options.lark.replyCard(active.replyMessageId, rendered);
+      const completedCardMessageId = nonEmptyString(result?.messageId);
+      if (!completedCardMessageId) {
+        throw new Error("Lark completed card reply did not return message_id");
+      }
+      card.anchorMessageId = active.replyMessageId;
+      card.messageId = completedCardMessageId;
+      active.lastAgentReplyMessageId = completedCardMessageId;
       card.lastRenderedJson = JSON.stringify(rendered);
+      try {
+        await this.options.lark.recallMessage(previousMessageId);
+      } catch (error) {
+        this.log.warn({ error, messageId: previousMessageId }, "failed to recall previous agent card after completion");
+      }
       for (const file of output.files) {
         try {
           await this.options.lark.replyFile(active.replyMessageId, file.fileKey);
@@ -3030,6 +3050,7 @@ export class ConversationManager {
       runId: active.runId,
       iconImageKey: this.options.config.lark.iconImageKey,
       finalElements,
+      mentionOpenIds: status === "finished" ? activeTurnMentionOpenIds(active) : undefined,
       summaryText,
       error
     });
@@ -3638,6 +3659,20 @@ function splitFinalAgentCardMessages(
     text: finalMessage.text,
     processMessages: messages.slice(0, -1)
   };
+}
+
+function activeTurnMentionOpenIds(active: ActiveTurn): string[] {
+  const seen = new Set<string>();
+  const openIds: string[] = [];
+  for (const message of active.messagesById.values()) {
+    const openId = nonEmptyString(message.original.senderOpenId);
+    if (!openId || seen.has(openId)) {
+      continue;
+    }
+    seen.add(openId);
+    openIds.push(openId);
+  }
+  return openIds;
 }
 
 function formatPendingMessageForCodex(message: PendingMessage): string {

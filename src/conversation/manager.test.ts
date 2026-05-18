@@ -2025,8 +2025,9 @@ describe("ConversationManager", () => {
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));
     await waitForExpect(() =>
-      expect(lark.patchCard).toHaveBeenCalledWith(
-        "card_m1_1",
+      expect(lark.replyCard).toHaveBeenNthCalledWith(
+        2,
+        "m1",
         expect.objectContaining({
           header: expect.objectContaining({
             template: "green",
@@ -2035,9 +2036,10 @@ describe("ConversationManager", () => {
         })
       )
     );
+    expect(lark.recallMessage).toHaveBeenCalledWith("card_m1_1");
   });
 
-  it("uses card mode to update a single agent card and skips the DONE reaction", async () => {
+  it("uses card mode to send a completed card, recall the working card, and skip the DONE reaction", async () => {
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
         await onTurnStarted?.("turn_1");
@@ -2055,10 +2057,11 @@ describe("ConversationManager", () => {
     const manager = createManager({ codex, lark, config: cardModeConfig({ iconImageKey: "img_logo" }) });
 
     manager.submitIncoming(message("m1", "first"));
-    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalled());
     await waitForExpect(() =>
-      expect(lark.patchCard).toHaveBeenCalledWith(
-        "card_m1_1",
+      expect(lark.replyCard).toHaveBeenNthCalledWith(
+        2,
+        "m1",
         expect.objectContaining({
           header: expect.objectContaining({
             template: "green",
@@ -2069,14 +2072,16 @@ describe("ConversationManager", () => {
     );
 
     const initialCard = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
-    const finalCard = vi.mocked(lark.patchCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const finalCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
     const finalBodyElements = (finalCard.body as { elements: unknown[] }).elements;
-    const processPanel = finalBodyElements[0] as Record<string, unknown>;
-    const finalContent = finalBodyElements.slice(1);
+    const mentionElement = finalBodyElements[0] as Record<string, unknown>;
+    const processPanel = finalBodyElements[1] as Record<string, unknown>;
+    const finalContent = finalBodyElements.slice(2);
     expect(lark.replyCard).toHaveBeenCalledWith("m1", expect.any(Object));
     expect(JSON.stringify(initialCard)).toContain("img_logo");
     expect(JSON.stringify(initialCard)).toContain("暂无进度");
     expect(JSON.stringify(vi.mocked(lark.patchCard).mock.calls)).toContain("- first item");
+    expect(JSON.stringify(mentionElement)).toContain("<at id=ou_guest></at>");
     expect(JSON.stringify(finalCard)).toContain("工作过程");
     expect(finalCard.config).toMatchObject({
       summary: { content: "second item" }
@@ -2087,6 +2092,7 @@ describe("ConversationManager", () => {
     expect(JSON.stringify(finalCard)).not.toContain("final aggregate should not be rendered");
     expect(lark.replyMarkdown).not.toHaveBeenCalled();
     expect(lark.addCompletedReaction).not.toHaveBeenCalled();
+    expect(lark.recallMessage).toHaveBeenCalledWith("card_m1_1");
   });
 
   it("uses agent message phase to keep commentary in card progress and final_answer as the result", async () => {
@@ -2108,8 +2114,9 @@ describe("ConversationManager", () => {
 
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() =>
-      expect(lark.patchCard).toHaveBeenCalledWith(
-        "card_m1_1",
+      expect(lark.replyCard).toHaveBeenNthCalledWith(
+        2,
+        "m1",
         expect.objectContaining({
           header: expect.objectContaining({
             template: "green",
@@ -2119,10 +2126,10 @@ describe("ConversationManager", () => {
       )
     );
 
-    const finalCard = vi.mocked(lark.patchCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const finalCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
     const finalBodyElements = (finalCard.body as { elements: unknown[] }).elements;
-    const processPanel = finalBodyElements[0] as Record<string, unknown>;
-    const finalContent = finalBodyElements.slice(1);
+    const processPanel = finalBodyElements[1] as Record<string, unknown>;
+    const finalContent = finalBodyElements.slice(2);
     expect(finalCard.config).toMatchObject({
       summary: { content: "final answer" }
     });
@@ -2151,12 +2158,36 @@ describe("ConversationManager", () => {
     const manager = createManager({ codex, lark, config: cardModeConfig() });
 
     manager.submitIncoming(message("m1", "first"));
-    await waitForExpect(() => expect(lark.patchCard).toHaveBeenCalled());
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(2));
 
-    const finalCard = vi.mocked(lark.patchCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const finalCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
     expect(finalCard.config).toMatchObject({
       summary: { content: "a".repeat(100) }
     });
+  });
+
+  it("mentions each distinct Lark sender at the start of the completed card body", async () => {
+    const { repository } = createRepository(groupConversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(groupMessage("m1", "first", { senderOpenId: "ou_first", senderName: "First User" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("m2", "second", { senderOpenId: "ou_second", senderName: "Second User" }));
+    await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
+
+    turns[0]!.resolve({
+      threadId: "thread_1",
+      turnId: "turn_1",
+      text: "done",
+      status: "completed"
+    });
+    await waitForExpect(() => expect(lark.recallMessage).toHaveBeenCalledWith("card_m2_2"));
+
+    const finalCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const firstBodyElement = (finalCard.body as { elements: unknown[] }).elements[0];
+    expect(JSON.stringify(firstBodyElement)).toContain("<at id=ou_first></at> <at id=ou_second></at>");
   });
 
   it("records card button actions as control history and dispatches /next", async () => {

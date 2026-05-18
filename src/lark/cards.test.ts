@@ -32,4 +32,15 @@ describe("renderTwinnyAgentCard", () => {
     const card = renderTwinnyAgentCard(createOptions({ queueDepth: 2 }));
     expect(JSON.stringify(card)).toContain("追加模式：新消息将和排队消息一起发送。");
   });
+
+  it("puts completed-card mentions at the start of the body", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "finished",
+      mentionOpenIds: ["ou_first", "ou_second", "ou_first"],
+      finalElements: []
+    }));
+    const elements = (card.body as { elements: unknown[] }).elements;
+
+    expect(JSON.stringify(elements[0])).toContain("<at id=ou_first></at> <at id=ou_second></at>");
+  });
 });

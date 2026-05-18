@@ -25,6 +25,7 @@ export interface RenderTwinnyAgentCardOptions {
   runId: number;
   iconImageKey?: string;
   finalElements?: LarkCardElement[];
+  mentionOpenIds?: string[];
   summaryText?: string;
   error?: string;
 }
@@ -201,6 +202,7 @@ export function mediaElement(fileKey: string): LarkCardElement {
 function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] {
   if (options.status === "finished") {
     return [
+      ...finishedMentionElements(options.mentionOpenIds),
       processPanel(options.messages),
       ...(options.finalElements?.length ? options.finalElements : [markdownElement("")]),
       elapsedElement(options.elapsedMs, options.status)
@@ -217,6 +219,11 @@ function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] 
     elements.push(queueModeHintElement(options));
   }
   return elements;
+}
+
+function finishedMentionElements(openIds: string[] | undefined): LarkCardElement[] {
+  const mentions = uniqueNonEmpty(openIds).map((openId) => `<at id=${openId}></at>`);
+  return mentions.length > 0 ? [markdownElement(mentions.join(" "))] : [];
 }
 
 function workingProcessElements(messages: TwinnyAgentCardMessage[]): LarkCardElement[] {
@@ -446,4 +453,18 @@ function markdownTable(headers: [string, string], rows: string[][]): string {
 
 function escapeMarkdownTableCell(value: string): string {
   return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+}
+
+function uniqueNonEmpty(values: string[] | undefined): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values ?? []) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
 }
