@@ -94,7 +94,7 @@ describe("renderTwinnyAgentCard", () => {
         outputTokens: 1_210
       }
     }));
-    const footer = "已工作 2m30s · gpt-5.5 xhigh · 57% · ↑ 327 K (90%) ↓ 1.21 K";
+    const footer = "已工作 2m30s · gpt-5.5 xhigh · 57% · ↑ 327 K (90% Cached) ↓ 1.21 K";
 
     expect(JSON.stringify(card)).toContain(footer);
     expect(findTextElement(card, footer)).toMatchObject({

@@ -479,7 +479,7 @@ function formatCompactTokenUsage(stats: TwinnyAgentCardRuntimeStats): string | u
     return undefined;
   }
   const cacheRate = inputTokens > 0 ? cachedInputTokens / inputTokens : 0;
-  return `↑ ${formatCompactTokenCount(inputTokens)} (${Math.round(Math.min(100, cacheRate * 100))}%) ↓ ${formatCompactTokenCount(outputTokens)}`;
+  return `↑ ${formatCompactTokenCount(inputTokens)} (${Math.round(Math.min(100, cacheRate * 100))}% Cached) ↓ ${formatCompactTokenCount(outputTokens)}`;
 }
 
 function formatCompactTokenCount(value: number): string {
