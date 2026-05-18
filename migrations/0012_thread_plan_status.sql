@@ -1,5 +1,6 @@
 ALTER TABLE threads
-ADD COLUMN plan_mode INTEGER NOT NULL DEFAULT 0;
+ADD COLUMN mode TEXT NOT NULL DEFAULT 'default'
+  CHECK(mode IN ('default', 'plan'));
 
 ALTER TABLE threads
 ADD COLUMN status TEXT NOT NULL DEFAULT 'idle'

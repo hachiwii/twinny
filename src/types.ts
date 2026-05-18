@@ -12,6 +12,8 @@ export type AgentMessageMode = "plain" | "card";
 
 export type AgentMessagePhase = "commentary" | "final_answer";
 
+export type CodexThreadMode = "default" | "plan";
+
 export type CodexThreadStatus = "idle" | "working" | "waiting";
 
 export interface CodexAgentMessage {
@@ -131,7 +133,7 @@ export interface CodexThreadRecord {
   conversationKey: string;
   larkThreadId?: string;
   role: RoleName;
-  planMode: boolean;
+  mode: CodexThreadMode;
   status: CodexThreadStatus;
   forkedFromCodexThreadId?: string;
   forkedAt?: number;

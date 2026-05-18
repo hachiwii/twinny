@@ -1,3 +1,5 @@
+import type { CodexThreadMode } from "../types.js";
+
 export type LarkCardJson = Record<string, unknown>;
 export type LarkCardElement = Record<string, unknown>;
 
@@ -55,7 +57,7 @@ export interface RenderTwinnyAgentCardOptions {
   stateKey: string;
   runId: number;
   iconImageKey?: string;
-  planMode?: boolean;
+  mode?: CodexThreadMode;
   waiting?: TwinnyAgentCardWaiting;
   finalElements?: LarkCardElement[];
   mentionOpenIds?: string[];
@@ -254,7 +256,7 @@ function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] 
       ...finishedMentionElements(options.mentionOpenIds),
       ...finishedProcessPanelElements(options.messages),
       ...(options.finalElements?.length ? options.finalElements : [markdownElement("")]),
-      elapsedElement(options.elapsedMs, options.runtimeStats, options.planMode)
+      elapsedElement(options.elapsedMs, options.runtimeStats, options.mode)
     ];
   }
 
@@ -274,7 +276,7 @@ function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] 
     } else if (options.waiting?.kind === "plan") {
       elements.push(...planElements(options.waiting.planText));
     }
-    elements.push(elapsedElement(options.elapsedMs, options.runtimeStats, options.planMode));
+    elements.push(elapsedElement(options.elapsedMs, options.runtimeStats, options.mode));
     if (options.status === "waiting_input") {
       elements.push(waitingButtonsElement(options, "提交", "primary_filled", "request_input_submit", "打断", "danger_filled", "request_input_interrupt"));
     } else if (options.status === "waiting_plan") {
@@ -284,7 +286,7 @@ function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] 
   }
 
   const elements = workingProcessElements(options.messages);
-  elements.push(elapsedElement(options.elapsedMs, options.runtimeStats, options.planMode));
+  elements.push(elapsedElement(options.elapsedMs, options.runtimeStats, options.mode));
   if (options.status === "failed" && options.error) {
     elements.push(markdownElement(`- ${sanitizeProcessText(options.error)}`, { text_color: "red" }));
   }
@@ -474,13 +476,13 @@ function buttonElement(label: string, type: string, value: TwinnyAgentCardAction
 function elapsedElement(
   elapsedMs: number,
   runtimeStats: TwinnyAgentCardRuntimeStats | undefined,
-  planMode?: boolean
+  mode?: CodexThreadMode
 ): LarkCardElement {
   return {
     tag: "div",
     text: {
       tag: "plain_text",
-      content: elapsedText(elapsedMs, runtimeStats, planMode),
+      content: elapsedText(elapsedMs, runtimeStats, mode),
       text_size: "notation",
       text_align: "left",
       text_color: "grey"
@@ -492,11 +494,11 @@ function elapsedElement(
 function elapsedText(
   elapsedMs: number,
   runtimeStats: TwinnyAgentCardRuntimeStats | undefined,
-  planMode?: boolean
+  mode?: CodexThreadMode
 ): string {
   const parts = [`已工作 ${formatElapsed(elapsedMs)}`, ...runtimeStatParts(runtimeStats)];
-  if (planMode) {
-    parts.push("Plan on");
+  if (mode === "plan") {
+    parts.push("Mode: plan");
   }
   return parts.join(" · ");
 }

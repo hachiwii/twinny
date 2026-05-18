@@ -6,6 +6,7 @@ import type {
   CodexRequestUserInputParams,
   CodexRequestUserInputRequest,
   CodexRequestUserInputResponse,
+  CodexThreadMode,
   CodexThreadTokenUsageUpdate,
   CodexTurnResult
 } from "../types.js";
@@ -36,7 +37,7 @@ export interface TurnStartOptions {
   threadId: string;
   text: string;
   cwd: string;
-  planMode?: boolean;
+  mode?: CodexThreadMode;
   model?: string;
   effort?: string;
   onTurnStarted?: (turnId: string) => Promise<void> | void;
@@ -123,7 +124,7 @@ export function buildTurnStartParams(options: TurnStartOptions): TurnStartParams
     cwd: options.cwd,
     approvalPolicy: "never"
   };
-  if (options.planMode) {
+  if (options.mode === "plan") {
     params.collaborationMode = {
       mode: "plan",
       settings: {

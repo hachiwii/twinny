@@ -331,7 +331,7 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m1", "/plan"));
 
     await waitForExpect(() =>
-      expect(repository.updateCodexThreadPlanMode).toHaveBeenCalledWith("p2p_ou_guest", "thread_1", true)
+      expect(repository.updateCodexThreadMode).toHaveBeenCalledWith("p2p_ou_guest", "thread_1", "plan")
     );
     expect(codex.startTurn).not.toHaveBeenCalled();
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m1"]);
@@ -346,10 +346,10 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m1", "/plan investigate plan mode"));
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
-    expect(repository.updateCodexThreadPlanMode).toHaveBeenCalledWith("p2p_ou_guest", "thread_1", true);
+    expect(repository.updateCodexThreadMode).toHaveBeenCalledWith("p2p_ou_guest", "thread_1", "plan");
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        planMode: true,
+        mode: "plan",
         input: wrappedMessage("investigate plan mode", "m1")
       })
     );
@@ -650,7 +650,7 @@ describe("ConversationManager", () => {
         "Conversation Key: p2p_ou_guest",
         "Codex Thread ID: thread_status",
         "Thread Status: idle",
-        "Plan Mode: off",
+        "Mode: default",
         "Thread Token Usage:",
         "- total: 100",
         "- input: 80",
@@ -3193,13 +3193,13 @@ function createRepository(initial?: ConversationRecord, options: {
         codexThreads.set(record.codexThreadId, record);
         return record;
       }),
-      updateCodexThreadPlanMode: vi.fn((conversationKey, codexThreadId, planMode) => {
+      updateCodexThreadMode: vi.fn((conversationKey, codexThreadId, mode) => {
         const existing = codexThreads.get(codexThreadId);
         if (!existing) {
           throw new Error("missing codex thread");
         }
         existing.conversationKey = conversationKey;
-        existing.planMode = planMode;
+        existing.mode = mode;
         existing.updatedAt = Date.now();
         return existing;
       }),
@@ -3340,7 +3340,7 @@ function codexThreadRecord(overrides: Partial<CodexThreadRecord> = {}): CodexThr
     codexThreadId: "thread_1",
     conversationKey: "p2p_ou_guest",
     role: "guest",
-    planMode: false,
+    mode: "default",
     status: "idle",
     inputTokens: 0,
     outputTokens: 0,

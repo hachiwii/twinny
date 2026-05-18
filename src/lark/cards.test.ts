@@ -108,6 +108,15 @@ describe("renderTwinnyAgentCard", () => {
     expect(JSON.stringify(card)).not.toContain("**↓**");
   });
 
+  it("adds plan mode to the elapsed footer when enabled", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      elapsedMs: 150_000,
+      mode: "plan"
+    }));
+
+    expect(JSON.stringify(card)).toContain("已工作 2m30s · Mode: plan");
+  });
+
   it("shows service restart recovery copy in paused-card subtitle", () => {
     const card = renderTwinnyAgentCard(createOptions({
       status: "paused",

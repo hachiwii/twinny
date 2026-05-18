@@ -26,6 +26,7 @@ import type {
   CodexPlanUpdate,
   CodexRequestUserInputRequest,
   CodexRequestUserInputResponse,
+  CodexThreadMode,
   CodexThreadStatus,
   AgentMessageMode,
   ConversationResponseMode,
@@ -116,10 +117,10 @@ export interface ConversationRepository {
     creatorOpenId?: string;
     cardMessageId?: string;
   }): Promise<CodexThreadRecord> | CodexThreadRecord;
-  updateCodexThreadPlanMode(
+  updateCodexThreadMode(
     conversationKey: string,
     codexThreadId: string,
-    planMode: boolean
+    mode: CodexThreadMode
   ): Promise<CodexThreadRecord> | CodexThreadRecord;
   updateCodexThreadStatus(
     conversationKey: string,
@@ -229,7 +230,7 @@ export interface CodexBridge {
     input: string;
     cwd: string;
     approvalPolicy: "never";
-    planMode?: boolean;
+    mode?: CodexThreadMode;
     model?: string;
     effort?: string;
     onTurnStarted?: (turnId: string) => Promise<void> | void;
@@ -375,7 +376,7 @@ interface ActiveTurn {
   startedAt: number;
   model?: string;
   modelReasoningEffort?: string;
-  planMode: boolean;
+  mode: CodexThreadMode;
   threadTokenUsage: ThreadTokenUsageSnapshot;
   turnId?: string;
   reaction?: LarkReactionHandle | null;
@@ -1551,7 +1552,7 @@ export class ConversationManager {
     lines.push(
       `Codex Thread ID: ${threadId ?? "未创建"}`,
       `Thread Status: ${thread?.status ?? "idle"}`,
-      `Plan Mode: ${thread?.planMode ? "on" : "off"}`,
+      `Mode: ${thread?.mode ?? "default"}`,
       ...formatThreadTokenStatus(thread)
     );
 
@@ -1694,7 +1695,7 @@ export class ConversationManager {
     active.cancelRequested = true;
     await this.clearReactionBestEffort(active);
     await this.patchAgentCardBestEffort(state, active, "accepted_plan");
-    await this.setThreadPlanModeBestEffort(active.conversationKey, active.threadId, false);
+    await this.setThreadModeBestEffort(active.conversationKey, active.threadId, "default");
     await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
     await this.markMessagesCompletedBestEffort([...active.processingMessageIds]);
     this.stopAgentCardTimer(active);
@@ -2009,7 +2010,7 @@ export class ConversationManager {
   ): Promise<void> {
     const resolved = await this.resolveThreadForMessage(context, pending.original);
     if (pending.control === "plan_on") {
-      await this.setThreadPlanModeBestEffort(resolved.conversationKey, resolved.threadId, true);
+      await this.setThreadModeBestEffort(resolved.conversationKey, resolved.threadId, "plan");
       if (pending.text.trim().length > 0) {
         await this.startTurnForMessages(state, context, [{ ...pending, control: undefined }]);
         return;
@@ -2019,7 +2020,7 @@ export class ConversationManager {
       return;
     }
 
-    await this.setThreadPlanModeBestEffort(resolved.conversationKey, resolved.threadId, false);
+    await this.setThreadModeBestEffort(resolved.conversationKey, resolved.threadId, "default");
     await this.markMessagesCompletedBestEffort([pending.messageId]);
     await this.replyControlBestEffort(pending.messageId, "已退出 plan mode。");
   }
@@ -2177,7 +2178,7 @@ export class ConversationManager {
       this.readThreadTokenUsageBestEffort(params.threadId)
     ]);
     const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
-    const planMode = threadRecord?.planMode === true;
+    const mode = threadRecord?.mode ?? "default";
     const startedAt = Date.now();
     const agentMessageMode = this.options.config.lark.agentMessageMode;
     const active: ActiveTurn = {
@@ -2192,7 +2193,7 @@ export class ConversationManager {
       startedAt,
       model: modelSettings.model,
       modelReasoningEffort: modelSettings.effort,
-      planMode,
+      mode,
       threadTokenUsage,
       reaction: await this.addReactionBestEffort(anchor.messageId),
       card:
@@ -2220,7 +2221,7 @@ export class ConversationManager {
       input: params.input,
       cwd: params.workspace,
       approvalPolicy: "never",
-      planMode: active.planMode,
+      mode: active.mode,
       model: modelSettings.model,
       effort: modelSettings.effort,
       onTurnStarted: (turnId) => this.handleTurnStarted(state, active, turnId),
@@ -2529,15 +2530,15 @@ export class ConversationManager {
     }
   }
 
-  private async setThreadPlanModeBestEffort(
+  private async setThreadModeBestEffort(
     conversationKey: string,
     codexThreadId: string,
-    planMode: boolean
+    mode: CodexThreadMode
   ): Promise<void> {
     try {
-      await this.options.repository.updateCodexThreadPlanMode(conversationKey, codexThreadId, planMode);
+      await this.options.repository.updateCodexThreadMode(conversationKey, codexThreadId, mode);
     } catch (error) {
-      this.log.warn({ error, codexThreadId, planMode }, "failed to update codex thread plan mode");
+      this.log.warn({ error, codexThreadId, mode }, "failed to update codex thread mode");
     }
   }
 
@@ -3527,7 +3528,7 @@ export class ConversationManager {
       stateKey: active.context.stateKey,
       runId: active.runId,
       iconImageKey: this.options.config.lark.iconImageKey,
-      planMode: active.planMode,
+      mode: active.mode,
       waiting: renderWaitingState(active.waiting),
       finalElements,
       mentionOpenIds:

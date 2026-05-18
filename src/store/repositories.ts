@@ -5,6 +5,7 @@ import type Database from "better-sqlite3";
 import { TwinnyError } from "../errors.js";
 import type {
   CodexThreadRecord,
+  CodexThreadMode,
   CodexThreadStatus,
   ConversationResponseMode,
   ConversationRecord,
@@ -55,7 +56,7 @@ interface CodexThreadRow {
   conversation_key: string;
   lark_thread_id: string | null;
   role: RoleName;
-  plan_mode: 0 | 1;
+  mode: CodexThreadMode;
   status: CodexThreadStatus;
   forked_from_thread_id: string | null;
   forked_at: number | null;
@@ -207,7 +208,7 @@ export class ConversationRepository {
   private readonly replaceCodexThreadForLarkThreadStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly updateCodexThreadUsageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly updateCodexThreadCardStatement: Database.Statement<[Record<string, unknown>]>;
-  private readonly updateCodexThreadPlanModeStatement: Database.Statement<[number, number, string, string]>;
+  private readonly updateCodexThreadModeStatement: Database.Statement<[CodexThreadMode, number, string, string]>;
   private readonly updateCodexThreadStatusStatement: Database.Statement<[CodexThreadStatus, number, string, string]>;
   private readonly selectCodexThreadWorkStats: Database.Statement<[string], CodexThreadWorkStatsRow>;
   private readonly insertLarkMessageStatement: Database.Statement<[Record<string, unknown>]>;
@@ -452,9 +453,9 @@ export class ConversationRepository {
         card_message_id = COALESCE(excluded.card_message_id, threads.card_message_id),
         updated_at = excluded.updated_at
     `);
-    this.updateCodexThreadPlanModeStatement = this.db.prepare(`
+    this.updateCodexThreadModeStatement = this.db.prepare(`
       UPDATE threads
-      SET plan_mode = ?,
+      SET mode = ?,
           updated_at = ?
       WHERE conversation_key = ?
         AND thread_id = ?
@@ -859,14 +860,15 @@ export class ConversationRepository {
     return this.requireCodexThreadById(input.codexThreadId);
   }
 
-  updateCodexThreadPlanMode(
+  updateCodexThreadMode(
     conversationKey: string,
     codexThreadId: string,
-    planMode: boolean
+    mode: CodexThreadMode
   ): CodexThreadRecord {
     assertValidConversationKey(conversationKey);
     assertNonEmpty(codexThreadId, "codexThreadId");
-    const result = this.updateCodexThreadPlanModeStatement.run(planMode ? 1 : 0, this.now(), conversationKey, codexThreadId);
+    assertValidCodexThreadMode(mode);
+    const result = this.updateCodexThreadModeStatement.run(mode, this.now(), conversationKey, codexThreadId);
     if (result.changes === 0) {
       throw new TwinnyError(`Codex thread ${codexThreadId} was not found`, "CODEX_THREAD_NOT_FOUND");
     }
@@ -1118,7 +1120,7 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     conversationKey: row.conversation_key,
     larkThreadId: row.lark_thread_id ?? undefined,
     role: row.role,
-    planMode: row.plan_mode === 1,
+    mode: validCodexThreadMode(row.mode) ? row.mode : "default",
     status: validCodexThreadStatus(row.status) ? row.status : "idle",
     forkedFromCodexThreadId: row.forked_from_thread_id ?? undefined,
     forkedAt: row.forked_at ?? undefined,
@@ -1304,6 +1306,16 @@ function assertValidCodexThreadStatus(status: CodexThreadStatus): void {
   if (!validCodexThreadStatus(status)) {
     throw new TwinnyError(`Unsupported Codex thread status: ${status}`, "CODEX_THREAD_STATUS_INVALID");
   }
+}
+
+function assertValidCodexThreadMode(mode: CodexThreadMode): void {
+  if (!validCodexThreadMode(mode)) {
+    throw new TwinnyError(`Unsupported Codex thread mode: ${mode}`, "CODEX_THREAD_MODE_INVALID");
+  }
+}
+
+function validCodexThreadMode(mode: unknown): mode is CodexThreadMode {
+  return mode === "default" || mode === "plan";
 }
 
 function validCodexThreadStatus(status: unknown): status is CodexThreadStatus {

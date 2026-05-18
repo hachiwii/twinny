@@ -28,6 +28,7 @@ import type {
   CodexAgentMessage,
   CodexPlanUpdate,
   CodexRequestUserInputRequest,
+  CodexThreadMode,
   CodexThreadTokenUsageUpdate,
   LarkReactionHandle,
   RoleName,
@@ -294,7 +295,7 @@ function adaptConversationRepository(repository: ConversationRepository) {
     replaceCodexThreadForLarkThread: repository.replaceCodexThreadForLarkThread.bind(repository),
     updateCodexThreadTokenUsage: repository.updateCodexThreadTokenUsage.bind(repository),
     updateCodexThreadCard: repository.updateCodexThreadCard.bind(repository),
-    updateCodexThreadPlanMode: repository.updateCodexThreadPlanMode.bind(repository),
+    updateCodexThreadMode: repository.updateCodexThreadMode.bind(repository),
     updateCodexThreadStatus: repository.updateCodexThreadStatus.bind(repository),
     getCodexThreadWorkStats: repository.getCodexThreadWorkStats.bind(repository),
     insertLarkMessage: repository.insertLarkMessage.bind(repository),
@@ -325,7 +326,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       threadId,
       input,
       cwd,
-      planMode,
+      mode,
       model,
       effort,
       onTurnStarted,
@@ -338,7 +339,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       threadId: string;
       input: string;
       cwd: string;
-      planMode?: boolean;
+      mode?: CodexThreadMode;
       model?: string;
       effort?: string;
       onTurnStarted?: (turnId: string) => Promise<void> | void;
@@ -354,7 +355,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
         threadId,
         text: input,
         cwd,
-        planMode,
+        mode,
         model,
         effort,
         onTurnStarted,

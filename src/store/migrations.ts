@@ -222,6 +222,26 @@ function ensureThreadsSummarySchemaConsistency(db: Database.Database): void {
   ensureTableColumn(db, threadsTable, "reasoning_output_tokens", "reasoning_output_tokens INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(db, threadsTable, "context_tokens", "context_tokens INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(db, threadsTable, "context_window", "context_window INTEGER NOT NULL DEFAULT 0");
+  if (getStoreSchemaVersion(db) >= 12) {
+    const latestThreadColumns = getTableColumns(db, threadsTable);
+    if (!latestThreadColumns.has("mode")) {
+      ensureTableColumn(
+        db,
+        threadsTable,
+        "mode",
+        "mode TEXT NOT NULL DEFAULT 'default' CHECK(mode IN ('default', 'plan'))"
+      );
+      if (latestThreadColumns.has("plan_mode")) {
+        db.exec(`UPDATE ${threadsTable} SET mode = CASE WHEN plan_mode = 1 THEN 'plan' ELSE 'default' END`);
+      }
+    }
+    ensureTableColumn(
+      db,
+      threadsTable,
+      "status",
+      "status TEXT NOT NULL DEFAULT 'idle' CHECK(status IN ('idle', 'working', 'waiting'))"
+    );
+  }
 
   db.exec("DROP INDEX IF EXISTS idx_codex_threads_conversation_lark_thread");
   db.exec("DROP INDEX IF EXISTS idx_conversations_codex_thread_id");
