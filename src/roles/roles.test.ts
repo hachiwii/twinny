@@ -32,7 +32,10 @@ describe("role helpers", () => {
     expect(((document.permissions as TomlTable).twinny_guest as TomlTable).network).toEqual({
       enabled: true,
       mode: "full",
-      allow_local_binding: true
+      allow_local_binding: true,
+      domains: {
+        "*": "allow"
+      }
     });
     expect(((document.permissions as TomlTable).twinny_guest as TomlTable).filesystem).toEqual({
       ":tmpdir": "write"
@@ -68,7 +71,10 @@ describe("role helpers", () => {
     expect(projects[workspace]).toEqual({ trust_level: "trusted", marker: "keep" });
     expect(projects["/tmp/other"]).toEqual({ trust_level: "untrusted" });
     expect(((document.permissions as TomlTable).twinny_guest as TomlTable).network).toMatchObject({
-      allow_local_binding: true
+      allow_local_binding: true,
+      domains: {
+        "*": "allow"
+      }
     });
     expect(((document.permissions as TomlTable).twinny_guest as TomlTable).filesystem).toMatchObject({
       ":tmpdir": "write"
@@ -112,10 +118,60 @@ describe("role helpers", () => {
     expect(((document.permissions as TomlTable).twinny_guest as TomlTable).network).toEqual({
       enabled: true,
       mode: "full",
-      allow_local_binding: true
+      allow_local_binding: true,
+      domains: {
+        "*": "allow"
+      }
     });
     expect(((document.permissions as TomlTable).twinny_guest as TomlTable).filesystem).toEqual({
       ":tmpdir": "write"
+    });
+    expect(validateGuestCodexConfigDocument(document)).toEqual({ ok: true, issues: [] });
+  });
+
+  it("normalizes guest network domains to allow every domain", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "twinny-roles-"));
+    tempDirs.push(tempDir);
+    const codexHome = path.join(tempDir, "codex");
+    const configPath = path.join(codexHome, "config.toml");
+    const workspace = path.join(tempDir, "workspaces", "p2p_ou_guest");
+    await fs.mkdir(codexHome, { recursive: true });
+    await fs.writeFile(
+      configPath,
+      stringify({
+        ...createGuestCodexConfigDocument(),
+        permissions: {
+          twinny_guest: {
+            network: {
+              enabled: true,
+              mode: "full",
+              allow_local_binding: true,
+              domains: {
+                "*.feishu.cn": "allow",
+                "example.com": "deny"
+              }
+            },
+            filesystem: {
+              ":tmpdir": "write"
+            }
+          }
+        },
+        projects: {
+          [workspace]: { trust_level: "trusted" }
+        }
+      }) + "\n"
+    );
+
+    await expect(ensureGuestWorkspaceProjectTrusted(codexHome, workspace)).resolves.toBe(true);
+
+    const document = parse(await fs.readFile(configPath, "utf8")) as TomlTable;
+    expect(((document.permissions as TomlTable).twinny_guest as TomlTable).network).toEqual({
+      enabled: true,
+      mode: "full",
+      allow_local_binding: true,
+      domains: {
+        "*": "allow"
+      }
     });
     expect(validateGuestCodexConfigDocument(document)).toEqual({ ok: true, issues: [] });
   });

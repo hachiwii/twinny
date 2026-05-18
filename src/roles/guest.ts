@@ -17,6 +17,10 @@ export interface GuestSafetyCheck {
 
 export const DEFAULT_GUEST_CODEX_MODEL = "gpt-5.5";
 
+const requiredGuestNetworkDomains: Record<string, "allow"> = {
+  "*": "allow"
+};
+
 const guestConfigWriteLocks = new Map<string, Promise<void>>();
 
 export function createGuestCodexConfigDocument(options: GuestCodexConfigOptions = {}): TomlTable {
@@ -38,7 +42,8 @@ export function createGuestCodexConfigDocument(options: GuestCodexConfigOptions 
         network: {
           enabled: true,
           mode: "full",
-          allow_local_binding: true
+          allow_local_binding: true,
+          domains: { ...requiredGuestNetworkDomains }
         }
       }
     },
@@ -131,6 +136,21 @@ export function validateGuestCodexConfigDocument(document: TomlTable): GuestSafe
     if (networkPermissions.allow_local_binding !== true) {
       issues.push("guest twinny_guest network.allow_local_binding must be true");
     }
+    const domains = networkPermissions.domains;
+    if (!isTomlTable(domains)) {
+      issues.push("guest twinny_guest network.domains must allow all domains");
+    } else {
+      for (const [domain, access] of Object.entries(requiredGuestNetworkDomains)) {
+        if (domains[domain] !== access) {
+          issues.push(`guest twinny_guest network.domains.${domain} must be ${access}`);
+        }
+      }
+      for (const domain of Object.keys(domains)) {
+        if (!(domain in requiredGuestNetworkDomains)) {
+          issues.push(`guest twinny_guest network.domains.${domain} must be removed`);
+        }
+      }
+    }
   }
   const filesystemPermissions = getGuestFilesystemPermissions(document);
   if (!filesystemPermissions) {
@@ -173,6 +193,24 @@ function ensureGuestPermissions(document: TomlTable): boolean {
   if (network.allow_local_binding !== true) {
     network.allow_local_binding = true;
     changed = true;
+  }
+  const existingDomains = network.domains;
+  if (!isTomlTable(existingDomains)) {
+    network.domains = { ...requiredGuestNetworkDomains };
+    changed = true;
+  } else {
+    for (const domain of Object.keys(existingDomains)) {
+      if (!(domain in requiredGuestNetworkDomains)) {
+        delete existingDomains[domain];
+        changed = true;
+      }
+    }
+    for (const [domain, access] of Object.entries(requiredGuestNetworkDomains)) {
+      if (existingDomains[domain] !== access) {
+        existingDomains[domain] = access;
+        changed = true;
+      }
+    }
   }
   return changed;
 }
