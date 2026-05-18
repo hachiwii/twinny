@@ -1674,6 +1674,7 @@ export class ConversationManager {
     active.waiting = undefined;
     await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
     await this.patchAgentCardBestEffort(state, active, "working");
+    this.startAgentCardTimer(state, active);
     waiting.responder.respond(buildRequestUserInputResponse(waiting.request, formValue));
   }
 
@@ -2371,6 +2372,7 @@ export class ConversationManager {
         request,
         responder
       };
+      this.stopAgentCardTimer(active);
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "waiting");
       if (state.pendingBatch.length > 0) {
         await this.cancelActiveTurn(state, { waitForCompletion: true });
@@ -2396,6 +2398,7 @@ export class ConversationManager {
         kind: "plan",
         plan
       };
+      this.stopAgentCardTimer(active);
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "waiting");
       if (state.pendingBatch.length > 0) {
         await this.cancelActiveTurn(state, { waitForCompletion: true });
@@ -3236,7 +3239,13 @@ export class ConversationManager {
     if (!card?.messageId || card.fallbackPlain) {
       return false;
     }
-    const rendered = this.renderAgentCard(state, active, status, undefined, error);
+    const effectiveStatus =
+      status === "working" && active.waiting?.kind === "request_user_input"
+        ? "waiting_input"
+        : status === "working" && active.waiting?.kind === "plan"
+          ? "waiting_plan"
+          : status;
+    const rendered = this.renderAgentCard(state, active, effectiveStatus, undefined, error);
     const serialized = JSON.stringify(rendered);
     if (serialized === card.lastRenderedJson) {
       return true;
@@ -3529,7 +3538,14 @@ export class ConversationManager {
       runId: active.runId,
       iconImageKey: this.options.config.lark.iconImageKey,
       mode: active.mode,
-      waiting: renderWaitingState(active.waiting),
+      waiting:
+        status === "waiting_input" ||
+        status === "waiting_plan" ||
+        status === "interrupted_input" ||
+        status === "interrupted_plan" ||
+        status === "accepted_plan"
+          ? renderWaitingState(active.waiting)
+          : undefined,
       finalElements,
       mentionOpenIds:
         status === "finished" ||

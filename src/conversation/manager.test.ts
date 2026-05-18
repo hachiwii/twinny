@@ -2577,6 +2577,17 @@ describe("ConversationManager", () => {
     });
     expect(repository.updateCodexThreadStatus).toHaveBeenCalledWith("p2p_ou_guest", "thread_1", "waiting");
 
+    vi.mocked(lark.patchCard).mockClear();
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_after_wait", text: "late update" });
+    await waitForExpect(() => {
+      const card = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
+      expect(card).toBeDefined();
+      const serialized = JSON.stringify(card);
+      expect(serialized).toContain("等待交互");
+      expect(serialized).toContain("Choose mode");
+      expect(serialized).not.toContain("工作中...");
+    });
+
     manager.submitCardAction({
       eventId: "event_request_submit",
       operatorOpenId: "ou_guest",
