@@ -98,12 +98,15 @@ export function runStoreMigrations(db: Database.Database, options: RunMigrations
   }
 
   const pending = migrations.filter((migration) => migration.version > currentVersion);
-  if (pending.length === 0) {
-    return currentVersion;
+  if (currentVersion >= 8) {
+    ensureThreadsSummarySchemaConsistency(db);
   }
-
   const migrate = db.transaction(() => {
     let lastVersion = currentVersion;
+    if (pending.length === 0) {
+      return lastVersion;
+    }
+
     for (const migration of pending) {
       if (migration.version !== lastVersion + 1) {
         throw new TwinnyError(
@@ -118,5 +121,96 @@ export function runStoreMigrations(db: Database.Database, options: RunMigrations
     return lastVersion;
   });
 
-  return migrate();
+  const appliedVersion = migrate();
+  if (appliedVersion >= 8) {
+    ensureThreadsSummarySchemaConsistency(db);
+  }
+  return appliedVersion;
+}
+
+type SqliteColumn = {
+  name: string;
+};
+
+function getTableColumns(db: Database.Database, tableName: string): Set<string> {
+  const rows = db.prepare<[], SqliteColumn>(`PRAGMA table_info(${tableName})`).all();
+  return new Set(rows.map((row) => row.name));
+}
+
+function tableExists(db: Database.Database, tableName: string): boolean {
+  return (
+    db.prepare<[string], { name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
+    ).get(tableName) !== undefined
+  );
+}
+
+function ensureTableColumn(
+  db: Database.Database,
+  tableName: string,
+  columnName: string,
+  columnDefinition: string
+): void {
+  const columns = getTableColumns(db, tableName);
+  if (!columns.has(columnName)) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnDefinition}`);
+  }
+}
+
+function ensureThreadsSummarySchemaConsistency(db: Database.Database): void {
+  const hasConversationsTable = tableExists(db, "conversations");
+  if (!hasConversationsTable) {
+    return;
+  }
+
+  const hasThreadsTable = tableExists(db, "threads");
+  const hasCodexThreadsTable = tableExists(db, "codex_threads");
+  if (!hasThreadsTable && !hasCodexThreadsTable) {
+    return;
+  }
+  let threadsTable = hasThreadsTable ? "threads" : "codex_threads";
+
+  if (!hasThreadsTable && hasCodexThreadsTable) {
+    db.exec("ALTER TABLE codex_threads RENAME TO threads");
+    threadsTable = "threads";
+  }
+
+  const conversationColumns = getTableColumns(db, "conversations");
+  const threadsColumns = getTableColumns(db, threadsTable);
+  const larkMessagesColumns = tableExists(db, "lark_messages") ? getTableColumns(db, "lark_messages") : new Set<string>();
+
+  if (conversationColumns.has("codex_thread_id") && !conversationColumns.has("thread_id")) {
+    db.exec("ALTER TABLE conversations RENAME COLUMN codex_thread_id TO thread_id");
+    db.exec("ALTER TABLE conversations RENAME COLUMN codex_thread_has_rollout TO thread_has_rollout");
+  }
+
+  if (threadsColumns.has("codex_thread_id") && !threadsColumns.has("thread_id")) {
+    db.exec(`ALTER TABLE ${threadsTable} RENAME COLUMN codex_thread_id TO thread_id`);
+  }
+
+  if (threadsColumns.has("forked_from_codex_thread_id") && !threadsColumns.has("forked_from_thread_id")) {
+    db.exec(`ALTER TABLE ${threadsTable} RENAME COLUMN forked_from_codex_thread_id TO forked_from_thread_id`);
+  }
+
+  if (larkMessagesColumns.has("codex_thread_id") && !larkMessagesColumns.has("thread_id")) {
+    db.exec("ALTER TABLE lark_messages RENAME COLUMN codex_thread_id TO thread_id");
+  }
+
+  ensureTableColumn(db, threadsTable, "creator_open_id", "creator_open_id TEXT");
+  ensureTableColumn(db, threadsTable, "card_message_id", "card_message_id TEXT");
+  ensureTableColumn(db, threadsTable, "input_tokens", "input_tokens INTEGER NOT NULL DEFAULT 0");
+  ensureTableColumn(db, threadsTable, "output_tokens", "output_tokens INTEGER NOT NULL DEFAULT 0");
+  ensureTableColumn(db, threadsTable, "cached_input_tokens", "cached_input_tokens INTEGER NOT NULL DEFAULT 0");
+  ensureTableColumn(db, threadsTable, "reasoning_output_tokens", "reasoning_output_tokens INTEGER NOT NULL DEFAULT 0");
+  ensureTableColumn(db, threadsTable, "context_tokens", "context_tokens INTEGER NOT NULL DEFAULT 0");
+  ensureTableColumn(db, threadsTable, "context_window", "context_window INTEGER NOT NULL DEFAULT 0");
+
+  db.exec("DROP INDEX IF EXISTS idx_codex_threads_conversation_lark_thread");
+  db.exec("DROP INDEX IF EXISTS idx_conversations_codex_thread_id");
+  db.exec("DROP INDEX IF EXISTS idx_lark_messages_codex_thread_turn");
+  db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_conversation_lark_thread ON threads(conversation_key, lark_thread_id) WHERE lark_thread_id IS NOT NULL"
+  );
+  db.exec("CREATE INDEX IF NOT EXISTS idx_conversations_thread_id ON conversations(thread_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_lark_messages_thread_turn ON lark_messages(thread_id, codex_turn_id)");
 }

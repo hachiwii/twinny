@@ -398,4 +398,83 @@ describe("store migrations", () => {
       db.close();
     }
   });
+
+  it("repairs a legacy version-8 schema that was labeled as upgraded but still stores codex_* thread columns", () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec(`
+        CREATE TABLE conversations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          conversation_key TEXT NOT NULL UNIQUE,
+          type TEXT NOT NULL,
+          chat_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          role TEXT NOT NULL,
+          codex_thread_id TEXT NOT NULL,
+          workspace TEXT NOT NULL,
+          role_codex_home TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          codex_thread_has_rollout INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE codex_threads (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          codex_thread_id TEXT NOT NULL UNIQUE,
+          conversation_key TEXT NOT NULL,
+          lark_thread_id TEXT,
+          role TEXT NOT NULL,
+          forked_from_codex_thread_id TEXT,
+          forked_at INTEGER,
+          total_tokens INTEGER NOT NULL DEFAULT 0,
+          token_usage_json TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE lark_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          lark_message_id TEXT,
+          event_id TEXT NOT NULL,
+          lark_user_id TEXT NOT NULL,
+          lark_group_id TEXT,
+          lark_thread_id TEXT,
+          conversation_key TEXT,
+          codex_thread_id TEXT,
+          codex_turn_id TEXT,
+          route_kind TEXT NOT NULL,
+          status TEXT NOT NULL,
+          text TEXT NOT NULL,
+          lark_create_time INTEGER,
+          received_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          processing_started_at INTEGER,
+          completed_at INTEGER,
+          failed_at INTEGER,
+          cleared_at INTEGER,
+          raw_event_json TEXT
+        );
+        CREATE UNIQUE INDEX idx_conversations_codex_thread_id ON conversations(codex_thread_id);
+        CREATE UNIQUE INDEX idx_codex_threads_conversation_lark_thread ON codex_threads(conversation_key, lark_thread_id);
+        CREATE INDEX idx_lark_messages_codex_thread_turn ON lark_messages(codex_thread_id, codex_turn_id);
+        PRAGMA user_version = 8;
+      `);
+
+      expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
+
+      const conversations = db.prepare<[], TableColumnRow>("PRAGMA table_info(conversations)").all().map((row) => row.name);
+      const threads = db.prepare<[], TableColumnRow>("PRAGMA table_info(threads)").all().map((row) => row.name);
+      const larkMessages = db.prepare<[], TableColumnRow>("PRAGMA table_info(lark_messages)").all().map((row) => row.name);
+
+      expect(conversations).toContain("thread_id");
+      expect(conversations).not.toContain("codex_thread_id");
+      expect(threads).toContain("thread_id");
+      expect(threads).not.toContain("codex_thread_id");
+      expect(threads).toContain("forked_from_thread_id");
+      expect(threads).not.toContain("forked_from_codex_thread_id");
+      expect(larkMessages).toContain("thread_id");
+      expect(larkMessages).not.toContain("codex_thread_id");
+      expect(db.pragma("user_version", { simple: true })).toBe(currentStoreSchemaVersion);
+    } finally {
+      db.close();
+    }
+  });
 });
