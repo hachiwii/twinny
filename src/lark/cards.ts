@@ -272,6 +272,10 @@ function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] 
       ...finishedProcessPanelElements(options.messages)
     ];
     if (options.waiting?.kind === "request_user_input") {
+      if (options.status === "waiting_input") {
+        elements.push(requestUserInputFormElement(options));
+        return elements;
+      }
       elements.push(...requestUserInputElements(options.waiting.questions));
     } else if (options.waiting?.kind === "plan") {
       elements.push(...planElements(options.waiting.planText));
@@ -403,7 +407,8 @@ function waitingButtonsElement(
   primaryAction: TwinnyAgentCardActionValue["action"],
   dangerLabel: string,
   dangerType: string,
-  dangerAction: TwinnyAgentCardActionValue["action"]
+  dangerAction: TwinnyAgentCardActionValue["action"],
+  buttonOptions: { primaryFormSubmit?: boolean; namePrefix?: string } = {}
 ): LarkCardElement {
   const buttons = [
     buttonElement(primaryLabel, primaryType, {
@@ -411,12 +416,17 @@ function waitingButtonsElement(
       action: primaryAction,
       stateKey: options.stateKey,
       runId: options.runId
+    }, {
+      formSubmit: buttonOptions.primaryFormSubmit,
+      name: buttonOptions.namePrefix ? `${buttonOptions.namePrefix}_submit` : undefined
     }),
     buttonElement(dangerLabel, dangerType, {
       twinny: true,
       action: dangerAction,
       stateKey: options.stateKey,
       runId: options.runId
+    }, {
+      name: buttonOptions.namePrefix ? `${buttonOptions.namePrefix}_interrupt` : undefined
     })
   ];
   return {
@@ -431,6 +441,40 @@ function waitingButtonsElement(
       direction: "horizontal",
       vertical_align: "top"
     })),
+    margin: "0px 0px 0px 0px"
+  };
+}
+
+function requestUserInputFormElement(options: RenderTwinnyAgentCardOptions): LarkCardElement {
+  const questions = options.waiting?.kind === "request_user_input" ? options.waiting.questions : [];
+  return {
+    tag: "form",
+    name: "request_user_input",
+    elements: [
+      ...requestUserInputElements(questions),
+      formElapsedElement(options),
+      waitingButtonsElement(options, "提交", "primary_filled", "request_input_submit", "打断", "danger_filled", "request_input_interrupt", {
+        primaryFormSubmit: true,
+        namePrefix: "request_user_input"
+      })
+    ],
+    margin: "0px 0px 0px 0px"
+  };
+}
+
+function formElapsedElement(options: RenderTwinnyAgentCardOptions): LarkCardElement {
+  return {
+    tag: "column_set",
+    columns: [
+      {
+        tag: "column",
+        width: "weighted",
+        weight: 1,
+        elements: [elapsedElement(options.elapsedMs, options.runtimeStats, options.mode)],
+        direction: "vertical",
+        vertical_align: "top"
+      }
+    ],
     margin: "0px 0px 0px 0px"
   };
 }
@@ -454,8 +498,13 @@ function queueModeHintElement(options: RenderTwinnyAgentCardOptions): LarkCardEl
   };
 }
 
-function buttonElement(label: string, type: string, value: TwinnyAgentCardActionValue): LarkCardElement {
-  return {
+function buttonElement(
+  label: string,
+  type: string,
+  value: TwinnyAgentCardActionValue,
+  options: { formSubmit?: boolean; name?: string } = {}
+): LarkCardElement {
+  const element: LarkCardElement = {
     tag: "button",
     text: {
       tag: "plain_text",
@@ -463,14 +512,23 @@ function buttonElement(label: string, type: string, value: TwinnyAgentCardAction
     },
     type,
     width: "default",
-    size: "medium",
-    behaviors: [
-      {
-        type: "callback",
-        value
-      }
-    ]
+    size: "medium"
   };
+  if (options.name) {
+    element.name = options.name;
+  }
+  if (options.formSubmit) {
+    element.action_type = "form_submit";
+    element.value = value;
+    return element;
+  }
+  element.behaviors = [
+    {
+      type: "callback",
+      value
+    }
+  ];
+  return element;
 }
 
 function elapsedElement(

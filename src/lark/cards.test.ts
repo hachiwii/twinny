@@ -76,6 +76,46 @@ describe("renderTwinnyAgentCard", () => {
     expect(findButton(queueCard, "关闭排队")).toMatchObject({ type: "primary" });
   });
 
+  it("submits requestUserInput answers through a form button", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "waiting_input",
+      waiting: {
+        kind: "request_user_input",
+        requestId: "request_1",
+        questions: [
+          {
+            id: "choice",
+            header: "Choose mode",
+            question: "Choose mode",
+            isOther: true,
+            isSecret: false,
+            options: [{ label: "直接实现", description: "按计划改代码并测试。" }]
+          }
+        ]
+      }
+    }));
+    const serialized = JSON.stringify(card);
+
+    expect(serialized).toContain("\"tag\":\"form\"");
+    expect(findButton(card, "提交")).toMatchObject({
+      name: "request_user_input_submit",
+      action_type: "form_submit",
+      value: expect.objectContaining({
+        twinny: true,
+        action: "request_input_submit"
+      })
+    });
+    expect(findButton(card, "打断")).toMatchObject({
+      name: "request_user_input_interrupt",
+      behaviors: [
+        expect.objectContaining({
+          type: "callback",
+          value: expect.objectContaining({ action: "request_input_interrupt" })
+        })
+      ]
+    });
+  });
+
   it("displays combined queue hint when queued messages exist in append mode", () => {
     const card = renderTwinnyAgentCard(createOptions({ queueDepth: 2 }));
     expect(JSON.stringify(card)).toContain("追加模式：新消息将和排队消息一起发送。");

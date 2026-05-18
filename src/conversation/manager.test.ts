@@ -2621,6 +2621,52 @@ describe("ConversationManager", () => {
     turns[0]!.resolve(completed("thread_1", "turn_1"));
   });
 
+  it("starts confirmed plan implementation with the concise Codex prompt", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    vi.mocked(lark.getMessageReadOpenIds).mockResolvedValue([]);
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "draft a plan"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    await turns[0]!.params.onPlanUpdated?.({
+      threadId: "thread_1",
+      turnId: "turn_1",
+      explanation: "Plan ready",
+      plan: [{ step: "Update the implementation", status: "pending" }]
+    });
+
+    await waitForExpect(() => {
+      const card = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
+      expect(card).toBeDefined();
+      expect(JSON.stringify(card)).toContain("确认计划");
+      expect(JSON.stringify(card)).toContain("实现");
+    });
+
+    manager.submitCardAction({
+      eventId: "event_plan_implement",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m1_1",
+      openChatId: "oc_ignored",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "plan_implement",
+        stateKey: "p2p_ou_guest",
+        runId: 1
+      },
+      raw: { event_id: "event_plan_implement" }
+    });
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(turns[1]!.params.input).toBe("Implement this plan");
+
+    turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
   it("uploads SEND_TO_LARK image directives from completed agent messages and embeds them in the Lark post", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-image-"));
     const workspaceRoot = path.join(tempRoot, "workspaces");

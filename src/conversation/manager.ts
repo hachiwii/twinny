@@ -388,6 +388,7 @@ interface ActiveTurn {
   sawAgentMessagePhase?: boolean;
   card?: ActiveTurnCardState;
   waiting?: ActiveTurnWaiting;
+  planUpdatePending?: boolean;
   pendingSteers: PendingMessage[];
   messagesById: Map<string, PendingMessage>;
   messageIds: Set<string>;
@@ -1711,10 +1712,10 @@ export class ConversationManager {
         text: planText,
         raw: action.raw
       },
-      `Implement the confirmed plan.\n\n${planText}`,
+      "Implement this plan",
       { queueBoundary: true }
     );
-    await this.startTurnForMessages(state, active.context, [pending]);
+    await this.startTurnForMessages(state, active.context, [pending], "Implement this plan");
   }
 
   private async recordMenuActionBestEffort(
@@ -2094,7 +2095,8 @@ export class ConversationManager {
   private async startTurnForMessages(
     state: ConversationState,
     context: MessageContext,
-    messages: PendingMessage[]
+    messages: PendingMessage[],
+    inputOverride?: string
   ): Promise<void> {
     if (messages.length === 0) {
       return;
@@ -2109,7 +2111,7 @@ export class ConversationManager {
       role: resolved.role,
       threadId: resolved.threadId,
       workspace: resolved.workspace,
-      input: messages.map(formatPendingMessageForCodex).join("\n")
+      input: inputOverride ?? messages.map(formatPendingMessageForCodex).join("\n")
     });
   }
 
@@ -2390,14 +2392,17 @@ export class ConversationManager {
     active: ActiveTurn,
     plan: CodexPlanUpdate
   ): Promise<void> {
+    active.planUpdatePending = true;
     await state.controlQueue.enqueue(async () => {
       if (state.active !== active || active.cancelRequested) {
+        active.planUpdatePending = false;
         return;
       }
       active.waiting = {
         kind: "plan",
         plan
       };
+      active.planUpdatePending = false;
       this.stopAgentCardTimer(active);
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "waiting");
       if (state.pendingBatch.length > 0) {
@@ -2421,7 +2426,11 @@ export class ConversationManager {
       this.stopAgentCardTimer(active);
       return;
     }
-    if (!active.cancelRequested && active.completedStatus === "completed" && active.waiting?.kind === "plan") {
+    if (
+      !active.cancelRequested &&
+      active.completedStatus === "completed" &&
+      (active.waiting?.kind === "plan" || active.planUpdatePending)
+    ) {
       await this.clearReactionBestEffort(active);
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "waiting");
       this.stopAgentCardTimer(active);

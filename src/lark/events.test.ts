@@ -139,6 +139,10 @@ describe("LarkEventConsumer", () => {
         open_chat_id: "oc_group",
         action: {
           tag: "button",
+          form_value: {
+            answer_choice_select: "直接实现",
+            answer_choice_other: ""
+          },
           value: {
             twinny: true,
             action: "stop",
@@ -161,6 +165,10 @@ describe("LarkEventConsumer", () => {
         action: "stop",
         stateKey: "p2p_ou_user",
         runId: 1
+      },
+      formValue: {
+        answer_choice_select: "直接实现",
+        answer_choice_other: ""
       },
       raw
     });
