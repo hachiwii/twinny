@@ -947,7 +947,12 @@ export class ConversationManager {
       return hasBotMention ? { kind: "unauthorized" } : { kind: "ignored" };
     }
 
-    if (conversation.responseMode === "at" && !hasBotMention && !(parsed.kind === "new_topic" && senderRole === "owner")) {
+    if (
+      conversation.responseMode === "at" &&
+      !hasBotMention &&
+      !context.larkThreadId &&
+      !(parsed.kind === "new_topic" && senderRole === "owner")
+    ) {
       return { kind: "ignored" };
     }
     return { kind: "allow", text, parsed, conversation };

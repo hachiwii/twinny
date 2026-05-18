@@ -59,8 +59,8 @@ describe("store migrations", () => {
         .all()
         .map((row) => row.name);
       expect(indexes).toEqual([
-        "idx_conversations_thread_id",
         "idx_conversations_role",
+        "idx_conversations_thread_id",
         "idx_conversations_type_chat_id",
         "sqlite_autoindex_conversations_1"
       ]);
@@ -139,8 +139,8 @@ describe("store migrations", () => {
         .map((row) => row.name);
       expect(messageIndexes).toEqual([
         "idx_lark_messages_card_action_event_id",
-        "idx_lark_messages_thread_turn",
-        "idx_lark_messages_lark_message_id"
+        "idx_lark_messages_lark_message_id",
+        "idx_lark_messages_thread_turn"
       ]);
     } finally {
       db.close();

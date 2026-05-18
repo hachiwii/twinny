@@ -1037,7 +1037,7 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         threadId: "thread_new_topic",
-        input: wrappedMessage("topic first", "g_topic_msg")
+        input: wrappedMessage("topic first", "g_topic_msg", "ou_owner")
       })
     );
     expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith("group_oc_group", cardThreadId);
@@ -1046,8 +1046,7 @@ describe("ConversationManager", () => {
         cardMessageId,
         expect.objectContaining({
           header: expect.objectContaining({
-            template: "green",
-            title: { tag: "plain_text", content: "已完成" }
+            title: { tag: "plain_text", content: "新会话" }
           })
         })
       )
@@ -2968,8 +2967,8 @@ function fetchedLarkMessage(messageId: string, messageType: string, content: str
   };
 }
 
-function wrappedMessage(text: string, messageId = "m1"): string {
-  return `<lark_message lark_message_id="${messageId}" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n${text}\n</lark_message>`;
+function wrappedMessage(text: string, messageId = "m1", senderOpenId = "ou_guest"): string {
+  return `<lark_message lark_message_id="${messageId}" timestamp="1234" sender_ouid="${senderOpenId}" sender_name="Guest User">\n${text}\n</lark_message>`;
 }
 
 function completed(
