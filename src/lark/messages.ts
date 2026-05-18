@@ -73,6 +73,26 @@ export class LarkMessageSender {
     };
   }
 
+  async replyRawMessage(
+    messageId: string,
+    message: { messageType: string; content: unknown },
+    options: TextMessageOptions = {}
+  ): Promise<LarkSendMessageResult> {
+    const raw = await this.openApiClient.request(`/im/v1/messages/${encodePathSegment(messageId)}/reply`, {
+      method: "POST",
+      signal: options.signal,
+      body: {
+        content: serializeRawMessageContent(message.content),
+        msg_type: message.messageType,
+        ...(options.uuid ? { uuid: options.uuid } : {})
+      }
+    });
+    return {
+      messageId: extractMessageId(raw),
+      raw
+    };
+  }
+
   async replyMarkdown(
     messageId: string,
     markdown: string,
@@ -316,6 +336,10 @@ function extractMessageId(raw: unknown): string | undefined {
   const data = getData(raw);
   const messageId = data.message_id;
   return typeof messageId === "string" ? messageId : undefined;
+}
+
+function serializeRawMessageContent(content: unknown): string {
+  return typeof content === "string" ? content : JSON.stringify(content ?? {});
 }
 
 function createPostContent(content: LarkPostParagraph[]) {

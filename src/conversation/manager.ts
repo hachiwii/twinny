@@ -247,6 +247,10 @@ export interface LarkResponder {
   removeReaction(handle: LarkReactionHandle): Promise<void>;
   replyText(messageId: string, text: string): Promise<void>;
   replyMarkdown(messageId: string, markdown: string): Promise<{ messageId?: string } | void>;
+  replyRawMessage(
+    messageId: string,
+    message: { messageType: string; content: unknown }
+  ): Promise<{ messageId?: string } | void>;
   replyPost(
     messageId: string,
     content: Array<Array<{ tag: "md"; text: string } | { tag: "img"; image_key: string } | { tag: "media"; file_key: string }>>
@@ -817,7 +821,6 @@ export class ConversationManager {
       return;
     }
 
-    const proxyDisplayText = routed.text;
     message.text = routed.text;
     const parsed = routed.parsed;
     if (parsed.kind === "activate") {
@@ -827,7 +830,7 @@ export class ConversationManager {
 
     await this.prepareMessageResources(context.conversationKey, message);
     const preparedParsed: ParsedCommand = parsed.kind === "message" ? { kind: "message", text: message.text } : parsed;
-    if (await this.redirectProjectTopicMessageIfNeeded(context, message, routed.conversation, proxyDisplayText)) {
+    if (await this.redirectProjectTopicMessageIfNeeded(context, message, preparedParsed, routed.conversation)) {
       return;
     }
     await this.recordIncomingMessage(state, context, message, preparedParsed);
@@ -902,10 +905,13 @@ export class ConversationManager {
   private async redirectProjectTopicMessageIfNeeded(
     context: MessageContext,
     message: IncomingLarkMessage,
-    conversation: ConversationRecord | null | undefined,
-    displayText: string
+    parsed: ParsedCommand,
+    conversation: ConversationRecord | null | undefined
   ): Promise<boolean> {
     if (conversation?.type !== "project" || !context.larkThreadId) {
+      return false;
+    }
+    if (isTextOrPostMessage(message) && parsed.kind !== "message") {
       return false;
     }
 
@@ -931,7 +937,7 @@ export class ConversationManager {
       throw new TwinnyError("Project topic replacement was not created", "LARK_TOPIC_CREATE_FAILED");
     }
 
-    const proxyMessageId = await this.sendProjectTopicProxyMessage(topic.cardMessageId, message, displayText);
+    const proxyMessageId = await this.sendProjectTopicProxyMessage(topic.cardMessageId, message);
     await this.recallProjectTopicOriginalBestEffort(message.messageId);
 
     const proxyContext = createProjectTopicProxyContext(context, topic.larkThreadId);
@@ -945,13 +951,9 @@ export class ConversationManager {
 
   private async sendProjectTopicProxyMessage(
     anchorMessageId: string,
-    message: IncomingLarkMessage,
-    displayText: string
+    message: IncomingLarkMessage
   ): Promise<string> {
-    const result = await this.options.lark.replyMarkdown(
-      anchorMessageId,
-      formatProjectTopicProxyMessage(message, displayText)
-    );
+    const result = await this.options.lark.replyRawMessage(anchorMessageId, rawMessageForLarkReply(message));
     const proxyMessageId = nonEmptyString(result?.messageId);
     if (!proxyMessageId) {
       throw new TwinnyError("Lark project topic proxy response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
@@ -3527,6 +3529,37 @@ function createProjectTopicProxyMessage(
   };
 }
 
+function isTextOrPostMessage(message: IncomingLarkMessage): boolean {
+  const messageType = message.messageType.toLowerCase();
+  return messageType === "text" || messageType === "post";
+}
+
+function rawMessageForLarkReply(message: IncomingLarkMessage): { messageType: string; content: unknown } {
+  const rawMessage = rawLarkMessageRecord(message.raw);
+  const messageType = nonEmptyString(
+    rawStringField(rawMessage, "message_type") ?? rawStringField(rawMessage, "msg_type") ?? message.messageType
+  );
+  const body = isRecord(rawMessage?.body) ? rawMessage.body : undefined;
+  const content = rawMessage?.content ?? body?.content;
+  if (!messageType || content === undefined) {
+    throw new TwinnyError("Project topic proxy message raw content is missing", "LARK_MESSAGE_MALFORMED");
+  }
+  return { messageType, content };
+}
+
+function rawLarkMessageRecord(raw: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(raw)) {
+    return undefined;
+  }
+  const event = isRecord(raw.event) ? raw.event : raw;
+  return isRecord(event.message) ? event.message : event;
+}
+
+function rawStringField(record: Record<string, unknown> | undefined, field: string): string | undefined {
+  const value = record?.[field];
+  return typeof value === "string" ? value : undefined;
+}
+
 function createBotMenuContext(operatorOpenId: string): MessageContext {
   const conversationKey = conversationKeyForP2p(operatorOpenId);
   return {
@@ -3604,12 +3637,6 @@ function stripBotMention(text: string, message: IncomingLarkMessage, botOpenId: 
     }
   }
   return stripped.trimStart();
-}
-
-function formatProjectTopicProxyMessage(message: IncomingLarkMessage, displayText: string): string {
-  const sender = `<at id=${message.senderOpenId}></at>`;
-  const body = displayText.trim() || "(空消息)";
-  return `来自 ${sender} 的消息：\n${body}`;
 }
 
 function helpTextFor(message: IncomingLarkMessage, context: MessageContext, config: TwinnyConfig): string {

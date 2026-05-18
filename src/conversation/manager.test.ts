@@ -1172,14 +1172,19 @@ describe("ConversationManager", () => {
       messageId: "card_project_1",
       raw: { data: { thread_id: "bot_topic_1" } }
     });
-    vi.mocked(lark.replyMarkdown).mockResolvedValueOnce({ messageId: "proxy_project_1" });
+    vi.mocked(lark.replyRawMessage).mockResolvedValueOnce({ messageId: "proxy_project_1" });
     const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
 
     manager.submitIncoming(groupMessage("user_topic_root", "please handle this", {
       senderOpenId: "ou_guest",
       senderName: "Guest User",
       chatType: "topic_group",
-      larkThreadId: "user_topic_1"
+      larkThreadId: "user_topic_1",
+      raw: rawReceiveEvent("user_topic_root", "please handle this", {
+        chat_id: "oc_group",
+        chat_type: "topic_group",
+        thread_id: "user_topic_1"
+      })
     }));
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
@@ -1193,10 +1198,14 @@ describe("ConversationManager", () => {
       }),
       { uuid: expect.stringMatching(UUID_PATTERN) }
     );
-    expect(lark.replyMarkdown).toHaveBeenCalledWith(
+    expect(lark.replyRawMessage).toHaveBeenCalledWith(
       "card_project_1",
-      "来自 <at id=ou_guest></at> 的消息：\nplease handle this"
+      {
+        messageType: "text",
+        content: JSON.stringify({ text: "please handle this" })
+      }
     );
+    expect(lark.replyMarkdown).not.toHaveBeenCalledWith("card_project_1", expect.stringContaining("来自"));
     expect(lark.recallMessage).toHaveBeenCalledWith("user_topic_root");
     expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
       conversationKey: "group_oc_group",
@@ -1217,7 +1226,11 @@ describe("ConversationManager", () => {
         routeKind: "message",
         status: "processing",
         text: "please handle this",
-        rawEventJson: "{}"
+        rawEventJson: JSON.stringify(rawReceiveEvent("user_topic_root", "please handle this", {
+          chat_id: "oc_group",
+          chat_type: "topic_group",
+          thread_id: "user_topic_1"
+        }))
       })
     );
     expect(repository.getLarkMessageById("user_topic_root")).toBeUndefined();
@@ -1233,6 +1246,40 @@ describe("ConversationManager", () => {
       expect.objectContaining({
         conversationKey: "group_oc_group",
         larkThreadId: "user_topic_1"
+      })
+    );
+  });
+
+  it("handles slash commands in new project topics without proxying them", async () => {
+    const row = groupConversationRecord({
+      type: "project",
+      role: "owner",
+      responseMode: "all",
+      codexThreadId: "thread_project"
+    });
+    const { repository } = createRepository(row);
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("user_topic_status", "/status", {
+      senderOpenId: "ou_owner",
+      senderName: "Owner",
+      chatType: "topic_group",
+      larkThreadId: "user_topic_cmd"
+    }));
+
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("user_topic_status", expect.stringContaining("Conversation Key: group_oc_group")));
+    expect(lark.sendCardToChatId).not.toHaveBeenCalled();
+    expect(lark.replyRawMessage).not.toHaveBeenCalled();
+    expect(lark.recallMessage).not.toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "user_topic_status",
+        larkThreadId: "user_topic_cmd",
+        routeKind: "control_message",
+        text: "/status"
       })
     );
   });
@@ -2799,6 +2846,7 @@ function createLarkResponder(): LarkResponder {
     removeReaction: vi.fn(async () => undefined),
     replyText: vi.fn(async () => undefined),
     replyMarkdown: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
+    replyRawMessage: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     replyPost: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     replyFile: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     sendTextToOpenId: vi.fn(async () => undefined),
