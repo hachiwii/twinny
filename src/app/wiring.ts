@@ -398,7 +398,7 @@ function adaptLarkSender(
       chatId: string,
       card: Parameters<LarkMessageSender["sendInteractiveCardToChatId"]>[1],
       options?: { uuid?: string }
-    ): Promise<{ messageId?: string }> => {
+    ) => {
       return sender.sendInteractiveCardToChatId(chatId, card, options);
     },
     replyCard: async (messageId: string, card: Parameters<LarkMessageSender["replyInteractiveCard"]>[1]): Promise<{ messageId?: string }> => {

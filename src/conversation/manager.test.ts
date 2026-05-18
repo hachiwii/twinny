@@ -909,7 +909,7 @@ describe("ConversationManager", () => {
       conversationKey: "group_oc_group",
       codexThreadId: "thread_new_session",
       role: "owner",
-      larkThreadId: "card_oc_group_1",
+      larkThreadId: undefined,
       creatorOpenId: "ou_owner",
       cardMessageId: "card_oc_group_1"
     });
@@ -966,7 +966,7 @@ describe("ConversationManager", () => {
       conversationKey: "group_oc_group",
       codexThreadId: "thread_new_topic",
       role: "owner",
-      larkThreadId: "card_oc_group_1",
+      larkThreadId: undefined,
       creatorOpenId: "ou_owner",
       cardMessageId: "card_oc_group_1"
     });
@@ -997,20 +997,11 @@ describe("ConversationManager", () => {
     const lark = createLarkResponder();
     const cardMessageId = "card_oc_group_1";
     const cardThreadId = "topic_thread_1";
-    const larkMessages = createLarkMessageReader({
-      [cardMessageId]: {
-        message_id: cardMessageId,
-        thread_id: cardThreadId,
-        create_time: "1234",
-        chat_id: "oc_group",
-        chat_type: "topic_group",
-        msg_type: "interactive",
-        body: {
-          content: "{}"
-        }
-      }
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: cardMessageId,
+      raw: { data: { thread_id: cardThreadId } }
     });
-    const manager = createManager({ repository, codex, lark, larkMessages });
+    const manager = createManager({ repository, codex, lark });
 
     manager.submitIncoming(groupMessage("g_new_topic", "/new_topic", {
       senderOpenId: "ou_owner",
@@ -1027,7 +1018,6 @@ describe("ConversationManager", () => {
         cardMessageId: "card_oc_group_1"
       })
     );
-    expect(larkMessages.getMessage).toHaveBeenCalledWith(cardMessageId);
 
     manager.submitIncoming(groupMessage("g_topic_msg", "topic first", {
       senderOpenId: "ou_owner",
@@ -2558,7 +2548,7 @@ function createLarkResponder(): LarkResponder {
     replyPost: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     replyFile: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     sendTextToOpenId: vi.fn(async () => undefined),
-    sendCardToChatId: vi.fn(async (chatId) => ({ messageId: `card_${chatId}_${++markdownReplyCount}` })),
+    sendCardToChatId: vi.fn(async (chatId) => ({ messageId: `card_${chatId}_${++markdownReplyCount}`, raw: {} })),
     replyCard: vi.fn(async (messageId) => ({ messageId: `card_${messageId}_${++markdownReplyCount}` })),
     patchCard: vi.fn(async (messageId) => ({ messageId })),
     recallMessage: vi.fn(async () => undefined)

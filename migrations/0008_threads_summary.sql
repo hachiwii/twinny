@@ -1,5 +1,23 @@
 ALTER TABLE codex_threads RENAME TO threads;
 
+-- thread_id is Codex thread id for this conversation
+ALTER TABLE conversations
+RENAME COLUMN codex_thread_id TO thread_id;
+
+ALTER TABLE conversations
+RENAME COLUMN codex_thread_has_rollout TO thread_has_rollout;
+
+-- thread_id is Codex thread id
+ALTER TABLE threads
+RENAME COLUMN codex_thread_id TO thread_id;
+
+ALTER TABLE threads
+RENAME COLUMN forked_from_codex_thread_id TO forked_from_thread_id;
+
+-- thread_id is Codex thread id associated with this message
+ALTER TABLE lark_messages
+RENAME COLUMN codex_thread_id TO thread_id;
+
 ALTER TABLE threads
 ADD COLUMN creator_open_id TEXT;
 
@@ -26,9 +44,16 @@ ADD COLUMN context_window INTEGER NOT NULL DEFAULT 0;
 
 DROP INDEX IF EXISTS idx_codex_threads_conversation_lark_thread;
 
+DROP INDEX IF EXISTS idx_conversations_codex_thread_id;
+
+DROP INDEX IF EXISTS idx_lark_messages_codex_thread_turn;
+
 CREATE UNIQUE INDEX idx_threads_conversation_lark_thread
 ON threads(conversation_key, lark_thread_id)
 WHERE lark_thread_id IS NOT NULL;
 
-CREATE INDEX idx_lark_messages_codex_thread_turn
-ON lark_messages(codex_thread_id, codex_turn_id);
+CREATE INDEX idx_conversations_thread_id
+ON conversations(thread_id);
+
+CREATE INDEX idx_lark_messages_thread_turn
+ON lark_messages(thread_id, codex_turn_id);

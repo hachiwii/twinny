@@ -40,6 +40,7 @@ import type {
   LarkChatMode,
   LarkGroupMessageType
 } from "../types.js";
+import type { LarkSendMessageResult } from "../lark/types.js";
 import { SerialQueue } from "./queue.js";
 import {
   conversationKeyForChat,
@@ -263,7 +264,11 @@ export interface LarkResponder {
   ): Promise<{ messageId?: string } | void>;
   replyFile(messageId: string, fileKey: string): Promise<{ messageId?: string } | void>;
   sendTextToOpenId(openId: string, text: string): Promise<void>;
-  sendCardToChatId(chatId: string, card: LarkCardJson, options?: { uuid?: string }): Promise<{ messageId?: string } | void>;
+  sendCardToChatId(
+    chatId: string,
+    card: LarkCardJson,
+    options?: { uuid?: string }
+  ): Promise<LarkSendMessageResult | void>;
   replyCard(messageId: string, card: LarkCardJson): Promise<{ messageId?: string } | void>;
   patchCard(messageId: string, card: LarkCardJson): Promise<{ messageId?: string } | void>;
   recallMessage(messageId: string): Promise<void>;
@@ -1324,7 +1329,7 @@ export class ConversationManager {
     if (!cardMessageId) {
       throw new TwinnyError("Lark new-session card response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
     }
-    const cardThreadId = await this.getLarkMessageThreadId(cardMessageId) ?? cardMessageId;
+    const cardThreadId = extractLarkMessageThreadId(result?.raw);
     await this.options.repository.updateCodexThreadCard({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
@@ -1333,19 +1338,6 @@ export class ConversationManager {
       creatorOpenId: request.operatorOpenId,
       cardMessageId
     });
-  }
-
-  private async getLarkMessageThreadId(messageId: string): Promise<string | undefined> {
-    if (!this.options.larkMessages) {
-      return undefined;
-    }
-    try {
-      const message = await this.options.larkMessages.getMessage(messageId);
-      return extractLarkMessageThreadId(message);
-    } catch (error) {
-      this.log.warn({ error, messageId }, "failed to fetch sent card message thread id");
-      return undefined;
-    }
   }
 
   private async handleDeactivateCommand(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
@@ -3947,22 +3939,10 @@ function extractLarkMessageThreadId(raw: unknown): string | undefined {
     return undefined;
   }
 
-  const event = isRecord(raw.event) ? raw.event : raw;
-  const message = isRecord(event.message) ? event.message : event;
-  const candidates = [message, event, raw];
-  for (const source of candidates) {
-    const threadId = source.thread_id;
-    if (typeof threadId === "string" && threadId.trim()) {
-      return threadId.trim();
-    }
-    const rootId = source.root_id;
-    if (typeof rootId === "string" && rootId.trim()) {
-      return rootId.trim();
-    }
-    const parentId = source.parent_id;
-    if (typeof parentId === "string" && parentId.trim()) {
-      return parentId.trim();
-    }
+  const data = isRecord(raw.data) ? raw.data : undefined;
+  const threadId = data?.thread_id;
+  if (typeof threadId === "string" && threadId.trim()) {
+    return threadId.trim();
   }
   return undefined;
 }

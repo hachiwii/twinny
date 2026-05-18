@@ -42,12 +42,12 @@ describe("store migrations", () => {
         { name: "chat_id", type: "TEXT", notnull: 1, pk: 0 },
         { name: "name", type: "TEXT", notnull: 1, pk: 0 },
         { name: "role", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "codex_thread_id", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "thread_id", type: "TEXT", notnull: 1, pk: 0 },
         { name: "workspace", type: "TEXT", notnull: 1, pk: 0 },
         { name: "role_codex_home", type: "TEXT", notnull: 1, pk: 0 },
         { name: "created_at", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 },
-        { name: "codex_thread_has_rollout", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "thread_has_rollout", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "response_mode", type: "TEXT", notnull: 1, pk: 0 },
         { name: "chat_mode", type: "TEXT", notnull: 0, pk: 0 }
       ]);
@@ -59,7 +59,7 @@ describe("store migrations", () => {
         .all()
         .map((row) => row.name);
       expect(indexes).toEqual([
-        "idx_conversations_codex_thread_id",
+        "idx_conversations_thread_id",
         "idx_conversations_role",
         "idx_conversations_type_chat_id",
         "sqlite_autoindex_conversations_1"
@@ -73,11 +73,11 @@ describe("store migrations", () => {
       }));
       expect(threadColumns).toEqual([
         { name: "id", type: "INTEGER", notnull: 0, pk: 1 },
-        { name: "codex_thread_id", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "thread_id", type: "TEXT", notnull: 1, pk: 0 },
         { name: "conversation_key", type: "TEXT", notnull: 1, pk: 0 },
         { name: "lark_thread_id", type: "TEXT", notnull: 0, pk: 0 },
         { name: "role", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "forked_from_codex_thread_id", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "forked_from_thread_id", type: "TEXT", notnull: 0, pk: 0 },
         { name: "forked_at", type: "INTEGER", notnull: 0, pk: 0 },
         { name: "total_tokens", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "token_usage_json", type: "TEXT", notnull: 1, pk: 0 },
@@ -117,7 +117,7 @@ describe("store migrations", () => {
         { name: "lark_group_id", type: "TEXT", notnull: 0, pk: 0 },
         { name: "lark_thread_id", type: "TEXT", notnull: 0, pk: 0 },
         { name: "conversation_key", type: "TEXT", notnull: 0, pk: 0 },
-        { name: "codex_thread_id", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "thread_id", type: "TEXT", notnull: 0, pk: 0 },
         { name: "codex_turn_id", type: "TEXT", notnull: 0, pk: 0 },
         { name: "route_kind", type: "TEXT", notnull: 1, pk: 0 },
         { name: "status", type: "TEXT", notnull: 1, pk: 0 },
@@ -139,7 +139,7 @@ describe("store migrations", () => {
         .map((row) => row.name);
       expect(messageIndexes).toEqual([
         "idx_lark_messages_card_action_event_id",
-        "idx_lark_messages_codex_thread_turn",
+        "idx_lark_messages_thread_turn",
         "idx_lark_messages_lark_message_id"
       ]);
     } finally {

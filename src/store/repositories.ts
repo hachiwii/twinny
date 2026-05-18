@@ -26,8 +26,8 @@ interface ConversationRow {
   chat_mode: LarkChatMode | null;
   response_mode: ConversationResponseMode;
   role: RoleName;
-  codex_thread_id: string;
-  codex_thread_has_rollout: 0 | 1;
+  thread_id: string;
+  thread_has_rollout: 0 | 1;
   workspace: string;
   role_codex_home: string;
   created_at: number;
@@ -52,11 +52,11 @@ interface InsertConversationParams {
 
 interface CodexThreadRow {
   id: number;
-  codex_thread_id: string;
+  thread_id: string;
   conversation_key: string;
   lark_thread_id: string | null;
   role: RoleName;
-  forked_from_codex_thread_id: string | null;
+  forked_from_thread_id: string | null;
   forked_at: number | null;
   creator_open_id: string | null;
   card_message_id: string | null;
@@ -85,7 +85,7 @@ interface LarkMessageRow {
   lark_group_id: string | null;
   lark_thread_id: string | null;
   conversation_key: string | null;
-  codex_thread_id: string | null;
+  thread_id: string | null;
   codex_turn_id: string | null;
   route_kind: LarkMessageRouteKind;
   status: LarkMessageStatus;
@@ -247,8 +247,8 @@ export class ConversationRepository {
         chat_mode,
         response_mode,
         role,
-        codex_thread_id,
-        codex_thread_has_rollout,
+        thread_id,
+        thread_has_rollout,
         workspace,
         role_codex_home,
         created_at,
@@ -276,7 +276,7 @@ export class ConversationRepository {
       SELECT * FROM conversations WHERE type = ? AND chat_id = ?
     `);
     this.selectByCodexThreadId = this.db.prepare(`
-      SELECT * FROM conversations WHERE codex_thread_id = ?
+      SELECT * FROM conversations WHERE thread_id = ?
     `);
     this.selectAll = this.db.prepare(`
       SELECT * FROM conversations ORDER BY id ASC
@@ -291,8 +291,8 @@ export class ConversationRepository {
     `);
     this.updateThread = this.db.prepare(`
       UPDATE conversations
-      SET codex_thread_id = ?,
-          codex_thread_has_rollout = ?,
+      SET thread_id = ?,
+          thread_has_rollout = ?,
           role = ?,
           role_codex_home = ?,
           workspace = ?,
@@ -301,21 +301,21 @@ export class ConversationRepository {
     `);
     this.markRollout = this.db.prepare(`
       UPDATE conversations
-      SET codex_thread_has_rollout = 1,
+      SET thread_has_rollout = 1,
           updated_at = ?
       WHERE conversation_key = ?
-        AND codex_thread_id = ?
+        AND thread_id = ?
     `);
     this.deleteByKey = this.db.prepare(`
       DELETE FROM conversations WHERE conversation_key = ?
     `);
     this.upsertCodexThreadStatement = this.db.prepare(`
       INSERT INTO threads (
-        codex_thread_id,
+        thread_id,
         conversation_key,
         lark_thread_id,
         role,
-        forked_from_codex_thread_id,
+        forked_from_thread_id,
         forked_at,
         total_tokens,
         token_usage_json,
@@ -333,16 +333,16 @@ export class ConversationRepository {
         @createdAt,
         @updatedAt
       )
-      ON CONFLICT(codex_thread_id) DO UPDATE SET
+      ON CONFLICT(thread_id) DO UPDATE SET
         conversation_key = excluded.conversation_key,
         lark_thread_id = COALESCE(excluded.lark_thread_id, threads.lark_thread_id),
         role = excluded.role,
-        forked_from_codex_thread_id = COALESCE(excluded.forked_from_codex_thread_id, threads.forked_from_codex_thread_id),
+        forked_from_thread_id = COALESCE(excluded.forked_from_thread_id, threads.forked_from_thread_id),
         forked_at = COALESCE(excluded.forked_at, threads.forked_at),
         updated_at = excluded.updated_at
     `);
     this.selectCodexThreadById = this.db.prepare(`
-      SELECT * FROM threads WHERE codex_thread_id = ?
+      SELECT * FROM threads WHERE thread_id = ?
     `);
     this.selectCodexThreadByConversationAndLarkThread = this.db.prepare(`
       SELECT * FROM threads
@@ -351,7 +351,7 @@ export class ConversationRepository {
     `);
     this.replaceCodexThreadForLarkThreadStatement = this.db.prepare(`
       UPDATE threads
-      SET codex_thread_id = @codexThreadId,
+      SET thread_id = @codexThreadId,
           role = @role,
           input_tokens = 0,
           output_tokens = 0,
@@ -367,7 +367,7 @@ export class ConversationRepository {
     `);
     this.updateCodexThreadUsageStatement = this.db.prepare(`
       INSERT INTO threads (
-        codex_thread_id,
+        thread_id,
         conversation_key,
         lark_thread_id,
         role,
@@ -397,7 +397,7 @@ export class ConversationRepository {
         @createdAt,
         @updatedAt
       )
-      ON CONFLICT(codex_thread_id) DO UPDATE SET
+      ON CONFLICT(thread_id) DO UPDATE SET
         conversation_key = excluded.conversation_key,
         role = excluded.role,
         input_tokens = excluded.input_tokens,
@@ -412,7 +412,7 @@ export class ConversationRepository {
     `);
     this.updateCodexThreadCardStatement = this.db.prepare(`
       INSERT INTO threads (
-        codex_thread_id,
+        thread_id,
         conversation_key,
         lark_thread_id,
         role,
@@ -430,7 +430,7 @@ export class ConversationRepository {
         @createdAt,
         @updatedAt
       )
-      ON CONFLICT(codex_thread_id) DO UPDATE SET
+      ON CONFLICT(thread_id) DO UPDATE SET
         conversation_key = excluded.conversation_key,
         lark_thread_id = COALESCE(excluded.lark_thread_id, threads.lark_thread_id),
         role = excluded.role,
@@ -452,7 +452,7 @@ export class ConversationRepository {
           MIN(processing_started_at) AS started_at,
           MAX(COALESCE(completed_at, failed_at, cleared_at)) AS terminal_at
         FROM lark_messages
-        WHERE codex_thread_id = ?
+        WHERE thread_id = ?
           AND codex_turn_id IS NOT NULL
           AND processing_started_at IS NOT NULL
         GROUP BY codex_turn_id
@@ -466,7 +466,7 @@ export class ConversationRepository {
         lark_group_id,
         lark_thread_id,
         conversation_key,
-        codex_thread_id,
+        thread_id,
         codex_turn_id,
         route_kind,
         status,
@@ -518,7 +518,7 @@ export class ConversationRepository {
       UPDATE lark_messages
       SET status = 'processing',
           conversation_key = COALESCE(?, conversation_key),
-          codex_thread_id = COALESCE(?, codex_thread_id),
+          thread_id = COALESCE(?, thread_id),
           codex_turn_id = COALESCE(?, codex_turn_id),
           processing_started_at = COALESCE(processing_started_at, ?),
           updated_at = ?
@@ -528,7 +528,7 @@ export class ConversationRepository {
       UPDATE lark_messages
       SET route_kind = 'queued_message',
           status = 'queued',
-          codex_thread_id = NULL,
+          thread_id = NULL,
           codex_turn_id = NULL,
           updated_at = ?
       WHERE lark_message_id = ?
@@ -552,7 +552,7 @@ export class ConversationRepository {
       UPDATE lark_messages
       SET status = 'steered',
           conversation_key = COALESCE(?, conversation_key),
-          codex_thread_id = COALESCE(?, codex_thread_id),
+          thread_id = COALESCE(?, thread_id),
           codex_turn_id = COALESCE(?, codex_turn_id),
           updated_at = ?
       WHERE lark_message_id = ?
@@ -1051,8 +1051,8 @@ function mapRequiredConversationRow(row: ConversationRow): ConversationRecord {
     chatMode: row.chat_mode ?? undefined,
     responseMode: row.response_mode,
     role: row.role,
-    codexThreadId: row.codex_thread_id,
-    codexThreadHasRollout: row.codex_thread_has_rollout === 1,
+    codexThreadId: row.thread_id,
+    codexThreadHasRollout: row.thread_has_rollout === 1,
     workspace: row.workspace,
     roleCodexHome: row.role_codex_home,
     createdAt: row.created_at,
@@ -1066,11 +1066,11 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
   }
   return {
     id: row.id,
-    codexThreadId: row.codex_thread_id,
+    codexThreadId: row.thread_id,
     conversationKey: row.conversation_key,
     larkThreadId: row.lark_thread_id ?? undefined,
     role: row.role,
-    forkedFromCodexThreadId: row.forked_from_codex_thread_id ?? undefined,
+    forkedFromCodexThreadId: row.forked_from_thread_id ?? undefined,
     forkedAt: row.forked_at ?? undefined,
     creatorOpenId: row.creator_open_id ?? undefined,
     cardMessageId: row.card_message_id ?? undefined,
@@ -1103,7 +1103,7 @@ function mapRequiredLarkMessageRow(row: LarkMessageRow): LarkMessageRecord {
     larkGroupId: row.lark_group_id ?? undefined,
     larkThreadId: row.lark_thread_id ?? undefined,
     conversationKey: row.conversation_key ?? undefined,
-    codexThreadId: row.codex_thread_id ?? undefined,
+    codexThreadId: row.thread_id ?? undefined,
     codexTurnId: row.codex_turn_id ?? undefined,
     routeKind: row.route_kind,
     status: row.status,
