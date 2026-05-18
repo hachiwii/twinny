@@ -290,6 +290,7 @@ function progressPlaceholderElement(): LarkCardElement {
 }
 
 function buttonsElement(options: RenderTwinnyAgentCardOptions): LarkCardElement {
+  const queueButtonType = options.queueNextMessage ? "primary" : "default";
   const buttons: LarkCardElement[] = [
     buttonElement("打断", "danger_filled", {
       twinny: true,
@@ -297,7 +298,7 @@ function buttonsElement(options: RenderTwinnyAgentCardOptions): LarkCardElement 
       stateKey: options.stateKey,
       runId: options.runId
     }),
-    buttonElement(options.queueNextMessage ? "关闭排队" : "开启排队", "default", {
+    buttonElement(options.queueNextMessage ? "关闭排队" : "开启排队", queueButtonType, {
       twinny: true,
       action: "queue",
       stateKey: options.stateKey,

@@ -17,6 +17,26 @@ function createOptions(overrides: Partial<RenderTwinnyAgentCardOptions>): Render
   };
 }
 
+function findButton(card: Record<string, unknown>, label: string): Record<string, unknown> | undefined {
+  const queue: unknown[] = [(card.body as { elements: unknown[] }).elements];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+    if (current && typeof current === "object") {
+      const element = current as Record<string, unknown>;
+      const text = element.text as { content?: string } | undefined;
+      if (element.tag === "button" && text?.content === label) {
+        return element;
+      }
+      queue.push(...Object.values(element));
+    }
+  }
+  return undefined;
+}
+
 describe("renderTwinnyAgentCard", () => {
   it("displays append-mode hint by default", () => {
     const card = renderTwinnyAgentCard(createOptions({}));
@@ -26,6 +46,14 @@ describe("renderTwinnyAgentCard", () => {
   it("displays queue-mode hint when queue mode is enabled", () => {
     const card = renderTwinnyAgentCard(createOptions({ queueNextMessage: true }));
     expect(JSON.stringify(card)).toContain("排队模式：新消息将等待当前任务完成后发送。");
+  });
+
+  it("uses primary type for the queue button when queue mode is enabled", () => {
+    const defaultCard = renderTwinnyAgentCard(createOptions({}));
+    expect(findButton(defaultCard, "开启排队")).toMatchObject({ type: "default" });
+
+    const queueCard = renderTwinnyAgentCard(createOptions({ queueNextMessage: true }));
+    expect(findButton(queueCard, "关闭排队")).toMatchObject({ type: "primary" });
   });
 
   it("displays combined queue hint when queued messages exist in append mode", () => {
