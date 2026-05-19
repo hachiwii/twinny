@@ -3425,7 +3425,7 @@ export class ConversationManager {
         active.sawAgentMessagePhase === true
       );
       const output = await this.prepareAgentFinalCardOutputForLark(final.text, active.workspace);
-      const rendered = this.renderAgentCard(state, active, "finished", output.elements, undefined, final.processMessages, final.text);
+      const rendered = this.renderAgentCard(state, active, "finished", output.elements, undefined, final.processMessages, output.summaryText);
       const previousMessageId = card.messageId;
       const shouldUpdateInPlace =
         state.pendingBatch.length > 0 || (await this.shouldUpdateCompletedAgentCardInPlace(active, previousMessageId));
@@ -3441,7 +3441,8 @@ export class ConversationManager {
       card.fallbackPlain = true;
       await this.replyAgentMessageBestEffort(active, active.replyMessageId, {
         id: "final",
-        text: active.resultText ?? ""
+        text: active.resultText ?? "",
+        phase: "final_answer"
       });
     }
   }
@@ -3673,8 +3674,16 @@ export class ConversationManager {
       return;
     }
     try {
-      const outbound = await this.prepareAgentReplyForLark(text, active.workspace);
+      const parseCodexMentions = agentMessage.phase === "final_answer";
+      const outbound = await this.prepareAgentReplyForLark(text, active.workspace, { parseCodexMentions });
       if (outbound === undefined) {
+        if (parseCodexMentions && hasCodexMentionSyntax(text)) {
+          const result = await this.options.lark.replyPost(messageId, postContentForCodexMentionText(text));
+          if (result?.messageId) {
+            active.lastAgentReplyMessageId = result.messageId;
+          }
+          return;
+        }
         const result = await this.options.lark.replyMarkdown(messageId, text);
         if (result?.messageId) {
           active.lastAgentReplyMessageId = result.messageId;
@@ -3708,12 +3717,16 @@ export class ConversationManager {
     }
   }
 
-  private async prepareAgentReplyForLark(text: string, workspace: string): Promise<PreparedAgentLarkReply | undefined> {
+  private async prepareAgentReplyForLark(
+    text: string,
+    workspace: string,
+    options: PrepareAgentReplyOptions = {}
+  ): Promise<PreparedAgentLarkReply | undefined> {
     if (!text.split(/\r?\n/).some((line) => line.trimStart().startsWith("SEND_TO_LARK:"))) {
       return undefined;
     }
 
-    const builder = new LarkPostContentBuilder();
+    const builder = new LarkPostContentBuilder({ parseCodexMentions: options.parseCodexMentions });
     const files: PreparedLarkFileReply[] = [];
     for (const line of text.split(/\r?\n/)) {
       const directive = parseSendToLarkDirective(line);
@@ -3772,7 +3785,7 @@ export class ConversationManager {
     const files: PreparedLarkFileReply[] = [];
     const pendingText: string[] = [];
     const flushText = (): void => {
-      const markdown = pendingText.join("\n").trim();
+      const markdown = renderCodexMentionTagsForCardMarkdown(pendingText.join("\n").trim());
       pendingText.splice(0);
       if (markdown.length > 0) {
         elements.push(markdownElement(markdown));
@@ -3829,7 +3842,8 @@ export class ConversationManager {
 
     return {
       elements: elements.length > 0 ? elements : [markdownElement("")],
-      files
+      files,
+      summaryText: renderCodexMentionTagsAsPlainText(text)
     };
   }
 }
@@ -3855,6 +3869,11 @@ interface PreparedAgentLarkReply {
 interface PreparedAgentCardReply {
   elements: LarkCardElement[];
   files: PreparedLarkFileReply[];
+  summaryText: string;
+}
+
+interface PrepareAgentReplyOptions {
+  parseCodexMentions?: boolean;
 }
 
 type SendToLarkDirective =
@@ -3865,6 +3884,8 @@ type SendToLarkDirective =
 class LarkPostContentBuilder {
   private readonly content: LarkPostContent = [];
   private pendingText: string[] = [];
+
+  constructor(private readonly options: PrepareAgentReplyOptions = {}) {}
 
   addTextLine(line: string): void {
     this.pendingText.push(line);
@@ -3892,9 +3913,74 @@ class LarkPostContentBuilder {
     const text = this.pendingText.join("\n").trim();
     this.pendingText = [];
     if (text.length > 0) {
+      if (this.options.parseCodexMentions && hasCodexMentionSyntax(text)) {
+        this.content.push(...postContentForCodexMentionText(text));
+        return;
+      }
       this.content.push([{ tag: "md", text }]);
     }
   }
+}
+
+type CodexMentionTextPart =
+  | { kind: "text"; text: string }
+  | { kind: "mention"; openId: string };
+
+function hasCodexMentionSyntax(text: string): boolean {
+  return text.includes("<mention-lark-user>");
+}
+
+function postContentForCodexMentionText(text: string): LarkPostContent {
+  const paragraphs = text.split(/\r?\n/).map((line) => postParagraphForCodexMentionText(line));
+  return paragraphs.length > 0 ? paragraphs : [[{ tag: "md", text: "" }]];
+}
+
+function postParagraphForCodexMentionText(text: string): LarkPostNode[] {
+  const nodes = splitCodexMentionText(text)
+    .map((part): LarkPostNode | undefined => {
+      if (part.kind === "mention") {
+        return { tag: "at", user_id: part.openId };
+      }
+      return part.text.length > 0 ? { tag: "md", text: part.text } : undefined;
+    })
+    .filter((node): node is LarkPostNode => node !== undefined);
+  return nodes.length > 0 ? nodes : [{ tag: "md", text: "" }];
+}
+
+function renderCodexMentionTagsForCardMarkdown(text: string): string {
+  return splitCodexMentionText(text)
+    .map((part) => part.kind === "mention" ? `<at id=${part.openId}></at>` : part.text)
+    .join("");
+}
+
+function renderCodexMentionTagsAsPlainText(text: string): string {
+  return splitCodexMentionText(text)
+    .map((part) => part.kind === "mention" ? `@${part.openId}` : part.text)
+    .join("");
+}
+
+function splitCodexMentionText(text: string): CodexMentionTextPart[] {
+  const parts: CodexMentionTextPart[] = [];
+  const pattern = /<mention-lark-user>([\s\S]*?)<\/mention-lark-user>/g;
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    const raw = match[0]!;
+    if (index > cursor) {
+      parts.push({ kind: "text", text: text.slice(cursor, index) });
+    }
+    const openId = match[1]?.trim() ?? "";
+    parts.push(isSafeLarkMentionOpenId(openId) ? { kind: "mention", openId } : { kind: "text", text: raw });
+    cursor = index + raw.length;
+  }
+  if (cursor < text.length) {
+    parts.push({ kind: "text", text: text.slice(cursor) });
+  }
+  return parts.length > 0 ? parts : [{ kind: "text", text }];
+}
+
+function isSafeLarkMentionOpenId(openId: string): boolean {
+  return /^[A-Za-z0-9_:-]{1,128}$/.test(openId);
 }
 
 function parseSendToLarkDirective(line: string): SendToLarkDirective {

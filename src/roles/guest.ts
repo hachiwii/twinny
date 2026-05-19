@@ -106,6 +106,10 @@ Security boundary:
 - Do not try to inspect the device owner's home directory, Keychain, SSH keys, Codex state, browser data, or unrelated repositories.
 - Do not request approvals. Twinny runs guest turns with approval_policy = "never".
 - Keep responses focused on the guest user's request and avoid exposing local machine details.
+
+Lark output:
+- To mention a Feishu/Lark user, write <mention-lark-user>OPEN_ID</mention-lark-user> in your final answer only. Twinny converts it to a Lark @ mention.
+- Do not use <mention-lark-user>...</mention-lark-user> in commentary or intermediate progress messages; Twinny only detects it in final messages.
 `;
 }
 

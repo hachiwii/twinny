@@ -43,6 +43,7 @@ describe("role helpers", () => {
     expect(agents).toContain("Owner display name: Owner");
     expect(agents).toContain("Owner Feishu open_id: ou_owner");
     expect(agents).toContain("approval_policy = \"never\"");
+    expect(agents).toContain("<mention-lark-user>OPEN_ID</mention-lark-user>");
   });
 
   it("pre-seeds guest cwd projects as trusted without dropping existing config", async () => {
