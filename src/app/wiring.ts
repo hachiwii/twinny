@@ -36,11 +36,13 @@ import type {
 } from "../types.js";
 import type { CodexRequestUserInputResponder, CodexTurnInput } from "../codex/turn.js";
 import { WorkspaceManager } from "../workspace/index.js";
+import { MacIdleSleepPreventer, type IdleSleepPreventer } from "./caffeinate.js";
 
 export interface TwinnyRuntimeOptions {
   logger?: Logger;
   requestTimeoutMs?: number;
   logoFilePath?: string;
+  idleSleepPreventer?: IdleSleepPreventer;
 }
 
 export class TwinnyRuntime {
@@ -50,6 +52,7 @@ export class TwinnyRuntime {
   private lock?: TwinnyRuntimeLock;
   private db?: TwinnyDatabase;
   private codexPool?: RoleCodexAppServerPool;
+  private idleSleepPreventer?: IdleSleepPreventer;
   private larkConsumer?: LarkEventConsumer;
   private conversation?: ConversationManager;
   private systemNotifier?: TwinnySystemNotifier;
@@ -72,6 +75,8 @@ export class TwinnyRuntime {
   async start(): Promise<void> {
     try {
       this.lock = await acquireTwinnyLock(this.paths, { stale: 30_000, update: 10_000 });
+      this.idleSleepPreventer = this.options.idleSleepPreventer ?? new MacIdleSleepPreventer({ logger: this.log });
+      this.idleSleepPreventer.start();
       this.db = openRuntimeDatabase(this.paths);
 
       const appSecret = await resolveSecretRef(this.config.lark.appSecretRef, this.secretStore);
@@ -184,6 +189,7 @@ export class TwinnyRuntime {
       this.closeDatabase();
     } finally {
       await this.releaseLock();
+      await this.stopIdleSleepPreventer();
       this.resolveStopped();
     }
   }
@@ -202,6 +208,7 @@ export class TwinnyRuntime {
       this.closeDatabase();
     } finally {
       await this.releaseLock();
+      await this.stopIdleSleepPreventer(signal);
       this.resolveStopped();
     }
   }
@@ -304,6 +311,19 @@ export class TwinnyRuntime {
       await lock.release();
     } catch (error) {
       this.log.warn({ error }, "failed to release runtime lock cleanly");
+    }
+  }
+
+  private async stopIdleSleepPreventer(signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
+    if (!this.idleSleepPreventer) {
+      return;
+    }
+    const preventer = this.idleSleepPreventer;
+    this.idleSleepPreventer = undefined;
+    try {
+      await preventer.stop(signal);
+    } catch (error) {
+      this.log.warn({ error }, "failed to stop caffeinate idle sleep assertion cleanly");
     }
   }
 
