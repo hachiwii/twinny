@@ -6,7 +6,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRuntimePaths, createTwinnyConfig } from "../config/index.js";
 import { createConversationRepository, openRuntimeDatabase } from "../store/index.js";
 import type { TwinnyConfig } from "../types.js";
-import { formatStartupInitializationProbeDetail, runStartupInitializationProbe } from "./startup-probe.js";
+import {
+  formatStartupInitializationProbeDetail,
+  openStartupProbeDatabase,
+  runStartupInitializationProbe
+} from "./startup-probe.js";
 
 describe("startup initialization probe", () => {
   const tempDirs: string[] = [];
@@ -70,6 +74,19 @@ describe("startup initialization probe", () => {
       expect(stored?.processingStartedAt).toBeUndefined();
     } finally {
       verifyDb.close();
+    }
+  });
+
+  it("opens the startup probe database in read-only mode", () => {
+    const { paths } = createTestConfig();
+    const writable = openRuntimeDatabase(paths);
+    writable.close();
+
+    const db = openStartupProbeDatabase(paths);
+    try {
+      expect(() => db.exec("CREATE TABLE probe_write_check (id INTEGER PRIMARY KEY)")).toThrow();
+    } finally {
+      db.close();
     }
   });
 

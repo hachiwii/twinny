@@ -23,7 +23,7 @@ export async function runStartupInitializationProbe(
   options: StartupInitializationProbeOptions
 ): Promise<StartupInitializationProbeResult> {
   const paths = options.paths ?? createRuntimePaths(options.config.home);
-  const db = (options.openDatabase ?? openRuntimeDatabase)(paths);
+  const db = (options.openDatabase ?? openStartupProbeDatabase)(paths);
   try {
     const repository = createConversationRepository(db);
     const conversation = new ConversationManager({
@@ -42,6 +42,10 @@ export async function runStartupInitializationProbe(
   } finally {
     db.close();
   }
+}
+
+export function openStartupProbeDatabase(paths: Pick<RuntimePaths, "sqliteFile">): TwinnyDatabase {
+  return openRuntimeDatabase(paths, { readonly: true, migrate: false });
 }
 
 export function formatStartupInitializationProbeDetail(result: StartupInitializationProbeResult): string {
