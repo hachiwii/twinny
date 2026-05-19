@@ -95,6 +95,8 @@ export interface ConversationRepository {
     role: RoleName;
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
+    forkedFromCodexThreadId?: string;
+    forkedAt?: number;
   }): Promise<unknown> | unknown;
   replaceCodexThreadForLarkThread?(
     conversationKey: string,
@@ -229,6 +231,12 @@ export interface CodexBridge {
     cwd: string;
     approvalPolicy: "never";
   }): Promise<{ threadId: string }>;
+  forkThread(params: {
+    role: RoleName;
+    threadId: string;
+    cwd: string;
+    approvalPolicy: "never";
+  }): Promise<{ threadId: string }>;
   startTurn(params: {
     role: RoleName;
     threadId: string;
@@ -345,6 +353,14 @@ interface NewSessionTopicRequest {
   operatorOpenId: string;
   eventId: string;
   anchorMessage?: IncomingLarkMessage;
+  codexThread?: NewSessionTopicCodexThread;
+}
+
+interface NewSessionTopicCodexThread {
+  threadId: string;
+  codexThreadHasRollout: boolean;
+  forkedFromCodexThreadId?: string;
+  forkedAt?: number;
 }
 
 interface CreatedSessionTopic {
@@ -476,6 +492,7 @@ type ParsedCommand =
   | { kind: "status" }
   | { kind: "new" }
   | { kind: "thread"; text: string }
+  | { kind: "fork"; text: string }
   | { kind: "activate"; text: string }
   | { kind: "deactivate" }
   | { kind: "help" };
@@ -1133,6 +1150,10 @@ export class ConversationManager {
       await this.handleThreadCommand(context, message, parsed.text);
       return;
     }
+    if (parsed.kind === "fork") {
+      await this.handleForkCommand(state, context, message, parsed.text);
+      return;
+    }
     if (parsed.kind === "deactivate") {
       await this.handleDeactivateCommand(context, message);
       return;
@@ -1228,7 +1249,7 @@ export class ConversationManager {
     const hasBotMention = messageMentionsBot(message, this.options.botOpenId);
     const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
     const isInactiveGroupCommandAllowed =
-      parsed.kind === "thread" || (parsed.kind === "activate" && senderRole === "owner");
+      parsed.kind === "thread" || parsed.kind === "fork" || (parsed.kind === "activate" && senderRole === "owner");
     if (!conversation || conversation.responseMode === "none") {
       if (isInactiveGroupCommandAllowed) {
         return { kind: "allow", text, parsed, conversation };
@@ -1239,7 +1260,8 @@ export class ConversationManager {
     if (
       conversation.responseMode === "at" &&
       !hasBotMention &&
-      parsed.kind !== "thread"
+      parsed.kind !== "thread" &&
+      parsed.kind !== "fork"
     ) {
       return { kind: "ignored" };
     }
@@ -1488,6 +1510,133 @@ export class ConversationManager {
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
+  private async handleForkCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    if (!isThreadCommandMessageType(message.messageType)) {
+      await this.replyControlBestEffort(message.messageId, "fork 只支持 text/post 消息。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+    if (!conversation) {
+      await this.replyControlBestEffort(message.messageId, "当前会话还没有可 fork 的 Codex thread。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const sourceThread = await this.resolveForkSourceThread(state, context, conversation);
+    if (!sourceThread.threadId) {
+      await this.replyControlBestEffort(message.messageId, "当前话题还没有绑定可 fork 的 Codex thread。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (sourceThread.record && !sourceThread.record.codexThreadHasRollout) {
+      await this.replyControlBestEffort(message.messageId, "当前 Codex thread 还没有可 fork 的历史，请先完成一轮对话。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const chatId = context.type === "p2p"
+      ? message.senderOpenId
+      : nonEmptyString(message.larkGroupId) ?? nonEmptyString(message.chatId);
+    if (!chatId) {
+      await this.replyControlBestEffort(message.messageId, "fork 只能在群聊或私聊中使用。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const forkedAt = Date.now();
+    let forkedThreadId: string;
+    try {
+      const forked = await this.options.codex.forkThread({
+        role: conversation.role,
+        threadId: sourceThread.threadId,
+        cwd: conversation.workspace,
+        approvalPolicy: "never"
+      });
+      forkedThreadId = forked.threadId;
+    } catch (error) {
+      if (!isMissingRolloutError(error)) {
+        throw error;
+      }
+      await this.replyControlBestEffort(message.messageId, "当前 Codex thread 还没有可 fork 的历史，请先完成一轮对话。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    let topic = await this.createNewSessionTopic(context, {
+      chatId,
+      operatorOpenId: message.senderOpenId,
+      eventId: message.eventId,
+      anchorMessage: message,
+      codexThread: {
+        threadId: forkedThreadId,
+        codexThreadHasRollout: true,
+        forkedFromCodexThreadId: sourceThread.threadId,
+        forkedAt
+      }
+    });
+    if (!topic) {
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const intro = await this.replyThreadTextMessage(
+      topic.cardMessageId,
+      formatForkIntroMessage(forkedAt, sourceThread.threadId)
+    );
+    topic = await this.updateSessionTopicThreadId(context, topic, intro.larkThreadId);
+
+    const threadText = text.trim();
+    if (!threadText) {
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const proxy = await this.replyThreadCommandMessage(topic.cardMessageId, message, threadText);
+    if (isGroupConversationType(context.type)) {
+      await this.recallMessageBestEffort(message.messageId, "failed to recall original /fork command after proxy reply");
+    }
+    topic = await this.updateSessionTopicThreadId(context, topic, proxy.larkThreadId);
+    const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
+    const proxyMessage = createThreadReplyMessage(context, message, proxy.messageId, topic.larkThreadId, proxy.text);
+    const proxyState = this.getState(proxyContext.stateKey);
+    const proxyParsed = parseSlashCommand(proxyMessage.text);
+    await this.recordIncomingMessage(proxyState, proxyContext, proxyMessage, proxyParsed);
+    await this.handleRecordedParsedCommand(proxyState, proxyContext, proxyMessage, proxyParsed);
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async resolveForkSourceThread(
+    state: ConversationState,
+    context: MessageContext,
+    conversation: ConversationRecord
+  ): Promise<{ threadId?: string; record?: CodexThreadRecord }> {
+    const activeThreadId = state.active?.threadId;
+    if (activeThreadId) {
+      return {
+        threadId: activeThreadId,
+        record: await this.options.repository.getCodexThreadById(activeThreadId)
+      };
+    }
+
+    if (context.larkThreadId) {
+      const record = await this.options.repository.getCodexThreadByConversationAndLarkThread(
+        context.conversationKey,
+        context.larkThreadId
+      );
+      return { threadId: record?.codexThreadId, record };
+    }
+
+    const record = await this.options.repository.getCodexThreadById(conversation.codexThreadId);
+    return { threadId: conversation.codexThreadId, record };
+  }
+
   private async replyThreadCommandMessage(
     anchorMessageId: string,
     message: IncomingLarkMessage,
@@ -1619,7 +1768,9 @@ export class ConversationManager {
 
     const role = conversation.role;
     const workspace = conversation.workspace;
-    const thread = createdThreadId
+    const thread = request.codexThread
+      ? { threadId: request.codexThread.threadId }
+      : createdThreadId
       ? { threadId: createdThreadId }
       : await this.options.codex.startThread({
           role,
@@ -1630,7 +1781,9 @@ export class ConversationManager {
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
       role,
-      codexThreadHasRollout: false
+      codexThreadHasRollout: request.codexThread?.codexThreadHasRollout ?? false,
+      forkedFromCodexThreadId: request.codexThread?.forkedFromCodexThreadId,
+      forkedAt: request.codexThread?.forkedAt
     });
     const initialRecord = await this.options.repository.updateCodexThreadCard({
       conversationKey: context.conversationKey,
@@ -4670,6 +4823,9 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "thread") {
     return { kind: "thread", text: rest };
   }
+  if (command === "fork") {
+    return { kind: "fork", text: rest };
+  }
   if (command === "help") {
     return { kind: "help" };
   }
@@ -5318,7 +5474,8 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/steer - 将队列中的下一批消息注入当前任务",
     "/queue <message> - 将消息加入下一轮队列，不注入当前任务",
     "/compact - 压缩当前 Codex thread 上下文；默认加入下一轮队列",
-    "/thread [message] - 创建新话题"
+    "/thread [message] - 创建新话题",
+    "/fork [message] - 从当前 Codex thread fork 出新话题"
   ];
   if (isGroupConversationType(context.type) && roleForSender(config, message.senderOpenId) === "owner") {
     lines.push(
@@ -5327,6 +5484,25 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     );
   }
   return lines.join("\n");
+}
+
+function formatForkIntroMessage(forkedAt: number, sourceThreadId: string): string {
+  return `该 Thread 于 ${formatLocalTimestamp(forkedAt)} 从 Codex thread ${sourceThreadId} fork 出来。`;
+}
+
+function formatLocalTimestamp(timestamp: number): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return "未知时间";
+  }
+  const date = new Date(timestamp);
+  return [
+    `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`,
+    `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`
+  ].join(" ");
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
 }
 
 function classifyInitialRoute(
@@ -5367,6 +5543,7 @@ function classifyInitialRoute(
     parsed.kind === "steer" ||
     parsed.kind === "new" ||
     parsed.kind === "thread" ||
+    parsed.kind === "fork" ||
     parsed.kind === "activate" ||
     parsed.kind === "deactivate" ||
     parsed.kind === "queue"

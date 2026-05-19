@@ -75,6 +75,9 @@ describe("CodexAppServer", () => {
       await expect(server.resumeThread("thread-existing", workspace)).resolves.toMatchObject({
         thread: { id: "thread-existing" }
       });
+      await expect(server.forkThread("thread-existing", workspace)).resolves.toMatchObject({
+        thread: { id: "thread-forked", forkedFromId: "thread-existing" }
+      });
       await expect(
         server.startTurn({
           threadId: "thread-existing",
@@ -125,6 +128,15 @@ describe("CodexAppServer", () => {
           cwd: workspace,
           approvalPolicy: "never",
           persistExtendedHistory: true
+        }
+      });
+      expect(sent.find((message) => message.method === "thread/fork")).toMatchObject({
+        params: {
+          threadId: "thread-existing",
+          cwd: workspace,
+          approvalPolicy: "never",
+          persistExtendedHistory: true,
+          excludeTurns: true
         }
       });
       expect(sent.find((message) => message.method === "turn/start")).toMatchObject({
@@ -284,6 +296,10 @@ rl.on("line", (line) => {
   }
   if (message.method === "thread/resume") {
     send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+    return;
+  }
+  if (message.method === "thread/fork") {
+    send({ id: message.id, result: { thread: { id: "thread-forked", forkedFromId: message.params.threadId } } });
     return;
   }
   if (message.method === "turn/start") {

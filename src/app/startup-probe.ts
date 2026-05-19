@@ -72,6 +72,7 @@ function createFailingCodexBridge(): CodexBridge {
   return {
     startThread: fail,
     resumeThread: fail,
+    forkThread: fail,
     startTurn: fail,
     compactThread: fail,
     steerTurn: fail,

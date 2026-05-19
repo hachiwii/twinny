@@ -1503,6 +1503,10 @@ function adaptCodexPool(pool: RoleCodexAppServerPool): CodexBridge {
       const response = await pool.get(role).resumeThread(threadId, cwd);
       return { threadId: response.thread.id };
     },
+    forkThread: async ({ role, threadId, cwd }) => {
+      const response = await pool.get(role).forkThread(threadId, cwd);
+      return { threadId: response.thread.id };
+    },
     startTurn: async ({
       role,
       threadId,
@@ -1676,6 +1680,9 @@ function defaultResult(message, method, nth) {
   }
   if (method === "thread/resume") {
     return { thread: { id: message.params.threadId } };
+  }
+  if (method === "thread/fork") {
+    return { thread: { id: role + "_thread_fork_" + nth, forkedFromId: message.params.threadId } };
   }
   if (method === "turn/start") {
     return { turn: { id: "turn_" + nth } };

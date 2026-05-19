@@ -12,6 +12,11 @@ export interface ThreadResumeParams extends ThreadStartParams {
   threadId: string;
 }
 
+export interface ThreadForkParams extends ThreadStartParams {
+  threadId: string;
+  excludeTurns: true;
+}
+
 export interface CodexThread {
   id: string;
   [key: string]: unknown;
@@ -23,6 +28,11 @@ export interface ThreadStartResponse {
 }
 
 export interface ThreadResumeResponse {
+  thread: CodexThread;
+  [key: string]: unknown;
+}
+
+export interface ThreadForkResponse {
   thread: CodexThread;
   [key: string]: unknown;
 }
@@ -46,6 +56,14 @@ export function buildThreadResumeParams(threadId: string, options: ThreadRuntime
   };
 }
 
+export function buildThreadForkParams(threadId: string, options: ThreadRuntimeOptions): ThreadForkParams {
+  return {
+    threadId,
+    ...buildThreadStartParams(options),
+    excludeTurns: true
+  };
+}
+
 export async function startCodexThread(
   protocol: CodexProtocolClient,
   options: ThreadRuntimeOptions
@@ -61,5 +79,16 @@ export async function resumeCodexThread(
   return protocol.request<ThreadResumeResponse, ThreadResumeParams>(
     "thread/resume",
     buildThreadResumeParams(threadId, options)
+  );
+}
+
+export async function forkCodexThread(
+  protocol: CodexProtocolClient,
+  threadId: string,
+  options: ThreadRuntimeOptions
+): Promise<ThreadForkResponse> {
+  return protocol.request<ThreadForkResponse, ThreadForkParams>(
+    "thread/fork",
+    buildThreadForkParams(threadId, options)
   );
 }

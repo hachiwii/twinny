@@ -4,7 +4,14 @@ import path from "node:path";
 import { ensureGuestWorkspaceProjectTrusted } from "../roles/index.js";
 import type { RoleName } from "../types.js";
 import { CodexProtocolClient, createInitializeParams, type InitializeResponse } from "./protocol.js";
-import { resumeCodexThread, startCodexThread, type ThreadResumeResponse, type ThreadStartResponse } from "./thread.js";
+import {
+  forkCodexThread,
+  resumeCodexThread,
+  startCodexThread,
+  type ThreadForkResponse,
+  type ThreadResumeResponse,
+  type ThreadStartResponse
+} from "./thread.js";
 import {
   compactCodexThread,
   interruptCodexTurn,
@@ -143,6 +150,11 @@ export class CodexAppServer extends EventEmitter {
   async resumeThread(threadId: string, cwd: string): Promise<ThreadResumeResponse> {
     await this.prepareThreadWorkspace(cwd);
     return resumeCodexThread(this.protocol, threadId, { cwd });
+  }
+
+  async forkThread(threadId: string, cwd: string): Promise<ThreadForkResponse> {
+    await this.prepareThreadWorkspace(cwd);
+    return forkCodexThread(this.protocol, threadId, { cwd });
   }
 
   async startTurn(options: TurnStartOptions): Promise<import("../types.js").CodexTurnResult> {

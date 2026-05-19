@@ -403,6 +403,10 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       const response = await pool.get(role).resumeThread(threadId, cwd);
       return { threadId: response.thread.id };
     },
+    forkThread: async ({ role, threadId, cwd }: { role: RoleName; threadId: string; cwd: string }) => {
+      const response = await pool.get(role).forkThread(threadId, cwd);
+      return { threadId: response.thread.id };
+    },
     startTurn: async ({
       role,
       threadId,

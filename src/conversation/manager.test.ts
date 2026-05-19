@@ -1480,6 +1480,166 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_thread_plan"]);
   });
 
+  it("forks the current group Codex thread into a new topic and proxies initial text", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      forkThread: vi.fn(async () => ({ threadId: "thread_forked" })),
+      startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
+        await onTurnStarted?.("turn_1");
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: "card_oc_group_1",
+      raw: {}
+    });
+    vi.mocked(lark.replyText)
+      .mockResolvedValueOnce({
+        messageId: "reply_fork_intro_1",
+        raw: { data: { thread_id: "topic_fork_1" } }
+      })
+      .mockResolvedValueOnce({
+        messageId: "reply_fork_1",
+        raw: { data: { thread_id: "topic_fork_1" } }
+      });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_fork", "/fork try alternate path", {
+      senderOpenId: "ou_guest"
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.forkThread).toHaveBeenCalledWith({
+      role: "owner",
+      threadId: "thread_group",
+      cwd: "/tmp/twinny/workspaces/group_oc_group",
+      approvalPolicy: "never"
+    });
+    expect(codex.startThread).not.toHaveBeenCalled();
+    expect(codex.resumeThread).toHaveBeenCalledWith({
+      role: "owner",
+      threadId: "thread_forked",
+      cwd: "/tmp/twinny/workspaces/group_oc_group",
+      approvalPolicy: "never"
+    });
+    expect(lark.sendCardToChatId).toHaveBeenCalledWith("oc_group", expect.any(Object), {
+      uuid: expect.stringMatching(UUID_PATTERN)
+    });
+    expect(lark.replyText).toHaveBeenNthCalledWith(
+      1,
+      "card_oc_group_1",
+      expect.stringContaining("从 Codex thread thread_group fork 出来"),
+      { replyInThread: true }
+    );
+    expect(lark.replyText).toHaveBeenNthCalledWith(
+      2,
+      "card_oc_group_1",
+      "try alternate path",
+      { replyInThread: true }
+    );
+    expect(lark.recallMessage).toHaveBeenCalledWith("g_fork");
+    expect(repository.getCodexThreadById("thread_forked")).toMatchObject({
+      codexThreadId: "thread_forked",
+      conversationKey: "group_oc_group",
+      larkThreadId: "topic_fork_1",
+      role: "owner",
+      forkedFromCodexThreadId: "thread_group",
+      codexThreadHasRollout: true
+    });
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "reply_fork_1",
+        eventId: "thread_reply:e_g_fork",
+        larkThreadId: "topic_fork_1",
+        routeKind: "message",
+        status: "processing",
+        text: "try alternate path"
+      })
+    );
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_forked",
+        input: wrappedMessage("try alternate path", "reply_fork_1", "ou_guest")
+      })
+    );
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_fork"]);
+  });
+
+  it("allows /fork inside a Lark thread and forks that topic's Codex thread", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const { repository } = createRepository(row, {
+      codexThreads: [
+        codexThreadRecord({
+          id: 2,
+          codexThreadId: "thread_topic_source",
+          conversationKey: "group_oc_group",
+          larkThreadId: "topic_source",
+          role: "owner",
+          codexThreadHasRollout: true
+        })
+      ]
+    });
+    const codex = createCodex({
+      forkThread: vi.fn(async () => ({ threadId: "thread_topic_fork" }))
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: "card_oc_group_1",
+      raw: {}
+    });
+    vi.mocked(lark.replyText)
+      .mockResolvedValueOnce({
+        messageId: "reply_topic_fork_intro_1",
+        raw: { data: { thread_id: "topic_fork_nested" } }
+      })
+      .mockResolvedValueOnce({
+        messageId: "reply_topic_fork_1",
+        raw: { data: { thread_id: "topic_fork_nested" } }
+      });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_fork_nested", "/fork nested work", {
+      chatType: "topic_group",
+      larkThreadId: "topic_source",
+      senderOpenId: "ou_guest"
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(repository.getCodexThreadByConversationAndLarkThread).toHaveBeenCalledWith(
+      "group_oc_group",
+      "topic_source"
+    );
+    expect(codex.forkThread).toHaveBeenCalledWith({
+      role: "owner",
+      threadId: "thread_topic_source",
+      cwd: "/tmp/twinny/workspaces/group_oc_group",
+      approvalPolicy: "never"
+    });
+    expect(lark.sendCardToChatId).toHaveBeenCalledWith("oc_group", expect.any(Object), {
+      uuid: expect.stringMatching(UUID_PATTERN)
+    });
+    expect(lark.replyText).toHaveBeenNthCalledWith(
+      1,
+      "card_oc_group_1",
+      expect.stringContaining("从 Codex thread thread_topic_source fork 出来"),
+      { replyInThread: true }
+    );
+    expect(lark.recallMessage).toHaveBeenCalledWith("g_fork_nested");
+    expect(repository.getCodexThreadById("thread_topic_fork")).toMatchObject({
+      larkThreadId: "topic_fork_nested",
+      forkedFromCodexThreadId: "thread_topic_source",
+      codexThreadHasRollout: true
+    });
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_topic_fork",
+        input: wrappedMessage("nested work", "reply_topic_fork_1", "ou_guest")
+      })
+    );
+  });
+
   it("rebuilds /thread text replies with send-side at mentions", async () => {
     const row = groupConversationRecord({ role: "owner", responseMode: "at" });
     const { repository } = createRepository(row);
@@ -4366,6 +4526,7 @@ function createCodex(overrides: Partial<CodexBridge> = {}): CodexBridge {
   return {
     startThread: vi.fn(async () => ({ threadId: "thread_1" })),
     resumeThread: vi.fn(async ({ threadId }) => ({ threadId })),
+    forkThread: vi.fn(async ({ threadId }) => ({ threadId: `${threadId}_fork` })),
     startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
       await onTurnStarted?.("turn_1");
       return completed(threadId, "turn_1");
@@ -4476,6 +4637,8 @@ function createRepository(initial?: ConversationRecord, options: {
     role: "owner" | "guest";
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
+    forkedFromCodexThreadId?: string;
+    forkedAt?: number;
   }): CodexThreadRecord => {
     const existing = codexThreads.get(input.codexThreadId);
     const record = codexThreadRecord({
@@ -4485,6 +4648,8 @@ function createRepository(initial?: ConversationRecord, options: {
       conversationKey: input.conversationKey,
       larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
       role: input.role,
+      forkedFromCodexThreadId: input.forkedFromCodexThreadId ?? existing?.forkedFromCodexThreadId,
+      forkedAt: input.forkedAt ?? existing?.forkedAt,
       codexThreadHasRollout: existing?.codexThreadHasRollout === true || input.codexThreadHasRollout === true,
       createdAt: existing?.createdAt ?? Date.now(),
       updatedAt: Date.now()
