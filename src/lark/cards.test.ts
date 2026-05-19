@@ -221,13 +221,17 @@ describe("renderTwinnyAgentCard", () => {
     expect(serialized).toContain("#### 任意 Part");
     expect(findElementsByTag(card, "hr")).toHaveLength(2);
     expect(serialized).not.toContain("查看完整计划");
+    expect(findElementByTag(card, "input")).toMatchObject({
+      name: "plan_implement_instruction",
+      placeholder: {
+        tag: "plain_text",
+        content: "补充提交指令（可选）"
+      }
+    });
     expect(findButton(card, "实现")).toMatchObject({
-      behaviors: [
-        expect.objectContaining({
-          type: "callback",
-          value: expect.objectContaining({ action: "plan_implement" })
-        })
-      ]
+      name: "plan_implement_submit",
+      action_type: "form_submit",
+      value: expect.objectContaining({ action: "plan_implement" })
     });
     expect(findButton(card, "拒绝")).toMatchObject({
       behaviors: [

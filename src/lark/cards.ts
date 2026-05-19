@@ -75,6 +75,8 @@ export interface TwinnyAgentCardRuntimeStats {
   contextWindow: number;
 }
 
+export const PLAN_IMPLEMENT_INSTRUCTION_FORM_NAME = "plan_implement_instruction";
+
 interface ParsedPlanMarkdown {
   rawText: string;
   title?: string;
@@ -297,7 +299,7 @@ function bodyElements(options: RenderTwinnyAgentCardOptions, parsedPlan?: Parsed
     if (options.status === "waiting_input") {
       elements.push(waitingButtonsElement(options, "提交", "primary_filled", "request_input_submit", "跳过", "danger_filled", "request_input_interrupt"));
     } else if (options.status === "waiting_plan") {
-      elements.push(waitingButtonsElement(options, "实现", "primary_filled", "plan_implement", "拒绝", "danger_filled", "plan_interrupt"));
+      elements.push(planImplementFormElement(options));
     }
     return elements;
   }
@@ -469,6 +471,21 @@ function requestUserInputFormElement(options: RenderTwinnyAgentCardOptions): Lar
       waitingButtonsElement(options, "提交", "primary_filled", "request_input_submit", "跳过", "danger_filled", "request_input_interrupt", {
         primaryFormSubmit: true,
         namePrefix: "request_user_input"
+      })
+    ],
+    margin: "0px 0px 0px 0px"
+  };
+}
+
+function planImplementFormElement(options: RenderTwinnyAgentCardOptions): LarkCardElement {
+  return {
+    tag: "form",
+    name: "plan_implement",
+    elements: [
+      planImplementInstructionInputElement(),
+      waitingButtonsElement(options, "实现", "primary_filled", "plan_implement", "拒绝", "danger_filled", "plan_interrupt", {
+        primaryFormSubmit: true,
+        namePrefix: "plan_implement"
       })
     ],
     margin: "0px 0px 0px 0px"
@@ -792,6 +809,20 @@ function inputElement(question: TwinnyAgentCardInputQuestion): LarkCardElement {
     default_value: "",
     width: "fill",
     ...(question.isSecret ? { input_type: "password" } : {}),
+    margin: "0px 0px 0px 0px"
+  };
+}
+
+function planImplementInstructionInputElement(): LarkCardElement {
+  return {
+    tag: "input",
+    name: PLAN_IMPLEMENT_INSTRUCTION_FORM_NAME,
+    placeholder: {
+      tag: "plain_text",
+      content: "补充提交指令（可选）"
+    },
+    default_value: "",
+    width: "fill",
     margin: "0px 0px 0px 0px"
   };
 }

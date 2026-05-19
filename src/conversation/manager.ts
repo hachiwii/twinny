@@ -8,6 +8,7 @@ import {
   imageElement,
   markdownElement,
   mediaElement,
+  PLAN_IMPLEMENT_INSTRUCTION_FORM_NAME,
   renderTwinnyAgentCard,
   renderTwinnyThreadSummaryCard,
   type LarkCardElement,
@@ -1770,6 +1771,10 @@ export class ConversationManager {
       await this.interruptActiveTurnBestEffort(active);
     }
 
+    const supplementalInstruction = extractPlanImplementInstruction(action.formValue);
+    const implementPrompt = supplementalInstruction
+      ? `Implement the plan with following instruction: ${supplementalInstruction}`
+      : "Implement this plan";
     const pending = toPendingMessage(
       {
         ...original,
@@ -1777,10 +1782,10 @@ export class ConversationManager {
         text: planText,
         raw: action.raw
       },
-      "Implement this plan",
+      implementPrompt,
       { queueBoundary: true }
     );
-    await this.startTurnForMessages(state, active.context, [pending], "Implement this plan");
+    await this.startTurnForMessages(state, active.context, [pending], implementPrompt);
   }
 
   private async recordMenuActionBestEffort(
@@ -4259,6 +4264,13 @@ function buildSkippedRequestUserInputResponse(request: CodexRequestUserInputRequ
     };
   }
   return { answers };
+}
+
+function extractPlanImplementInstruction(formValue: Record<string, unknown> | undefined): string | undefined {
+  const value = stringArrayValue(formValue?.[PLAN_IMPLEMENT_INSTRUCTION_FORM_NAME])
+    .map((item) => item.trim())
+    .find(Boolean);
+  return value || undefined;
 }
 
 function formatRequestUserInputAnswerProgress(
