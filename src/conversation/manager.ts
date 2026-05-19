@@ -1685,11 +1685,16 @@ export class ConversationManager {
       return;
     }
     const waiting = active.waiting;
+    const response = buildRequestUserInputResponse(waiting.request, formValue);
+    active.card?.messages.push({
+      id: `request_user_input:${String(waiting.request.requestId)}:answered`,
+      text: formatRequestUserInputAnswerProgress(waiting.request, response)
+    });
     active.waiting = undefined;
     await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
     await this.patchAgentCardBestEffort(state, active, "working");
     this.startAgentCardTimer(state, active);
-    waiting.responder.respond(buildRequestUserInputResponse(waiting.request, formValue));
+    waiting.responder.respond(response);
   }
 
   private async executePlanImplementAction(
@@ -4072,11 +4077,25 @@ function buildRequestUserInputResponse(
     const selected = stringArrayValue(formValue?.[formSelectName(question.id)])
       .map((value) => value.trim())
       .filter(Boolean);
+    const fallback = question.options?.[0]?.label ? [question.options[0].label] : [];
     answers[question.id] = {
-      answers: other.length > 0 ? other : selected
+      answers: other.length > 0 ? other : selected.length > 0 ? selected : fallback
     };
   }
   return { answers };
+}
+
+function formatRequestUserInputAnswerProgress(
+  request: CodexRequestUserInputRequest,
+  response: CodexRequestUserInputResponse
+): string {
+  const items = request.params.questions.map((question) => {
+    const title = compactInlineText(question.header || question.question || question.id);
+    const answers = response.answers[question.id]?.answers ?? [];
+    const answerText = answers.length > 0 ? answers.map(compactInlineText).join(", ") : "未填写";
+    return `${title}: ${answerText}`;
+  });
+  return `[收到答案] ${items.join("; ")}`;
 }
 
 function formSelectName(id: string): string {
@@ -4103,6 +4122,10 @@ function stringArrayValue(value: unknown): string[] {
     return stringArrayValue(selected);
   }
   return [];
+}
+
+function compactInlineText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function parseActivateCommand(

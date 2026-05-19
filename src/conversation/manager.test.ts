@@ -2616,13 +2616,18 @@ describe("ConversationManager", () => {
         stateKey: "p2p_ou_guest",
         runId: 1
       },
-      formValue: {
-        answer_choice_select: "直接实现",
-        answer_choice_other: ""
-      },
+      formValue: {},
       raw: { event_id: "event_request_submit" }
     });
 
+    await waitForExpect(() => {
+      const card = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
+      expect(card).toBeDefined();
+      const serialized = JSON.stringify(card);
+      expect(serialized).toContain("工作中...");
+      expect(serialized).toContain("[收到答案] Choose mode: 直接实现");
+      expect(serialized).not.toContain("等待交互");
+    });
     await waitForExpect(() =>
       expect(responder.respond).toHaveBeenCalledWith({
         answers: {

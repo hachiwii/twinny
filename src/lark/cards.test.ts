@@ -57,6 +57,25 @@ function findTextElement(card: Record<string, unknown>, content: string): Record
   return undefined;
 }
 
+function findElementByTag(card: Record<string, unknown>, tag: string): Record<string, unknown> | undefined {
+  const queue: unknown[] = [(card.body as { elements: unknown[] }).elements];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+    if (current && typeof current === "object") {
+      const element = current as Record<string, unknown>;
+      if (element.tag === tag) {
+        return element;
+      }
+      queue.push(...Object.values(element));
+    }
+  }
+  return undefined;
+}
+
 describe("renderTwinnyAgentCard", () => {
   it("displays append-mode hint by default", () => {
     const card = renderTwinnyAgentCard(createOptions({}));
@@ -97,6 +116,9 @@ describe("renderTwinnyAgentCard", () => {
     const serialized = JSON.stringify(card);
 
     expect(serialized).toContain("\"tag\":\"form\"");
+    expect(findElementByTag(card, "select_static")).toMatchObject({
+      initial_index: 1
+    });
     expect(findButton(card, "提交")).toMatchObject({
       name: "request_user_input_submit",
       action_type: "form_submit",
@@ -114,6 +136,74 @@ describe("renderTwinnyAgentCard", () => {
         })
       ]
     });
+  });
+
+  it("renders skipped requestUserInput cards without form controls or action buttons", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "interrupted_input",
+      waiting: {
+        kind: "request_user_input",
+        requestId: "request_1",
+        questions: [
+          {
+            id: "choice",
+            header: "Choose mode",
+            question: "Choose mode",
+            isOther: true,
+            isSecret: false,
+            options: [{ label: "直接实现", description: "按计划改代码并测试。" }]
+          }
+        ]
+      }
+    }));
+    const serialized = JSON.stringify(card);
+
+    expect(card.header).toMatchObject({
+      title: { tag: "plain_text", content: "已跳过问题" },
+      subtitle: { tag: "plain_text", content: "" },
+      template: "grey"
+    });
+    expect(serialized).toContain("Choose mode");
+    expect(findElementByTag(card, "select_static")).toBeUndefined();
+    expect(findElementByTag(card, "input")).toBeUndefined();
+    expect(findButton(card, "提交")).toBeUndefined();
+    expect(findButton(card, "打断")).toBeUndefined();
+  });
+
+  it("renders rejected plan cards without action buttons", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "interrupted_plan",
+      waiting: {
+        kind: "plan",
+        planText: "Plan ready\n- [ ] Update the implementation"
+      }
+    }));
+
+    expect(card.header).toMatchObject({
+      title: { tag: "plain_text", content: "计划被拒绝" },
+      template: "grey"
+    });
+    expect(JSON.stringify(card)).toContain("Plan ready");
+    expect(findButton(card, "实现")).toBeUndefined();
+    expect(findButton(card, "打断")).toBeUndefined();
+  });
+
+  it("renders accepted plan cards with a turquoise header and no action buttons", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "accepted_plan",
+      waiting: {
+        kind: "plan",
+        planText: "Plan ready\n- [ ] Update the implementation"
+      }
+    }));
+
+    expect(card.header).toMatchObject({
+      title: { tag: "plain_text", content: "计划已确认" },
+      template: "turquoise"
+    });
+    expect(JSON.stringify(card)).toContain("Plan ready");
+    expect(findButton(card, "实现")).toBeUndefined();
+    expect(findButton(card, "打断")).toBeUndefined();
   });
 
   it("displays combined queue hint when queued messages exist in append mode", () => {

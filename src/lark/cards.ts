@@ -99,9 +99,9 @@ const STATUS_HEADER: Record<TwinnyAgentCardStatus, { title: string; subtitle?: s
   failed: { title: "发生错误", template: "red" },
   waiting_input: { title: "等待交互", template: "yellow" },
   waiting_plan: { title: "确认计划", template: "wathet" },
-  interrupted_input: { title: "交互已打断", template: "grey" },
-  interrupted_plan: { title: "计划已打断", template: "grey" },
-  accepted_plan: { title: "计划已确认", template: "grey" }
+  interrupted_input: { title: "已跳过问题", template: "grey" },
+  interrupted_plan: { title: "计划被拒绝", template: "grey" },
+  accepted_plan: { title: "计划已确认", template: "turquoise" }
 };
 
 export function renderTwinnyAgentCard(options: RenderTwinnyAgentCardOptions): LarkCardJson {
@@ -276,7 +276,7 @@ function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] 
         elements.push(requestUserInputFormElement(options));
         return elements;
       }
-      elements.push(...requestUserInputElements(options.waiting.questions));
+      elements.push(...requestUserInputElements(options.waiting.questions, { includeControls: false }));
     } else if (options.waiting?.kind === "plan") {
       elements.push(...planElements(options.waiting.planText));
     }
@@ -561,7 +561,11 @@ function elapsedText(
   return parts.join(" · ");
 }
 
-function requestUserInputElements(questions: TwinnyAgentCardInputQuestion[]): LarkCardElement[] {
+function requestUserInputElements(
+  questions: TwinnyAgentCardInputQuestion[],
+  options: { includeControls?: boolean } = {}
+): LarkCardElement[] {
+  const includeControls = options.includeControls ?? true;
   const elements: LarkCardElement[] = [];
   for (let index = 0; index < questions.length; index += 1) {
     const question = questions[index]!;
@@ -577,10 +581,10 @@ function requestUserInputElements(questions: TwinnyAgentCardInputQuestion[]): La
     for (const option of question.options ?? []) {
       elements.push(markdownElement(`- **${escapeMarkdown(option.label)}**: ${escapeMarkdown(option.description)}`, { margin: "0px 0px 0px 0px" }));
     }
-    if ((question.options?.length ?? 0) > 0) {
+    if (includeControls && (question.options?.length ?? 0) > 0) {
       elements.push(selectElement(question));
     }
-    if (question.isOther || (question.options?.length ?? 0) === 0) {
+    if (includeControls && (question.isOther || (question.options?.length ?? 0) === 0)) {
       elements.push(inputElement(question));
     }
   }
@@ -612,7 +616,7 @@ function selectElement(question: TwinnyAgentCardInputQuestion): LarkCardElement 
     })),
     type: "default",
     width: "fill",
-    initial_index: 0,
+    initial_index: 1,
     margin: "0px 0px 0px 0px"
   };
 }
@@ -636,7 +640,7 @@ function cardHeaderSubtitle(
   options: RenderTwinnyAgentCardOptions,
   fallback: string | undefined
 ): string {
-  if (options.waiting?.kind === "request_user_input") {
+  if (options.status === "waiting_input" && options.waiting?.kind === "request_user_input") {
     const count = options.waiting.questions.length;
     return `${count} 个问题待回答`;
   }
