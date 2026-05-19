@@ -1163,6 +1163,53 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("parses slash commands from /thread initial text before starting the topic turn", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_thread_plan" }))
+    });
+    const lark = createLarkResponder();
+    const cardMessageId = "card_oc_group_1";
+    const cardThreadId = "topic_thread_plan";
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: cardMessageId,
+      raw: {}
+    });
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_thread_plan_1",
+      raw: { data: { thread_id: cardThreadId } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_thread_plan", "/thread /plan investigate plan mode", {
+      senderOpenId: "ou_guest"
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(lark.replyText).toHaveBeenCalledWith(cardMessageId, "/plan investigate plan mode", { replyInThread: true });
+    expect(lark.recallMessage).toHaveBeenCalledWith("g_thread_plan");
+    expect(repository.updateCodexThreadMode).toHaveBeenCalledWith("group_oc_group", "thread_thread_plan", "plan");
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_thread_plan",
+        mode: "plan",
+        input: wrappedMessage("investigate plan mode", "reply_thread_plan_1", "ou_guest")
+      })
+    );
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "reply_thread_plan_1",
+        eventId: "thread_reply:e_g_thread_plan",
+        larkThreadId: cardThreadId,
+        routeKind: "queued_message",
+        status: "queued",
+        text: "investigate plan mode"
+      })
+    );
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_thread_plan"]);
+  });
+
   it("rebuilds /thread text replies with send-side at mentions", async () => {
     const row = groupConversationRecord({ role: "owner", responseMode: "at" });
     const { repository } = createRepository(row);

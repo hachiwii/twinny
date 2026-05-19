@@ -885,51 +885,64 @@ export class ConversationManager {
     await this.prepareMessageResources(context.conversationKey, message);
     const preparedParsed: ParsedCommand = parsed.kind === "message" ? { kind: "message", text: message.text } : parsed;
     await this.recordIncomingMessage(state, context, message, preparedParsed);
-    if (preparedParsed.kind === "help") {
+    await this.handleRecordedParsedCommand(state, context, message, preparedParsed);
+  }
+
+  private async handleRecordedParsedCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    parsed: ParsedCommand
+  ): Promise<void> {
+    if (parsed.kind === "activate") {
+      await this.handleActivateCommand(state, context, message, parsed.text);
+      return;
+    }
+    if (parsed.kind === "help") {
       await this.handleHelpCommand(context, message);
       return;
     }
-    if (preparedParsed.kind === "status") {
+    if (parsed.kind === "status") {
       await this.handleStatusCommand(state, context, message);
       return;
     }
-    if (preparedParsed.kind === "stop") {
+    if (parsed.kind === "stop") {
       await this.handleStopCommand(state, message);
       return;
     }
-    if (preparedParsed.kind === "next") {
+    if (parsed.kind === "next") {
       await this.handleNextCommand(state, context, message);
       return;
     }
-    if (preparedParsed.kind === "steer") {
+    if (parsed.kind === "steer") {
       await this.handleSteerCommand(state, message);
       return;
     }
-    if (preparedParsed.kind === "new") {
+    if (parsed.kind === "new") {
       await this.handleNewCommand(state, context, message);
       return;
     }
-    if (preparedParsed.kind === "thread") {
-      await this.handleThreadCommand(context, message, preparedParsed.text);
+    if (parsed.kind === "thread") {
+      await this.handleThreadCommand(context, message, parsed.text);
       return;
     }
-    if (preparedParsed.kind === "deactivate") {
+    if (parsed.kind === "deactivate") {
       await this.handleDeactivateCommand(context, message);
       return;
     }
-    if (preparedParsed.kind === "queue") {
-      await this.handleQueueCommand(state, context, message, preparedParsed.text);
+    if (parsed.kind === "queue") {
+      await this.handleQueueCommand(state, context, message, parsed.text);
       return;
     }
-    if (preparedParsed.kind === "plan") {
-      await this.handlePlanCommand(state, context, message, preparedParsed.text);
+    if (parsed.kind === "plan") {
+      await this.handlePlanCommand(state, context, message, parsed.text);
       return;
     }
-    if (preparedParsed.kind === "exit") {
+    if (parsed.kind === "exit") {
       await this.handleExitCommand(state, context, message);
       return;
     }
-    await this.handleUserMessage(state, context, message, preparedParsed.text);
+    await this.handleUserMessage(state, context, message, parsed.text);
   }
 
   private async recordIncomingMessage(
@@ -1264,9 +1277,9 @@ export class ConversationManager {
     const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
     const proxyMessage = createThreadReplyMessage(message, proxy.messageId, topic.larkThreadId, proxy.text);
     const proxyState = this.getState(proxyContext.stateKey);
-    const proxyParsed: ParsedCommand = { kind: "message", text: proxyMessage.text };
+    const proxyParsed = parseSlashCommand(proxyMessage.text);
     await this.recordIncomingMessage(proxyState, proxyContext, proxyMessage, proxyParsed);
-    await this.handleUserMessage(proxyState, proxyContext, proxyMessage, proxyMessage.text);
+    await this.handleRecordedParsedCommand(proxyState, proxyContext, proxyMessage, proxyParsed);
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
