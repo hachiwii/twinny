@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { parse, type TomlTable } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
-import { CodexAppServer, buildCodexAppServerEnv } from "./appserver.js";
+import { CodexAppServer, RoleCodexAppServerPool, buildCodexAppServerEnv } from "./appserver.js";
 
 const tempDirs: string[] = [];
 
@@ -146,6 +146,88 @@ describe("CodexAppServer", () => {
       await server.stop();
     }
   });
+
+  it("starts again after the app-server process exits", async () => {
+    const tempDir = makeTempDir();
+    const captureFile = path.join(tempDir, "requests.ndjson");
+    const fakeBinary = createOneShotExitCodexBinary(tempDir, captureFile);
+    const codexHome = path.join(tempDir, "codex-home");
+    const workspace = path.join(tempDir, "workspaces", "p2p_ou_1");
+    fs.mkdirSync(workspace, { recursive: true });
+
+    const server = new CodexAppServer({
+      role: "owner",
+      binary: fakeBinary,
+      codexHome,
+      requestTimeoutMs: 2_000,
+      clientVersion: "test",
+      env: {
+        PATH: process.env.PATH,
+        HOME: tempDir
+      }
+    });
+
+    try {
+      const exited = onceExit(server);
+      await expect(server.start()).resolves.toMatchObject({ userAgent: "fake-codex" });
+      await expect(exited).resolves.toMatchObject({ code: 42, signal: null });
+
+      await expect(server.start()).resolves.toMatchObject({ userAgent: "fake-codex" });
+      await expect(server.startThread(workspace)).resolves.toMatchObject({
+        thread: { id: "thread-start" }
+      });
+
+      const sent = readCapturedMessages(captureFile);
+      expect(sent.filter((message) => message.method === "initialize")).toHaveLength(2);
+      expect(sent.find((message) => message.method === "thread/start")).toMatchObject({
+        params: {
+          cwd: workspace,
+          approvalPolicy: "never",
+          persistExtendedHistory: true
+        }
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+describe("RoleCodexAppServerPool", () => {
+  it("restarts the selected role after its app-server exits", async () => {
+    const tempDir = makeTempDir();
+    const captureFile = path.join(tempDir, "requests.ndjson");
+    const fakeBinary = createOneShotExitCodexBinary(tempDir, captureFile);
+    const workspace = path.join(tempDir, "workspaces", "p2p_ou_1");
+    fs.mkdirSync(workspace, { recursive: true });
+
+    const pool = new RoleCodexAppServerPool({
+      binary: fakeBinary,
+      roles: {
+        owner: { codexHome: path.join(tempDir, "owner-codex-home") },
+        guest: { codexHome: path.join(tempDir, "guest-codex-home") }
+      },
+      requestTimeoutMs: 2_000,
+      clientVersion: "test",
+      env: {
+        PATH: process.env.PATH,
+        HOME: tempDir
+      }
+    });
+    const owner = pool.get("owner");
+
+    try {
+      const exited = onceExit(owner);
+      await expect(owner.start()).resolves.toMatchObject({ userAgent: "fake-codex" });
+      await expect(exited).resolves.toMatchObject({ code: 42, signal: null });
+
+      await expect(pool.restart("owner")).resolves.toMatchObject({ userAgent: "fake-codex" });
+      await expect(owner.startThread(workspace)).resolves.toMatchObject({
+        thread: { id: "thread-start" }
+      });
+    } finally {
+      await pool.stopAll();
+    }
+  });
 });
 
 function makeTempDir(): string {
@@ -238,6 +320,60 @@ rl.on("line", (line) => {
     { mode: 0o755 }
   );
   return binary;
+}
+
+function createOneShotExitCodexBinary(tempDir: string, captureFile: string): string {
+  const binary = path.join(tempDir, "fake-codex-restart.mjs");
+  const runFile = path.join(tempDir, "fake-codex-runs.txt");
+  fs.writeFileSync(
+    binary,
+    `#!/usr/bin/env node
+import fs from "node:fs";
+import readline from "node:readline";
+
+const captureFile = ${JSON.stringify(captureFile)};
+const runFile = ${JSON.stringify(runFile)};
+const previousRuns = fs.existsSync(runFile) ? Number(fs.readFileSync(runFile, "utf8")) : 0;
+const run = previousRuns + 1;
+fs.writeFileSync(runFile, String(run));
+const rl = readline.createInterface({ input: process.stdin });
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\\n");
+}
+
+rl.on("line", (line) => {
+  fs.appendFileSync(captureFile, line + "\\n");
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({
+      id: message.id,
+      result: {
+        userAgent: "fake-codex",
+        codexHome: process.env.CODEX_HOME,
+        platformFamily: "unix",
+        platformOs: "macos"
+      }
+    });
+    if (run === 1) {
+      setTimeout(() => process.exit(42), 5);
+    }
+    return;
+  }
+  if (message.method === "thread/start") {
+    send({ id: message.id, result: { thread: { id: "thread-start" } } });
+  }
+});
+`,
+    { mode: 0o755 }
+  );
+  return binary;
+}
+
+function onceExit(server: CodexAppServer): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return new Promise((resolve) => {
+    server.once("exit", (code, signal) => resolve({ code, signal }));
+  });
 }
 
 function readCapturedMessages(captureFile: string): Array<Record<string, unknown>> {

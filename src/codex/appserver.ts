@@ -62,6 +62,7 @@ export class CodexAppServer extends EventEmitter {
   private child: ChildProcessWithoutNullStreams | undefined;
   private protocolClient: CodexProtocolClient | undefined;
   private initializeResponse: InitializeResponse | undefined;
+  private startPromise: Promise<InitializeResponse> | undefined;
 
   constructor(private readonly options: CodexAppServerOptions) {
     super();
@@ -79,8 +80,25 @@ export class CodexAppServer extends EventEmitter {
   }
 
   async start(): Promise<InitializeResponse> {
+    if (this.protocolClient && this.initializeResponse) {
+      return this.initializeResponse;
+    }
+    if (this.startPromise) {
+      return this.startPromise;
+    }
+
+    this.startPromise = this.startFresh();
+    try {
+      return await this.startPromise;
+    } finally {
+      this.startPromise = undefined;
+    }
+  }
+
+  private async startFresh(): Promise<InitializeResponse> {
     if (this.protocolClient) {
-      return this.initializeResponse ?? this.protocolClient.initialize(createInitializeParams(this.options.clientVersion));
+      this.initializeResponse = await this.protocolClient.initialize(createInitializeParams(this.options.clientVersion));
+      return this.initializeResponse;
     }
 
     const child = spawn(this.options.binary, ["app-server", "--listen", "stdio://"], {
@@ -89,20 +107,26 @@ export class CodexAppServer extends EventEmitter {
       stdio: ["pipe", "pipe", "pipe"]
     });
 
-    this.child = child;
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => this.emit("stderr", chunk));
-    child.on("exit", (code, signal) => {
-      this.protocolClient = undefined;
-      this.child = undefined;
-      this.emit("exit", code, signal);
-    });
 
     const protocol = new CodexProtocolClient(child.stdout, child.stdin, {
       requestTimeoutMs: this.options.requestTimeoutMs,
       requestIdPrefix: `twinny-${this.options.role}`
     });
+    this.child = child;
     this.protocolClient = protocol;
+    this.initializeResponse = undefined;
+    child.on("exit", (code, signal) => {
+      if (this.child === child) {
+        this.child = undefined;
+      }
+      if (this.protocolClient === protocol) {
+        this.protocolClient = undefined;
+        this.initializeResponse = undefined;
+      }
+      this.emit("exit", code, signal);
+    });
     protocol.start();
 
     this.initializeResponse = await protocol.initialize(createInitializeParams(this.options.clientVersion));
@@ -203,6 +227,10 @@ export class RoleCodexAppServerPool {
       throw new Error(`No Codex app-server configured for role ${role}`);
     }
     return server;
+  }
+
+  async restart(role: RoleName): Promise<InitializeResponse> {
+    return this.get(role).start();
   }
 
   async stopAll(signal: NodeJS.Signals = "SIGTERM"): Promise<void> {

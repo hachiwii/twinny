@@ -53,6 +53,7 @@ export class TwinnyRuntime {
   private larkConsumer?: LarkEventConsumer;
   private conversation?: ConversationManager;
   private systemNotifier?: TwinnySystemNotifier;
+  private readonly codexRecoveryByRole = new Map<RoleName, Promise<void>>();
   private stopped = false;
   private stopPromise: Promise<void>;
   private resolveStopped!: () => void;
@@ -88,6 +89,9 @@ export class TwinnyRuntime {
         });
         this.codexPool.get(role).on("exit", (code, signal) => {
           this.log.error({ role, code, signal }, "codex app-server exited");
+          void this.handleCodexAppServerExit(role).catch((error) => {
+            this.log.error({ error, role }, "failed to recover codex app-server after exit");
+          });
         });
       }
       await this.codexPool.startAll();
@@ -204,6 +208,38 @@ export class TwinnyRuntime {
 
   async wait(): Promise<void> {
     await this.stopPromise;
+  }
+
+  private async handleCodexAppServerExit(role: RoleName): Promise<void> {
+    if (this.stopped) {
+      return;
+    }
+    const existing = this.codexRecoveryByRole.get(role);
+    if (existing) {
+      return existing;
+    }
+    const recovery = this.recoverCodexAppServer(role).finally(() => {
+      if (this.codexRecoveryByRole.get(role) === recovery) {
+        this.codexRecoveryByRole.delete(role);
+      }
+    });
+    this.codexRecoveryByRole.set(role, recovery);
+    await recovery;
+  }
+
+  private async recoverCodexAppServer(role: RoleName): Promise<void> {
+    const pool = this.codexPool;
+    if (!pool || this.stopped) {
+      return;
+    }
+    const suspended = (await this.conversation?.suspendActiveTurnsForCodexAppServerExit(role)) ?? 0;
+    this.log.warn({ role, suspended }, "recovering codex app-server after exit");
+    await pool.restart(role);
+    if (this.stopped) {
+      return;
+    }
+    await this.conversation?.recoverUnfinishedMessages({ role });
+    this.log.info({ role, suspended }, "codex app-server recovered after exit");
   }
 
   private async shutdownConversation(): Promise<void> {

@@ -3283,6 +3283,57 @@ describe("ConversationManager", () => {
     });
   });
 
+  it("recovers only unfinished messages for the selected role", async () => {
+    const guestRecord = larkMessageRecord({
+      larkMessageId: "m_guest",
+      larkUserId: "ou_guest",
+      conversationKey: "p2p_ou_guest",
+      codexThreadId: "thread_guest",
+      rawEventJson: JSON.stringify(rawReceiveEvent("m_guest", "guest message"))
+    });
+    const ownerRecord = larkMessageRecord({
+      larkMessageId: "m_owner",
+      larkUserId: "ou_owner",
+      conversationKey: "p2p_ou_owner",
+      codexThreadId: "thread_owner",
+      rawEventJson: JSON.stringify({
+        ...rawReceiveEvent("m_owner", "owner message"),
+        sender: { sender_id: { open_id: "ou_owner" }, sender_type: "user" }
+      })
+    });
+    const { repository } = createRepository(undefined, {
+      larkMessages: [guestRecord, ownerRecord],
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_guest",
+          conversationKey: "p2p_ou_guest",
+          role: "guest"
+        }),
+        codexThreadRecord({
+          id: 2,
+          codexThreadId: "thread_owner",
+          conversationKey: "p2p_ou_owner",
+          role: "owner"
+        })
+      ]
+    });
+    const codex = createCodex();
+    const manager = createManager({ repository, codex });
+
+    await manager.recoverUnfinishedMessages({ role: "owner" });
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    expect(codex.resumeThread).toHaveBeenCalledWith(expect.objectContaining({ role: "owner", threadId: "thread_owner" }));
+    expect(codex.resumeThread).not.toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_guest" }));
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "owner",
+        threadId: "thread_owner",
+        input: "Twinny daemon has beed reloaded, continue with the unfinished work."
+      })
+    );
+  });
+
   it("recovers queued messages from raw Lark event JSON", async () => {
     const row = conversationRecord({ codexThreadId: "thread_recovered" });
     const record = larkMessageRecord({
@@ -3466,6 +3517,62 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesFailed).not.toHaveBeenCalled();
     expect(repository.markLarkMessagesInterrupted).not.toHaveBeenCalled();
     expect(repository.markLarkMessagesCleared).not.toHaveBeenCalled();
+  });
+
+  it("suspends active turns for an exited app-server role without interrupting or failing messages", async () => {
+    const { codex } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const { repository } = createRepository();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    await expect(manager.suspendActiveTurnsForCodexAppServerExit("owner")).resolves.toBe(0);
+    await expect(manager.suspendActiveTurnsForCodexAppServerExit("guest")).resolves.toBe(1);
+
+    expect(codex.interruptTurn).not.toHaveBeenCalled();
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith(
+        "card_m1_1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "grey",
+            title: { tag: "plain_text", content: "工作中断" }
+          })
+        })
+      )
+    );
+    expect(repository.markLarkMessagesFailed).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesInterrupted).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCleared).not.toHaveBeenCalled();
+  });
+
+  it("leaves turns recoverable when Codex protocol closes during an active turn", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const { repository } = createRepository();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    turns[0]!.reject(new TwinnyError("Codex protocol connection closed", "CODEX_PROTOCOL_CLOSED"));
+
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith(
+        "card_m1_1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "grey",
+            title: { tag: "plain_text", content: "工作中断" }
+          })
+        })
+      )
+    );
+    expect(repository.markLarkMessagesFailed).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesInterrupted).not.toHaveBeenCalled();
+    expect(lark.replyText).not.toHaveBeenCalledWith("m1", expect.stringContaining("Codex protocol connection closed"));
   });
 });
 

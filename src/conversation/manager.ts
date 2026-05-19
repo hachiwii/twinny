@@ -554,7 +554,25 @@ export class ConversationManager {
     await Promise.all(cancelPromises);
   }
 
-  async recoverUnfinishedMessages(): Promise<void> {
+  async suspendActiveTurnsForCodexAppServerExit(role: RoleName): Promise<number> {
+    const suspendPromises: Promise<number>[] = [];
+    for (const state of this.states.values()) {
+      suspendPromises.push(
+        state.controlQueue.enqueue(async () => {
+          const active = state.active;
+          if (!active || active.role !== role) {
+            return 0;
+          }
+          await this.suspendActiveTurnForCodexAppServerExit(state, active);
+          return 1;
+        })
+      );
+    }
+    const counts = await Promise.all(suspendPromises);
+    return counts.reduce((sum, count) => sum + count, 0);
+  }
+
+  async recoverUnfinishedMessages(options: { role?: RoleName } = {}): Promise<void> {
     const records = await this.options.repository.listUnfinishedLarkMessages();
     if (records.length === 0) {
       return;
@@ -568,6 +586,12 @@ export class ConversationManager {
 
     for (const record of records) {
       const context = contextForRecoveredRecord(record);
+      if (options.role) {
+        const role = await this.roleForRecoverableRecord(record, context);
+        if (role !== options.role) {
+          continue;
+        }
+      }
       const state = this.getState(context.stateKey);
       recoverableStates.set(context.stateKey, { state, context });
       const message = await this.toRecoveredPendingMessage(record, context).catch(async (error: unknown) => {
@@ -601,6 +625,36 @@ export class ConversationManager {
     for (const { state, context } of recoverableStates.values()) {
       await state.controlQueue.enqueue(() => this.startPendingBatch(state, context));
     }
+  }
+
+  private async roleForRecoverableRecord(record: LarkMessageRecord, context: MessageContext): Promise<RoleName> {
+    try {
+      if (record.codexThreadId) {
+        const thread = await this.options.repository.getCodexThreadById(record.codexThreadId);
+        if (thread) {
+          return thread.role;
+        }
+      }
+      if (context.larkThreadId) {
+        const thread = await this.options.repository.getCodexThreadByConversationAndLarkThread(
+          context.conversationKey,
+          context.larkThreadId
+        );
+        if (thread) {
+          return thread.role;
+        }
+      }
+      const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+      if (conversation) {
+        return conversation.role;
+      }
+    } catch (error) {
+      this.log.warn(
+        { error, messageId: record.larkMessageId, conversationKey: context.conversationKey },
+        "failed to resolve recoverable message role; falling back to sender role"
+      );
+    }
+    return roleForSender(this.options.config, record.larkUserId);
   }
 
   private async toRecoveredPendingMessage(record: LarkMessageRecord, context: MessageContext): Promise<PendingMessage> {
@@ -2391,6 +2445,14 @@ export class ConversationManager {
       })
       .catch(async (error) => {
         if (state.active === active && !active.cancelRequested) {
+          if (isCodexProtocolClosedError(error)) {
+            await this.suspendActiveTurnForCodexAppServerExit(state, active);
+            this.log.warn(
+              { error, messageId: active.replyMessageId, conversationKey: context.conversationKey, role: active.role },
+              "codex protocol closed; leaving active turn recoverable"
+            );
+            return;
+          }
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
           this.log.error({ error, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation turn failed");
           await this.failAgentCardBestEffort(state, active, toErrorMessage(error));
@@ -2637,6 +2699,19 @@ export class ConversationManager {
     if (active.turnId) {
       await this.interruptActiveTurnBestEffort(active);
     }
+    return true;
+  }
+
+  private async suspendActiveTurnForCodexAppServerExit(state: ConversationState, active: ActiveTurn): Promise<boolean> {
+    if (state.active !== active) {
+      return false;
+    }
+    state.active = undefined;
+    active.cancelRequested = true;
+    active.pendingSteers = [];
+    await this.clearReactionBestEffort(active);
+    await this.pauseAgentCardForShutdownBestEffort(state, active);
+    await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
     return true;
   }
 
@@ -5519,6 +5594,14 @@ function isMissingRolloutError(error: unknown): boolean {
   }
   const cause = isRecord(error) ? error.cause : undefined;
   return isRecord(cause) && typeof cause.message === "string" && cause.message.includes("no rollout found");
+}
+
+function isCodexProtocolClosedError(error: unknown): boolean {
+  if (error instanceof TwinnyError && error.code === "CODEX_PROTOCOL_CLOSED") {
+    return true;
+  }
+  const cause = isRecord(error) ? error.cause : undefined;
+  return isRecord(cause) && cause.code === "CODEX_PROTOCOL_CLOSED";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
