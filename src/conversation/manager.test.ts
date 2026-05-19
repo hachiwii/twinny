@@ -1090,6 +1090,7 @@ describe("ConversationManager", () => {
       })
     );
     expect(lark.replyText).toHaveBeenCalledWith(cardMessageId, "topic first", { replyInThread: true });
+    expect(lark.recallMessage).toHaveBeenCalledWith("g_thread");
     expect(codex.resumeThread).not.toHaveBeenCalled();
     expect(codex.startThread).toHaveBeenCalledTimes(1);
     expect(codex.startTurn).toHaveBeenCalledWith(
@@ -1230,6 +1231,7 @@ describe("ConversationManager", () => {
       ],
       { replyInThread: true }
     );
+    expect(lark.recallMessage).toHaveBeenCalledWith("g_thread_post");
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         input: wrappedMessage("post hi @Alice\nsecond line", "reply_post_1", "ou_guest")

@@ -1255,6 +1255,7 @@ export class ConversationManager {
     }
 
     const proxy = await this.replyThreadCommandMessage(topic.cardMessageId, message, threadText);
+    await this.recallMessageBestEffort(message.messageId, "failed to recall original /thread command after proxy reply");
     topic = await this.updateSessionTopicThreadId(context, topic, proxy.larkThreadId);
     const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
     const proxyMessage = createThreadReplyMessage(message, proxy.messageId, topic.larkThreadId, proxy.text);
@@ -3140,6 +3141,14 @@ export class ConversationManager {
       await this.options.lark.sendTextToOpenId(openId, text);
     } catch (error) {
       this.log.warn({ error, openId }, "failed to send direct lark control message");
+    }
+  }
+
+  private async recallMessageBestEffort(messageId: string, failureMessage: string): Promise<void> {
+    try {
+      await this.options.lark.recallMessage(messageId);
+    } catch (error) {
+      this.log.warn({ error, messageId }, failureMessage);
     }
   }
 
