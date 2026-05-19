@@ -417,6 +417,10 @@ interface ConversationState {
   submittedMessages: Map<string, IncomingLarkMessage>;
   processingMessage?: IncomingLarkMessage;
   active?: ActiveTurn;
+  waitingInterruptBatch?: {
+    context: MessageContext;
+    messages: PendingMessage[];
+  };
   pendingBatch: PendingMessage[];
   queueNextMessage: boolean;
   nextRunId: number;
@@ -1414,13 +1418,15 @@ export class ConversationManager {
     }
     const pending = toPendingMessage(message, text, { queueBoundary: queueByMenu });
     const active = state.active;
-    if (active?.waiting) {
-      await this.addQueuedReactionBestEffort(pending);
-      state.pendingBatch.push(pending);
-      await this.cancelActiveTurn(state, { waitForCompletion: true });
-      if (!state.active) {
-        await this.startPendingBatch(state, context);
+    if (state.waitingInterruptBatch) {
+      state.waitingInterruptBatch.messages.push(pending);
+      if (!active) {
+        await this.startWaitingInterruptBatch(state);
       }
+      return;
+    }
+    if (active?.waiting) {
+      await this.interruptWaitingTurnWithMessage(state, context, active, pending);
       return;
     }
     if (queueByMenu) {
@@ -1464,6 +1470,17 @@ export class ConversationManager {
 
     state.queueNextMessage = false;
     const pending = toPendingMessage(message, text, { queueBoundary: true });
+    if (state.waitingInterruptBatch) {
+      state.waitingInterruptBatch.messages.push(pending);
+      if (!state.active) {
+        await this.startWaitingInterruptBatch(state);
+      }
+      return;
+    }
+    if (state.active?.waiting) {
+      await this.interruptWaitingTurnWithMessage(state, context, state.active, pending);
+      return;
+    }
     if (state.active || state.pendingBatch.length > 0) {
       await this.addQueuedReactionBestEffort(pending);
     }
@@ -2040,6 +2057,33 @@ export class ConversationManager {
     }
   }
 
+  private async interruptWaitingTurnWithMessage(
+    state: ConversationState,
+    context: MessageContext,
+    active: ActiveTurn,
+    message: PendingMessage
+  ): Promise<void> {
+    state.waitingInterruptBatch = {
+      context,
+      messages: [...(state.waitingInterruptBatch?.messages ?? []), message]
+    };
+    if (!active.cancelRequested) {
+      await this.cancelActiveTurn(state, { waitForCompletion: true });
+    }
+    if (!state.active) {
+      await this.startWaitingInterruptBatch(state);
+    }
+  }
+
+  private async startWaitingInterruptBatch(state: ConversationState): Promise<void> {
+    if (state.active || !state.waitingInterruptBatch || state.waitingInterruptBatch.messages.length === 0) {
+      return;
+    }
+    const batch = state.waitingInterruptBatch;
+    state.waitingInterruptBatch = undefined;
+    await this.startTurnForMessages(state, batch.context, batch.messages);
+  }
+
   private async processPendingControlMessage(
     state: ConversationState,
     context: MessageContext,
@@ -2476,6 +2520,10 @@ export class ConversationManager {
     if (active.cancelRequested) {
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
       this.stopAgentCardTimer(active);
+      await this.startWaitingInterruptBatch(state);
+      if (state.active) {
+        return;
+      }
       await this.startPendingBatch(state, active.context);
       return;
     }
@@ -2495,7 +2543,9 @@ export class ConversationManager {
 
   private clearPendingMessages(state: ConversationState): PendingMessage[] {
     const batchPending = state.pendingBatch.splice(0);
-    return batchPending;
+    const waitingInterruptPending = state.waitingInterruptBatch?.messages.splice(0) ?? [];
+    state.waitingInterruptBatch = undefined;
+    return [...batchPending, ...waitingInterruptPending];
   }
 
   private async clearPendingMessagesBestEffort(state: ConversationState): Promise<PendingMessage[]> {
@@ -4465,6 +4515,12 @@ function classifyInitialRoute(
   parsed: ParsedCommand,
   originalText: string
 ): { routeKind: LarkMessageRouteKind; status: "queued" | "processing"; text: string } {
+  if (
+    (state.active?.waiting || state.waitingInterruptBatch) &&
+    (parsed.kind === "message" || (parsed.kind === "queue" && parsed.text.length > 0))
+  ) {
+    return { routeKind: "message", status: "processing", text: parsed.text };
+  }
   if (parsed.kind === "queue" && parsed.text.length > 0) {
     return { routeKind: "queued_message", status: "queued", text: parsed.text };
   }

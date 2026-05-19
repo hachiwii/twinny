@@ -2765,6 +2765,128 @@ describe("ConversationManager", () => {
     turns[0]!.resolve(completed("thread_1", "turn_1"));
   });
 
+  it("starts quick requestUserInput follow-up messages directly without queued reactions", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    vi.mocked(lark.getMessageReadOpenIds).mockResolvedValue([]);
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+    const responder = {
+      respond: vi.fn(),
+      reject: vi.fn()
+    };
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await turns[0]!.params.onRequestUserInput?.(
+      {
+        requestId: "request_1",
+        params: {
+          threadId: "thread_1",
+          turnId: "turn_1",
+          itemId: "item_1",
+          questions: [
+            {
+              id: "choice",
+              header: "Choose mode",
+              question: "Choose mode",
+              isOther: true,
+              isSecret: false,
+              options: [{ label: "直接实现", description: "按计划改代码并测试。" }]
+            }
+          ]
+        }
+      },
+      responder
+    );
+    await waitForExpect(() => {
+      const card = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
+      expect(card).toBeDefined();
+      expect(JSON.stringify(card)).toContain("等待交互");
+    });
+
+    manager.submitIncoming(message("m2", "/queue queued follow-up"));
+    manager.submitIncoming(message("m3", "second follow-up"));
+
+    await waitForExpect(() =>
+      expect(codex.interruptTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ role: "guest", threadId: "thread_1", turnId: "turn_1" })
+      )
+    );
+    await waitForExpect(() => {
+      const inserted = vi.mocked(repository.insertLarkMessage).mock.calls.map(([input]) => input);
+      expect(inserted.find((input) => input.larkMessageId === "m2")).toMatchObject({
+        routeKind: "message",
+        status: "processing",
+        text: "queued follow-up"
+      });
+      expect(inserted.find((input) => input.larkMessageId === "m3")).toMatchObject({
+        routeKind: "message",
+        status: "processing",
+        text: "second follow-up"
+      });
+    });
+    expect(lark.addQueuedReaction).not.toHaveBeenCalled();
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(0);
+    expect(codex.startTurn).toHaveBeenCalledTimes(1);
+
+    turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(turns[1]!.params.input).toBe(
+      `${wrappedMessage("queued follow-up", "m2")}\n${wrappedMessage("second follow-up", "m3")}`
+    );
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(0);
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("starts plan follow-up messages directly without queued reactions", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    vi.mocked(lark.getMessageReadOpenIds).mockResolvedValue([]);
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "draft a plan"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await turns[0]!.params.onPlanUpdated?.({
+      threadId: "thread_1",
+      turnId: "turn_1",
+      explanation: "Plan ready",
+      plan: [{ step: "Update the implementation", status: "pending" }]
+    });
+    await waitForExpect(() => {
+      const card = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
+      expect(card).toBeDefined();
+      expect(JSON.stringify(card)).toContain("确认计划");
+    });
+
+    manager.submitIncoming(message("m2", "revise the plan"));
+
+    await waitForExpect(() =>
+      expect(codex.interruptTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ role: "guest", threadId: "thread_1", turnId: "turn_1" })
+      )
+    );
+    await waitForExpect(() => {
+      const inserted = vi.mocked(repository.insertLarkMessage).mock.calls.map(([input]) => input);
+      expect(inserted.find((input) => input.larkMessageId === "m2")).toMatchObject({
+        routeKind: "message",
+        status: "processing",
+        text: "revise the plan"
+      });
+    });
+    expect(lark.addQueuedReaction).not.toHaveBeenCalled();
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(0);
+    expect(codex.startTurn).toHaveBeenCalledTimes(1);
+
+    turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(turns[1]!.params.input).toBe(wrappedMessage("revise the plan", "m2"));
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
   it("starts confirmed plan implementation with the concise Codex prompt", async () => {
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();
