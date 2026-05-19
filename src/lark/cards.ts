@@ -242,12 +242,81 @@ export function renderTwinnyThreadSummaryCard(options: RenderTwinnyThreadSummary
 export function markdownElement(content: string, extra: Record<string, unknown> = {}): LarkCardElement {
   return {
     tag: "markdown",
-    content,
+    content: normalizeIndentedCodeFenceBlocks(content),
     text_align: "left",
     text_size: "normal_v2",
     margin: "0px 0px 0px 0px",
     ...extra
   };
+}
+
+interface MarkdownFenceState {
+  indent: string;
+  marker: "`" | "~";
+  markerLength: number;
+}
+
+function normalizeIndentedCodeFenceBlocks(markdown: string): string {
+  if (!markdown.includes("```") && !markdown.includes("~~~")) {
+    return markdown;
+  }
+
+  const lines = markdown.split("\n");
+  const normalized: string[] = [];
+  let fence: MarkdownFenceState | undefined;
+
+  for (const line of lines) {
+    if (!fence) {
+      const opening = parseMarkdownFenceOpening(line);
+      if (!opening) {
+        normalized.push(line);
+        continue;
+      }
+      fence = opening;
+      normalized.push(stripMarkdownFenceIndent(line, opening.indent));
+      continue;
+    }
+
+    normalized.push(stripMarkdownFenceIndent(line, fence.indent));
+    if (isMarkdownFenceClosing(line, fence)) {
+      fence = undefined;
+    }
+  }
+
+  return normalized.join("\n");
+}
+
+function parseMarkdownFenceOpening(line: string): MarkdownFenceState | undefined {
+  const match = trimTrailingCarriageReturn(line).match(/^([ \t]*)(`{3,}|~{3,})/);
+  if (!match) {
+    return undefined;
+  }
+  const fenceMarker = match[2]!;
+  return {
+    indent: match[1]!,
+    marker: fenceMarker[0] as "`" | "~",
+    markerLength: fenceMarker.length
+  };
+}
+
+function stripMarkdownFenceIndent(line: string, indent: string): string {
+  if (!indent) {
+    return line;
+  }
+  return line.startsWith(indent) ? line.slice(indent.length) : line;
+}
+
+function isMarkdownFenceClosing(line: string, fence: MarkdownFenceState): boolean {
+  const match = trimTrailingCarriageReturn(line).match(/^[ \t]*(`{3,}|~{3,})[ \t]*$/);
+  if (!match) {
+    return false;
+  }
+  const fenceMarker = match[1]!;
+  return fenceMarker[0] === fence.marker && fenceMarker.length >= fence.markerLength;
+}
+
+function trimTrailingCarriageReturn(line: string): string {
+  return line.endsWith("\r") ? line.slice(0, -1) : line;
 }
 
 export function imageElement(imageKey: string): LarkCardElement {

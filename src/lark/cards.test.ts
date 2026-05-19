@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  markdownElement,
   renderTwinnyAgentCard,
   type RenderTwinnyAgentCardOptions
 } from "./cards.js";
@@ -84,6 +85,56 @@ function findElementsByTag(card: Record<string, unknown>, tag: string): Record<s
   }
   return matches;
 }
+
+describe("markdownElement", () => {
+  it("removes list indentation from fenced code blocks before rendering Lark card markdown", () => {
+    const element = markdownElement([
+      "3. 先跑最小构建",
+      "   Android 通常是：",
+      "   ```bash",
+      "   ./gradlew assembleDebug",
+      "   ./gradlew test",
+      "   ```"
+    ].join("\n"));
+
+    expect(element.content).toBe([
+      "3. 先跑最小构建",
+      "   Android 通常是：",
+      "```bash",
+      "./gradlew assembleDebug",
+      "./gradlew test",
+      "```"
+    ].join("\n"));
+  });
+
+  it("preserves code indentation after removing only the shared fence prefix", () => {
+    const element = markdownElement([
+      "1. 示例",
+      "    ```ts",
+      "      const value = 1;",
+      "        return value;",
+      "    ```"
+    ].join("\n"));
+
+    expect(element.content).toBe([
+      "1. 示例",
+      "```ts",
+      "  const value = 1;",
+      "    return value;",
+      "```"
+    ].join("\n"));
+  });
+
+  it("leaves unindented fenced code blocks unchanged", () => {
+    const markdown = [
+      "```bash",
+      "./gradlew assembleDebug",
+      "```"
+    ].join("\n");
+
+    expect(markdownElement(markdown).content).toBe(markdown);
+  });
+});
 
 describe("renderTwinnyAgentCard", () => {
   const samplePlanText = [
