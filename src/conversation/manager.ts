@@ -313,6 +313,26 @@ export interface ConversationManagerOptions {
   nameLookupFailureTtlMs?: number;
 }
 
+export interface ConversationRecoveryProbeFailure {
+  eventId: string;
+  larkMessageId?: string;
+  status: LarkMessageStatus;
+  error: string;
+}
+
+export interface ConversationRecoveryProbeSnapshot {
+  unfinishedMessages: number;
+  queuedMessages: number;
+  processingMessages: number;
+  recoveredMessages: number;
+  failedMessages: number;
+  stateCount: number;
+  pendingMessages: number;
+  compactMessages: number;
+  roles: Record<RoleName, number>;
+  failures: ConversationRecoveryProbeFailure[];
+}
+
 interface ActiveThreadResolution {
   threadId: string;
   replacedMissingThread: boolean;
@@ -644,6 +664,91 @@ export class ConversationManager {
     for (const { state, context } of recoverableStates.values()) {
       await state.controlQueue.enqueue(() => this.startPendingBatch(state, context));
     }
+  }
+
+  async probeUnfinishedMessages(): Promise<ConversationRecoveryProbeSnapshot> {
+    const records = await this.options.repository.listUnfinishedLarkMessages();
+    const roles: Record<RoleName, number> = { owner: 0, guest: 0 };
+    const failures: ConversationRecoveryProbeFailure[] = [];
+    let queuedMessages = 0;
+    let processingMessages = 0;
+    let recoveredMessages = 0;
+    let pendingMessages = 0;
+    let compactMessages = 0;
+
+    for (const record of records) {
+      if (record.status === "queued") {
+        queuedMessages += 1;
+      } else if (record.status === "processing") {
+        processingMessages += 1;
+      }
+
+      const context = contextForRecoveredRecord(record);
+      const state = this.getState(context.stateKey);
+
+      try {
+        const role = await this.roleForRecoverableRecord(record, context);
+        roles[role] += 1;
+        const raw = parseStoredRawEvent(record.rawEventJson);
+        const normalized = normalizeIncomingLarkMessage(raw) ?? recoverLarkMessageFromRecord(record, context);
+        if (!normalized) {
+          throw new TwinnyError(
+            `Cannot recover Lark message ${record.larkMessageId ?? record.eventId} from raw event JSON`,
+            "LARK_MESSAGE_RECOVERY_FAILED"
+          );
+        }
+
+        const parsed = parseSlashCommand(normalized.text);
+        const text = record.status === "queued" && (normalized.resources?.length ?? 0) > 0 ? normalized.text : record.text;
+        const pending = toPendingMessage(normalized, text, {
+          queueBoundary:
+            parsed.kind === "compact" ||
+            (record.status === "queued" &&
+              (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit")),
+          control:
+            parsed.kind === "plan"
+              ? "plan_on"
+              : parsed.kind === "exit"
+                ? "plan_off"
+                : parsed.kind === "compact"
+                  ? "compact"
+                  : undefined
+        });
+        if (pending.control === "compact") {
+          compactMessages += 1;
+        }
+        if (record.status === "queued" || pending.control === "compact") {
+          state.pendingBatch.push(pending);
+          pendingMessages += 1;
+        }
+        recoveredMessages += 1;
+      } catch (error) {
+        const message = toErrorMessage(error);
+        failures.push({
+          eventId: record.eventId,
+          larkMessageId: record.larkMessageId,
+          status: record.status,
+          error: message
+        });
+        this.log.warn(
+          { error: message, eventId: record.eventId, messageId: record.larkMessageId },
+          "startup probe failed to recover unfinished Lark message"
+        );
+      }
+    }
+
+    return {
+      unfinishedMessages: records.length,
+      queuedMessages,
+      processingMessages,
+      recoveredMessages,
+      failedMessages: failures.length,
+      stateCount: this.states.size,
+      pendingMessages,
+      compactMessages,
+      roles,
+      failures
+    };
   }
 
   private async roleForRecoverableRecord(record: LarkMessageRecord, context: MessageContext): Promise<RoleName> {

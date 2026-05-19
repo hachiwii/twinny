@@ -15,7 +15,7 @@ export interface MacIdleSleepPreventerOptions {
   spawnProcess?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 }
 
-const defaultCaffeinateCommand = "/usr/bin/caffeinate";
+export const DEFAULT_CAFFEINATE_COMMAND = "/usr/bin/caffeinate";
 const defaultCaffeinateArgs = ["-i"];
 
 export class MacIdleSleepPreventer implements IdleSleepPreventer {
@@ -29,7 +29,7 @@ export class MacIdleSleepPreventer implements IdleSleepPreventer {
 
   constructor(private readonly options: MacIdleSleepPreventerOptions = {}) {
     this.platform = options.platform ?? process.platform;
-    this.command = options.command ?? defaultCaffeinateCommand;
+    this.command = options.command ?? DEFAULT_CAFFEINATE_COMMAND;
     this.args = options.args ?? defaultCaffeinateArgs;
     this.stopTimeoutMs = options.stopTimeoutMs ?? 1_000;
     this.spawnProcess = options.spawnProcess ?? spawn;

@@ -357,7 +357,7 @@ export async function createRuntime(config: TwinnyConfig, options: TwinnyRuntime
   return new TwinnyRuntime(config, options);
 }
 
-function adaptConversationRepository(repository: ConversationRepository) {
+export function adaptConversationRepository(repository: ConversationRepository) {
   return {
     findByConversationKey: (conversationKey: string) => repository.getByConversationKey(conversationKey) ?? null,
     create: repository.create.bind(repository),
