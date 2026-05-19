@@ -109,7 +109,6 @@ Security boundary:
 
 Lark output:
 - To mention a Feishu/Lark user, write <mention-lark-user>OPEN_ID</mention-lark-user> in your final answer only. Twinny converts it to a Lark @ mention.
-- Do not use <mention-lark-user>...</mention-lark-user> in commentary or intermediate progress messages; Twinny only detects it in final messages.
 `;
 }
 
