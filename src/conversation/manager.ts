@@ -1932,7 +1932,13 @@ export class ConversationManager {
       implementPrompt,
       { queueBoundary: true }
     );
-    await this.startTurnForMessages(state, active.context, [pending], implementPrompt);
+    await this.startTurnForMessages(state, active.context, [pending], implementPrompt, [
+      {
+        id: `plan_implement:${action.eventId}:confirmed`,
+        text: formatConfirmedPlanProgress(supplementalInstruction),
+        processOnly: true
+      }
+    ]);
   }
 
   private async recordMenuActionBestEffort(
@@ -2462,7 +2468,8 @@ export class ConversationManager {
     state: ConversationState,
     context: MessageContext,
     messages: PendingMessage[],
-    inputOverride?: CodexTurnInput
+    inputOverride?: CodexTurnInput,
+    initialCardMessages?: TwinnyAgentCardMessage[]
   ): Promise<void> {
     if (messages.length === 0) {
       return;
@@ -2477,7 +2484,8 @@ export class ConversationManager {
       role: resolved.role,
       threadId: resolved.threadId,
       workspace: resolved.workspace,
-      input: inputOverride ?? formatPendingMessagesForCodexInput(messages)
+      input: inputOverride ?? formatPendingMessagesForCodexInput(messages),
+      initialCardMessages
     });
   }
 
@@ -2532,6 +2540,7 @@ export class ConversationManager {
       threadId: string;
       workspace: string;
       input: CodexTurnInput;
+      initialCardMessages?: TwinnyAgentCardMessage[];
     }
   ): Promise<void> {
     if (params.messages.length === 0) {
@@ -2571,7 +2580,7 @@ export class ConversationManager {
           ? {
               anchorMessageId: anchor.messageId,
               startedAt,
-              messages: [],
+              messages: params.initialCardMessages ? [...params.initialCardMessages] : [],
               fallbackPlain: false
             }
           : undefined,
@@ -4560,6 +4569,10 @@ function extractPlanImplementInstruction(formValue: Record<string, unknown> | un
   return value || undefined;
 }
 
+function formatConfirmedPlanProgress(supplementalInstruction: string | undefined): string {
+  return supplementalInstruction ? `[已确认方案] ${supplementalInstruction}` : "[已确认方案]";
+}
+
 function formatRequestUserInputAnswerProgress(
   request: CodexRequestUserInputRequest,
   response: CodexRequestUserInputResponse
@@ -5008,10 +5021,20 @@ function splitFinalAgentCardMessages(
   if (messages.length === 0) {
     return { text: fallbackFinalText, processMessages: [] };
   }
-  const finalMessage = messages[messages.length - 1]!;
+  let finalMessageIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.processOnly !== true) {
+      finalMessageIndex = index;
+      break;
+    }
+  }
+  if (finalMessageIndex < 0) {
+    return { text: fallbackFinalText, processMessages: messages };
+  }
+  const finalMessage = messages[finalMessageIndex]!;
   return {
     text: finalMessage.text,
-    processMessages: messages.slice(0, -1)
+    processMessages: messages.filter((_, index) => index !== finalMessageIndex)
   };
 }
 

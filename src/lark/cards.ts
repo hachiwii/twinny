@@ -18,6 +18,7 @@ export type TwinnyAgentCardStatus =
 export interface TwinnyAgentCardMessage {
   id: string;
   text: string;
+  processOnly?: boolean;
 }
 
 export interface TwinnyAgentCardActionValue {

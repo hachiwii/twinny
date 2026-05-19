@@ -3242,6 +3242,9 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
     expect(turns[1]!.params.input).toBe("Implement this plan");
     expect(turns[1]!.params.mode).toBe("default");
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(2));
+    const implementationCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(JSON.stringify(implementationCard)).toContain("- [已确认方案]");
 
     turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
     turns[1]!.resolve(completed("thread_1", "turn_2"));
@@ -3285,6 +3288,11 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
     expect(turns[1]!.params.input).toBe("Implement the plan with following instruction: keep API stable");
     expect(turns[1]!.params.mode).toBe("default");
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(2));
+    const implementationCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const implementationSerialized = JSON.stringify(implementationCard);
+    expect(implementationSerialized).toContain("- [已确认方案] keep API stable");
+    expect(implementationSerialized.indexOf("[已确认方案]")).toBeLessThan(implementationSerialized.indexOf("已工作"));
 
     turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
     turns[1]!.resolve(completed("thread_1", "turn_2"));
