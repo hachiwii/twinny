@@ -473,8 +473,12 @@ function adaptLarkSender(
     ) => {
       return sender.forwardThreadToThread(threadId, receiveThreadId, options);
     },
-    replyCard: async (messageId: string, card: Parameters<LarkMessageSender["replyInteractiveCard"]>[1]): Promise<{ messageId?: string }> => {
-      return sender.replyInteractiveCard(messageId, card);
+    replyCard: async (
+      messageId: string,
+      card: Parameters<LarkMessageSender["replyInteractiveCard"]>[1],
+      options?: { replyInThread?: boolean }
+    ): Promise<{ messageId?: string; raw?: unknown }> => {
+      return sender.replyInteractiveCard(messageId, card, options);
     },
     patchCard: async (messageId: string, card: Parameters<LarkMessageSender["patchInteractiveCard"]>[1]): Promise<{ messageId?: string }> => {
       return sender.patchInteractiveCard(messageId, card);

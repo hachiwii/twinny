@@ -1326,20 +1326,58 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_thread_nested"]);
   });
 
-  it("rejects /thread outside group conversations", async () => {
-    const row = conversationRecord({ role: "owner", chatId: "ou_owner", codexThreadId: "thread_owner" });
+  it("lets p2p users create a Lark thread with /thread", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_main" });
     const { repository } = createRepository(row);
-    const codex = createCodex();
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_dm_topic" })),
+      startTurn: vi.fn(async ({ threadId }) => completed(threadId, "turn_1"))
+    });
     const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockResolvedValueOnce({
+      messageId: "card_dm_thread_1",
+      raw: { data: { thread_id: "dm_thread_1" } }
+    });
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_dm_thread_1",
+      raw: { data: { thread_id: "dm_thread_1" } }
+    });
     const manager = createManager({ repository, codex, lark });
 
-    manager.submitIncoming(message("m_thread", "/thread hello", { senderOpenId: "ou_owner" }));
+    manager.submitIncoming(message("m_thread", "/thread hello", { senderOpenId: "ou_guest" }));
 
-    await waitForExpect(() =>
-      expect(lark.replyText).toHaveBeenCalledWith("m_thread", "thread 只能在群里用。")
-    );
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(lark.replyCard).toHaveBeenCalledWith("m_thread", expect.any(Object), { replyInThread: true });
+    expect(lark.replyText).toHaveBeenCalledWith("card_dm_thread_1", "hello", { replyInThread: true });
     expect(lark.sendCardToChatId).not.toHaveBeenCalled();
-    expect(codex.startThread).not.toHaveBeenCalled();
+    expect(lark.recallMessage).not.toHaveBeenCalled();
+    expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
+      conversationKey: "p2p_ou_guest",
+      codexThreadId: "thread_dm_topic",
+      role: "guest",
+      larkThreadId: "dm_thread_1",
+      creatorOpenId: "ou_guest",
+      cardMessageId: "card_dm_thread_1"
+    });
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "reply_dm_thread_1",
+        eventId: "thread_reply:e_m_thread",
+        larkUserId: "ou_guest",
+        larkGroupId: undefined,
+        larkThreadId: "dm_thread_1",
+        conversationKey: "p2p_ou_guest",
+        routeKind: "message",
+        status: "processing",
+        text: "hello"
+      })
+    );
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_dm_topic",
+        input: wrappedMessage("hello", "reply_dm_thread_1", "ou_guest")
+      })
+    );
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m_thread"]);
   });
 

@@ -143,6 +143,7 @@ export class LarkMessageSender {
       body: {
         content: JSON.stringify(card),
         msg_type: "interactive",
+        ...(options.replyInThread ? { reply_in_thread: true } : {}),
         ...(options.uuid ? { uuid: options.uuid } : {})
       }
     });

@@ -152,6 +152,34 @@ describe("LarkMessageSender", () => {
     });
   });
 
+  it("marks interactive card replies as in-thread when requested", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { message_id: "om_card", thread_id: "omt_thread" } }
+    ]);
+    const sender = createSender(fetch);
+    const card = { schema: "2.0", body: { elements: [{ tag: "markdown", content: "working" }] } };
+
+    await expect(sender.replyInteractiveCard("om_source", card, { replyInThread: true })).resolves.toMatchObject({
+      messageId: "om_card",
+      raw: { data: { thread_id: "omt_thread" } }
+    });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/messages/om_source/reply", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        content: JSON.stringify(card),
+        msg_type: "interactive",
+        reply_in_thread: true
+      }),
+      signal: undefined
+    });
+  });
+
   it("patches an interactive card message through OpenAPI", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },

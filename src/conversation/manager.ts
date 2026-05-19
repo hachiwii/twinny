@@ -275,7 +275,7 @@ export interface LarkResponder {
     options?: { uuid?: string }
   ): Promise<LarkSendMessageResult | void>;
   forwardThreadToThread(threadId: string, receiveThreadId: string, options?: { uuid?: string }): Promise<LarkSendMessageResult | void>;
-  replyCard(messageId: string, card: LarkCardJson): Promise<{ messageId?: string } | void>;
+  replyCard(messageId: string, card: LarkCardJson, options?: LarkReplyOptions): Promise<LarkReplyResult | void>;
   patchCard(messageId: string, card: LarkCardJson): Promise<{ messageId?: string } | void>;
   recallMessage(messageId: string): Promise<void>;
   getMessageReadOpenIds(messageId: string): Promise<string[]>;
@@ -312,6 +312,7 @@ interface NewSessionTopicRequest {
   chatId: string;
   operatorOpenId: string;
   eventId: string;
+  anchorMessage?: IncomingLarkMessage;
 }
 
 interface CreatedSessionTopic {
@@ -1238,17 +1239,14 @@ export class ConversationManager {
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
-    if (!isGroupConversationType(context.type)) {
-      await this.replyControlBestEffort(message.messageId, "thread 只能在群里用。");
-      await this.markMessagesCompletedBestEffort([message.messageId]);
-      return;
-    }
     if (!isThreadCommandMessageType(message.messageType)) {
       await this.replyControlBestEffort(message.messageId, "thread 只支持 text/post 消息。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
-    const chatId = nonEmptyString(message.larkGroupId) ?? nonEmptyString(message.chatId);
+    const chatId = context.type === "p2p"
+      ? message.senderOpenId
+      : nonEmptyString(message.larkGroupId) ?? nonEmptyString(message.chatId);
     if (!chatId) {
       await this.replyControlBestEffort(message.messageId, "thread 只能在群里用。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -1257,7 +1255,8 @@ export class ConversationManager {
     let topic = await this.createNewSessionTopic(context, {
       chatId,
       operatorOpenId: message.senderOpenId,
-      eventId: message.eventId
+      eventId: message.eventId,
+      anchorMessage: message
     });
     if (!topic) {
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -1273,10 +1272,12 @@ export class ConversationManager {
     }
 
     const proxy = await this.replyThreadCommandMessage(topic.cardMessageId, message, threadText);
-    await this.recallMessageBestEffort(message.messageId, "failed to recall original /thread command after proxy reply");
+    if (isGroupConversationType(context.type)) {
+      await this.recallMessageBestEffort(message.messageId, "failed to recall original /thread command after proxy reply");
+    }
     topic = await this.updateSessionTopicThreadId(context, topic, proxy.larkThreadId);
     const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
-    const proxyMessage = createThreadReplyMessage(message, proxy.messageId, topic.larkThreadId, proxy.text);
+    const proxyMessage = createThreadReplyMessage(context, message, proxy.messageId, topic.larkThreadId, proxy.text);
     const proxyState = this.getState(proxyContext.stateKey);
     const proxyParsed = parseSlashCommand(proxyMessage.text);
     await this.recordIncomingMessage(proxyState, proxyContext, proxyMessage, proxyParsed);
@@ -1336,19 +1337,52 @@ export class ConversationManager {
     context: MessageContext,
     request: NewSessionTopicRequest
   ): Promise<CreatedSessionTopic | undefined> {
-    const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
-    if (!conversation || conversation.responseMode === "none") {
+    let conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+    let createdThreadId: string | undefined;
+    if (!conversation) {
+      if (isGroupConversationType(context.type)) {
+        await this.sendDirectControlBestEffort(request.operatorOpenId, "请先由 owner 在群内执行 /activate。");
+        return;
+      }
+      const anchorMessage = request.anchorMessage;
+      if (!anchorMessage) {
+        await this.sendDirectControlBestEffort(request.operatorOpenId, "thread 需要从消息中发起。");
+        return;
+      }
+      const role = roleForSender(this.options.config, request.operatorOpenId);
+      const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
+      const thread = await this.options.codex.startThread({
+        role,
+        cwd: workspace,
+        approvalPolicy: "never"
+      });
+      createdThreadId = thread.threadId;
+      conversation = await this.options.repository.create({
+        conversationKey: context.conversationKey,
+        type: context.type,
+        chatId: anchorMessage.senderOpenId,
+        name: conversationNameForMessage(this.options.config, role, anchorMessage),
+        responseMode: "all",
+        role,
+        codexThreadId: thread.threadId,
+        workspace,
+        roleCodexHome: this.options.roles.codexHomeFor(role)
+      });
+    }
+    if (conversation.responseMode === "none" && isGroupConversationType(context.type)) {
       await this.sendDirectControlBestEffort(request.operatorOpenId, "请先由 owner 在群内执行 /activate。");
       return;
     }
 
     const role = conversation.role;
     const workspace = conversation.workspace;
-    const thread = await this.options.codex.startThread({
-      role,
-      cwd: workspace,
-      approvalPolicy: "never"
-    });
+    const thread = createdThreadId
+      ? { threadId: createdThreadId }
+      : await this.options.codex.startThread({
+          role,
+          cwd: workspace,
+          approvalPolicy: "never"
+        });
     await this.options.repository.upsertCodexThread({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
@@ -1361,11 +1395,18 @@ export class ConversationManager {
       role,
       creatorOpenId: request.operatorOpenId
     });
-    const result = await this.options.lark.sendCardToChatId(
-      request.chatId,
-      await this.renderThreadSummaryCard(initialRecord),
-      { uuid: createLarkUuid("twinny-new-session", request.eventId) }
-    );
+    const card = await this.renderThreadSummaryCard(initialRecord);
+    const result = isGroupConversationType(context.type)
+      ? await this.options.lark.sendCardToChatId(
+          request.chatId,
+          card,
+          { uuid: createLarkUuid("twinny-new-session", request.eventId) }
+        )
+      : await this.options.lark.replyCard(
+          request.anchorMessage?.messageId ?? request.eventId,
+          card,
+          { replyInThread: true }
+        );
     const cardMessageId = nonEmptyString(result?.messageId);
     if (!cardMessageId) {
       throw new TwinnyError("Lark new-session card response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
@@ -4349,7 +4390,7 @@ function createMessageContext(type: ConversationType, message: IncomingLarkMessa
 
 function createThreadReplyContext(context: MessageContext, larkThreadId: string): MessageContext {
   return {
-    type: "topic_group",
+    type: context.type === "p2p" ? "p2p" : "topic_group",
     conversationKey: context.conversationKey,
     stateKey: `${context.conversationKey}_thread_${safePathSegment(larkThreadId)}`,
     larkThreadId
@@ -4357,19 +4398,23 @@ function createThreadReplyContext(context: MessageContext, larkThreadId: string)
 }
 
 function createThreadReplyMessage(
+  context: MessageContext,
   message: IncomingLarkMessage,
   replyMessageId: string,
   larkThreadId: string,
   text: string
 ): IncomingLarkMessage {
   const createTime = message.createTime ?? Date.now();
+  const chatType: ConversationType = context.type === "p2p" ? "p2p" : "topic_group";
+  const chatId = chatType === "p2p" ? message.senderOpenId : message.larkGroupId ?? message.chatId;
   return {
     ...message,
     eventId: `thread_reply:${message.eventId}`,
     messageId: replyMessageId,
-    chatType: "topic_group",
+    chatId,
+    chatType,
     messageType: "text",
-    larkGroupId: message.larkGroupId ?? message.chatId,
+    larkGroupId: chatType === "p2p" ? undefined : chatId,
     larkThreadId,
     text,
     createTime,
@@ -4383,8 +4428,8 @@ function createThreadReplyMessage(
       message: {
         message_id: replyMessageId,
         create_time: String(createTime),
-        chat_id: message.larkGroupId ?? message.chatId,
-        chat_type: "topic_group",
+        chat_id: chatId,
+        chat_type: chatType,
         message_type: "text",
         thread_id: larkThreadId,
         mentions: message.mentions,
@@ -4398,7 +4443,7 @@ function recoverLarkMessageFromRecord(record: LarkMessageRecord, context: Messag
   if (!record.larkMessageId || !record.larkUserId) {
     return null;
   }
-  const chatType: ConversationType = context.larkThreadId ? "topic_group" : context.type;
+  const chatType: ConversationType = context.larkThreadId && context.type !== "p2p" ? "topic_group" : context.type;
   const chatId = chatType === "p2p" ? record.larkUserId : record.larkGroupId;
   if (!chatId) {
     return null;
