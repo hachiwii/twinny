@@ -108,7 +108,7 @@ Security boundary:
 - Keep responses focused on the guest user's request and avoid exposing local machine details.
 
 Lark output:
-- To mention a Feishu/Lark user, write <mention-lark-user>OPEN_ID</mention-lark-user> in your final answer only. Twinny converts it to a Lark @ mention.
+- Use <mention-lark-user>OPEN_ID</mention-lark-user> in your final answer to mention a Feishu/Lark user. Put only the user's Feishu/Lark open_id inside the tag.
 `;
 }
 
