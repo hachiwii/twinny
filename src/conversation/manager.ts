@@ -13,6 +13,7 @@ import {
   renderTwinnyThreadSummaryCard,
   type LarkCardElement,
   type LarkCardJson,
+  type TwinnyAgentCardStatus,
   type TwinnyAgentCardInputQuestion,
   type TwinnyAgentCardMessage,
   type TwinnyAgentCardRuntimeStats
@@ -59,6 +60,9 @@ import {
   isGroupConversationType,
   roleForSender
 } from "./routing.js";
+
+const COMPACT_PROGRESS_TEXT = "正在压缩上下文";
+const COMPACT_COMPLETED_TEXT = "完成上下文压缩";
 
 export interface ConversationRepository {
   findByConversationKey(conversationKey: string): Promise<ConversationRecord | null> | ConversationRecord | null;
@@ -3723,12 +3727,14 @@ export class ConversationManager {
       return;
     }
     try {
-      const final = splitFinalAgentCardMessages(
-        card.messages,
-        active.resultText ?? "",
-        active.finalAgentMessageText,
-        active.sawAgentMessagePhase === true
-      );
+      const final = active.kind === "compact"
+        ? { text: COMPACT_COMPLETED_TEXT, processMessages: [] }
+        : splitFinalAgentCardMessages(
+            card.messages,
+            active.resultText ?? "",
+            active.finalAgentMessageText,
+            active.sawAgentMessagePhase === true
+          );
       const output = await this.prepareAgentFinalCardOutputForLark(final.text, active.workspace);
       const rendered = this.renderAgentCard(state, active, "finished", output.elements, undefined, final.processMessages, output.summaryText);
       const previousMessageId = card.messageId;
@@ -3919,25 +3925,16 @@ export class ConversationManager {
   private renderAgentCard(
     state: ConversationState,
     active: ActiveTurn,
-    status:
-      | "working"
-      | "finished"
-      | "interrupted"
-      | "paused"
-      | "failed"
-      | "waiting_input"
-      | "waiting_plan"
-      | "interrupted_input"
-      | "interrupted_plan"
-      | "accepted_plan",
+    status: TwinnyAgentCardStatus,
     finalElements?: LarkCardElement[],
     error?: string,
     messages?: TwinnyAgentCardMessage[],
     summaryText?: string
   ): LarkCardJson {
+    const renderedMessages = messages ?? activeCardMessagesForRender(active, status);
     return renderTwinnyAgentCard({
       status,
-      messages: messages ?? active.card?.messages ?? [],
+      messages: renderedMessages,
       elapsedMs: Date.now() - active.startedAt,
       runtimeStats: activeTurnRuntimeStats(active),
       queueDepth: state.pendingBatch.length,
@@ -5016,6 +5013,13 @@ function splitFinalAgentCardMessages(
     text: finalMessage.text,
     processMessages: messages.slice(0, -1)
   };
+}
+
+function activeCardMessagesForRender(active: ActiveTurn, status: TwinnyAgentCardStatus): TwinnyAgentCardMessage[] {
+  if (active.kind === "compact" && status === "working") {
+    return [{ id: "compact-progress", text: COMPACT_PROGRESS_TEXT }];
+  }
+  return active.card?.messages ?? [];
 }
 
 function activeTurnMentionOpenIds(active: ActiveTurn): string[] {

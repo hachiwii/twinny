@@ -2334,6 +2334,35 @@ describe("ConversationManager", () => {
     expect(lark.recallMessage).toHaveBeenCalledWith("card_m1_1");
   });
 
+  it("renders compact cards with fixed progress and completion text", async () => {
+    const { codex, compacts } = createDeferredCompactCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "/compact"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    const workingCard = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
+    const workingSerialized = JSON.stringify(workingCard);
+    expect(workingSerialized).toContain("正在压缩上下文");
+    expect(workingSerialized).not.toContain("暂无进度");
+
+    compacts[0]!.resolve(completed("thread_1", "compact_1"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(2));
+
+    const completedCard = vi.mocked(lark.replyCard).mock.calls[1]![1] as Record<string, unknown>;
+    const completedSerialized = JSON.stringify(completedCard);
+    expect(completedCard).toMatchObject({
+      header: expect.objectContaining({
+        template: "green",
+        title: { tag: "plain_text", content: "已完成" }
+      })
+    });
+    expect(completedSerialized).toContain("完成上下文压缩");
+    expect(completedSerialized).not.toContain("正在压缩上下文");
+    expect(completedSerialized).not.toContain("工作过程");
+  });
+
   it("updates the working agent card footer with model and thread token usage", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-codex-config-"));
     const codexHome = path.join(tempRoot, "codex");
