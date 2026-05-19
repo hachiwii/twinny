@@ -219,6 +219,10 @@ export class CodexProtocolClient extends EventEmitter {
   }
 
   private handleLine(line: string): void {
+    if (this.closed) {
+      return;
+    }
+
     const trimmed = line.trim();
     if (trimmed.length === 0) {
       return;
