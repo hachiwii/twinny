@@ -58,6 +58,11 @@ function findTextElement(card: Record<string, unknown>, content: string): Record
 }
 
 function findElementByTag(card: Record<string, unknown>, tag: string): Record<string, unknown> | undefined {
+  return findElementsByTag(card, tag)[0];
+}
+
+function findElementsByTag(card: Record<string, unknown>, tag: string): Record<string, unknown>[] {
+  const matches: Record<string, unknown>[] = [];
   const queue: unknown[] = [(card.body as { elements: unknown[] }).elements];
   while (queue.length > 0) {
     const current = queue.shift();
@@ -68,15 +73,28 @@ function findElementByTag(card: Record<string, unknown>, tag: string): Record<st
     if (current && typeof current === "object") {
       const element = current as Record<string, unknown>;
       if (element.tag === tag) {
-        return element;
+        matches.push(element);
       }
       queue.push(...Object.values(element));
     }
   }
-  return undefined;
+  return matches;
 }
 
 describe("renderTwinnyAgentCard", () => {
+  const samplePlanText = [
+    "# 最小计划",
+    "",
+    "## Summary",
+    "确认当前处于 plan mode，仅产出计划。",
+    "",
+    "## Key Changes",
+    "不修改文件，不运行命令。",
+    "",
+    "## 任意 Part",
+    "不假设固定的计划分段名称。"
+  ].join("\n");
+
   it("displays append-mode hint by default", () => {
     const card = renderTwinnyAgentCard(createOptions({}));
     expect(JSON.stringify(card)).toContain("追加模式：新消息将被追加至当前任务。");
@@ -170,38 +188,80 @@ describe("renderTwinnyAgentCard", () => {
     expect(findButton(card, "打断")).toBeUndefined();
   });
 
-  it("renders rejected plan cards without action buttons", () => {
+  it("renders waiting plan markdown as title and separated parts", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "waiting_plan",
+      waiting: {
+        kind: "plan",
+        planText: samplePlanText
+      }
+    }));
+    const serialized = JSON.stringify(card);
+
+    expect(card.header).toMatchObject({
+      title: { tag: "plain_text", content: "最小计划" },
+      subtitle: { tag: "plain_text", content: "确认计划" },
+      template: "wathet"
+    });
+    expect(serialized).toContain("#### Summary");
+    expect(serialized).toContain("#### Key Changes");
+    expect(serialized).toContain("#### 任意 Part");
+    expect(findElementsByTag(card, "hr")).toHaveLength(2);
+    expect(serialized).not.toContain("查看完整计划");
+    expect(findButton(card, "实现")).toMatchObject({
+      behaviors: [
+        expect.objectContaining({
+          type: "callback",
+          value: expect.objectContaining({ action: "plan_implement" })
+        })
+      ]
+    });
+  });
+
+  it("renders rejected plan cards with a stable title and collapsed remaining parts", () => {
     const card = renderTwinnyAgentCard(createOptions({
       status: "interrupted_plan",
       waiting: {
         kind: "plan",
-        planText: "Plan ready\n- [ ] Update the implementation"
+        planText: samplePlanText
       }
     }));
+    const serialized = JSON.stringify(card);
 
     expect(card.header).toMatchObject({
-      title: { tag: "plain_text", content: "计划被拒绝" },
+      title: { tag: "plain_text", content: "最小计划" },
+      subtitle: { tag: "plain_text", content: "计划被拒绝" },
       template: "grey"
     });
-    expect(JSON.stringify(card)).toContain("Plan ready");
+    expect(serialized).toContain("#### Summary");
+    expect(serialized).toContain("确认当前处于 plan mode");
+    expect(serialized).toContain("查看完整计划");
+    expect(serialized).toContain("#### Key Changes");
+    expect(serialized).toContain("#### 任意 Part");
+    expect(findElementsByTag(card, "hr")).toHaveLength(0);
     expect(findButton(card, "实现")).toBeUndefined();
     expect(findButton(card, "打断")).toBeUndefined();
   });
 
-  it("renders accepted plan cards with a turquoise header and no action buttons", () => {
+  it("renders accepted plan cards with a turquoise header and collapsed remaining parts", () => {
     const card = renderTwinnyAgentCard(createOptions({
       status: "accepted_plan",
       waiting: {
         kind: "plan",
-        planText: "Plan ready\n- [ ] Update the implementation"
+        planText: samplePlanText
       }
     }));
+    const serialized = JSON.stringify(card);
 
     expect(card.header).toMatchObject({
-      title: { tag: "plain_text", content: "计划已确认" },
+      title: { tag: "plain_text", content: "最小计划" },
+      subtitle: { tag: "plain_text", content: "计划已确认" },
       template: "turquoise"
     });
-    expect(JSON.stringify(card)).toContain("Plan ready");
+    expect(serialized).toContain("#### Summary");
+    expect(serialized).toContain("查看完整计划");
+    expect(serialized).toContain("#### Key Changes");
+    expect(findElementsByTag(card, "hr")).toHaveLength(0);
     expect(findButton(card, "实现")).toBeUndefined();
     expect(findButton(card, "打断")).toBeUndefined();
   });

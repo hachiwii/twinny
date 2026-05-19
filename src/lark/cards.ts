@@ -75,6 +75,16 @@ export interface TwinnyAgentCardRuntimeStats {
   contextWindow: number;
 }
 
+interface ParsedPlanMarkdown {
+  title?: string;
+  parts: ParsedPlanPart[];
+}
+
+interface ParsedPlanPart {
+  title?: string;
+  content: string;
+}
+
 export interface RenderTwinnyThreadSummaryCardOptions {
   creatorOpenId?: string;
   createdAt: number;
@@ -106,7 +116,9 @@ const STATUS_HEADER: Record<TwinnyAgentCardStatus, { title: string; subtitle?: s
 
 export function renderTwinnyAgentCard(options: RenderTwinnyAgentCardOptions): LarkCardJson {
   const header = STATUS_HEADER[options.status];
-  const subtitle = cardHeaderSubtitle(options, header.subtitle);
+  const parsedPlan = options.waiting?.kind === "plan" ? parsePlanMarkdown(options.waiting.planText) : undefined;
+  const title = cardHeaderTitle(options, header.title, parsedPlan);
+  const subtitle = cardHeaderSubtitle(options, header);
   const summaryContent = options.status === "finished" ? cardSummaryContent(options.summaryText ?? "") : undefined;
   return {
     schema: "2.0",
@@ -136,12 +148,12 @@ export function renderTwinnyAgentCard(options: RenderTwinnyAgentCardOptions): La
       horizontal_align: "left",
       vertical_align: "top",
       padding: "12px 12px 12px 12px",
-      elements: bodyElements(options)
+      elements: bodyElements(options, parsedPlan)
     },
     header: {
       title: {
         tag: "plain_text",
-        content: header.title
+        content: title
       },
       subtitle: {
         tag: "plain_text",
@@ -250,7 +262,7 @@ export function mediaElement(fileKey: string): LarkCardElement {
   };
 }
 
-function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] {
+function bodyElements(options: RenderTwinnyAgentCardOptions, parsedPlan?: ParsedPlanMarkdown): LarkCardElement[] {
   if (options.status === "finished") {
     return [
       ...finishedMentionElements(options.mentionOpenIds),
@@ -278,7 +290,7 @@ function bodyElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] 
       }
       elements.push(...requestUserInputElements(options.waiting.questions, { includeControls: false }));
     } else if (options.waiting?.kind === "plan") {
-      elements.push(...planElements(options.waiting.planText));
+      elements.push(...planElements(parsedPlan ?? parsePlanMarkdown(options.waiting.planText), options.status));
     }
     elements.push(elapsedElement(options.elapsedMs, options.runtimeStats, options.mode));
     if (options.status === "waiting_input") {
@@ -591,8 +603,150 @@ function requestUserInputElements(
   return elements.length > 0 ? elements : [progressPlaceholderElement()];
 }
 
-function planElements(planText: string): LarkCardElement[] {
-  return [markdownElement(planText.trim() || "暂无计划")];
+function planElements(plan: ParsedPlanMarkdown, status: TwinnyAgentCardStatus): LarkCardElement[] {
+  const parts = plan.parts.length > 0 ? plan.parts : [{ content: "暂无计划" }];
+  if (status === "waiting_plan") {
+    const elements: LarkCardElement[] = [];
+    for (let index = 0; index < parts.length; index += 1) {
+      if (index > 0) {
+        elements.push({ tag: "hr", margin: "0px 0px 0px 0px" });
+      }
+      elements.push(markdownElement(formatPlanPartMarkdown(parts[index]!)));
+    }
+    return elements;
+  }
+
+  const [firstPart, ...remainingParts] = parts;
+  const elements: LarkCardElement[] = [markdownElement(formatPlanPartMarkdown(firstPart!))];
+  if (remainingParts.length > 0) {
+    elements.push(fullPlanPanel(remainingParts));
+  }
+  return elements;
+}
+
+function fullPlanPanel(parts: ParsedPlanPart[]): LarkCardElement {
+  return {
+    tag: "collapsible_panel",
+    expanded: false,
+    header: {
+      title: {
+        tag: "plain_text",
+        content: "查看完整计划"
+      },
+      vertical_align: "center",
+      icon: {
+        tag: "standard_icon",
+        token: "down-small-ccm_outlined",
+        color: "",
+        size: "16px 16px"
+      },
+      icon_position: "right",
+      icon_expanded_angle: -180
+    },
+    border: {
+      color: "grey",
+      corner_radius: "5px"
+    },
+    vertical_spacing: "8px",
+    padding: "8px 8px 8px 8px",
+    elements: parts.map((part) => markdownElement(formatPlanPartMarkdown(part)))
+  };
+}
+
+function formatPlanPartMarkdown(part: ParsedPlanPart): string {
+  const content = part.content.trim();
+  if (!part.title) {
+    return content || "暂无计划";
+  }
+  return content ? `#### ${part.title}\n${content}` : `#### ${part.title}`;
+}
+
+function parsePlanMarkdown(planText: string): ParsedPlanMarkdown {
+  const normalized = planText.replace(/\r\n?/g, "\n").trim();
+  if (!normalized) {
+    return { parts: [] };
+  }
+
+  const lines = normalized.split("\n");
+  let cursor = 0;
+  while (cursor < lines.length && lines[cursor]!.trim() === "") {
+    cursor += 1;
+  }
+
+  const title = parseMarkdownHeading(lines[cursor] ?? "", 1);
+  if (title !== undefined) {
+    cursor += 1;
+  }
+
+  const parts: ParsedPlanPart[] = [];
+  const preambleLines: string[] = [];
+  let currentPart: { title: string; lines: string[] } | undefined;
+  let inFence = false;
+
+  const pushPreamble = () => {
+    const content = preambleLines.join("\n").trim();
+    if (content) {
+      parts.push({ content });
+    }
+    preambleLines.length = 0;
+  };
+
+  const pushCurrentPart = () => {
+    if (!currentPart) {
+      return;
+    }
+    const content = currentPart.lines.join("\n").trim();
+    parts.push({ title: currentPart.title, content });
+    currentPart = undefined;
+  };
+
+  for (; cursor < lines.length; cursor += 1) {
+    const line = lines[cursor]!;
+    if (!inFence) {
+      const partTitle = parseMarkdownHeading(line, 2);
+      if (partTitle !== undefined) {
+        if (currentPart) {
+          pushCurrentPart();
+        } else {
+          pushPreamble();
+        }
+        currentPart = { title: partTitle, lines: [] };
+        continue;
+      }
+    }
+
+    if (currentPart) {
+      currentPart.lines.push(line);
+    } else {
+      preambleLines.push(line);
+    }
+
+    if (isMarkdownFenceBoundary(line)) {
+      inFence = !inFence;
+    }
+  }
+
+  pushCurrentPart();
+  pushPreamble();
+
+  const parsed: ParsedPlanMarkdown = { parts };
+  if (title !== undefined) {
+    parsed.title = title;
+  }
+  return parsed;
+}
+
+function parseMarkdownHeading(line: string, level: 1 | 2): string | undefined {
+  const match = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*$/);
+  if (!match || match[1]!.length !== level) {
+    return undefined;
+  }
+  const heading = match[2]!.replace(/\s+#+\s*$/, "").trim();
+  return heading || undefined;
+}
+
+function isMarkdownFenceBoundary(line: string): boolean {
+  return /^\s*(```+|~~~+)/.test(line);
 }
 
 function selectElement(question: TwinnyAgentCardInputQuestion): LarkCardElement {
@@ -636,15 +790,33 @@ function inputElement(question: TwinnyAgentCardInputQuestion): LarkCardElement {
   };
 }
 
+function cardHeaderTitle(
+  options: RenderTwinnyAgentCardOptions,
+  fallback: string,
+  parsedPlan: ParsedPlanMarkdown | undefined
+): string {
+  if (isPlanCardStatus(options.status) && options.waiting?.kind === "plan") {
+    return parsedPlan?.title ?? "计划";
+  }
+  return fallback;
+}
+
 function cardHeaderSubtitle(
   options: RenderTwinnyAgentCardOptions,
-  fallback: string | undefined
+  header: { title: string; subtitle?: string }
 ): string {
   if (options.status === "waiting_input" && options.waiting?.kind === "request_user_input") {
     const count = options.waiting.questions.length;
     return `${count} 个问题待回答`;
   }
-  return fallback ?? "";
+  if (isPlanCardStatus(options.status) && options.waiting?.kind === "plan") {
+    return header.title;
+  }
+  return header.subtitle ?? "";
+}
+
+function isPlanCardStatus(status: TwinnyAgentCardStatus): boolean {
+  return status === "waiting_plan" || status === "interrupted_plan" || status === "accepted_plan";
 }
 
 function formSelectName(id: string): string {
