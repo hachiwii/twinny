@@ -57,6 +57,23 @@ describe("codex turn payloads", () => {
     });
   });
 
+  it("passes local image user input items through", () => {
+    const input = [
+      { type: "text" as const, text: "inspect ", text_elements: [] as [] },
+      { type: "localImage" as const, path: "/tmp/a.png", detail: null }
+    ];
+
+    expect(
+      buildTurnStartParams({
+        threadId: "thread_123",
+        input,
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1"
+      })
+    ).toMatchObject({
+      input
+    });
+  });
+
   it("builds turn/interrupt params", () => {
     expect(buildTurnInterruptParams({ threadId: "thread_123", turnId: "turn_1" })).toEqual({
       threadId: "thread_123",

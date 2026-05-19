@@ -1995,12 +1995,29 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        input:
-          '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
-          "Please inspect\n\n" +
-          '<img path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m1/img_1.jpg" lark_file_key="img_1" size="111">Saved locally</img>\n\n' +
-          '<video path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m1/file_1.mp4" lark_file_key="file_1" size="222">Saved locally</video>\n' +
-          "</lark_message>"
+        input: [
+          {
+            type: "text",
+            text:
+              '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+              "Please inspect\n\n" +
+              '<img path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m1/img_1.jpg" lark_file_key="img_1" size="111">',
+            text_elements: []
+          },
+          {
+            type: "localImage",
+            path: "/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m1/img_1.jpg",
+            detail: null
+          },
+          {
+            type: "text",
+            text:
+              "</img>\n\n" +
+              '<video path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m1/file_1.mp4" lark_file_key="file_1" size="222">Saved locally</video>\n' +
+              "</lark_message>",
+            text_elements: []
+          }
+        ]
       })
     );
   });
@@ -2930,10 +2947,25 @@ describe("ConversationManager", () => {
     });
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        input:
-          '<lark_message lark_message_id="m2" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
-          '<img path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m2/img_1.png" lark_file_key="img_1" size="789">Saved locally</img>\n' +
-          "</lark_message>"
+        input: [
+          {
+            type: "text",
+            text:
+              '<lark_message lark_message_id="m2" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+              '<img path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m2/img_1.png" lark_file_key="img_1" size="789">',
+            text_elements: []
+          },
+          {
+            type: "localImage",
+            path: "/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m2/img_1.png",
+            detail: null
+          },
+          {
+            type: "text",
+            text: "</img>\n</lark_message>",
+            text_elements: []
+          }
+        ]
       })
     );
   });

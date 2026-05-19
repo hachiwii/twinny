@@ -34,7 +34,7 @@ import type {
   RoleName,
   TwinnyConfig
 } from "../types.js";
-import type { CodexRequestUserInputResponder } from "../codex/turn.js";
+import type { CodexRequestUserInputResponder, CodexTurnInput } from "../codex/turn.js";
 import { WorkspaceManager } from "../workspace/index.js";
 
 export interface TwinnyRuntimeOptions {
@@ -359,7 +359,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
     }: {
       role: RoleName;
       threadId: string;
-      input: string;
+      input: CodexTurnInput;
       cwd: string;
       mode?: CodexThreadMode;
       model?: string;
@@ -375,7 +375,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
     }) =>
       pool.get(role).startTurn({
         threadId,
-        text: input,
+        ...(typeof input === "string" ? { text: input } : { input }),
         cwd,
         mode,
         model,
@@ -395,9 +395,13 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       role: RoleName;
       threadId: string;
       turnId: string;
-      input: string;
+      input: CodexTurnInput;
     }): Promise<void> => {
-      await pool.get(role).steerTurn({ threadId, turnId, text: input });
+      await pool.get(role).steerTurn({
+        threadId,
+        turnId,
+        ...(typeof input === "string" ? { text: input } : { input })
+      });
     },
     interruptTurn: async ({
       role,

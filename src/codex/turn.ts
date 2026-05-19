@@ -18,9 +18,19 @@ export interface TextTurnInput {
   text_elements: [];
 }
 
+export interface LocalImageTurnInput {
+  type: "localImage";
+  path: string;
+  detail: null;
+}
+
+export type CodexUserInput = TextTurnInput | LocalImageTurnInput;
+
+export type CodexTurnInput = string | CodexUserInput[];
+
 export interface TurnStartParams {
   threadId: string;
-  input: TextTurnInput[];
+  input: CodexUserInput[];
   cwd: string;
   approvalPolicy: "never";
   collaborationMode?: {
@@ -35,7 +45,8 @@ export interface TurnStartParams {
 
 export interface TurnStartOptions {
   threadId: string;
-  text: string;
+  text?: string;
+  input?: CodexTurnInput;
   cwd: string;
   mode?: CodexThreadMode;
   model?: string;
@@ -90,12 +101,13 @@ export interface CodexRequestUserInputResponder {
 export interface TurnSteerOptions {
   threadId: string;
   turnId: string;
-  text: string;
+  text?: string;
+  input?: CodexTurnInput;
 }
 
 export interface TurnSteerParams {
   threadId: string;
-  input: TextTurnInput[];
+  input: CodexUserInput[];
   expectedTurnId: string;
 }
 
@@ -117,10 +129,25 @@ export function buildTextTurnInput(text: string): TextTurnInput {
   };
 }
 
+export function buildLocalImageTurnInput(path: string): LocalImageTurnInput {
+  return {
+    type: "localImage",
+    path,
+    detail: null
+  };
+}
+
+export function normalizeCodexTurnInput(input?: CodexTurnInput, fallbackText = ""): CodexUserInput[] {
+  if (Array.isArray(input)) {
+    return input;
+  }
+  return [buildTextTurnInput(input ?? fallbackText)];
+}
+
 export function buildTurnStartParams(options: TurnStartOptions): TurnStartParams {
   const params: TurnStartParams = {
     threadId: options.threadId,
-    input: [buildTextTurnInput(options.text)],
+    input: normalizeCodexTurnInput(options.input, options.text ?? ""),
     cwd: options.cwd,
     approvalPolicy: "never"
   };
@@ -140,7 +167,7 @@ export function buildTurnStartParams(options: TurnStartOptions): TurnStartParams
 export function buildTurnSteerParams(options: TurnSteerOptions): TurnSteerParams {
   return {
     threadId: options.threadId,
-    input: [buildTextTurnInput(options.text)],
+    input: normalizeCodexTurnInput(options.input, options.text ?? ""),
     expectedTurnId: options.turnId
   };
 }

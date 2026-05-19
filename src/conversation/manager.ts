@@ -47,7 +47,7 @@ import type {
   LarkChatMode,
   LarkGroupMessageType
 } from "../types.js";
-import type { CodexRequestUserInputResponder } from "../codex/turn.js";
+import type { CodexRequestUserInputResponder, CodexTurnInput, CodexUserInput } from "../codex/turn.js";
 import type { LarkSendMessageResult } from "../lark/types.js";
 import { SerialQueue } from "./queue.js";
 import {
@@ -227,7 +227,7 @@ export interface CodexBridge {
   startTurn(params: {
     role: RoleName;
     threadId: string;
-    input: string;
+    input: CodexTurnInput;
     cwd: string;
     approvalPolicy: "never";
     mode?: CodexThreadMode;
@@ -246,7 +246,7 @@ export interface CodexBridge {
     role: RoleName;
     threadId: string;
     turnId: string;
-    input: string;
+    input: CodexTurnInput;
     cwd: string;
     approvalPolicy: "never";
   }): Promise<void>;
@@ -1824,7 +1824,7 @@ export class ConversationManager {
     }
 
     const batch = state.pendingBatch.slice(0, nextBatchSize);
-    const input = batch.map(formatPendingMessageForCodex).join("\n");
+    const input = formatPendingMessagesForCodexInput(batch);
     try {
       await this.options.codex.steerTurn({
         role: active.role,
@@ -1974,7 +1974,7 @@ export class ConversationManager {
         role: active.role,
         threadId: active.threadId,
         turnId: active.turnId,
-        input: formatPendingMessageForCodex(message),
+        input: formatPendingMessageForCodexInput(message),
         cwd: active.workspace,
         approvalPolicy: "never"
       });
@@ -2114,7 +2114,7 @@ export class ConversationManager {
     state: ConversationState,
     context: MessageContext,
     messages: PendingMessage[],
-    inputOverride?: string
+    inputOverride?: CodexTurnInput
   ): Promise<void> {
     if (messages.length === 0) {
       return;
@@ -2129,7 +2129,7 @@ export class ConversationManager {
       role: resolved.role,
       threadId: resolved.threadId,
       workspace: resolved.workspace,
-      input: inputOverride ?? messages.map(formatPendingMessageForCodex).join("\n")
+      input: inputOverride ?? formatPendingMessagesForCodexInput(messages)
     });
   }
 
@@ -2183,7 +2183,7 @@ export class ConversationManager {
       role: RoleName;
       threadId: string;
       workspace: string;
-      input: string;
+      input: CodexTurnInput;
     }
   ): Promise<void> {
     if (params.messages.length === 0) {
@@ -2342,7 +2342,7 @@ export class ConversationManager {
           role: active.role,
           threadId: active.threadId,
           turnId: active.turnId,
-          input: formatPendingMessageForCodex(message),
+          input: formatPendingMessageForCodexInput(message),
           cwd: active.workspace,
           approvalPolicy: "never"
         });
@@ -4555,6 +4555,105 @@ function formatPendingMessageForCodex(message: PendingMessage): string {
   return `<lark_message ${renderedAttributes}>\n${message.text}\n</lark_message>`;
 }
 
+function formatPendingMessageForCodexInput(message: PendingMessage): CodexTurnInput {
+  const rendered = formatPendingMessageForCodex(message);
+  return replaceDownloadedImagesWithLocalInputs(rendered, message.original.downloadedFiles ?? [], message.original.messageType);
+}
+
+function formatPendingMessagesForCodexInput(messages: PendingMessage[]): CodexTurnInput {
+  const inputs = messages.map(formatPendingMessageForCodexInput);
+  if (inputs.every((input): input is string => typeof input === "string")) {
+    return inputs.join("\n");
+  }
+
+  const merged: CodexUserInput[] = [];
+  for (let index = 0; index < inputs.length; index += 1) {
+    if (index > 0) {
+      appendCodexTextInput(merged, "\n");
+    }
+    appendCodexInput(merged, inputs[index]!);
+  }
+  return merged;
+}
+
+function replaceDownloadedImagesWithLocalInputs(
+  text: string,
+  files: Array<{
+    path: string;
+    resourceType: "image" | "file";
+    fileKey: string;
+    size: number;
+    codexTag?: "img" | "video" | "file";
+  }>,
+  messageType: string
+): CodexTurnInput {
+  if (!files.some((file) => codexFileTagForMessageResource(file, messageType) === "img")) {
+    return text;
+  }
+
+  const input: CodexUserInput[] = [];
+  let cursor = 0;
+  for (const file of files) {
+    const tagParts = formatDownloadedFileTagParts(file, messageType);
+    if (tagParts.tag !== "img") {
+      continue;
+    }
+
+    const marker = `${tagParts.openTag}Saved locally${tagParts.closeTag}`;
+    const markerStart = text.indexOf(marker, cursor);
+    if (markerStart < 0) {
+      continue;
+    }
+
+    const markerContentStart = markerStart + tagParts.openTag.length;
+    appendCodexTextInput(input, text.slice(cursor, markerContentStart));
+    input.push({
+      type: "localImage",
+      path: file.path,
+      detail: null
+    });
+    cursor = markerContentStart + "Saved locally".length;
+  }
+
+  if (input.length === 0) {
+    return text;
+  }
+
+  appendCodexTextInput(input, text.slice(cursor));
+  return input;
+}
+
+function appendCodexInput(target: CodexUserInput[], input: CodexTurnInput): void {
+  if (typeof input === "string") {
+    appendCodexTextInput(target, input);
+    return;
+  }
+
+  for (const item of input) {
+    if (item.type === "text") {
+      appendCodexTextInput(target, item.text);
+    } else {
+      target.push(item);
+    }
+  }
+}
+
+function appendCodexTextInput(target: CodexUserInput[], text: string): void {
+  if (text.length === 0) {
+    return;
+  }
+  const previous = target[target.length - 1];
+  if (previous?.type === "text") {
+    previous.text += text;
+    return;
+  }
+  target.push({
+    type: "text",
+    text,
+    text_elements: []
+  });
+}
+
 interface TokenBreakdown {
   totalTokens: number;
   inputTokens: number;
@@ -5038,12 +5137,29 @@ function formatDownloadedFileForCodex(
   file: { path: string; resourceType: "image" | "file"; fileKey: string; size: number; codexTag?: "img" | "video" | "file" },
   messageType: string
 ): string {
-  const tag = file.codexTag ?? codexFileTagForMessage(file.resourceType, messageType);
-  return (
-    `<${tag} path="${escapeXmlAttribute(file.path)}" ` +
-    `lark_file_key="${escapeXmlAttribute(file.fileKey)}" size="${escapeXmlAttribute(String(file.size))}">` +
-    `Saved locally</${tag}>`
-  );
+  const { openTag, closeTag } = formatDownloadedFileTagParts(file, messageType);
+  return `${openTag}Saved locally${closeTag}`;
+}
+
+function formatDownloadedFileTagParts(
+  file: { path: string; resourceType: "image" | "file"; fileKey: string; size: number; codexTag?: "img" | "video" | "file" },
+  messageType: string
+): { tag: "img" | "video" | "file"; openTag: string; closeTag: string } {
+  const tag = codexFileTagForMessageResource(file, messageType);
+  return {
+    tag,
+    openTag:
+      `<${tag} path="${escapeXmlAttribute(file.path)}" ` +
+      `lark_file_key="${escapeXmlAttribute(file.fileKey)}" size="${escapeXmlAttribute(String(file.size))}">`,
+    closeTag: `</${tag}>`
+  };
+}
+
+function codexFileTagForMessageResource(
+  file: { resourceType: "image" | "file"; codexTag?: "img" | "video" | "file" },
+  messageType: string
+): "img" | "video" | "file" {
+  return file.codexTag ?? codexFileTagForMessage(file.resourceType, messageType);
 }
 
 function codexFileTagForMessage(resourceType: "image" | "file", messageType: string): "img" | "video" | "file" {

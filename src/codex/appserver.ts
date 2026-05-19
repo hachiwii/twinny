@@ -5,7 +5,13 @@ import { ensureGuestWorkspaceProjectTrusted } from "../roles/index.js";
 import type { RoleName } from "../types.js";
 import { CodexProtocolClient, createInitializeParams, type InitializeResponse } from "./protocol.js";
 import { resumeCodexThread, startCodexThread, type ThreadResumeResponse, type ThreadStartResponse } from "./thread.js";
-import { interruptCodexTurn, startCodexTurn, steerCodexTurn, type TurnStartOptions } from "./turn.js";
+import {
+  interruptCodexTurn,
+  startCodexTurn,
+  steerCodexTurn,
+  type CodexTurnInput,
+  type TurnStartOptions
+} from "./turn.js";
 
 export interface CodexAppServerOptions {
   role: RoleName;
@@ -117,7 +123,7 @@ export class CodexAppServer extends EventEmitter {
     return startCodexTurn(this.protocol, options, { requestTimeoutMs: this.options.requestTimeoutMs });
   }
 
-  async steerTurn(options: { threadId: string; turnId: string; text: string }): Promise<void> {
+  async steerTurn(options: { threadId: string; turnId: string; text?: string; input?: CodexTurnInput }): Promise<void> {
     await steerCodexTurn(this.protocol, options);
   }
 
