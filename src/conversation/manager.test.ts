@@ -262,6 +262,93 @@ describe("ConversationManager", () => {
     turns[0]!.resolve(completed("thread_1", "turn_1"));
   });
 
+  it("queues owner ordinary messages on another user's active turn while still allowing owner stop", async () => {
+    const { repository } = createRepository(groupConversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(groupMessage("g1", "active", { senderOpenId: "ou_guest" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    manager.submitIncoming(groupMessage("g2", "owner follow-up", { senderOpenId: "ou_owner" }));
+    await waitForExpect(() => expect(manager.queueDepth("group_oc_group")).toBe(1));
+
+    expect(codex.steerTurn).not.toHaveBeenCalled();
+    await waitForExpect(() =>
+      expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          larkMessageId: "g2",
+          larkUserId: "ou_owner",
+          routeKind: "queued_message",
+          status: "queued",
+          text: "owner follow-up"
+        })
+      )
+    );
+
+    manager.submitIncoming(groupMessage("g3", "/stop", { senderOpenId: "ou_owner" }));
+    await waitForExpect(() =>
+      expect(codex.interruptTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ role: "guest", threadId: "thread_group", turnId: "turn_1" })
+      )
+    );
+    expect(repository.markLarkMessagesCleared).toHaveBeenCalledWith(["g2"]);
+
+    turns[0]!.resolve(completed("thread_group", "turn_1", "interrupted"));
+  });
+
+  it("auto-steers owner ordinary messages when owner owns the active turn", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository: createRepository(groupConversationRecord()).repository, codex });
+
+    manager.submitIncoming(groupMessage("g1", "owner active", { senderOpenId: "ou_owner" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("g2", "owner follow-up", { senderOpenId: "ou_owner" }));
+
+    await waitForExpect(() =>
+      expect(codex.steerTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: "thread_group",
+          turnId: "turn_1",
+          input: wrappedMessage("owner follow-up", "g2", "ou_owner")
+        })
+      )
+    );
+    expect(manager.queueDepth("group_oc_group")).toBe(0);
+
+    turns[0]!.resolve(completed("thread_group", "turn_1"));
+  });
+
+  it("starts a different user's queued message before a later trigger-user message", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository: createRepository(groupConversationRecord()).repository, codex });
+
+    manager.submitIncoming(groupMessage("g1", "active", { senderOpenId: "ou_guest" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("g2", "other queued", { senderOpenId: "ou_other" }));
+    manager.submitIncoming(groupMessage("g3", "same later", { senderOpenId: "ou_guest" }));
+    await waitForExpect(() => expect(manager.queueDepth("group_oc_group")).toBe(2));
+
+    expect(codex.steerTurn).not.toHaveBeenCalled();
+
+    turns[0]!.resolve(completed("thread_group", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ input: wrappedMessage("other queued", "g2", "ou_other") })
+    );
+    expect(manager.queueDepth("group_oc_group")).toBe(1);
+
+    turns[1]!.resolve(completed("thread_group", "turn_2"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ input: wrappedMessage("same later", "g3", "ou_guest") })
+    );
+
+    turns[2]!.resolve(completed("thread_group", "turn_3"));
+  });
+
   it("queues /queue and following ordinary messages for the next turn joined by newlines", async () => {
     const { codex, turns } = createDeferredCodex();
     const manager = createManager({ codex });
@@ -2729,6 +2816,8 @@ describe("ConversationManager", () => {
     manager.submitIncoming(groupMessage("m1", "first", { senderOpenId: "ou_first", senderName: "First User" }));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(groupMessage("m2", "second", { senderOpenId: "ou_second", senderName: "Second User" }));
+    await waitForExpect(() => expect(manager.queueDepth("group_oc_group")).toBe(1));
+    manager.submitIncoming(groupMessage("m3", "/steer", { senderOpenId: "ou_first", senderName: "First User" }));
     await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
 
     turns[0]!.resolve({
@@ -2904,6 +2993,76 @@ describe("ConversationManager", () => {
     expect(cardActions[0]).toMatchObject({ eventId: "event_card_queue_1", text: "/queue" });
     expect(cardActions[1]).toMatchObject({ eventId: "event_card_queue_2", text: "/queue" });
     expect(cardActions[2]).toMatchObject({ eventId: "event_card_queue_3", text: "/queue" });
+  });
+
+  it("drops unauthorized control commands and invalid card actions without history", async () => {
+    const { repository } = createRepository(groupConversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(groupMessage("g1", "active", { senderOpenId: "ou_guest" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_1", text: "working" });
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    vi.mocked(lark.patchCard).mockClear();
+
+    manager.submitIncoming(groupMessage("g2", "/next", { senderOpenId: "ou_other" }));
+    manager.submitCardAction({
+      eventId: "event_card_other",
+      operatorOpenId: "ou_other",
+      openMessageId: "card_g1_1",
+      openChatId: "oc_group",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "queue",
+        stateKey: "group_oc_group",
+        runId: 1
+      },
+      raw: { event_id: "event_card_other" }
+    });
+    manager.submitCardAction({
+      eventId: "event_card_stale",
+      operatorOpenId: "ou_owner",
+      openMessageId: "card_g1_1",
+      openChatId: "oc_group",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "queue",
+        stateKey: "group_oc_group",
+        runId: 99
+      },
+      raw: { event_id: "event_card_stale" }
+    });
+    manager.submitCardAction({
+      eventId: "event_card_owner",
+      operatorOpenId: "ou_owner",
+      openMessageId: "card_g1_1",
+      openChatId: "oc_group",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "queue",
+        stateKey: "group_oc_group",
+        runId: 1
+      },
+      raw: { event_id: "event_card_owner" }
+    });
+
+    await waitForExpect(() => {
+      const inserted = vi.mocked(repository.insertLarkMessage).mock.calls.map(([input]) => input);
+      expect(inserted.some((input) => input.eventId === "event_card_owner" && input.routeKind === "card_action")).toBe(true);
+    });
+    const inserted = vi.mocked(repository.insertLarkMessage).mock.calls.map(([input]) => input);
+    expect(inserted.some((input) => input.eventId === "e_g2")).toBe(false);
+    expect(inserted.some((input) => input.eventId === "event_card_other")).toBe(false);
+    expect(inserted.some((input) => input.eventId === "event_card_stale")).toBe(false);
+    expect(codex.interruptTurn).not.toHaveBeenCalled();
+    expect(lark.patchCard).toHaveBeenCalled();
+
+    turns[0]!.resolve(completed("thread_group", "turn_1"));
   });
 
   it("renders requestUserInput waiting card and submits form answers back to Codex", async () => {
@@ -3106,7 +3265,7 @@ describe("ConversationManager", () => {
     turns[0]!.resolve(completed("thread_1", "turn_1"));
   });
 
-  it("starts quick requestUserInput follow-up messages directly without queued reactions", async () => {
+  it("queues requestUserInput follow-up messages behind an immediate same-user head", async () => {
     const { repository } = createRepository();
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();
@@ -3162,13 +3321,14 @@ describe("ConversationManager", () => {
         text: "queued follow-up"
       });
       expect(inserted.find((input) => input.larkMessageId === "m3")).toMatchObject({
-        routeKind: "message",
-        status: "processing",
+        routeKind: "queued_message",
+        status: "queued",
         text: "second follow-up"
       });
     });
-    expect(lark.addQueuedReaction).not.toHaveBeenCalled();
-    expect(manager.queueDepth("p2p_ou_guest")).toBe(0);
+    expect(lark.addQueuedReaction).toHaveBeenCalledWith("m2");
+    expect(lark.addQueuedReaction).toHaveBeenCalledWith("m3");
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(2);
     expect(codex.startTurn).toHaveBeenCalledTimes(1);
 
     turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
@@ -3226,6 +3386,143 @@ describe("ConversationManager", () => {
     expect(turns[1]!.params.input).toBe(wrappedMessage("revise the plan", "m2"));
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("consumes only the same-user queue head from plan waiting, then transfers ownership after normal completion", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository: createRepository(groupConversationRecord()).repository, codex });
+
+    manager.submitIncoming(groupMessage("g1", "draft a plan", { senderOpenId: "ou_guest" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("g2", "/queue same-user follow-up", { senderOpenId: "ou_guest" }));
+    manager.submitIncoming(groupMessage("g3", "different-user follow-up", { senderOpenId: "ou_other" }));
+    await waitForExpect(() => expect(manager.queueDepth("group_oc_group")).toBe(2));
+
+    await turns[0]!.params.onPlanUpdated?.({
+      threadId: "thread_group",
+      turnId: "turn_1",
+      explanation: "Plan ready",
+      plan: [{ step: "Update the implementation", status: "pending" }]
+    });
+    await waitForExpect(() =>
+      expect(codex.interruptTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ role: "guest", threadId: "thread_group", turnId: "turn_1" })
+      )
+    );
+
+    turns[0]!.resolve(completed("thread_group", "turn_1", "interrupted"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(turns[1]!.params.input).toBe(wrappedMessage("same-user follow-up", "g2", "ou_guest"));
+    expect(manager.queueDepth("group_oc_group")).toBe(1);
+
+    turns[1]!.resolve(completed("thread_group", "turn_2"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    expect(turns[2]!.params.input).toBe(wrappedMessage("different-user follow-up", "g3", "ou_other"));
+
+    turns[2]!.resolve(completed("thread_group", "turn_3"));
+  });
+
+  it("consumes a same-user /exit queued while plan waiting", async () => {
+    const { repository } = createRepository(groupConversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g1", "draft a plan", { senderOpenId: "ou_guest" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    await turns[0]!.params.onPlanUpdated?.({
+      threadId: "thread_group",
+      turnId: "turn_1",
+      explanation: "Plan ready",
+      plan: [{ step: "Update the implementation", status: "pending" }]
+    });
+    manager.submitIncoming(groupMessage("g2", "/exit", { senderOpenId: "ou_guest" }));
+
+    await waitForExpect(() =>
+      expect(codex.interruptTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ role: "guest", threadId: "thread_group", turnId: "turn_1" })
+      )
+    );
+
+    turns[0]!.resolve(completed("thread_group", "turn_1", "interrupted"));
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadMode).toHaveBeenCalledWith("group_oc_group", "thread_group", "default")
+    );
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g2"]);
+    expect(lark.replyText).toHaveBeenCalledWith("g2", "已退出 plan mode。");
+    expect(codex.startTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a different-user queued message when the same-user waiting follow-up also ends waiting", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository: createRepository(groupConversationRecord()).repository, codex });
+
+    manager.submitIncoming(groupMessage("g1", "draft a plan", { senderOpenId: "ou_guest" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("g2", "/queue same-user follow-up", { senderOpenId: "ou_guest" }));
+    manager.submitIncoming(groupMessage("g3", "different-user follow-up", { senderOpenId: "ou_other" }));
+    await waitForExpect(() => expect(manager.queueDepth("group_oc_group")).toBe(2));
+
+    await turns[0]!.params.onPlanUpdated?.({
+      threadId: "thread_group",
+      turnId: "turn_1",
+      explanation: "Plan ready",
+      plan: [{ step: "Update the implementation", status: "pending" }]
+    });
+    turns[0]!.resolve(completed("thread_group", "turn_1", "interrupted"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    await turns[1]!.params.onPlanUpdated?.({
+      threadId: "thread_group",
+      turnId: "turn_2",
+      explanation: "Follow-up plan ready",
+      plan: [{ step: "Keep waiting", status: "pending" }]
+    });
+    turns[1]!.resolve(completed("thread_group", "turn_2"));
+
+    await waitForDelay();
+    expect(codex.startTurn).toHaveBeenCalledTimes(2);
+    expect(manager.queueDepth("group_oc_group")).toBe(1);
+  });
+
+  it("reruns the waiting queue-head check after recall exposes a same-user message", async () => {
+    const { repository } = createRepository(groupConversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(groupMessage("g1", "draft a plan", { senderOpenId: "ou_guest" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("g2", "different-user queued", { senderOpenId: "ou_other" }));
+    await waitForExpect(() => expect(manager.queueDepth("group_oc_group")).toBe(1));
+
+    await turns[0]!.params.onPlanUpdated?.({
+      threadId: "thread_group",
+      turnId: "turn_1",
+      explanation: "Plan ready",
+      plan: [{ step: "Update the implementation", status: "pending" }]
+    });
+    await waitForDelay();
+    expect(codex.interruptTurn).not.toHaveBeenCalled();
+    expect(codex.startTurn).toHaveBeenCalledTimes(1);
+
+    manager.submitIncoming(groupMessage("g3", "same-user queued while waiting", { senderOpenId: "ou_guest" }));
+    await waitForExpect(() => expect(manager.queueDepth("group_oc_group")).toBe(2));
+    expect(codex.interruptTurn).not.toHaveBeenCalled();
+
+    manager.submitMessageRecall({ eventId: "recall_g2", messageId: "g2", raw: {} });
+    await waitForExpect(() =>
+      expect(codex.interruptTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ role: "guest", threadId: "thread_group", turnId: "turn_1" })
+      )
+    );
+    expect(repository.markLarkMessageRecalled).toHaveBeenCalledWith("g2");
+
+    turns[0]!.resolve(completed("thread_group", "turn_1", "interrupted"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(turns[1]!.params.input).toBe(wrappedMessage("same-user queued while waiting", "g3", "ou_guest"));
+
+    turns[1]!.resolve(completed("thread_group", "turn_2"));
   });
 
   it("starts confirmed plan implementation with the concise Codex prompt", async () => {

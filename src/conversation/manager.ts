@@ -383,6 +383,7 @@ interface ActiveTurn {
   runId: number;
   agentMessageMode: AgentMessageMode;
   role: RoleName;
+  triggerOpenId: string;
   threadId: string;
   workspace: string;
   conversationKey: string;
@@ -941,6 +942,9 @@ export class ConversationManager {
       await this.clearQueuedReactionBestEffort(removed);
     }
     await this.markMessageRecalledBestEffort(recall.messageId);
+    if (removed && state.active?.waiting) {
+      await this.tryConsumeWaitingQueue(state, state.active);
+    }
   }
 
   private async routeMessage(
@@ -964,10 +968,26 @@ export class ConversationManager {
       return;
     }
 
+    if (this.shouldDropOccupiedControlCommand(state, message, parsed)) {
+      return;
+    }
+
     await this.prepareMessageResources(context.conversationKey, message);
     const preparedParsed: ParsedCommand = parsed.kind === "message" ? { kind: "message", text: message.text } : parsed;
     await this.recordIncomingMessage(state, context, message, preparedParsed);
     await this.handleRecordedParsedCommand(state, context, message, preparedParsed);
+  }
+
+  private shouldDropOccupiedControlCommand(
+    state: ConversationState,
+    message: IncomingLarkMessage,
+    parsed: ParsedCommand
+  ): boolean {
+    if (parsed.kind !== "stop" && parsed.kind !== "next" && parsed.kind !== "steer") {
+      return false;
+    }
+    const active = state.active;
+    return active !== undefined && !this.canControlActiveTurn(active, message.senderOpenId);
   }
 
   private async handleRecordedParsedCommand(
@@ -1038,7 +1058,7 @@ export class ConversationManager {
     parsed: ParsedCommand
   ): Promise<void> {
     const role = roleForSender(this.options.config, message.senderOpenId);
-    const route = classifyInitialRoute(state, parsed, message.text);
+    const route = classifyInitialRoute(state, parsed, message);
     const senderName = await this.resolveSenderName(context, message, role);
     message.senderName = senderName;
     await this.options.repository.insertLarkMessage({
@@ -1558,14 +1578,24 @@ export class ConversationManager {
     const pending = toPendingMessage(message, text, { queueBoundary: queueByMenu });
     const active = state.active;
     if (state.waitingInterruptBatch) {
-      state.waitingInterruptBatch.messages.push(pending);
-      if (!active) {
-        await this.startWaitingInterruptBatch(state);
+      const batchOwnerOpenId = state.waitingInterruptBatch.messages[0]?.original.senderOpenId;
+      if (batchOwnerOpenId && message.senderOpenId === batchOwnerOpenId) {
+        state.waitingInterruptBatch.messages.push(pending);
+        if (!active) {
+          await this.startWaitingInterruptBatch(state);
+        }
+      } else {
+        await this.queuePendingMessage(state, context, pending);
       }
       return;
     }
     if (active?.waiting) {
-      await this.interruptWaitingTurnWithMessage(state, context, active, pending);
+      if (state.pendingBatch.length === 0 && this.canSteerActiveTurn(active, message.senderOpenId)) {
+        await this.interruptWaitingTurnWithMessage(state, context, active, pending);
+      } else {
+        await this.queuePendingMessage(state, context, pending);
+        await this.tryConsumeWaitingQueue(state, active);
+      }
       return;
     }
     if (active?.kind === "compact") {
@@ -1593,7 +1623,11 @@ export class ConversationManager {
     }
 
     if (active) {
-      await this.steerOrDefer(state, active, pending);
+      if (this.canSteerActiveTurn(active, message.senderOpenId)) {
+        await this.steerOrDefer(state, active, pending);
+      } else {
+        await this.queuePendingMessage(state, context, pending);
+      }
       return;
     }
 
@@ -1615,21 +1649,22 @@ export class ConversationManager {
     state.queueNextMessage = false;
     const pending = toPendingMessage(message, text, { queueBoundary: true });
     if (state.waitingInterruptBatch) {
-      state.waitingInterruptBatch.messages.push(pending);
-      if (!state.active) {
-        await this.startWaitingInterruptBatch(state);
-      }
+      await this.queuePendingMessage(state, context, pending);
       return;
     }
     if (state.active?.waiting) {
-      await this.interruptWaitingTurnWithMessage(state, context, state.active, pending);
+      const active = state.active;
+      await this.queuePendingMessage(state, context, pending);
+      await this.tryConsumeWaitingQueue(state, active);
       return;
     }
     if (state.active || state.pendingBatch.length > 0) {
       await this.addQueuedReactionBestEffort(pending);
     }
     state.pendingBatch.push(pending);
-    if (!state.active) {
+    if (state.active?.waiting) {
+      await this.tryConsumeWaitingQueue(state, state.active);
+    } else if (!state.active) {
       await this.startPendingBatch(state, context);
     }
   }
@@ -1649,7 +1684,9 @@ export class ConversationManager {
       await this.addQueuedReactionBestEffort(pending);
     }
     state.pendingBatch.push(pending);
-    if (!state.active) {
+    if (state.active?.waiting) {
+      await this.tryConsumeWaitingQueue(state, state.active);
+    } else if (!state.active) {
       await this.startPendingBatch(state, context);
     }
   }
@@ -1668,7 +1705,9 @@ export class ConversationManager {
       await this.addQueuedReactionBestEffort(pending);
     }
     state.pendingBatch.push(pending);
-    if (!state.active) {
+    if (state.active?.waiting) {
+      await this.tryConsumeWaitingQueue(state, state.active);
+    } else if (!state.active) {
       await this.startPendingBatch(state, context);
     }
   }
@@ -1800,37 +1839,42 @@ export class ConversationManager {
     }
 
     const active = state.active;
+    if (!active) {
+      return;
+    }
+    const invalid =
+      active.runId !== command.runId ||
+      active.context.stateKey !== command.stateKey ||
+      (action.openMessageId !== undefined && active.card?.messageId !== undefined && action.openMessageId !== active.card.messageId) ||
+      !this.canControlActiveTurn(active, action.operatorOpenId);
+    if (invalid) {
+      return;
+    }
+
     let status: LarkMessageStatus = "completed";
     try {
-      const stale =
-        !active ||
-        active.runId !== command.runId ||
-        active.context.stateKey !== command.stateKey ||
-        (action.openMessageId !== undefined && active.card?.messageId !== undefined && action.openMessageId !== active.card.messageId);
-      if (!stale) {
-        switch (command.action) {
-          case "stop":
-            await this.executeStopAction(state);
-            break;
-          case "next":
-            await this.executeNextAction(state, active.context);
-            break;
-          case "queue":
-            await this.executeQueueAction(state, active);
-            break;
-          case "request_input_submit":
-            await this.executeRequestInputSubmitAction(state, active, action.formValue);
-            break;
-          case "request_input_interrupt":
-            await this.executeRequestInputSkipAction(state, active);
-            break;
-          case "plan_implement":
-            await this.executePlanImplementAction(state, active, action);
-            break;
-          case "plan_interrupt":
-            await this.executeNextAction(state, active.context);
-            break;
-        }
+      switch (command.action) {
+        case "stop":
+          await this.executeStopAction(state);
+          break;
+        case "next":
+          await this.executeNextAction(state, active.context);
+          break;
+        case "queue":
+          await this.executeQueueAction(state, active);
+          break;
+        case "request_input_submit":
+          await this.executeRequestInputSubmitAction(state, active, action.formValue);
+          break;
+        case "request_input_interrupt":
+          await this.executeRequestInputSkipAction(state, active);
+          break;
+        case "plan_implement":
+          await this.executePlanImplementAction(state, active, action);
+          break;
+        case "plan_interrupt":
+          await this.executeNextAction(state, active.context);
+          break;
       }
     } catch (error) {
       status = "failed";
@@ -2235,6 +2279,30 @@ export class ConversationManager {
     }
   }
 
+  private async queuePendingMessage(state: ConversationState, context: MessageContext, message: PendingMessage): Promise<void> {
+    await this.addQueuedReactionBestEffort(message);
+    state.pendingBatch.push(message);
+    await this.markPendingMessagesQueuedBestEffort([message]);
+    if (!state.active) {
+      await this.startPendingBatch(state, context);
+    }
+  }
+
+  private async tryConsumeWaitingQueue(state: ConversationState, active: ActiveTurn): Promise<boolean> {
+    if (state.active !== active || !active.waiting || active.cancelRequested || state.pendingBatch.length === 0) {
+      return false;
+    }
+    const first = state.pendingBatch[0]!;
+    if (first.original.senderOpenId !== active.triggerOpenId) {
+      return false;
+    }
+    const interrupted = await this.cancelActiveTurn(state, { waitForCompletion: true });
+    if (!interrupted || !state.active) {
+      await this.startPendingBatch(state, active.context);
+    }
+    return true;
+  }
+
   private async interruptWaitingTurnWithMessage(
     state: ConversationState,
     context: MessageContext,
@@ -2324,6 +2392,7 @@ export class ConversationManager {
       runId: ++state.nextRunId,
       agentMessageMode,
       role: params.role,
+      triggerOpenId: message.original.senderOpenId,
       threadId: params.threadId,
       workspace: params.workspace,
       conversationKey: context.conversationKey,
@@ -2568,6 +2637,7 @@ export class ConversationManager {
       runId: ++state.nextRunId,
       agentMessageMode,
       role: params.role,
+      triggerOpenId: params.messages[0]!.original.senderOpenId,
       threadId: params.threadId,
       workspace: params.workspace,
       conversationKey: context.conversationKey,
@@ -2766,11 +2836,7 @@ export class ConversationManager {
       };
       this.stopAgentCardTimer(active);
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "waiting");
-      if (state.pendingBatch.length > 0) {
-        await this.cancelActiveTurn(state, { waitForCompletion: true });
-        if (!state.active) {
-          await this.startPendingBatch(state, active.context);
-        }
+      if (await this.tryConsumeWaitingQueue(state, active)) {
         return;
       }
       await this.notifyAgentCardBestEffort(state, active, "waiting_input");
@@ -2795,11 +2861,7 @@ export class ConversationManager {
       active.planUpdatePending = false;
       this.stopAgentCardTimer(active);
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "waiting");
-      if (state.pendingBatch.length > 0) {
-        await this.cancelActiveTurn(state, { waitForCompletion: true });
-        if (!state.active) {
-          await this.startPendingBatch(state, active.context);
-        }
+      if (await this.tryConsumeWaitingQueue(state, active)) {
         return;
       }
       await this.notifyAgentCardBestEffort(state, active, "waiting_plan");
@@ -3488,6 +3550,14 @@ export class ConversationManager {
     } catch (error) {
       this.log.warn({ error, messageId: handle.messageId, reactionId: handle.reactionId }, "failed to remove lark reaction");
     }
+  }
+
+  private canControlActiveTurn(active: ActiveTurn, openId: string): boolean {
+    return openId === active.triggerOpenId || openId === this.options.config.owner.openId;
+  }
+
+  private canSteerActiveTurn(active: ActiveTurn, openId: string): boolean {
+    return openId === active.triggerOpenId;
   }
 
   private async addCompletedReactionBestEffort(active: ActiveTurn): Promise<void> {
@@ -4936,13 +5006,20 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
 function classifyInitialRoute(
   state: ConversationState,
   parsed: ParsedCommand,
-  originalText: string
+  message: IncomingLarkMessage
 ): { routeKind: LarkMessageRouteKind; status: "queued" | "processing"; text: string } {
-  if (
-    (state.active?.waiting || state.waitingInterruptBatch) &&
-    (parsed.kind === "message" || (parsed.kind === "queue" && parsed.text.length > 0))
-  ) {
-    return { routeKind: "message", status: "processing", text: parsed.text };
+  const originalText = message.text;
+  const active = state.active;
+  if (state.waitingInterruptBatch && (parsed.kind === "message" || (parsed.kind === "queue" && parsed.text.length > 0))) {
+    const batchOwnerOpenId = state.waitingInterruptBatch.messages[0]?.original.senderOpenId;
+    return batchOwnerOpenId && message.senderOpenId === batchOwnerOpenId
+      ? { routeKind: "message", status: "processing", text: parsed.text }
+      : { routeKind: "queued_message", status: "queued", text: parsed.text };
+  }
+  if (active?.waiting && (parsed.kind === "message" || (parsed.kind === "queue" && parsed.text.length > 0))) {
+    return state.pendingBatch.length === 0 && message.senderOpenId === active.triggerOpenId
+      ? { routeKind: "message", status: "processing", text: parsed.text }
+      : { routeKind: "queued_message", status: "queued", text: parsed.text };
   }
   if (parsed.kind === "queue" && parsed.text.length > 0) {
     return { routeKind: "queued_message", status: "queued", text: parsed.text };
@@ -4981,8 +5058,10 @@ function classifyInitialRoute(
   ) {
     return { routeKind: "queued_message", status: "queued", text: parsed.text };
   }
-  if (state.active) {
-    return { routeKind: "steered_message", status: "processing", text: parsed.text };
+  if (active) {
+    return message.senderOpenId === active.triggerOpenId
+      ? { routeKind: "steered_message", status: "processing", text: parsed.text }
+      : { routeKind: "queued_message", status: "queued", text: parsed.text };
   }
   return { routeKind: "message", status: "processing", text: parsed.text };
 }
@@ -5005,8 +5084,10 @@ function countNextPendingBatch(state: ConversationState): number {
   if (state.pendingBatch.length === 0) {
     return 0;
   }
+  const firstSenderOpenId = state.pendingBatch[0]!.original.senderOpenId;
   for (let index = 1; index < state.pendingBatch.length; index += 1) {
-    if (state.pendingBatch[index]!.queueBoundary) {
+    const message = state.pendingBatch[index]!;
+    if (message.queueBoundary || message.original.senderOpenId !== firstSenderOpenId) {
       return index;
     }
   }
