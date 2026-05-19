@@ -1,6 +1,8 @@
 import { LarkOpenApiClient } from "./openapi.js";
 import type { LarkChatMode, LarkGroupMessageType } from "../types.js";
 
+export type LarkDirectoryChatMode = LarkChatMode | "p2p";
+
 export interface LarkUserDirectoryOptions {
   openApiClient: LarkOpenApiClient;
 }
@@ -8,7 +10,7 @@ export interface LarkUserDirectoryOptions {
 export interface LarkChatInfo {
   chatId?: string;
   name?: string;
-  chatMode?: LarkChatMode;
+  chatMode?: LarkDirectoryChatMode;
   groupMessageType?: LarkGroupMessageType;
 }
 
@@ -114,8 +116,8 @@ function extractChatId(raw: unknown): string | undefined {
   return firstNonEmptyString(chat.chat_id, data.chat_id);
 }
 
-function normalizeLarkChatMode(value: string | undefined): LarkChatMode | undefined {
-  if (value === "group" || value === "topic") {
+function normalizeLarkChatMode(value: string | undefined): LarkDirectoryChatMode | undefined {
+  if (value === "p2p" || value === "group" || value === "topic") {
     return value;
   }
   return undefined;

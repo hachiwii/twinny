@@ -119,10 +119,10 @@ export function normalizeIncomingLarkMessageWithReason(
     return ignored("malformed_event", raw);
   }
 
-  const content = normalizeMessageContent(messageType, message.content);
+  const content = normalizeLarkMessageContent(messageType, message.content);
   const resources = content.resources;
   const shouldUseRaw = content.text === null || (content.text.length === 0 && resources.length === 0);
-  const text = shouldUseRaw ? stringifyRawMessage(message) : (content.text ?? "");
+  const text = shouldUseRaw ? stringifyRawLarkMessageForCodex(message) : (content.text ?? "");
   const rawForCodex = content.rawForCodex || shouldUseRaw;
 
   return {
@@ -216,13 +216,13 @@ export function normalizeLarkMessageRecallWithReason(raw: unknown): NormalizeLar
   };
 }
 
-interface NormalizedMessageContent {
+export interface NormalizedLarkMessageContent {
   text: string | null;
   resources: IncomingLarkMessageResource[];
   rawForCodex: boolean;
 }
 
-function normalizeMessageContent(messageType: string, content: unknown): NormalizedMessageContent {
+export function normalizeLarkMessageContent(messageType: string, content: unknown): NormalizedLarkMessageContent {
   if (messageType === "text") {
     return {
       text: normalizeTextContent(content),
@@ -249,9 +249,14 @@ function normalizeMessageContent(messageType: string, content: unknown): Normali
   };
 }
 
-function stringifyRawMessage(message: Record<string, unknown>): string {
+export function stringifyRawLarkMessageForCodex(message: Record<string, unknown>): string {
+  const body = isRecord(message.body) ? message.body : {};
+  const compact = {
+    message_type: stringValue(message.message_type) ?? stringValue(message.msg_type) ?? "unknown",
+    content: message.content ?? body.content ?? null
+  };
   try {
-    return JSON.stringify(message) ?? "";
+    return JSON.stringify(compact) ?? "";
   } catch {
     return String(message);
   }

@@ -47,6 +47,16 @@ describe("LarkChatDirectory", () => {
     });
   });
 
+  it("preserves p2p chat mode from chat info responses", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { name: "单聊", chat_mode: "p2p" } }
+    ]);
+    const directory = new LarkChatDirectory({ openApiClient: createOpenApiClient(fetch) });
+
+    await expect(directory.getChatInfo("oc_p2p")).resolves.toEqual({ name: "单聊", chatMode: "p2p" });
+  });
+
   it("keeps getChatName as a compatibility wrapper", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },

@@ -123,7 +123,10 @@ describe("normalizeIncomingLarkMessage", () => {
       messageId: "om_1",
       messageType: "merge_forward",
       rawForCodex: true,
-      text: JSON.stringify(event.message)
+      text: JSON.stringify({
+        message_type: "merge_forward",
+        content: JSON.stringify({ message_id_list: ["om_child"] })
+      })
     });
   });
 
@@ -141,7 +144,10 @@ describe("normalizeIncomingLarkMessage", () => {
       messageId: "om_1",
       messageType: "post",
       rawForCodex: true,
-      text: JSON.stringify(event.message)
+      text: JSON.stringify({
+        message_type: "post",
+        content: JSON.stringify({ title: "No content array" })
+      })
     });
   });
 
@@ -159,7 +165,10 @@ describe("normalizeIncomingLarkMessage", () => {
       messageId: "om_1",
       messageType: "unknown",
       rawForCodex: true,
-      text: JSON.stringify(event.message)
+      text: JSON.stringify({
+        message_type: "unknown",
+        content: JSON.stringify({ custom: true })
+      })
     });
   });
 

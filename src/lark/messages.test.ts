@@ -474,6 +474,37 @@ describe("LarkMessageSender", () => {
     );
   });
 
+  it("fetches merge-forward message items through the get API with raw card content", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      {
+        code: 0,
+        data: {
+          items: [
+            { message_id: "om_outer", msg_type: "merge_forward", body: { content: "Merged and Forwarded Message" } },
+            { message_id: "om_child", upper_message_id: "om_outer", msg_type: "text", body: { content: JSON.stringify({ text: "child" }) } }
+          ]
+        }
+      }
+    ]);
+    const reader = createReader(fetch);
+
+    await expect(reader.getMessageItems("om_outer")).resolves.toHaveLength(2);
+
+    expect(fetch).toHaveBeenLastCalledWith(
+      "https://open.feishu.cn/open-apis/im/v1/messages/om_outer?user_id_type=open_id&card_msg_content_type=raw_card_content",
+      {
+        method: "GET",
+        headers: {
+          authorization: "Bearer tenant-token",
+          "content-type": "application/json"
+        },
+        body: undefined,
+        signal: undefined
+      }
+    );
+  });
+
   it("reports omitted or deleted mget messages as unavailable", async () => {
     const omittedFetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },

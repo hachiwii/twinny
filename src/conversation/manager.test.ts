@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Logger } from "pino";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import { TwinnyError } from "../errors.js";
 import { LarkMessageUnavailableError } from "../lark/messages.js";
 import type {
@@ -730,6 +730,40 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ input: `${wrappedMessage("edited", "m2")}\n${wrappedMessage("steer edited", "m3")}` })
+    );
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("only checks non-text queued messages for recall before processing", async () => {
+    const { repository } = createRepository(groupConversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    const larkMessages = createLarkMessageReader({
+      m2: fetchedLarkMessage("m2", "image", JSON.stringify({ image_key: "img_updated" }))
+    });
+    const manager = createManager({ repository, codex, larkMessages });
+
+    manager.submitIncoming(groupMessage("m1", "active", { senderOpenId: "ou_guest" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("m2", "stored image", {
+      messageType: "image",
+      senderOpenId: "ou_other",
+      raw: rawReceiveEvent("m2", "stored image", {
+        message_type: "image",
+        content: JSON.stringify({ image_key: "img_old" }),
+        chat_id: "oc_group",
+        chat_type: "group"
+      })
+    }));
+    await waitForExpect(() => expect(manager.queueDepth("group_oc_group")).toBe(1));
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(larkMessages.getMessage).toHaveBeenCalledWith("m2");
+    expect(repository.updateQueuedLarkMessage).not.toHaveBeenCalled();
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ input: wrappedMessage("stored image", "m2", "ou_other") })
     );
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
@@ -2619,7 +2653,6 @@ describe("ConversationManager", () => {
     const codex = createCodex();
     const manager = createManager({ codex });
     const rawMessage = JSON.stringify({
-      message_id: "m1",
       message_type: "merge_forward",
       content: JSON.stringify({ message_id_list: ["om_child"] })
     });
@@ -2640,6 +2673,156 @@ describe("ConversationManager", () => {
           "</lark_message>"
       })
     );
+  });
+
+  it("expands merge-forward messages from Lark get items before submitting to Codex", async () => {
+    const codex = createCodex();
+    const larkUsers: LarkUserDirectory = {
+      getUserNameByOpenId: vi.fn(async (openId) => openId === "ou_child" ? "Child User" : "Guest User")
+    };
+    const larkChats: LarkChatDirectory = {
+      getChatInfo: vi.fn(async () => ({ name: "Source Chat", chatMode: "group" as const }))
+    };
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(async ({ outputDir, fileKey }) => ({
+        path: `${outputDir}/${fileKey}.jpg`,
+        resourceType: "image" as const,
+        fileKey,
+        size: 123,
+        contentType: "image/jpeg"
+      }))
+    };
+    const larkMessages: LarkMessageReader = {
+      getMessage: vi.fn(),
+      getMessageItems: vi.fn(async () => [
+        { message_id: "mf1", msg_type: "merge_forward", deleted: false, body: { content: "Merged and Forwarded Message" } },
+        {
+          message_id: "child_text",
+          upper_message_id: "mf1",
+          msg_type: "text",
+          chat_id: "oc_source",
+          create_time: "111",
+          sender: { id: "ou_child", id_type: "open_id", sender_type: "user" },
+          body: { content: JSON.stringify({ text: "hello from child" }) }
+        },
+        {
+          message_id: "child_image",
+          upper_message_id: "mf1",
+          msg_type: "image",
+          chat_id: "oc_source",
+          create_time: "112",
+          sender: { id: "cli_app", id_type: "app_id", sender_type: "app" },
+          body: { content: JSON.stringify({ image_key: "img_1" }) }
+        }
+      ])
+    };
+    const manager = createManager({ codex, larkUsers, larkChats, larkFiles, larkMessages });
+
+    manager.submitIncoming(message("mf1", "Merged and Forwarded Message", {
+      messageType: "merge_forward",
+      rawForCodex: true
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(larkMessages.getMessageItems).toHaveBeenCalledWith("mf1");
+    expect(larkChats.getChatInfo).toHaveBeenCalledWith("oc_source");
+    expect(larkFiles.downloadMessageResource).toHaveBeenCalledWith({
+      messageId: "child_image",
+      resourceType: "image",
+      fileKey: "img_1",
+      fileName: undefined,
+      outputDir: "/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files"
+    });
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input:
+          '<lark_message lark_message_id="mf1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+          '<merge_forward source_chat_id="oc_source" source_chat_type="group" source_chat_name="Source Chat">\n' +
+          '<lark_message lark_message_id="child_text" timestamp="111" message_type="text" sender_id="ou_child" sender_ouid="ou_child" sender_id_type="open_id" sender_type="user" sender_name="Child User">\n' +
+          "hello from child\n" +
+          "</lark_message>\n" +
+          '<lark_message lark_message_id="child_image" timestamp="112" message_type="image" sender_id="cli_app" sender_id_type="app_id" sender_type="app">\n' +
+          '<file path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/img_1.jpg" lark_file_key="img_1" size="123">Saved locally</file>\n' +
+          "</lark_message>\n" +
+          "</merge_forward>\n" +
+          "</lark_message>"
+      })
+    );
+  });
+
+  it("omits merge-forward name attributes when user or chat lookup fails", async () => {
+    const codex = createCodex();
+    const larkUsers: LarkUserDirectory = {
+      getUserNameByOpenId: vi.fn(async () => {
+        throw new Error("contact unavailable");
+      })
+    };
+    const larkChats: LarkChatDirectory = {
+      getChatInfo: vi.fn(async () => {
+        throw new Error("chat unavailable");
+      })
+    };
+    const larkMessages: LarkMessageReader = {
+      getMessage: vi.fn(),
+      getMessageItems: vi.fn(async () => [
+        { message_id: "mf1", msg_type: "merge_forward", deleted: false, body: { content: "Merged and Forwarded Message" } },
+        {
+          message_id: "child_text",
+          upper_message_id: "mf1",
+          msg_type: "text",
+          chat_id: "oc_source",
+          create_time: "111",
+          sender: { id: "ou_child", id_type: "open_id", sender_type: "user" },
+          body: { content: JSON.stringify({ text: "hello" }) }
+        }
+      ])
+    };
+    const manager = createManager({ codex, larkUsers, larkChats, larkMessages });
+
+    manager.submitIncoming(message("mf1", "Merged and Forwarded Message", {
+      messageType: "merge_forward",
+      rawForCodex: true
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    const input = (codex.startTurn as Mock).mock.calls[0]?.[0].input as string;
+    expect(input).toContain('<merge_forward source_chat_id="oc_source">');
+    expect(input).not.toContain("source_chat_name=");
+    expect(input).not.toContain("source_chat_type=");
+    expect(input).not.toContain('sender_name="Child User"');
+  });
+
+  it("applies merge-forward child and global content limits", async () => {
+    const codex = createCodex();
+    const children = Array.from({ length: 33 }, (_, index) => ({
+      message_id: `child_${index}`,
+      upper_message_id: "mf1",
+      msg_type: "text",
+      chat_id: "oc_source",
+      create_time: String(100 + index),
+      sender: { id: "cli_app", id_type: "app_id", sender_type: "app" },
+      body: { content: JSON.stringify({ text: index === 0 ? "x".repeat(2050) : `child ${index}` }) }
+    }));
+    const larkMessages: LarkMessageReader = {
+      getMessage: vi.fn(),
+      getMessageItems: vi.fn(async () => [
+        { message_id: "mf1", msg_type: "merge_forward", deleted: false, body: { content: "Merged and Forwarded Message" } },
+        ...children
+      ])
+    };
+    const manager = createManager({ codex, larkMessages });
+
+    manager.submitIncoming(message("mf1", "Merged and Forwarded Message", {
+      messageType: "merge_forward",
+      rawForCodex: true
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    const input = (codex.startTurn as Mock).mock.calls[0]?.[0].input as string;
+    expect(input).toContain('lark_message_id="child_0"');
+    expect(input).toContain('omitted="true" omitted_reason="message_content_too_large"');
+    expect(input).not.toContain('lark_message_id="child_32"');
+    expect(input).toContain("已省略 1 条合并转发消息，原因是数量或总长度超过限制。");
   });
 
   it("replaces a persisted thread when Codex no longer has the rollout", async () => {

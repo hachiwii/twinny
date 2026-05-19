@@ -388,6 +388,28 @@ export class LarkMessageReader {
     }
     return message;
   }
+
+  async getMessageItems(messageId: string): Promise<unknown[]> {
+    const raw = await this.options.openApiClient.request(`/im/v1/messages/${encodePathSegment(messageId)}`, {
+      method: "GET",
+      query: {
+        user_id_type: "open_id",
+        card_msg_content_type: "raw_card_content"
+      }
+    });
+    const data = getData(raw);
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (items.length === 0) {
+      throw new LarkMessageUnavailableError(messageId);
+    }
+    const message = items.find(
+      (item) => item && typeof item === "object" && !Array.isArray(item) && (item as Record<string, unknown>).message_id === messageId
+    );
+    if (!message || isFetchedMessageDeleted(message)) {
+      throw new LarkMessageUnavailableError(messageId);
+    }
+    return items;
+  }
 }
 
 function extractMessageId(raw: unknown): string | undefined {

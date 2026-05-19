@@ -18,7 +18,11 @@ import {
   type TwinnyAgentCardMessage,
   type TwinnyAgentCardRuntimeStats
 } from "../lark/cards.js";
-import { normalizeIncomingLarkMessage } from "../lark/filters.js";
+import {
+  normalizeIncomingLarkMessage,
+  normalizeLarkMessageContent,
+  stringifyRawLarkMessageForCodex
+} from "../lark/filters.js";
 import { isLarkMessageUnavailableError } from "../lark/messages.js";
 import { logger as defaultLogger } from "../observability/logs.js";
 import type {
@@ -63,6 +67,9 @@ import {
 
 const COMPACT_PROGRESS_TEXT = "正在压缩上下文";
 const COMPACT_COMPLETED_TEXT = "完成上下文压缩";
+const MERGE_FORWARD_CHILD_CONTENT_MAX_BYTES = 2 * 1024;
+const MERGE_FORWARD_CHILD_MESSAGE_MAX_COUNT = 32;
+const MERGE_FORWARD_TOTAL_CONTENT_MAX_BYTES = 32 * 1024;
 
 export interface ConversationRepository {
   findByConversationKey(conversationKey: string): Promise<ConversationRecord | null> | ConversationRecord | null;
@@ -180,7 +187,7 @@ export interface LarkUserDirectory {
 export interface LarkChatDirectory {
   getChatInfo?(chatId: string): Promise<{
     name?: string;
-    chatMode?: LarkChatMode;
+    chatMode?: LarkChatMode | "p2p";
     groupMessageType?: LarkGroupMessageType;
   } | undefined>;
   getChatName?(chatId: string): Promise<string | undefined>;
@@ -213,6 +220,7 @@ export interface LarkFileDownloader {
 
 export interface LarkMessageReader {
   getMessage(messageId: string): Promise<unknown>;
+  getMessageItems?(messageId: string): Promise<unknown[]>;
 }
 
 export interface WorkspaceManagerLike {
@@ -809,7 +817,7 @@ export class ConversationManager {
     }
     normalized.senderName = await this.resolveSenderName(context, normalized, roleForSender(this.options.config, normalized.senderOpenId));
     if (record.status === "queued") {
-      await this.prepareMessageResources(context.conversationKey, normalized);
+      await this.prepareIncomingMessageForCodex(context, normalized);
     }
     const parsed = parseSlashCommand(normalized.text);
     const text = (record.status === "queued" && (normalized.resources?.length ?? 0) > 0) ? normalized.text : record.text;
@@ -1094,10 +1102,225 @@ export class ConversationManager {
       return;
     }
 
-    await this.prepareMessageResources(context.conversationKey, message);
+    await this.prepareIncomingMessageForCodex(context, message);
     const preparedParsed: ParsedCommand = parsed.kind === "message" ? { kind: "message", text: message.text } : parsed;
     await this.recordIncomingMessage(state, context, message, preparedParsed);
     await this.handleRecordedParsedCommand(state, context, message, preparedParsed);
+  }
+
+  private async prepareIncomingMessageForCodex(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
+    await this.expandMergeForwardMessage(context, message);
+    await this.prepareMessageResources(context.conversationKey, message);
+  }
+
+  private async expandMergeForwardMessage(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
+    if (message.messageType !== "merge_forward") {
+      return;
+    }
+    const reader = this.options.larkMessages;
+    if (!reader?.getMessageItems) {
+      this.log.warn({ messageId: message.messageId }, "Lark message reader cannot expand merge-forward messages");
+      return;
+    }
+
+    try {
+      const items = await reader.getMessageItems(message.messageId);
+      const childItems = items
+        .filter(isRecord)
+        .filter((item) => nonEmptyString(stringRecordValue(item, "upper_message_id")) === message.messageId);
+      if (childItems.length === 0) {
+        this.log.warn({ messageId: message.messageId }, "merge-forward message did not include child items");
+        return;
+      }
+
+      const sourceChat = await this.resolveMergeForwardSourceChat(firstChildChatId(childItems));
+      const renderedChildren: string[] = [];
+      let renderedContentBytes = 0;
+      let omittedByGlobalLimit = 0;
+
+      for (const child of childItems) {
+        if (renderedChildren.length >= MERGE_FORWARD_CHILD_MESSAGE_MAX_COUNT) {
+          omittedByGlobalLimit += 1;
+          continue;
+        }
+
+        const rendered = await this.renderMergeForwardChildMessage(context, child);
+        const childContentBytes = byteLength(rendered.content);
+        if (childContentBytes > MERGE_FORWARD_CHILD_CONTENT_MAX_BYTES) {
+          renderedChildren.push(formatMergeForwardChildMessage(rendered.attributes, "", {
+            omitted: true,
+            omittedReason: "message_content_too_large"
+          }));
+          continue;
+        }
+        if (renderedContentBytes + childContentBytes > MERGE_FORWARD_TOTAL_CONTENT_MAX_BYTES) {
+          omittedByGlobalLimit += 1;
+          continue;
+        }
+
+        renderedContentBytes += childContentBytes;
+        renderedChildren.push(formatMergeForwardChildMessage(rendered.attributes, rendered.content));
+      }
+
+      const mergeLines = [
+        formatXmlOpenTag("merge_forward", mergeForwardAttributes(sourceChat)),
+        ...renderedChildren,
+        "</merge_forward>"
+      ];
+      if (omittedByGlobalLimit > 0) {
+        mergeLines.push(`已省略 ${omittedByGlobalLimit} 条合并转发消息，原因是数量或总长度超过限制。`);
+      }
+
+      message.text = mergeLines.join("\n");
+      message.resources = undefined;
+      message.downloadedFiles = undefined;
+      message.rawForCodex = undefined;
+    } catch (error) {
+      this.log.warn({ error, messageId: message.messageId }, "failed to expand merge-forward message; using raw message content");
+    }
+  }
+
+  private async resolveMergeForwardSourceChat(chatId: string | undefined): Promise<MergeForwardSourceChat> {
+    const source: MergeForwardSourceChat = {};
+    if (!chatId) {
+      return source;
+    }
+    source.id = chatId;
+    if (!this.options.larkChats?.getChatInfo) {
+      return source;
+    }
+
+    try {
+      const info = await this.options.larkChats.getChatInfo(chatId);
+      source.name = nonEmptyString(info?.name);
+      source.type = mergeForwardSourceChatType(info?.chatMode);
+    } catch (error) {
+      this.log.warn({ error, chatId }, "failed to resolve merge-forward source chat info");
+    }
+    return source;
+  }
+
+  private async renderMergeForwardChildMessage(
+    context: MessageContext,
+    item: Record<string, unknown>
+  ): Promise<{ attributes: Array<[string, string]>; content: string }> {
+    const messageId = nonEmptyString(stringRecordValue(item, "message_id")) ?? "unknown";
+    const messageType = nonEmptyString(stringRecordValue(item, "msg_type")) ?? "unknown";
+    const sender = isRecord(item.sender) ? item.sender : {};
+    const senderId = nonEmptyString(stringRecordValue(sender, "id"));
+    const senderIdType = nonEmptyString(stringRecordValue(sender, "id_type"));
+    const senderType = nonEmptyString(stringRecordValue(sender, "sender_type"));
+    const senderName = senderId && senderIdType === "open_id" ? await this.resolveMergeForwardSenderName(senderId) : undefined;
+
+    const attributes: Array<[string, string]> = [
+      ["lark_message_id", messageId],
+      ["timestamp", nonEmptyString(stringRecordValue(item, "create_time")) ?? ""],
+      ["message_type", messageType]
+    ];
+    if (senderId) {
+      attributes.push(["sender_id", senderId]);
+      if (senderIdType === "open_id") {
+        attributes.push(["sender_ouid", senderId]);
+      }
+    }
+    if (senderIdType) {
+      attributes.push(["sender_id_type", senderIdType]);
+    }
+    if (senderType) {
+      attributes.push(["sender_type", senderType]);
+    }
+    if (senderName) {
+      attributes.push(["sender_name", senderName]);
+    }
+
+    const body = isRecord(item.body) ? item.body : {};
+    const content = body.content;
+    if (messageType === "merge_forward") {
+      attributes.push(["raw", "true"]);
+      return { attributes, content: stringifyRawLarkMessageForCodex({ message_type: messageType, content }) };
+    }
+
+    const normalized = normalizeLarkMessageContent(messageType, content);
+    if (normalized.rawForCodex) {
+      attributes.push(["raw", "true"]);
+      return { attributes, content: stringifyRawLarkMessageForCodex({ message_type: messageType, content }) };
+    }
+
+    let text = normalized.text ?? "";
+    const resources = mergeForwardResourcesForCodex(normalized.resources);
+    if (resources.length > 0) {
+      const downloadedFiles = await this.downloadMergeForwardChildResources(context, messageId, resources);
+      text = formatMessageTextWithDownloadedFiles(text, downloadedFiles, messageType);
+    }
+    return { attributes, content: text };
+  }
+
+  private async resolveMergeForwardSenderName(openId: string): Promise<string | undefined> {
+    const failureUntil = this.nameLookupFailureCache.get(openId) ?? 0;
+    if (failureUntil > Date.now()) {
+      return undefined;
+    }
+    this.nameLookupFailureCache.delete(openId);
+    if (!this.options.larkUsers) {
+      return undefined;
+    }
+
+    try {
+      const name = nonEmptyString(await this.options.larkUsers.getUserNameByOpenId(openId));
+      if (!name) {
+        this.cacheNameLookupFailure(openId);
+        return undefined;
+      }
+      return name;
+    } catch (error) {
+      this.cacheNameLookupFailure(openId);
+      this.log.warn({ error, larkUserId: openId }, "failed to resolve merge-forward sender name");
+      return undefined;
+    }
+  }
+
+  private async downloadMergeForwardChildResources(
+    context: MessageContext,
+    messageId: string,
+    resources: Array<{
+      resourceType: "image" | "file";
+      fileKey: string;
+      fileName?: string;
+      codexTag?: "img" | "video" | "file";
+      textPlaceholder?: string;
+    }>
+  ): Promise<Array<{
+    path: string;
+    resourceType: "image" | "file";
+    fileKey: string;
+    fileName?: string;
+    size: number;
+    contentType?: string;
+    codexTag?: "img" | "video" | "file";
+    textPlaceholder?: string;
+  }>> {
+    if (!this.options.larkFiles) {
+      throw new TwinnyError("Lark file downloader is not configured", "LARK_FILE_DOWNLOADER_MISSING");
+    }
+
+    const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
+    const outputDir = path.join(workspace, ".twinny", "lark_files");
+    const downloadedFiles = [];
+    for (const resource of resources) {
+      const downloaded = await this.options.larkFiles.downloadMessageResource({
+        messageId,
+        resourceType: resource.resourceType,
+        fileKey: resource.fileKey,
+        fileName: resource.fileName,
+        outputDir
+      });
+      downloadedFiles.push({
+        ...downloaded,
+        codexTag: resource.codexTag ?? (resource.resourceType === "image" ? "file" : undefined),
+        textPlaceholder: resource.textPlaceholder
+      });
+    }
+    return downloadedFiles;
   }
 
   private shouldDropOccupiedControlCommand(
@@ -2797,6 +3020,10 @@ export class ConversationManager {
     }
 
     try {
+      if (!shouldRefreshQueuedMessageContent(pending.original.messageType)) {
+        return pending;
+      }
+
       const latestRaw = patchLarkMessageRawEvent(pending.original.raw, fetchedRaw);
       if (!larkMessageContentChanged(pending.original.raw, latestRaw)) {
         return pending;
@@ -2818,7 +3045,7 @@ export class ConversationManager {
       );
       const parsed = parseSlashCommand(normalized.text);
       const text = parsed.kind === "queue" ? parsed.text : normalized.text;
-      await this.prepareMessageResources(context.conversationKey, normalized);
+      await this.prepareIncomingMessageForCodex(context, normalized);
       pending.original = normalized;
       pending.text = (normalized.downloadedFiles?.length ?? 0) > 0 ? normalized.text : text;
       await this.updateQueuedMessageBestEffort(pending.messageId, {
@@ -5667,7 +5894,45 @@ function formatPendingMessageForCodex(message: PendingMessage): string {
   const renderedAttributes = attributes
     .map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`)
     .join(" ");
-  return `<lark_message ${renderedAttributes}>\n${message.text}\n</lark_message>`;
+  const text = message.original.rawForCodex ? compactRawMessageTextForCodex(message.original.raw, message.text) : message.text;
+  return `<lark_message ${renderedAttributes}>\n${text}\n</lark_message>`;
+}
+
+function compactRawMessageTextForCodex(raw: unknown, fallbackText: string): string {
+  const rawRecord = rawMessageRecord(raw);
+  const fallbackRecord = rawMessageRecord(parseJsonObject(fallbackText));
+  const message = isInformativeRawMessageRecord(rawRecord) ? rawRecord : fallbackRecord;
+  return stringifyRawLarkMessageForCodex(message ?? { message_type: "unknown", content: fallbackText });
+}
+
+function rawMessageRecord(raw: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(raw)) {
+    return undefined;
+  }
+  if (isRecord(raw.event) && isRecord(raw.event.message)) {
+    return raw.event.message;
+  }
+  if (isRecord(raw.message)) {
+    return raw.message;
+  }
+  return raw;
+}
+
+function isInformativeRawMessageRecord(record: Record<string, unknown> | undefined): record is Record<string, unknown> {
+  return record !== undefined && (
+    Object.hasOwn(record, "message_type") ||
+    Object.hasOwn(record, "msg_type") ||
+    Object.hasOwn(record, "content") ||
+    Object.hasOwn(record, "body")
+  );
+}
+
+function parseJsonObject(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 function formatPendingMessageForCodexInput(message: PendingMessage): CodexTurnInput {
@@ -5767,6 +6032,107 @@ function appendCodexTextInput(target: CodexUserInput[], text: string): void {
     text,
     text_elements: []
   });
+}
+
+interface MergeForwardSourceChat {
+  id?: string;
+  type?: "p2p" | "group" | "topic_group";
+  name?: string;
+}
+
+function shouldRefreshQueuedMessageContent(messageType: string): boolean {
+  return messageType === "text" || messageType === "post";
+}
+
+function mergeForwardSourceChatType(chatMode: LarkChatMode | "p2p" | undefined): MergeForwardSourceChat["type"] {
+  switch (chatMode) {
+    case "p2p":
+      return "p2p";
+    case "group":
+      return "group";
+    case "topic":
+      return "topic_group";
+    default:
+      return undefined;
+  }
+}
+
+function mergeForwardAttributes(source: MergeForwardSourceChat): Array<[string, string]> {
+  const attributes: Array<[string, string]> = [];
+  if (source.id) {
+    attributes.push(["source_chat_id", source.id]);
+  }
+  if (source.type) {
+    attributes.push(["source_chat_type", source.type]);
+  }
+  if (source.name) {
+    attributes.push(["source_chat_name", source.name]);
+  }
+  return attributes;
+}
+
+function mergeForwardResourcesForCodex(resources: Array<{
+  resourceType: "image" | "file";
+  fileKey: string;
+  fileName?: string;
+  codexTag?: "img" | "video" | "file";
+  textPlaceholder?: string;
+}>): Array<{
+  resourceType: "image" | "file";
+  fileKey: string;
+  fileName?: string;
+  codexTag?: "img" | "video" | "file";
+  textPlaceholder?: string;
+}> {
+  return resources.map((resource) => ({
+    ...resource,
+    codexTag: resource.resourceType === "image" ? "file" : resource.codexTag
+  }));
+}
+
+function firstChildChatId(children: Record<string, unknown>[]): string | undefined {
+  for (const child of children) {
+    const chatId = nonEmptyString(stringRecordValue(child, "chat_id"));
+    if (chatId) {
+      return chatId;
+    }
+  }
+  return undefined;
+}
+
+function stringRecordValue(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function byteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+function formatMergeForwardChildMessage(
+  attributes: Array<[string, string]>,
+  content: string,
+  options: { omitted?: boolean; omittedReason?: string } = {}
+): string {
+  const renderedAttributes = [...attributes];
+  if (options.omitted) {
+    renderedAttributes.push(["omitted", "true"]);
+  }
+  if (options.omittedReason) {
+    renderedAttributes.push(["omitted_reason", options.omittedReason]);
+  }
+  return `${formatXmlOpenTag("lark_message", renderedAttributes)}\n${content}\n</lark_message>`;
+}
+
+function formatXmlOpenTag(name: string, attributes: Array<[string, string]>): string {
+  const rendered = formatXmlAttributes(attributes);
+  return rendered ? `<${name} ${rendered}>` : `<${name}>`;
+}
+
+function formatXmlAttributes(attributes: Array<[string, string]>): string {
+  return attributes
+    .map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`)
+    .join(" ");
 }
 
 interface TokenBreakdown {
