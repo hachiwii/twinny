@@ -262,10 +262,6 @@ export class TurnOutputAccumulator {
         this.recordTokenUsage(notification.params);
         return;
       }
-      if (notification.method === "turn/plan/updated") {
-        // Temporarily ignore this event until its app-server semantics match the plan confirmation flow.
-        return;
-      }
       if (notification.method === "error") {
         this.recordError(notification.params);
       }
@@ -332,6 +328,12 @@ export class TurnOutputAccumulator {
       return;
     }
     if (this.turnId && params.turnId && params.turnId !== this.turnId) {
+      return;
+    }
+
+    const plan = extractPlanUpdate(params);
+    if (plan) {
+      this.emitPlanUpdate(plan);
       return;
     }
 
@@ -405,14 +407,7 @@ export class TurnOutputAccumulator {
     });
   }
 
-  private recordPlanUpdated(params: unknown): void {
-    const plan = parsePlanUpdate(params);
-    if (!plan || plan.threadId !== this.threadId) {
-      return;
-    }
-    if (this.turnId && plan.turnId !== this.turnId) {
-      return;
-    }
+  private emitPlanUpdate(plan: CodexPlanUpdate): void {
     this.setTurnId(plan.turnId);
     void Promise.resolve(this.callbacks.onPlanUpdated?.(plan)).catch((error: unknown) => {
       const parsedError =
@@ -476,6 +471,23 @@ function extractAgentMessage(item: unknown): CompletedAgentMessage | undefined {
   }
   const phase = agentMessagePhaseValue(item.phase);
   return phase === undefined ? { id, text } : { id, text, phase };
+}
+
+function extractPlanUpdate(params: ItemCompletedParams): CodexPlanUpdate | undefined {
+  const turnId = stringValue(params.turnId);
+  if (!turnId || !isRecord(params.item) || params.item.type !== "plan") {
+    return undefined;
+  }
+  const text = stringValue(params.item.text);
+  if (text === undefined) {
+    return undefined;
+  }
+  return {
+    threadId: params.threadId,
+    turnId,
+    explanation: text,
+    plan: []
+  };
 }
 
 function handleTurnServerRequest(
@@ -596,36 +608,6 @@ function parseRequestUserInputQuestion(value: unknown): CodexRequestUserInputPar
     isOther,
     isSecret,
     options: parsedOptions as CodexRequestUserInputParams["questions"][number]["options"]
-  };
-}
-
-function parsePlanUpdate(value: unknown): CodexPlanUpdate | undefined {
-  if (!isRecord(value) || typeof value.threadId !== "string" || typeof value.turnId !== "string") {
-    return undefined;
-  }
-  if (value.explanation !== null && value.explanation !== undefined && typeof value.explanation !== "string") {
-    return undefined;
-  }
-  if (!Array.isArray(value.plan)) {
-    return undefined;
-  }
-  const plan = value.plan.map((step) => {
-    if (!isRecord(step) || typeof step.step !== "string") {
-      return undefined;
-    }
-    if (step.status !== "pending" && step.status !== "inProgress" && step.status !== "completed") {
-      return undefined;
-    }
-    return { step: step.step, status: step.status };
-  });
-  if (plan.some((step) => step === undefined)) {
-    return undefined;
-  }
-  return {
-    threadId: value.threadId,
-    turnId: value.turnId,
-    explanation: typeof value.explanation === "string" ? value.explanation : null,
-    plan: plan as CodexPlanUpdate["plan"]
   };
 }
 

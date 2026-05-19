@@ -251,6 +251,36 @@ describe("TurnOutputAccumulator", () => {
       }
     });
   });
+
+  it("emits plan updates from completed plan items", () => {
+    const planUpdated = vi.fn();
+    const turnStarted = vi.fn();
+    const accumulator = new TurnOutputAccumulator("thread_123", undefined, {
+      onPlanUpdated: planUpdated,
+      onTurnStarted: turnStarted
+    });
+
+    accumulator.record({
+      method: "item/completed",
+      params: {
+        threadId: "thread_123",
+        turnId: "turn_1",
+        item: {
+          type: "plan",
+          id: "plan_1",
+          text: "# Plan\n\n- Step one\n- Step two"
+        }
+      }
+    });
+
+    expect(turnStarted).toHaveBeenCalledWith("turn_1");
+    expect(planUpdated).toHaveBeenCalledWith({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      explanation: "# Plan\n\n- Step one\n- Step two",
+      plan: []
+    });
+  });
 });
 
 describe("startCodexTurn", () => {
