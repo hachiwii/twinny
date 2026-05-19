@@ -295,9 +295,9 @@ function bodyElements(options: RenderTwinnyAgentCardOptions, parsedPlan?: Parsed
     }
     elements.push(elapsedElement(options.elapsedMs, options.runtimeStats, options.mode));
     if (options.status === "waiting_input") {
-      elements.push(waitingButtonsElement(options, "提交", "primary_filled", "request_input_submit", "打断", "danger_filled", "request_input_interrupt"));
+      elements.push(waitingButtonsElement(options, "提交", "primary_filled", "request_input_submit", "跳过", "danger_filled", "request_input_interrupt"));
     } else if (options.status === "waiting_plan") {
-      elements.push(waitingButtonsElement(options, "实现", "primary_filled", "plan_implement", "打断", "danger_filled", "plan_interrupt"));
+      elements.push(waitingButtonsElement(options, "实现", "primary_filled", "plan_implement", "拒绝", "danger_filled", "plan_interrupt"));
     }
     return elements;
   }
@@ -466,7 +466,7 @@ function requestUserInputFormElement(options: RenderTwinnyAgentCardOptions): Lar
     elements: [
       ...requestUserInputElements(questions),
       formElapsedElement(options),
-      waitingButtonsElement(options, "提交", "primary_filled", "request_input_submit", "打断", "danger_filled", "request_input_interrupt", {
+      waitingButtonsElement(options, "提交", "primary_filled", "request_input_submit", "跳过", "danger_filled", "request_input_interrupt", {
         primaryFormSubmit: true,
         namePrefix: "request_user_input"
       })

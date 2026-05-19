@@ -2659,6 +2659,112 @@ describe("ConversationManager", () => {
     turns[0]!.resolve(completed("thread_1", "turn_1"));
   });
 
+  it("skips requestUserInput questions by returning skip answers to Codex", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    vi.mocked(lark.getMessageReadOpenIds).mockResolvedValue([]);
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+    const responder = {
+      respond: vi.fn(),
+      reject: vi.fn()
+    };
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    await turns[0]!.params.onRequestUserInput?.(
+      {
+        requestId: "request_1",
+        params: {
+          threadId: "thread_1",
+          turnId: "turn_1",
+          itemId: "item_1",
+          questions: [
+            {
+              id: "choice",
+              header: "Choose mode",
+              question: "Choose mode",
+              isOther: true,
+              isSecret: false,
+              options: [{ label: "直接实现", description: "按计划改代码并测试。" }]
+            },
+            {
+              id: "details",
+              header: "Details",
+              question: "Any constraints?",
+              isOther: true,
+              isSecret: false,
+              options: null
+            }
+          ]
+        }
+      },
+      responder
+    );
+
+    await waitForExpect(() => {
+      const card = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
+      expect(card).toBeDefined();
+      const serialized = JSON.stringify(card);
+      expect(serialized).toContain("等待交互");
+      expect(serialized).toContain("跳过");
+    });
+
+    vi.mocked(lark.patchCard).mockClear();
+    manager.submitCardAction({
+      eventId: "event_request_skip",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m1_1",
+      openChatId: "oc_ignored",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "request_input_interrupt",
+        stateKey: "p2p_ou_guest",
+        runId: 1
+      },
+      raw: { event_id: "event_request_skip" }
+    });
+
+    await waitForExpect(() =>
+      expect(responder.respond).toHaveBeenCalledWith({
+        answers: {
+          choice: {
+            answers: ["user skip the question"]
+          },
+          details: {
+            answers: ["user skip the question"]
+          }
+        }
+      })
+    );
+    expect(codex.interruptTurn).not.toHaveBeenCalled();
+    expect(repository.updateCodexThreadStatus).toHaveBeenCalledWith("p2p_ou_guest", "thread_1", "working");
+    await waitForExpect(() => {
+      const card = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
+      expect(card).toBeDefined();
+      const serialized = JSON.stringify(card);
+      expect(serialized).toContain("工作中...");
+      expect(serialized).toContain("[收到答案] Choose mode: user skip the question; Details: user skip the question");
+      expect(serialized).not.toContain("等待交互");
+    });
+    await waitForExpect(() => {
+      const cardActionInput = vi
+        .mocked(repository.insertLarkMessage)
+        .mock.calls.map(([input]) => input)
+        .find((input) => input.eventId === "event_request_skip");
+      expect(cardActionInput).toMatchObject({
+        routeKind: "card_action",
+        status: "completed",
+        text: "/request-input skip"
+      });
+    });
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+  });
+
   it("starts confirmed plan implementation with the concise Codex prompt", async () => {
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();

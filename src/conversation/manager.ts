@@ -1642,7 +1642,7 @@ export class ConversationManager {
             await this.executeRequestInputSubmitAction(state, active, action.formValue);
             break;
           case "request_input_interrupt":
-            await this.executeNextAction(state, active.context);
+            await this.executeRequestInputSkipAction(state, active);
             break;
           case "plan_implement":
             await this.executePlanImplementAction(state, active, action);
@@ -1688,6 +1688,23 @@ export class ConversationManager {
     const response = buildRequestUserInputResponse(waiting.request, formValue);
     active.card?.messages.push({
       id: `request_user_input:${String(waiting.request.requestId)}:answered`,
+      text: formatRequestUserInputAnswerProgress(waiting.request, response)
+    });
+    active.waiting = undefined;
+    await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
+    await this.patchAgentCardBestEffort(state, active, "working");
+    this.startAgentCardTimer(state, active);
+    waiting.responder.respond(response);
+  }
+
+  private async executeRequestInputSkipAction(state: ConversationState, active: ActiveTurn): Promise<void> {
+    if (active.waiting?.kind !== "request_user_input") {
+      return;
+    }
+    const waiting = active.waiting;
+    const response = buildSkippedRequestUserInputResponse(waiting.request);
+    active.card?.messages.push({
+      id: `request_user_input:${String(waiting.request.requestId)}:skipped`,
       text: formatRequestUserInputAnswerProgress(waiting.request, response)
     });
     active.waiting = undefined;
@@ -3995,7 +4012,7 @@ function twinnyCardActionText(action: ParsedCardActionCommand["action"]): string
     case "request_input_submit":
       return "/request-input submit";
     case "request_input_interrupt":
-      return "/request-input interrupt";
+      return "/request-input skip";
     case "plan_implement":
       return "/plan implement";
     case "plan_interrupt":
@@ -4080,6 +4097,16 @@ function buildRequestUserInputResponse(
     const fallback = question.options?.[0]?.label ? [question.options[0].label] : [];
     answers[question.id] = {
       answers: other.length > 0 ? other : selected.length > 0 ? selected : fallback
+    };
+  }
+  return { answers };
+}
+
+function buildSkippedRequestUserInputResponse(request: CodexRequestUserInputRequest): CodexRequestUserInputResponse {
+  const answers: CodexRequestUserInputResponse["answers"] = {};
+  for (const question of request.params.questions) {
+    answers[question.id] = {
+      answers: ["user skip the question"]
     };
   }
   return { answers };

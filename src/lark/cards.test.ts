@@ -152,7 +152,7 @@ describe("renderTwinnyAgentCard", () => {
         action: "request_input_submit"
       })
     });
-    expect(findButton(card, "打断")).toMatchObject({
+    expect(findButton(card, "跳过")).toMatchObject({
       name: "request_user_input_interrupt",
       behaviors: [
         expect.objectContaining({
@@ -192,7 +192,7 @@ describe("renderTwinnyAgentCard", () => {
     expect(findElementByTag(card, "select_static")).toBeUndefined();
     expect(findElementByTag(card, "input")).toBeUndefined();
     expect(findButton(card, "提交")).toBeUndefined();
-    expect(findButton(card, "打断")).toBeUndefined();
+    expect(findButton(card, "跳过")).toBeUndefined();
   });
 
   it("renders waiting plan markdown as title and separated parts", () => {
@@ -220,6 +220,14 @@ describe("renderTwinnyAgentCard", () => {
         expect.objectContaining({
           type: "callback",
           value: expect.objectContaining({ action: "plan_implement" })
+        })
+      ]
+    });
+    expect(findButton(card, "拒绝")).toMatchObject({
+      behaviors: [
+        expect.objectContaining({
+          type: "callback",
+          value: expect.objectContaining({ action: "plan_interrupt" })
         })
       ]
     });
@@ -270,7 +278,7 @@ describe("renderTwinnyAgentCard", () => {
     expect(serialized).toContain("#### 任意 Part");
     expect(findElementsByTag(card, "hr")).toHaveLength(0);
     expect(findButton(card, "实现")).toBeUndefined();
-    expect(findButton(card, "打断")).toBeUndefined();
+    expect(findButton(card, "拒绝")).toBeUndefined();
   });
 
   it("renders untitled terminal plan cards without folding the raw markdown body", () => {
@@ -294,7 +302,7 @@ describe("renderTwinnyAgentCard", () => {
     expect(serialized).not.toContain("查看完整计划");
     expect(findElementsByTag(card, "hr")).toHaveLength(0);
     expect(findButton(card, "实现")).toBeUndefined();
-    expect(findButton(card, "打断")).toBeUndefined();
+    expect(findButton(card, "拒绝")).toBeUndefined();
   });
 
   it("renders accepted plan cards with a turquoise header and collapsed remaining parts", () => {
@@ -317,7 +325,7 @@ describe("renderTwinnyAgentCard", () => {
     expect(serialized).toContain("#### Key Changes");
     expect(findElementsByTag(card, "hr")).toHaveLength(0);
     expect(findButton(card, "实现")).toBeUndefined();
-    expect(findButton(card, "打断")).toBeUndefined();
+    expect(findButton(card, "拒绝")).toBeUndefined();
   });
 
   it("displays combined queue hint when queued messages exist in append mode", () => {
