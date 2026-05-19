@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { execa } from "execa";
 import { DEFAULT_CAFFEINATE_COMMAND } from "../app/caffeinate.js";
 import { formatStartupInitializationProbeDetail, runStartupInitializationProbe } from "../app/startup-probe.js";
-import { readConfigStatus, resolveSecretRef, SecurityCliSecretStore } from "../config/index.js";
+import { readConfigStatus, resolveSecretRef, SecurityCliSecretStore, type SecretStore } from "../config/index.js";
 import { LarkBotDirectory, LarkOpenApiClient, TenantAccessTokenManager } from "../lark/index.js";
 import { isTwinnyLockHeld, readTwinnyLockMetadata } from "../lock/index.js";
 import { openRuntimeDatabase } from "../store/index.js";
@@ -36,12 +36,11 @@ export async function runDoctorChecks(): Promise<HealthSnapshot> {
 
   const config = configStatus.config;
   const secretStore = new SecurityCliSecretStore();
-  const appSecret = await checkAsync(checks, "lark app_secret", async () => {
-    const secret = await resolveSecretRef(config.lark.appSecretRef, secretStore);
-    if (!secret) {
-      throw new Error(`missing ${config.lark.appSecretRef}`);
-    }
-    return secret;
+  let appSecret: string | undefined;
+  await checkAsync(checks, "lark app_secret", async () => {
+    const secret = await resolveDoctorSecretRef(config.lark.appSecretRef, secretStore);
+    appSecret = secret.value;
+    return secret.detail;
   });
 
   await checkAsync(checks, "owner user token", async () => {
@@ -90,18 +89,19 @@ export async function runDoctorChecks(): Promise<HealthSnapshot> {
     return metadata ? `held by pid ${metadata.pid}` : "held";
   });
 
-  if (appSecret) {
+  const resolvedAppSecret = appSecret;
+  if (resolvedAppSecret) {
     await checkAsync(checks, "lark tenant token", async () => {
       const manager = new TenantAccessTokenManager({
         appId: config.lark.appId,
-        appSecret
+        appSecret: resolvedAppSecret
       });
       await manager.getTenantAccessToken();
       return "reachable";
     });
 
     await checkAsync(checks, "lark bot open_id", async () => {
-      return checkLarkBotOpenId(config, appSecret);
+      return checkLarkBotOpenId(config, resolvedAppSecret);
     });
   }
 
@@ -147,6 +147,20 @@ export async function checkLarkBotOpenId(
     throw new Error("missing bot open_id");
   }
   return botOpenId;
+}
+
+export async function resolveDoctorSecretRef(
+  ref: string,
+  secretStore: SecretStore
+): Promise<{ value: string; detail: "present" }> {
+  const value = await resolveSecretRef(ref, secretStore);
+  if (!value) {
+    throw new Error(`missing ${ref}`);
+  }
+  return {
+    value,
+    detail: "present"
+  };
 }
 
 async function checkAsync<T>(

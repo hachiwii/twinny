@@ -2,8 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createTwinnyConfig } from "../config/index.js";
-import { checkCaffeinateBinary, checkLarkBotOpenId } from "./health.js";
+import { createTwinnyConfig, MemorySecretStore } from "../config/index.js";
+import { checkCaffeinateBinary, checkLarkBotOpenId, resolveDoctorSecretRef } from "./health.js";
 
 describe("doctor health checks", () => {
   const tempDirs: string[] = [];
@@ -34,6 +34,16 @@ describe("doctor health checks", () => {
 
   it("skips caffeinate on non-macOS platforms", async () => {
     await expect(checkCaffeinateBinary({ platform: "linux" })).resolves.toBe("not required on linux");
+  });
+
+  it("keeps resolved secret values out of doctor detail", async () => {
+    const store = new MemorySecretStore();
+    await store.set("custom.secret", "super-secret-value");
+
+    await expect(resolveDoctorSecretRef("keychain:twinny/custom/secret", store)).resolves.toEqual({
+      value: "super-secret-value",
+      detail: "present"
+    });
   });
 
   it("checks Lark bot open_id through a separate doctor item", async () => {
