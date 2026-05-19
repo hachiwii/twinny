@@ -1726,7 +1726,9 @@ export class ConversationManager {
       await this.addQueuedReactionBestEffort(pending);
     }
     state.pendingBatch.push(pending);
-    if (!state.active) {
+    if (state.active?.waiting) {
+      await this.tryConsumeWaitingQueue(state, state.active);
+    } else if (!state.active) {
       await this.startPendingBatch(state, context);
     }
   }

@@ -486,6 +486,71 @@ describe("ConversationManager", () => {
     expect(codex.steerTurn).not.toHaveBeenCalled();
   });
 
+  it("consumes a same-user /compact queued while plan waiting", async () => {
+    const turns: Array<Deferred<CodexTurnResult> & { params: Parameters<CodexBridge["startTurn"]>[0] }> = [];
+    const compacts: Array<Deferred<CodexTurnResult> & { params: Parameters<CodexBridge["compactThread"]>[0] }> = [];
+    const codex = createCodex({
+      startTurn: vi.fn((params) => {
+        const turn = deferred<CodexTurnResult>();
+        turns.push({ ...turn, params });
+        void params.onTurnStarted?.(`turn_${turns.length}`);
+        return turn.promise;
+      }),
+      compactThread: vi.fn((params) => {
+        const compact = deferred<CodexTurnResult>();
+        compacts.push({ ...compact, params });
+        void params.onTurnStarted?.(`compact_${compacts.length}`);
+        return compact.promise;
+      })
+    });
+    const manager = createManager({ codex });
+
+    manager.submitIncoming(message("m1", "draft a plan"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await turns[0]!.params.onPlanUpdated?.({
+      threadId: "thread_1",
+      turnId: "turn_1",
+      explanation: "Plan ready",
+      plan: [{ step: "Update the implementation", status: "pending" }]
+    });
+
+    manager.submitIncoming(message("m2", "/compact"));
+
+    await waitForExpect(() =>
+      expect(codex.interruptTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ role: "guest", threadId: "thread_1", turnId: "turn_1" })
+      )
+    );
+    turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
+    await waitForExpect(() => expect(codex.compactThread).toHaveBeenCalledTimes(1));
+    expect(compacts[0]!.params.threadId).toBe("thread_1");
+
+    compacts[0]!.resolve(completed("thread_1", "compact_1"));
+  });
+
+  it("keeps a different-user /compact queued while plan waiting", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository: createRepository(groupConversationRecord()).repository, codex });
+
+    manager.submitIncoming(groupMessage("g1", "draft a plan", { senderOpenId: "ou_guest" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await turns[0]!.params.onPlanUpdated?.({
+      threadId: "thread_group",
+      turnId: "turn_1",
+      explanation: "Plan ready",
+      plan: [{ step: "Update the implementation", status: "pending" }]
+    });
+
+    manager.submitIncoming(groupMessage("g2", "/compact", { senderOpenId: "ou_other" }));
+
+    await waitForExpect(() => expect(manager.queueDepth("group_oc_group")).toBe(1));
+    await waitForDelay();
+    expect(codex.interruptTurn).not.toHaveBeenCalled();
+    expect(codex.compactThread).not.toHaveBeenCalled();
+
+    turns[0]!.resolve(completed("thread_group", "turn_1"));
+  });
+
   it("queues ordinary messages while compact is active instead of steering them", async () => {
     const { codex, compacts } = createDeferredCompactCodex();
     const manager = createManager({ codex });
