@@ -244,7 +244,7 @@ describe("renderTwinnyAgentCard", () => {
       mode: "plan"
     }));
 
-    expect(JSON.stringify(card)).toContain("已工作 2m30s · Mode: plan");
+    expect(JSON.stringify(card)).toContain("已工作 2m30s · Plan Mode");
   });
 
   it("shows service restart recovery copy in paused-card subtitle", () => {

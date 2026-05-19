@@ -556,7 +556,7 @@ function elapsedText(
 ): string {
   const parts = [`已工作 ${formatElapsed(elapsedMs)}`, ...runtimeStatParts(runtimeStats)];
   if (mode === "plan") {
-    parts.push("Mode: plan");
+    parts.push("Plan Mode");
   }
   return parts.join(" · ");
 }
