@@ -252,6 +252,771 @@ describe("Lark to Codex integration flow", () => {
     expect(traceText(groupTurn)).toContain("run group task");
     expect(traceText(groupTurn)).not.toContain("@_bot");
   });
+
+  it("downloads rich Lark post image and media resources before sending the turn to Codex", async () => {
+    const harness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "turn_1",
+              status: "completed",
+              durationMs: 6,
+              items: [{ type: "agentMessage", id: "resource_done", text: "resource done", phase: "final_answer" }]
+            }
+          }
+        }
+      }
+    ));
+    const richPostContent = {
+      zh_cn: {
+        title: "Incident",
+        content: [
+          [{ tag: "text", text: "Please inspect " }, { tag: "img", image_key: "img_in_1" }],
+          [{ tag: "text", text: "Playback " }, { tag: "media", file_key: "video_in_1" }]
+        ]
+      }
+    };
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({
+        eventId: "e_resource",
+        messageId: "m_resource",
+        messageType: "post",
+        content: JSON.stringify(richPostContent)
+      })
+    }));
+    await harness.waitForTrace((trace) => codexOut(trace, "turn/start").length === 1, "resource turn/start");
+
+    const trace = harness.readTrace();
+    const resourceRequests = larkOut(trace).filter((entry) => entry.method === "GET" && entry.path.includes("/resources/"));
+    expect(resourceRequests).toHaveLength(2);
+    expect(resourceRequests).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: "/im/v1/messages/m_resource/resources/img_in_1",
+        query: { type: "image" }
+      }),
+      expect.objectContaining({
+        path: "/im/v1/messages/m_resource/resources/video_in_1",
+        query: { type: "file" }
+      })
+    ]));
+
+    const expectedResourceDir = path.join(harness.tempDir, "workspaces", "p2p_ou_guest", ".twinny", "lark_files", "m_resource");
+    const turnText = traceText(codexOut(trace, "turn/start")[0]);
+    expect(turnText).toContain("# Incident");
+    expect(turnText).toContain("lark_file_key=\\\"img_in_1\\\"");
+    expect(turnText).toContain("lark_file_key=\\\"video_in_1\\\"");
+    expect(turnText).toContain(path.join(expectedResourceDir, "img_in_1.png"));
+    expect(turnText).toContain(path.join(expectedResourceDir, "clip.mp4"));
+    expect(turnText).toContain("\"type\":\"localImage\"");
+  });
+
+  it("uploads SEND_TO_LARK image, video, and file outputs and replies with the expected Lark payloads", async () => {
+    const harness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        files: [
+          { path: "{{cwd}}/result.png", content: "png" },
+          { path: "{{cwd}}/demo.mp4", content: "mp4" },
+          { path: "{{cwd}}/report.pdf", content: "pdf" }
+        ],
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "turn_1",
+              status: "completed",
+              durationMs: 6,
+              items: [
+                {
+                  type: "agentMessage",
+                  id: "artifact_done",
+                  phase: "final_answer",
+                  text:
+                    "Artifacts ready\n" +
+                    "SEND_TO_LARK: <img path=\"{{cwd}}/result.png\"></img>\n" +
+                    "SEND_TO_LARK: <video path=\"{{cwd}}/demo.mp4\"></video>\n" +
+                    "SEND_TO_LARK: <file path=\"{{cwd}}/report.pdf\"></file>"
+                }
+              ]
+            }
+          }
+        }
+      }
+    ));
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_artifacts", messageId: "m_artifacts", text: "produce artifacts" })
+    }));
+    await harness.waitForTrace(
+      (trace) => larkOut(trace).some((entry) => entry.path === "/im/v1/messages/m_artifacts/reply" && traceText(entry).includes("file_uploaded_")),
+      "artifact file reply"
+    );
+
+    const trace = harness.readTrace();
+    const imageUpload = larkOut(trace).find((entry) => entry.path === "/im/v1/images");
+    const fileUploads = larkOut(trace).filter((entry) => entry.path === "/im/v1/files");
+    expect(imageUpload?.body).toMatchObject({
+      formData: {
+        image_type: "message",
+        image: { name: "result.png", size: 3, type: "image/png" }
+      }
+    });
+    expect(fileUploads).toHaveLength(2);
+    expect(fileUploads.map((entry) => entry.body)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        formData: expect.objectContaining({
+          file_type: "mp4",
+          file_name: "demo.mp4",
+          file: { name: "demo.mp4", size: 3, type: "video/mp4" }
+        })
+      }),
+      expect.objectContaining({
+        formData: expect.objectContaining({
+          file_type: "pdf",
+          file_name: "report.pdf",
+          file: { name: "report.pdf", size: 3, type: "application/pdf" }
+        })
+      })
+    ]));
+    expect(JSON.stringify(trace)).toContain("img_uploaded_");
+    expect(JSON.stringify(trace)).toContain("file_uploaded_");
+    expect(larkOut(trace)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        method: "POST",
+        path: "/im/v1/messages/m_artifacts/reply",
+        bodyContentJson: expect.objectContaining({ file_key: expect.stringContaining("file_uploaded_") })
+      })
+    ]));
+  });
+
+  it("keeps compact traffic ordered: ordinary messages queue, steer is rejected, and stop interrupts compact", async () => {
+    const harness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "turn_1",
+              status: "completed",
+              durationMs: 6,
+              items: [{ type: "agentMessage", id: "ready", text: "ready", phase: "final_answer" }]
+            }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/compact/start", nth: 1 },
+        delayMs: 80,
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "compact_1" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/compact/start", nth: 1 },
+        delayMs: 260,
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: { id: "compact_1", status: "completed", durationMs: 260, items: [] }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/interrupt", nth: 1 },
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: { id: "compact_1", status: "interrupted", durationMs: 90, items: [] }
+          }
+        }
+      }
+    ));
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_compact_prepare", messageId: "m_compact_prepare", text: "prepare thread" })
+    }));
+    await harness.waitForExpect(() => {
+      expect(harness.repository.getLarkMessageById("m_compact_prepare")).toMatchObject({ status: "completed" });
+    });
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_compact", messageId: "m_compact", text: "/compact" })
+    }));
+    await harness.waitForTrace((trace) => codexOut(trace, "thread/compact/start").length === 1, "compact request");
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_compact_during", messageId: "m_compact_during", text: "message before compact started" })
+    }));
+    await harness.waitForExpect(() => {
+      expect(harness.repository.getLarkMessageById("m_compact_during")).toMatchObject({ status: "queued" });
+    });
+    await harness.waitForTrace(
+      (trace) => trace.some((entry) => entry.kind === "codex.in" && traceText(entry).includes("compact_1") && traceText(entry).includes("turn/started")),
+      "compact started notification"
+    );
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_compact_steer", messageId: "m_compact_steer", text: "/steer" })
+    }));
+    await harness.waitForTrace(
+      (trace) => larkOut(trace).some((entry) => entry.path === "/im/v1/messages/m_compact_steer/reply" && traceText(entry).includes("compact")),
+      "compact steer rejection"
+    );
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_compact_stop", messageId: "m_compact_stop", text: "/stop" })
+    }));
+    await harness.waitForTrace((trace) => codexOut(trace, "turn/interrupt").length === 1, "compact interrupt");
+    await harness.waitForTrace((items) => {
+      const interruptId = codexOut(items, "turn/interrupt")[0]?.id;
+      return interruptId !== undefined && items.some((entry) => entry.kind === "codex.in" && entry.message.id === interruptId);
+    }, "compact interrupt response");
+    await harness.waitForTrace(
+      (items) => larkOut(items).some((entry) => entry.path === "/im/v1/messages/m_compact_stop/reply" && traceText(entry).includes("已停止")),
+      "compact stop reply"
+    );
+    await harness.waitForExpect(() => {
+      expect(harness.repository.getLarkMessageById("m_compact_during")).toMatchObject({ status: "cleared" });
+    });
+
+    const trace = harness.readTrace();
+    const queuedAt = larkOut(trace).find((entry) => entry.path === "/im/v1/messages/m_compact_during/reactions")?.at;
+    const compactStartedAt = trace.find(
+      (entry) => entry.kind === "codex.in" && traceText(entry).includes("compact_1") && traceText(entry).includes("turn/started")
+    )?.at;
+    expect(queuedAt).toBeDefined();
+    expect(compactStartedAt).toBeDefined();
+    expect(queuedAt!).toBeLessThan(compactStartedAt!);
+    expect(codexOut(trace, "turn/steer")).toHaveLength(0);
+    expect(larkOut(trace).some((entry) => entry.path === "/im/v1/messages/m_compact_stop/reply" && traceText(entry).includes("已停止"))).toBe(true);
+  });
+
+  it("creates a Lark thread with /thread and routes later topic messages through the new Codex thread", async () => {
+    const harness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_2", turn: { id: "turn_1" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_2",
+            turn: {
+              id: "turn_1",
+              status: "completed",
+              durationMs: 7,
+              items: [{ type: "agentMessage", id: "thread_first", text: "thread first done", phase: "final_answer" }]
+            }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 2 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_2", turn: { id: "turn_2" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 2 },
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_2",
+            turn: {
+              id: "turn_2",
+              status: "completed",
+              durationMs: 7,
+              items: [{ type: "agentMessage", id: "thread_followup", text: "thread followup done", phase: "final_answer" }]
+            }
+          }
+        }
+      }
+    ));
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({
+        eventId: "e_thread_activate",
+        messageId: "g_thread_activate",
+        text: "/activate all guest",
+        chatType: "group",
+        chatId: "oc_group",
+        senderOpenId: "ou_owner"
+      })
+    }));
+    await harness.waitForTrace(
+      (trace) => larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g_thread_activate/reply" && traceText(entry).includes("Role")),
+      "thread group activation"
+    );
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({
+        eventId: "e_thread_command",
+        messageId: "g_thread_command",
+        text: "/thread investigate thread flow",
+        chatType: "group",
+        chatId: "oc_group",
+        senderOpenId: "ou_guest"
+      })
+    }));
+    await harness.waitForTrace((trace) => codexOut(trace, "turn/start").length === 1, "thread proxy turn/start");
+
+    const createdThreadId = "thread_reply_send_2_3";
+    let trace = harness.readTrace();
+    expect(codexOut(trace, "thread/start")).toHaveLength(2);
+    expect(codexOut(trace, "turn/start")[0]?.message.params).toMatchObject({ threadId: "guest_thread_2" });
+    expect(traceText(codexOut(trace, "turn/start")[0])).toContain("investigate thread flow");
+    expect(larkOut(trace)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ method: "POST", path: "/im/v1/messages", query: { receive_id_type: "chat_id" } }),
+      expect.objectContaining({
+        method: "POST",
+        path: "/im/v1/messages/send_2/reply",
+        body: expect.objectContaining({ reply_in_thread: true })
+      }),
+      expect.objectContaining({ method: "DELETE", path: "/im/v1/messages/g_thread_command" })
+    ]));
+
+    await harness.waitForTrace(
+      (items) => larkOut(items).some((entry) => entry.method === "PATCH" && traceText(entry).includes("thread first done")),
+      "thread first final card"
+    );
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({
+        eventId: "e_thread_followup",
+        messageId: "g_thread_followup",
+        text: "follow-up in new thread",
+        chatType: "topic_group",
+        chatId: "oc_group",
+        threadId: createdThreadId,
+        rootId: createdThreadId,
+        senderOpenId: "ou_guest"
+      })
+    }));
+    await harness.waitForTrace((items) => codexOut(items, "turn/start").length === 2, "thread follow-up turn/start");
+    await harness.waitForTrace(
+      (items) => larkOut(items).some((entry) => entry.path === "/im/v1/messages/g_thread_followup/reply" && traceText(entry).includes("interactive")),
+      "thread follow-up replied in current topic"
+    );
+
+    trace = harness.readTrace();
+    expect(codexOut(trace, "thread/resume")[0]?.message.params).toMatchObject({ threadId: "guest_thread_2" });
+    expect(codexOut(trace, "turn/start")[1]?.message.params).toMatchObject({ threadId: "guest_thread_2" });
+    expect(traceText(codexOut(trace, "turn/start")[1])).toContain("follow-up in new thread");
+    expect(larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g_thread_followup/reply")).toBe(true);
+  });
+
+  it("handles card controls for queue/next, skipped question input, and rejected plan mode", async () => {
+    const queueHarness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/interrupt", nth: 1 },
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: { id: "turn_1", status: "interrupted", durationMs: 10, items: [] }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 2 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_2" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 2 },
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "turn_2",
+              status: "completed",
+              durationMs: 6,
+              items: [{ type: "agentMessage", id: "queued_finished", text: "queued finished", phase: "final_answer" }]
+            }
+          }
+        }
+      }
+    ));
+    await queueHarness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_card_active", messageId: "m_card_active", text: "long card task" })
+    }));
+    await queueHarness.waitForTrace((trace) => codexOut(trace, "turn/start").length === 1, "card active turn");
+    await queueHarness.dispatchLarkJsonl(jsonl({
+      event: "card.action.trigger",
+      data: cardActionEvent({
+        eventId: "e_card_queue_unauthorized",
+        action: "queue",
+        stateKey: "p2p_ou_guest",
+        runId: 1,
+        operatorOpenId: "ou_other"
+      })
+    }));
+    await queueHarness.dispatchLarkJsonl(jsonl({
+      event: "card.action.trigger",
+      data: cardActionEvent({ eventId: "e_card_queue", action: "queue", stateKey: "p2p_ou_guest", runId: 1 })
+    }));
+    await queueHarness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_card_queued", messageId: "m_card_queued", text: "queued by card" })
+    }));
+    await queueHarness.waitForExpect(() => {
+      expect(queueHarness.repository.getLarkMessageById("m_card_queued")).toMatchObject({ status: "queued" });
+    });
+    await queueHarness.dispatchLarkJsonl(jsonl({
+      event: "card.action.trigger",
+      data: cardActionEvent({ eventId: "e_card_next", action: "next", stateKey: "p2p_ou_guest", runId: 1 })
+    }));
+    await queueHarness.waitForTrace((trace) => codexOut(trace, "turn/start").length === 2, "card next starts queued turn");
+    await queueHarness.waitForTrace(
+      (items) => larkOut(items).some((entry) => entry.method === "PATCH" && traceText(entry).includes("queued finished")),
+      "card queued turn final card"
+    );
+    let trace = queueHarness.readTrace();
+    expect(codexOut(trace, "turn/interrupt")).toHaveLength(1);
+    expect(traceText(codexOut(trace, "turn/start")[1])).toContain("queued by card");
+    expect(JSON.stringify(trace)).not.toContain("e_card_queue_unauthorized");
+    await queueHarness.dispose();
+
+    const inputHarness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        request: {
+          id: "skip_question_1",
+          method: "item/tool/requestUserInput",
+          params: {
+            threadId: "guest_thread_1",
+            turnId: "turn_1",
+            itemId: "item_question",
+            questions: [
+              {
+                id: "detail",
+                header: "Detail",
+                question: "Need details?",
+                isOther: false,
+                isSecret: false,
+                options: [{ label: "Use defaults", description: "Continue with defaults." }]
+              }
+            ]
+          }
+        }
+      },
+      {
+        role: "guest",
+        afterResponse: { id: "skip_question_1" },
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "turn_1",
+              status: "completed",
+              durationMs: 8,
+              items: [{ type: "agentMessage", id: "skip_done", text: "skip done", phase: "final_answer" }]
+            }
+          }
+        }
+      }
+    ));
+    await inputHarness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_skip_input", messageId: "m_skip_input", text: "ask me" })
+    }));
+    await inputHarness.waitForTrace(
+      (items) => larkOut(items).some((entry) => entry.method === "PATCH" && traceText(entry).includes("Need details?")),
+      "input waiting card"
+    );
+    await inputHarness.dispatchLarkJsonl(jsonl({
+      event: "card.action.trigger",
+      data: cardActionEvent({ eventId: "e_skip_action", action: "request_input_interrupt", stateKey: "p2p_ou_guest", runId: 1 })
+    }));
+    await inputHarness.waitForTrace(
+      (items) => codexResponses(items, "skip_question_1").some((entry) => traceText(entry).includes("user skip the question")),
+      "skipped input response"
+    );
+    await inputHarness.waitForExpect(() => {
+      expect(inputHarness.repository.getLarkMessageById("m_skip_input")).toMatchObject({ status: "completed" });
+    });
+    await inputHarness.dispose();
+
+    const planHarness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: {
+          method: "item/completed",
+          params: { threadId: "guest_thread_1", turnId: "turn_1", item: { type: "plan", text: "Plan to reject" } }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: { id: "turn_1", status: "completed", durationMs: 8, items: [{ type: "plan", text: "Plan to reject" }] }
+          }
+        }
+      }
+    ));
+    await planHarness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_plan_reject", messageId: "m_plan_reject", text: "/plan propose only" })
+    }));
+    await planHarness.waitForTrace(
+      (items) => larkOut(items).some((entry) => entry.method === "PATCH" && traceText(entry).includes("Plan to reject")),
+      "plan waiting card"
+    );
+    await planHarness.dispatchLarkJsonl(jsonl({
+      event: "card.action.trigger",
+      data: cardActionEvent({ eventId: "e_plan_interrupt", action: "plan_interrupt", stateKey: "p2p_ou_guest", runId: 1 })
+    }));
+    await planHarness.waitForTrace((items) => codexOut(items, "turn/interrupt").length === 1, "plan interrupt");
+    await planHarness.waitForTrace((items) => {
+      const interruptId = codexOut(items, "turn/interrupt")[0]?.id;
+      return interruptId !== undefined && items.some((entry) => entry.kind === "codex.in" && entry.message.id === interruptId);
+    }, "plan interrupt response");
+    trace = planHarness.readTrace();
+    expect(codexOut(trace, "turn/start")).toHaveLength(1);
+    await planHarness.dispose();
+  });
+
+  it("queues different-user group messages during an active turn while preserving authorized owner stop", async () => {
+    const harness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        delayMs: 180,
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "turn_1",
+              status: "completed",
+              durationMs: 180,
+              items: [{ type: "agentMessage", id: "guest_done", text: "guest done", phase: "final_answer" }]
+            }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 2 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_2" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 2 },
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "turn_2",
+              status: "completed",
+              durationMs: 6,
+              items: [{ type: "agentMessage", id: "other_done", text: "other done", phase: "final_answer" }]
+            }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 3 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_3" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/interrupt", nth: 1 },
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: { id: "turn_3", status: "interrupted", durationMs: 8, items: [] }
+          }
+        }
+      }
+    ));
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({
+        eventId: "e_multi_activate",
+        messageId: "g_multi_activate",
+        text: "/activate all guest",
+        chatType: "group",
+        chatId: "oc_group",
+        senderOpenId: "ou_owner"
+      })
+    }));
+    await harness.waitForTrace(
+      (trace) => larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g_multi_activate/reply" && traceText(entry).includes("Role")),
+      "multi-user group activation"
+    );
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({
+        eventId: "e_multi_guest",
+        messageId: "g_multi_guest",
+        text: "guest active task",
+        chatType: "group",
+        chatId: "oc_group",
+        senderOpenId: "ou_guest"
+      })
+    }));
+    await harness.waitForTrace((trace) => codexOut(trace, "turn/start").length === 1, "guest active turn");
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({
+        eventId: "e_multi_other",
+        messageId: "g_multi_other",
+        text: "other user should queue",
+        chatType: "group",
+        chatId: "oc_group",
+        senderOpenId: "ou_other"
+      })
+    }));
+    await harness.waitForExpect(() => {
+      expect(harness.repository.getLarkMessageById("g_multi_other")).toMatchObject({ status: "queued" });
+    });
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({
+        eventId: "e_multi_other_next",
+        messageId: "g_multi_other_next",
+        text: "/next",
+        chatType: "group",
+        chatId: "oc_group",
+        senderOpenId: "ou_other"
+      })
+    }));
+    await waitForDelay(30);
+    expect(codexOut(harness.readTrace(), "turn/steer")).toHaveLength(0);
+    expect(codexOut(harness.readTrace(), "turn/interrupt")).toHaveLength(0);
+
+    await harness.waitForTrace((trace) => codexOut(trace, "turn/start").length === 2, "different user queued turn");
+    await harness.waitForExpect(() => {
+      expect(harness.repository.getLarkMessageById("g_multi_other")).toMatchObject({ status: "completed" });
+    });
+    let trace = harness.readTrace();
+    expect(traceText(codexOut(trace, "turn/start")[1])).toContain("other user should queue");
+    expect(traceText(codexOut(trace, "turn/start")[1])).toContain("ou_other");
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({
+        eventId: "e_multi_stop_active",
+        messageId: "g_multi_stop_active",
+        text: "guest active task for owner stop",
+        chatType: "group",
+        chatId: "oc_group",
+        senderOpenId: "ou_guest"
+      })
+    }));
+    await harness.waitForTrace((items) => codexOut(items, "turn/start").length === 3, "owner stop active turn");
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({
+        eventId: "e_multi_stop_queued",
+        messageId: "g_multi_stop_queued",
+        text: "queued before owner stop",
+        chatType: "group",
+        chatId: "oc_group",
+        senderOpenId: "ou_other"
+      })
+    }));
+    await harness.waitForExpect(() => {
+      expect(harness.repository.getLarkMessageById("g_multi_stop_queued")).toMatchObject({ status: "queued" });
+    });
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({
+        eventId: "e_multi_owner_stop",
+        messageId: "g_multi_owner_stop",
+        text: "/stop",
+        chatType: "group",
+        chatId: "oc_group",
+        senderOpenId: "ou_owner"
+      })
+    }));
+    await harness.waitForTrace((items) => codexOut(items, "turn/interrupt").length === 1, "owner stop interrupt");
+    await harness.waitForExpect(() => {
+      expect(harness.repository.getLarkMessageById("g_multi_stop_queued")).toMatchObject({ status: "cleared" });
+    });
+    await waitForDelay(30);
+    trace = harness.readTrace();
+    expect(codexOut(trace, "turn/start")).toHaveLength(3);
+    expect(larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g_multi_owner_stop/reply" && traceText(entry).includes("已停止"))).toBe(true);
+  });
 });
 
 class IntegrationHarness {
@@ -284,6 +1049,8 @@ class IntegrationHarness {
   }
 
   static async create(codexScriptJsonl: string): Promise<IntegrationHarness> {
+    larkId = 0;
+    FakeLarkApi.reset();
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-integration-"));
     const traceFile = path.join(tempDir, "trace.jsonl");
     const scriptFile = path.join(tempDir, "codex-script.jsonl");
@@ -456,7 +1223,7 @@ class FakeLarkApi {
     const url = new URL(input);
     const apiPath = url.pathname.replace(/^\/open-apis/, "");
     const method = init?.method ?? "GET";
-    const body = parseRequestBody(init?.body);
+    const body = await parseRequestBody(init?.body);
     appendTrace(this.traceFile, {
       kind: "lark.out",
       method,
@@ -538,10 +1305,26 @@ class FakeLarkApi {
     }
     const resourceMatch = /^\/im\/v1\/messages\/[^/]+\/resources\/[^/]+$/.exec(apiPath);
     if (resourceMatch && method === "GET") {
-      return binaryResponse(Buffer.from("fake-resource"), "text/plain");
+      const resourceKey = decodeURIComponent(apiPath.split("/").pop() ?? "resource");
+      const resourceType = url.searchParams.get("type");
+      if (resourceType === "image" || resourceKey.startsWith("img")) {
+        return binaryResponse(Buffer.from("fake-image"), "image/png", `attachment; filename="${resourceKey}.png"`);
+      }
+      const fileName = resourceKey.includes("video") ? "clip.mp4" : `${resourceKey}.pdf`;
+      const contentType = fileName.endsWith(".mp4") ? "video/mp4" : "application/pdf";
+      return binaryResponse(Buffer.from("fake-resource"), contentType, `attachment; filename="${fileName}"`);
     }
-    if (apiPath === "/im/v1/images" || apiPath === "/im/v1/files") {
-      return jsonResponse({ code: 0, data: { image_key: `img_${nextLarkId()}`, file_key: `file_${nextLarkId()}` } });
+    if (apiPath === "/im/v1/images") {
+      return jsonResponse({ code: 0, data: { image_key: `img_uploaded_${nextLarkId()}` } });
+    }
+    if (apiPath === "/im/v1/files") {
+      return jsonResponse({ code: 0, data: { file_key: `file_uploaded_${nextLarkId()}` } });
+    }
+    const forwardMatch = /^\/im\/v1\/threads\/([^/]+)\/forward$/.exec(apiPath);
+    if (forwardMatch && method === "POST") {
+      const sourceThreadId = decodeURIComponent(forwardMatch[1]!);
+      const messageId = `forward_${nextLarkId()}`;
+      return jsonResponse({ code: 0, data: { message_id: messageId, thread_id: sourceThreadId } });
     }
     return jsonResponse({ code: 0, data: {} });
   };
@@ -556,6 +1339,10 @@ class FakeLarkApi {
     if (messageId) {
       FakeLarkApi.messageRawById.set(messageId, raw);
     }
+  }
+
+  static reset(): void {
+    FakeLarkApi.messageRawById.clear();
   }
 
   private fetchedMessage(messageId: string): unknown {
@@ -739,6 +1526,7 @@ function createFakeCodexBinary(tempDir: string, traceFile: string, scriptFile: s
     binary,
     `#!/usr/bin/env node
 import fs from "node:fs";
+import path from "node:path";
 import readline from "node:readline";
 
 const traceFile = ${JSON.stringify(traceFile)};
@@ -756,7 +1544,10 @@ function append(entry) {
 }
 
 function send(message, delayMs = 0) {
-  const write = () => process.stdout.write(JSON.stringify(message) + "\\n");
+  const write = () => {
+    append({ kind: "codex.in", role, message });
+    process.stdout.write(JSON.stringify(message) + "\\n");
+  };
   if (delayMs > 0) {
     setTimeout(write, delayMs);
     return;
@@ -809,12 +1600,37 @@ function defaultResult(message, method, nth) {
   return {};
 }
 
-function emitAction(action) {
+function materialize(value, message) {
+  if (typeof value === "string") {
+    return value
+      .split("{{cwd}}").join(message.params?.cwd ?? "")
+      .split("{{threadId}}").join(message.params?.threadId ?? "")
+      .split("{{turnId}}").join(message.params?.turnId ?? "");
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => materialize(item, message));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, materialize(item, message)]));
+  }
+  return value;
+}
+
+function writeActionFiles(action, message) {
+  for (const file of action.files ?? []) {
+    const filePath = materialize(file.path, message);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, file.content ?? "");
+  }
+}
+
+function emitAction(action, message) {
+  writeActionFiles(action, message);
   if (action.notify) {
-    send({ method: action.notify.method, params: action.notify.params }, action.delayMs ?? 0);
+    send({ method: action.notify.method, params: materialize(action.notify.params, message) }, action.delayMs ?? 0);
   }
   if (action.request) {
-    send({ id: action.request.id, method: action.request.method, params: action.request.params }, action.delayMs ?? 0);
+    send({ id: action.request.id, method: action.request.method, params: materialize(action.request.params, message) }, action.delayMs ?? 0);
   }
 }
 
@@ -829,7 +1645,7 @@ function handleRequest(message) {
   }
   for (const action of script) {
     if (matches(action.after, message, method, nth)) {
-      emitAction(action);
+      emitAction(action, message);
     }
   }
 }
@@ -839,7 +1655,7 @@ function handleResponse(message) {
   const nth = nextCount(key);
   for (const action of script) {
     if (matches(action.afterResponse, message, key, nth)) {
-      emitAction(action);
+      emitAction(action, message);
     }
   }
 }
@@ -864,14 +1680,22 @@ rl.on("line", (line) => {
 function receiveMessageEvent(options: {
   eventId: string;
   messageId: string;
-  text: string;
+  text?: string;
+  messageType?: string;
+  content?: unknown;
   senderOpenId?: string;
+  senderName?: string;
   chatType?: "p2p" | "group" | "topic_group";
   chatId?: string;
+  threadId?: string;
+  rootId?: string;
+  parentId?: string;
   mentions?: Array<Record<string, unknown>>;
 }): unknown {
   const senderOpenId = options.senderOpenId ?? "ou_guest";
   const chatType = options.chatType ?? "p2p";
+  const messageType = options.messageType ?? "text";
+  const content = options.content ?? JSON.stringify({ text: options.text ?? "" });
   return {
     event_id: options.eventId,
     sender: {
@@ -879,18 +1703,31 @@ function receiveMessageEvent(options: {
         open_id: senderOpenId
       },
       sender_type: "user",
-      sender_name: senderOpenId === "ou_owner" ? "Owner User" : "Guest User"
+      sender_name: options.senderName ?? userNameForOpenId(senderOpenId)
     },
     message: {
       message_id: options.messageId,
+      root_id: options.rootId,
+      parent_id: options.parentId,
+      thread_id: options.threadId,
       create_time: "1000",
       chat_id: options.chatId ?? (chatType === "p2p" ? senderOpenId : "oc_group"),
       chat_type: chatType,
-      message_type: "text",
+      message_type: messageType,
       mentions: options.mentions,
-      content: JSON.stringify({ text: options.text })
+      content
     }
   };
+}
+
+function userNameForOpenId(openId: string): string {
+  if (openId === "ou_owner") {
+    return "Owner User";
+  }
+  if (openId === "ou_other") {
+    return "Other User";
+  }
+  return "Guest User";
 }
 
 function recallEvent(options: { eventId: string; messageId: string }): unknown {
@@ -910,11 +1747,16 @@ function cardActionEvent(options: {
   stateKey: string;
   runId: number;
   formValue?: Record<string, unknown>;
+  operatorOpenId?: string;
+  openMessageId?: string;
+  openChatId?: string;
 }): unknown {
   return {
     header: { event_id: options.eventId },
     event: {
-      operator: { open_id: "ou_guest" },
+      operator: { open_id: options.operatorOpenId ?? "ou_guest" },
+      open_message_id: options.openMessageId,
+      open_chat_id: options.openChatId,
       action: {
         tag: "button",
         value: {
@@ -946,6 +1788,10 @@ function parseJsonl<T>(jsonl: string): T[] {
     .map((line) => JSON.parse(line) as T);
 }
 
+function jsonl(...items: unknown[]): string {
+  return items.map((item) => JSON.stringify(item)).join("\n");
+}
+
 function normalizeJsonl(jsonl: string): string {
   return jsonl
     .split(/\r?\n/)
@@ -958,15 +1804,30 @@ function appendTrace(traceFile: string, entry: Record<string, unknown>): void {
   fs.appendFileSync(traceFile, `${JSON.stringify({ ...entry, at: Date.now() })}\n`, "utf8");
 }
 
-function parseRequestBody(body: string | FormData | undefined): unknown {
+async function parseRequestBody(body: string | FormData | undefined): Promise<unknown> {
   if (typeof body !== "string") {
-    return body === undefined ? undefined : { formData: true };
+    if (body === undefined) {
+      return undefined;
+    }
+    return parseFormData(body);
   }
   try {
     return JSON.parse(body);
   } catch {
     return body;
   }
+}
+
+function parseFormData(body: FormData): unknown {
+  const fields: Record<string, unknown> = {};
+  for (const [key, value] of body.entries()) {
+    fields[key] = typeof value === "string" ? value : {
+      name: "name" in value ? value.name : undefined,
+      size: "size" in value ? value.size : undefined,
+      type: "type" in value ? value.type : undefined
+    };
+  }
+  return { formData: fields };
 }
 
 function parseBodyContent(body: unknown): unknown {
@@ -1003,14 +1864,21 @@ function jsonResponse(body: unknown, status = 200): FetchResponseLike {
   };
 }
 
-function binaryResponse(body: Buffer, contentType: string): FetchResponseLike {
+function binaryResponse(body: Buffer, contentType: string, contentDisposition?: string): FetchResponseLike {
   return {
     ok: true,
     status: 200,
     statusText: "OK",
     headers: {
       get(name: string) {
-        return name.toLowerCase() === "content-type" ? contentType : null;
+        const normalized = name.toLowerCase();
+        if (normalized === "content-type") {
+          return contentType;
+        }
+        if (normalized === "content-disposition") {
+          return contentDisposition ?? null;
+        }
+        return null;
       }
     },
     json: async () => ({}),
@@ -1078,7 +1946,7 @@ interface LarkEventInput {
   data: unknown;
 }
 
-type TraceEntry = CodexTraceEntry | LarkTraceEntry;
+type TraceEntry = CodexTraceEntry | CodexIncomingTraceEntry | LarkTraceEntry;
 
 interface CodexTraceEntry {
   kind: "codex.out";
@@ -1086,6 +1954,19 @@ interface CodexTraceEntry {
   role: RoleName;
   id: string | number;
   method: string | null;
+  message: {
+    id?: string | number;
+    method?: string;
+    params?: unknown;
+    result?: unknown;
+    error?: unknown;
+  };
+}
+
+interface CodexIncomingTraceEntry {
+  kind: "codex.in";
+  at: number;
+  role: RoleName;
   message: {
     id?: string | number;
     method?: string;
