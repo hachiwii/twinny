@@ -393,6 +393,8 @@ interface ActiveTurn {
   modelReasoningEffort?: string;
   mode: CodexThreadMode;
   threadTokenUsage: ThreadTokenUsageSnapshot;
+  turnStartThreadTokenUsage: ThreadTokenUsageSnapshot;
+  turnTokenUsage: ThreadTokenUsageSnapshot;
   turnId?: string;
   reaction?: LarkReactionHandle | null;
   lastAgentReplyMessageId?: string;
@@ -2332,6 +2334,8 @@ export class ConversationManager {
       modelReasoningEffort: modelSettings.effort,
       mode,
       threadTokenUsage,
+      turnStartThreadTokenUsage: threadTokenUsage,
+      turnTokenUsage: emptyThreadTokenUsageSnapshot(),
       reaction: await this.addReactionBestEffort(message.messageId),
       card:
         agentMessageMode === "card"
@@ -2574,6 +2578,8 @@ export class ConversationManager {
       modelReasoningEffort: modelSettings.effort,
       mode,
       threadTokenUsage,
+      turnStartThreadTokenUsage: threadTokenUsage,
+      turnTokenUsage: emptyThreadTokenUsageSnapshot(),
       reaction: await this.addReactionBestEffort(anchor.messageId),
       card:
         agentMessageMode === "card"
@@ -3067,6 +3073,7 @@ export class ConversationManager {
     try {
       const tokenUsage = extractThreadTokenUsage(usage);
       active.threadTokenUsage = tokenUsage;
+      active.turnTokenUsage = subtractThreadTokenUsage(tokenUsage, active.turnStartThreadTokenUsage);
       await this.options.repository.updateCodexThreadTokenUsage({
         codexThreadId: usage.threadId,
         conversationKey: active.conversationKey,
@@ -4482,9 +4489,9 @@ function activeTurnRuntimeStats(active: ActiveTurn): TwinnyAgentCardRuntimeStats
   return {
     model: active.model,
     effort: active.modelReasoningEffort,
-    inputTokens: active.threadTokenUsage.inputTokens,
-    cachedInputTokens: active.threadTokenUsage.cachedInputTokens,
-    outputTokens: active.threadTokenUsage.outputTokens,
+    inputTokens: active.turnTokenUsage.inputTokens,
+    cachedInputTokens: active.turnTokenUsage.cachedInputTokens,
+    outputTokens: active.turnTokenUsage.outputTokens,
     contextTokens: active.threadTokenUsage.contextTokens,
     contextWindow: active.threadTokenUsage.contextWindow
   };
@@ -5340,6 +5347,26 @@ function extractThreadTokenUsage(usage: CodexThreadTokenUsageUpdate): ThreadToke
         nestedValue(raw, ["usage", "window"])
       ) ?? 0
   };
+}
+
+function subtractThreadTokenUsage(
+  current: ThreadTokenUsageSnapshot,
+  baseline: ThreadTokenUsageSnapshot
+): ThreadTokenUsageSnapshot {
+  return {
+    totalTokens: tokenDelta(current.totalTokens, baseline.totalTokens),
+    inputTokens: tokenDelta(current.inputTokens, baseline.inputTokens),
+    cachedInputTokens: tokenDelta(current.cachedInputTokens, baseline.cachedInputTokens),
+    outputTokens: tokenDelta(current.outputTokens, baseline.outputTokens),
+    reasoningOutputTokens: tokenDelta(current.reasoningOutputTokens, baseline.reasoningOutputTokens),
+    contextTokens: current.contextTokens,
+    contextWindow: current.contextWindow
+  };
+}
+
+function tokenDelta(current: number, baseline: number): number {
+  const delta = Math.trunc(current) - Math.trunc(baseline);
+  return Number.isFinite(delta) && delta > 0 ? delta : 0;
 }
 
 function emptyThreadTokenUsageSnapshot(): ThreadTokenUsageSnapshot {

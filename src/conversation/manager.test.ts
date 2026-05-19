@@ -2363,7 +2363,7 @@ describe("ConversationManager", () => {
     expect(completedSerialized).not.toContain("工作过程");
   });
 
-  it("updates the working agent card footer with model and thread token usage", async () => {
+  it("updates the working agent card footer with model and current turn token usage", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-codex-config-"));
     const codexHome = path.join(tempRoot, "codex");
     fs.mkdirSync(codexHome, { recursive: true });
@@ -2381,7 +2381,33 @@ describe("ConversationManager", () => {
     };
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();
-    const manager = createManager({ codex, lark, config: managerConfig });
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_1",
+          conversationKey: "p2p_ou_guest",
+          totalTokens: 301_000,
+          inputTokens: 300_000,
+          cachedInputTokens: 270_000,
+          outputTokens: 1_000,
+          tokenUsageJson: JSON.stringify({
+            tokenUsage: {
+              total: {
+                totalTokens: 301_000,
+                inputTokens: 300_000,
+                cachedInputTokens: 270_000,
+                outputTokens: 1_000
+              },
+              last: {
+                totalTokens: 50_000
+              },
+              modelContextWindow: 100_000
+            }
+          })
+        })
+      ]
+    });
+    const manager = createManager({ repository, codex, lark, config: managerConfig });
 
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
@@ -2410,7 +2436,9 @@ describe("ConversationManager", () => {
     await waitForExpect(() => {
       const card = vi.mocked(lark.patchCard).mock.calls.find(([messageId]) => messageId === "card_m1_1")?.[1];
       expect(card).toBeDefined();
-      expect(JSON.stringify(card)).toContain("gpt-5.5 xhigh · 57% · ↑ 327 K (90% Cached) ↓ 1.21 K");
+      const serialized = JSON.stringify(card);
+      expect(serialized).toContain("gpt-5.5 xhigh · 57% · ↑ 27 K ↓ 210");
+      expect(serialized).not.toContain("Cached");
     });
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));

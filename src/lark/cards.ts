@@ -961,13 +961,11 @@ function formatContextPercentage(contextTokens: number, contextWindow: number): 
 
 function formatCompactTokenUsage(stats: TwinnyAgentCardRuntimeStats): string | undefined {
   const inputTokens = Math.max(0, Math.trunc(stats.inputTokens));
-  const cachedInputTokens = Math.max(0, Math.trunc(stats.cachedInputTokens));
   const outputTokens = Math.max(0, Math.trunc(stats.outputTokens));
-  if (inputTokens === 0 && cachedInputTokens === 0 && outputTokens === 0) {
+  if (inputTokens === 0 && outputTokens === 0) {
     return undefined;
   }
-  const cacheRate = inputTokens > 0 ? cachedInputTokens / inputTokens : 0;
-  return `↑ ${formatCompactTokenCount(inputTokens)} (${Math.round(Math.min(100, cacheRate * 100))}% Cached) ↓ ${formatCompactTokenCount(outputTokens)}`;
+  return `↑ ${formatCompactTokenCount(inputTokens)} ↓ ${formatCompactTokenCount(outputTokens)}`;
 }
 
 function formatCompactTokenCount(value: number): string {
