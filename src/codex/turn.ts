@@ -24,7 +24,7 @@ export interface TurnStartParams {
   cwd: string;
   approvalPolicy: "never";
   collaborationMode?: {
-    mode: "plan";
+    mode: CodexThreadMode;
     settings: {
       model: string;
       reasoning_effort: string | null;
@@ -124,9 +124,9 @@ export function buildTurnStartParams(options: TurnStartOptions): TurnStartParams
     cwd: options.cwd,
     approvalPolicy: "never"
   };
-  if (options.mode === "plan") {
+  if (options.mode) {
     params.collaborationMode = {
-      mode: "plan",
+      mode: options.mode,
       settings: {
         model: options.model ?? "gpt-5.5",
         reasoning_effort: options.effort ?? "medium",

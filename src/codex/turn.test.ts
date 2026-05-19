@@ -25,6 +25,24 @@ describe("codex turn payloads", () => {
     });
   });
 
+  it("builds default collaboration mode when mode is explicit", () => {
+    expect(
+      buildTurnStartParams({
+        threadId: "thread_123",
+        text: "implement",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        mode: "default"
+      })
+    ).toMatchObject({
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          developer_instructions: null
+        }
+      }
+    });
+  });
+
   it("builds turn/steer text input with the active turn precondition", () => {
     expect(
       buildTurnSteerParams({

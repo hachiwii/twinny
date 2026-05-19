@@ -2678,6 +2678,7 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
     expect(turns[1]!.params.input).toBe("Implement this plan");
+    expect(turns[1]!.params.mode).toBe("default");
 
     turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
     turns[1]!.resolve(completed("thread_1", "turn_2"));
