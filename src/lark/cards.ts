@@ -76,6 +76,7 @@ export interface TwinnyAgentCardRuntimeStats {
 }
 
 interface ParsedPlanMarkdown {
+  rawText: string;
   title?: string;
   parts: ParsedPlanPart[];
 }
@@ -118,7 +119,7 @@ export function renderTwinnyAgentCard(options: RenderTwinnyAgentCardOptions): La
   const header = STATUS_HEADER[options.status];
   const parsedPlan = options.waiting?.kind === "plan" ? parsePlanMarkdown(options.waiting.planText) : undefined;
   const title = cardHeaderTitle(options, header.title, parsedPlan);
-  const subtitle = cardHeaderSubtitle(options, header);
+  const subtitle = cardHeaderSubtitle(options, header, parsedPlan);
   const summaryContent = options.status === "finished" ? cardSummaryContent(options.summaryText ?? "") : undefined;
   return {
     schema: "2.0",
@@ -604,6 +605,10 @@ function requestUserInputElements(
 }
 
 function planElements(plan: ParsedPlanMarkdown, status: TwinnyAgentCardStatus): LarkCardElement[] {
+  if (!plan.title) {
+    return [markdownElement(plan.rawText || "暂无计划")];
+  }
+
   const parts = plan.parts.length > 0 ? plan.parts : [{ content: "暂无计划" }];
   if (status === "waiting_plan") {
     const elements: LarkCardElement[] = [];
@@ -662,9 +667,10 @@ function formatPlanPartMarkdown(part: ParsedPlanPart): string {
 }
 
 function parsePlanMarkdown(planText: string): ParsedPlanMarkdown {
+  const rawText = planText.trim();
   const normalized = planText.replace(/\r\n?/g, "\n").trim();
   if (!normalized) {
-    return { parts: [] };
+    return { rawText, parts: [] };
   }
 
   const lines = normalized.split("\n");
@@ -729,7 +735,7 @@ function parsePlanMarkdown(planText: string): ParsedPlanMarkdown {
   pushCurrentPart();
   pushPreamble();
 
-  const parsed: ParsedPlanMarkdown = { parts };
+  const parsed: ParsedPlanMarkdown = { rawText, parts };
   if (title !== undefined) {
     parsed.title = title;
   }
@@ -796,20 +802,21 @@ function cardHeaderTitle(
   parsedPlan: ParsedPlanMarkdown | undefined
 ): string {
   if (isPlanCardStatus(options.status) && options.waiting?.kind === "plan") {
-    return parsedPlan?.title ?? "计划";
+    return parsedPlan?.title ?? fallback;
   }
   return fallback;
 }
 
 function cardHeaderSubtitle(
   options: RenderTwinnyAgentCardOptions,
-  header: { title: string; subtitle?: string }
+  header: { title: string; subtitle?: string },
+  parsedPlan: ParsedPlanMarkdown | undefined
 ): string {
   if (options.status === "waiting_input" && options.waiting?.kind === "request_user_input") {
     const count = options.waiting.questions.length;
     return `${count} 个问题待回答`;
   }
-  if (isPlanCardStatus(options.status) && options.waiting?.kind === "plan") {
+  if (isPlanCardStatus(options.status) && options.waiting?.kind === "plan" && parsedPlan?.title) {
     return header.title;
   }
   return header.subtitle ?? "";
