@@ -355,6 +355,120 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("runs /compact as a queued control command without starting a normal turn", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const codex = createCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "/compact"));
+
+    await waitForExpect(() => expect(codex.compactThread).toHaveBeenCalledTimes(1));
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(codex.compactThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "guest",
+        threadId: "thread_1",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_guest",
+        approvalPolicy: "never"
+      })
+    );
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "m1",
+        routeKind: "queued_message",
+        status: "queued",
+        text: "/compact"
+      })
+    );
+    await waitForExpect(() => expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m1"]));
+  });
+
+  it("queues /compact behind an active turn and runs it after the turn completes", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ codex });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/compact"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+
+    expect(codex.compactThread).not.toHaveBeenCalled();
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+
+    await waitForExpect(() => expect(codex.compactThread).toHaveBeenCalledTimes(1));
+    expect(codex.steerTurn).not.toHaveBeenCalled();
+  });
+
+  it("queues ordinary messages while compact is active instead of steering them", async () => {
+    const { codex, compacts } = createDeferredCompactCodex();
+    const manager = createManager({ codex });
+
+    manager.submitIncoming(message("m1", "/compact"));
+    await waitForExpect(() => expect(codex.compactThread).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "during compact"));
+
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+    expect(codex.steerTurn).not.toHaveBeenCalled();
+
+    compacts[0]!.resolve(completed("thread_1", "compact_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ input: wrappedMessage("during compact", "m2") })
+    );
+  });
+
+  it("does not steer queued messages into an active compact", async () => {
+    const { codex } = createDeferredCompactCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark });
+
+    manager.submitIncoming(message("m1", "/compact"));
+    await waitForExpect(() => expect(codex.compactThread).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue queued"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+    manager.submitIncoming(message("m3", "/steer"));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith("m3", "当前 compact 不支持注入，队列保持不变。")
+    );
+    expect(codex.steerTurn).not.toHaveBeenCalled();
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(1);
+  });
+
+  it("interrupts active compact on /stop", async () => {
+    const { codex } = createDeferredCompactCodex();
+    const manager = createManager({ codex });
+
+    manager.submitIncoming(message("m1", "/compact"));
+    await waitForExpect(() => expect(codex.compactThread).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/stop"));
+
+    await waitForExpect(() =>
+      expect(codex.interruptTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ threadId: "thread_1", turnId: "compact_1" })
+      )
+    );
+  });
+
+  it("interrupts active compact on /next and then starts the queued batch", async () => {
+    const { codex, compacts } = createDeferredCompactCodex();
+    const manager = createManager({ codex });
+
+    manager.submitIncoming(message("m1", "/compact"));
+    await waitForExpect(() => expect(codex.compactThread).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue queued after compact"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+    manager.submitIncoming(message("m3", "/next"));
+    await waitForExpect(() => expect(codex.interruptTurn).toHaveBeenCalledTimes(1));
+
+    compacts[0]!.resolve(completed("thread_1", "compact_1", "interrupted"));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ input: wrappedMessage("queued after compact", "m2") })
+    );
+  });
+
   it("splits pending queue batches at each explicit /queue message", async () => {
     const { codex, turns } = createDeferredCodex();
     const manager = createManager({ codex });
@@ -3361,6 +3475,57 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("recovers queued /compact by rerunning the compact control path", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_recovered" });
+    const record = larkMessageRecord({
+      larkMessageId: "m2",
+      routeKind: "queued_message",
+      status: "queued",
+      text: "/compact",
+      rawEventJson: JSON.stringify(rawReceiveEvent("m2", "/compact"))
+    });
+    const { repository } = createRepository(row, { larkMessages: [record] });
+    const codex = createCodex();
+    const manager = createManager({ repository, codex });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(codex.compactThread).toHaveBeenCalledTimes(1));
+
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(codex.compactThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_recovered",
+        role: "guest"
+      })
+    );
+  });
+
+  it("recovers processing /compact by rerunning compact instead of the recovery prompt", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_recovered" });
+    const record = larkMessageRecord({
+      larkMessageId: "m2",
+      routeKind: "queued_message",
+      status: "processing",
+      text: "/compact",
+      codexThreadId: "thread_recovered",
+      rawEventJson: JSON.stringify(rawReceiveEvent("m2", "/compact"))
+    });
+    const { repository } = createRepository(row, { larkMessages: [record] });
+    const codex = createCodex();
+    const manager = createManager({ repository, codex });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(codex.compactThread).toHaveBeenCalledTimes(1));
+
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(codex.compactThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_recovered",
+        role: "guest"
+      })
+    );
+  });
+
   it("recovers processing thread replies from persisted DB fields when raw event JSON is missing", async () => {
     const row = groupConversationRecord({ role: "owner", codexThreadId: "thread_recovered" });
     const record = larkMessageRecord({
@@ -3665,6 +3830,10 @@ function createCodex(overrides: Partial<CodexBridge> = {}): CodexBridge {
       await onTurnStarted?.("turn_1");
       return completed(threadId, "turn_1");
     }),
+    compactThread: vi.fn(async ({ threadId, onTurnStarted }) => {
+      await onTurnStarted?.("compact_1");
+      return completed(threadId, "compact_1");
+    }),
     steerTurn: vi.fn(async () => undefined),
     interruptTurn: vi.fn(async () => undefined),
     readAccountRateLimits: vi.fn(async () => ({
@@ -3692,6 +3861,22 @@ function createDeferredCodex(): {
     })
   });
   return { codex, turns };
+}
+
+function createDeferredCompactCodex(): {
+  codex: CodexBridge;
+  compacts: Array<Deferred<CodexTurnResult> & { params: Parameters<CodexBridge["compactThread"]>[0] }>;
+} {
+  const compacts: Array<Deferred<CodexTurnResult> & { params: Parameters<CodexBridge["compactThread"]>[0] }> = [];
+  const codex = createCodex({
+    compactThread: vi.fn((params) => {
+      const compact = deferred<CodexTurnResult>();
+      compacts.push({ ...compact, params });
+      void params.onTurnStarted?.(`compact_${compacts.length}`);
+      return compact.promise;
+    })
+  });
+  return { codex, compacts };
 }
 
 function createLarkResponder(): LarkResponder {

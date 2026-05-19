@@ -88,6 +88,12 @@ describe("CodexAppServer", () => {
         status: "completed",
         durationMs: 7
       });
+      await expect(server.compactThread({ threadId: "thread-existing", cwd: workspace })).resolves.toMatchObject({
+        threadId: "thread-existing",
+        turnId: "turn-compact",
+        status: "completed",
+        durationMs: 3
+      });
       await expect(
         server.steerTurn({
           threadId: "thread-existing",
@@ -127,6 +133,11 @@ describe("CodexAppServer", () => {
           input: [{ type: "text", text: "hello from lark", text_elements: [] }],
           cwd: workspace,
           approvalPolicy: "never"
+        }
+      });
+      expect(sent.find((message) => message.method === "thread/compact/start")).toMatchObject({
+        params: {
+          threadId: "thread-existing"
         }
       });
       expect(sent.find((message) => message.method === "turn/steer")).toMatchObject({
@@ -302,6 +313,26 @@ rl.on("line", (line) => {
             { type: "agentMessage", id: "msg-1", text: "item text" },
             { type: "agentMessage", id: "msg-2", text: "completed text" }
           ]
+        }
+      }
+    });
+    return;
+  }
+  if (message.method === "thread/compact/start") {
+    send({ id: message.id, result: {} });
+    send({
+      method: "turn/started",
+      params: { threadId: message.params.threadId, turn: { id: "turn-compact" } }
+    });
+    send({
+      method: "turn/completed",
+      params: {
+        threadId: message.params.threadId,
+        turn: {
+          id: "turn-compact",
+          status: "completed",
+          durationMs: 3,
+          items: []
         }
       }
     });

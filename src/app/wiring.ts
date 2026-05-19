@@ -422,6 +422,25 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
         onPlanUpdated,
         onRequestUserInput
       }),
+    compactThread: async ({
+      role,
+      threadId,
+      cwd,
+      onTurnStarted,
+      onTokenUsage
+    }: {
+      role: RoleName;
+      threadId: string;
+      cwd: string;
+      onTurnStarted?: (turnId: string) => Promise<void> | void;
+      onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
+    }) =>
+      pool.get(role).compactThread({
+        threadId,
+        cwd,
+        onTurnStarted,
+        onTokenUsage
+      }),
     steerTurn: async ({
       role,
       threadId,

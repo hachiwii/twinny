@@ -121,6 +121,16 @@ export interface TurnInterruptParams {
   turnId: string;
 }
 
+export interface ThreadCompactStartOptions {
+  threadId: string;
+  onTurnStarted?: (turnId: string) => Promise<void> | void;
+  onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
+}
+
+export interface ThreadCompactStartParams {
+  threadId: string;
+}
+
 export function buildTextTurnInput(text: string): TextTurnInput {
   return {
     type: "text",
@@ -208,6 +218,47 @@ export async function startCodexTurn(
     if (response.turn?.id) {
       accumulator.setTurnId(response.turn.id);
     }
+    return await accumulator.wait(requestOptions.completionTimeoutMs);
+  } catch (error) {
+    throw error instanceof Error
+      ? error
+      : new TwinnyError(toErrorMessage(error), "CODEX_TURN_FAILED", error);
+  } finally {
+    protocol.off("notification", onNotification);
+    protocol.off("serverRequest", onServerRequest);
+  }
+}
+
+export async function compactCodexThread(
+  protocol: CodexProtocolClient,
+  options: ThreadCompactStartOptions,
+  requestOptions: TurnRequestOptions = {}
+): Promise<CodexTurnResult> {
+  const accumulator = new TurnOutputAccumulator(options.threadId, undefined, {
+    onTurnStarted: options.onTurnStarted,
+    onTokenUsage: options.onTokenUsage
+  });
+  const onNotification = (notification: CodexNotificationMessage): void => {
+    accumulator.record(notification);
+  };
+  const onServerRequest = (request: CodexRequestMessage): void => {
+    if (!requestMatchesThread(request, options.threadId)) {
+      return;
+    }
+    protocol.respondError(request.id, {
+      code: "TWINNY_UNSUPPORTED_SERVER_REQUEST",
+      message: `Twinny does not implement Codex server request ${request.method} during compact`
+    });
+  };
+
+  protocol.on("notification", onNotification);
+  protocol.on("serverRequest", onServerRequest);
+  try {
+    await protocol.request<Record<string, never>, ThreadCompactStartParams>(
+      "thread/compact/start",
+      { threadId: options.threadId },
+      { timeoutMs: requestOptions.requestTimeoutMs }
+    );
     return await accumulator.wait(requestOptions.completionTimeoutMs);
   } catch (error) {
     throw error instanceof Error

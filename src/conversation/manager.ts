@@ -243,6 +243,14 @@ export interface CodexBridge {
       responder: CodexRequestUserInputResponder
     ) => Promise<void> | void;
   }): Promise<CodexTurnResult>;
+  compactThread(params: {
+    role: RoleName;
+    threadId: string;
+    cwd: string;
+    approvalPolicy: "never";
+    onTurnStarted?: (turnId: string) => Promise<void> | void;
+    onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
+  }): Promise<CodexTurnResult>;
   steerTurn(params: {
     role: RoleName;
     threadId: string;
@@ -351,7 +359,7 @@ interface PendingMessage {
   text: string;
   original: IncomingLarkMessage;
   queueBoundary: boolean;
-  control?: "plan_on" | "plan_off";
+  control?: "plan_on" | "plan_off" | "compact";
   queuedReaction?: LarkReactionHandle | null;
 }
 
@@ -367,6 +375,7 @@ type ActiveTurnWaiting =
     };
 
 interface ActiveTurn {
+  kind: "normal" | "compact";
   runId: number;
   agentMessageMode: AgentMessageMode;
   role: RoleName;
@@ -433,6 +442,7 @@ type ParsedCommand =
   | { kind: "queue"; text: string }
   | { kind: "plan"; text: string }
   | { kind: "exit" }
+  | { kind: "compact" }
   | { kind: "stop" }
   | { kind: "next" }
   | { kind: "steer" }
@@ -607,7 +617,9 @@ export class ConversationManager {
       if (!message) {
         continue;
       }
-      if (record.status === "processing") {
+      if (message.control === "compact") {
+        state.pendingBatch.push(message);
+      } else if (record.status === "processing") {
         const group = processingGroups.get(context.stateKey) ?? { state, context, records: [], messages: [] };
         group.records.push(record);
         group.messages.push(message);
@@ -674,9 +686,17 @@ export class ConversationManager {
     const text = (record.status === "queued" && (normalized.resources?.length ?? 0) > 0) ? normalized.text : record.text;
     return toPendingMessage(normalized, text, {
       queueBoundary:
-        record.status === "queued" &&
-        (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit"),
-      control: parsed.kind === "plan" ? "plan_on" : parsed.kind === "exit" ? "plan_off" : undefined
+        parsed.kind === "compact" ||
+        (record.status === "queued" &&
+          (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit")),
+      control:
+        parsed.kind === "plan"
+          ? "plan_on"
+          : parsed.kind === "exit"
+            ? "plan_off"
+            : parsed.kind === "compact"
+              ? "compact"
+              : undefined
     });
   }
 
@@ -996,6 +1016,10 @@ export class ConversationManager {
     }
     if (parsed.kind === "exit") {
       await this.handleExitCommand(state, context, message);
+      return;
+    }
+    if (parsed.kind === "compact") {
+      await this.handleCompactCommand(state, context, message);
       return;
     }
     await this.handleUserMessage(state, context, message, parsed.text);
@@ -1538,6 +1562,11 @@ export class ConversationManager {
       await this.interruptWaitingTurnWithMessage(state, context, active, pending);
       return;
     }
+    if (active?.kind === "compact") {
+      await this.addQueuedReactionBestEffort(pending);
+      state.pendingBatch.push(pending);
+      return;
+    }
     if (queueByMenu) {
       if (active || state.pendingBatch.length > 0) {
         await this.addQueuedReactionBestEffort(pending);
@@ -1628,6 +1657,25 @@ export class ConversationManager {
     const pending = toPendingMessage(message, "", {
       queueBoundary: true,
       control: "plan_off"
+    });
+    if (state.active || state.pendingBatch.length > 0) {
+      await this.addQueuedReactionBestEffort(pending);
+    }
+    state.pendingBatch.push(pending);
+    if (!state.active) {
+      await this.startPendingBatch(state, context);
+    }
+  }
+
+  private async handleCompactCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage
+  ): Promise<void> {
+    state.queueNextMessage = false;
+    const pending = toPendingMessage(message, "", {
+      queueBoundary: true,
+      control: "compact"
     });
     if (state.active || state.pendingBatch.length > 0) {
       await this.addQueuedReactionBestEffort(pending);
@@ -1964,6 +2012,11 @@ export class ConversationManager {
     }
 
     const active = state.active;
+    if (active?.kind === "compact") {
+      await this.replyControlBestEffort(message.messageId, "当前 compact 不支持注入，队列保持不变。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
     if (!active || active.cancelRequested || !active.turnId || active.completedStatus) {
       await this.replyControlBestEffort(message.messageId, "当前没有可注入的运行任务，队列保持不变。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -2203,6 +2256,18 @@ export class ConversationManager {
     pending: PendingMessage
   ): Promise<void> {
     const resolved = await this.resolveThreadForMessage(context, pending.original);
+    if (pending.control === "compact") {
+      if (resolved.replacedMissingThread) {
+        await this.notifyThreadReplacementBestEffort(pending.messageId, resolved.previousThreadId, resolved.threadId);
+      }
+      await this.beginCompactTurn(state, context, {
+        message: pending,
+        role: resolved.role,
+        threadId: resolved.threadId,
+        workspace: resolved.workspace
+      });
+      return;
+    }
     if (pending.control === "plan_on") {
       await this.setThreadModeBestEffort(resolved.conversationKey, resolved.threadId, "plan");
       if (pending.text.trim().length > 0) {
@@ -2217,6 +2282,111 @@ export class ConversationManager {
     await this.setThreadModeBestEffort(resolved.conversationKey, resolved.threadId, "default");
     await this.markMessagesCompletedBestEffort([pending.messageId]);
     await this.replyControlBestEffort(pending.messageId, "已退出 plan mode。");
+  }
+
+  private async beginCompactTurn(
+    state: ConversationState,
+    context: MessageContext,
+    params: {
+      message: PendingMessage;
+      role: RoleName;
+      threadId: string;
+      workspace: string;
+    }
+  ): Promise<void> {
+    const message = params.message;
+    await this.markPendingMessagesProcessingBestEffort([message], {
+      conversationKey: context.conversationKey,
+      codexThreadId: params.threadId
+    });
+    const [modelSettings, threadTokenUsage] = await Promise.all([
+      this.readCodexTurnModelSettingsBestEffort(params.role, params.workspace),
+      this.readThreadTokenUsageBestEffort(params.threadId)
+    ]);
+    const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
+    const mode = threadRecord?.mode ?? "default";
+    const startedAt = Date.now();
+    const agentMessageMode = this.options.config.lark.agentMessageMode;
+    const active: ActiveTurn = {
+      kind: "compact",
+      runId: ++state.nextRunId,
+      agentMessageMode,
+      role: params.role,
+      threadId: params.threadId,
+      workspace: params.workspace,
+      conversationKey: context.conversationKey,
+      context,
+      replyMessageId: message.messageId,
+      startedAt,
+      model: modelSettings.model,
+      modelReasoningEffort: modelSettings.effort,
+      mode,
+      threadTokenUsage,
+      reaction: await this.addReactionBestEffort(message.messageId),
+      card:
+        agentMessageMode === "card"
+          ? {
+              anchorMessageId: message.messageId,
+              startedAt,
+              messages: [],
+              fallbackPlain: false
+            }
+          : undefined,
+      pendingSteers: [],
+      messagesById: new Map([[message.messageId, message]]),
+      messageIds: new Set([message.messageId]),
+      processingMessageIds: new Set([message.messageId]),
+      steeredMessageIds: new Set(),
+      cancelRequested: false
+    };
+    state.active = active;
+    await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
+
+    const compactPromise = this.options.codex.compactThread({
+      role: params.role,
+      threadId: active.threadId,
+      cwd: params.workspace,
+      approvalPolicy: "never",
+      onTurnStarted: (turnId) => this.handleTurnStarted(state, active, turnId),
+      onTokenUsage: (usage) => this.recordThreadTokenUsageBestEffort(state, active, usage)
+    });
+    void compactPromise
+      .then((result) => {
+        active.completedStatus = result.status;
+        active.resultText = result.text;
+        active.resultError = result.error;
+        this.log.info(
+          {
+            messageId: message.messageId,
+            conversationKey: context.conversationKey,
+            role: params.role,
+            codexThreadId: active.threadId,
+            turnId: result.turnId,
+            status: result.status,
+            durationMs: Date.now() - startedAt
+          },
+          "conversation compact completed"
+        );
+      })
+      .catch(async (error) => {
+        if (state.active === active && !active.cancelRequested) {
+          await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
+          this.log.error(
+            { error, messageId: active.replyMessageId, conversationKey: context.conversationKey },
+            "conversation compact failed"
+          );
+          await this.failAgentCardBestEffort(state, active, toErrorMessage(error));
+          if (active.agentMessageMode !== "card" || active.card?.fallbackPlain || !active.card?.messageId) {
+            await this.replyErrorBestEffort(active.replyMessageId, error);
+          }
+        } else {
+          this.log.debug({ error, conversationKey: context.conversationKey, threadId: active.threadId }, "ignored stale codex compact failure");
+        }
+      })
+      .finally(() => {
+        void state.controlQueue.enqueue(() => this.finishActiveTurn(state, context.conversationKey, active));
+      });
+    await this.createAgentCardBestEffort(state, active);
   }
 
   private async refreshPendingMessagesBeforeStart(context: MessageContext, messages: PendingMessage[]): Promise<PendingMessage[]> {
@@ -2377,6 +2547,7 @@ export class ConversationManager {
     const startedAt = Date.now();
     const agentMessageMode = this.options.config.lark.agentMessageMode;
     const active: ActiveTurn = {
+      kind: "normal",
       runId: ++state.nextRunId,
       agentMessageMode,
       role: params.role,
@@ -4238,6 +4409,9 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "exit") {
     return { kind: "exit" };
   }
+  if (command === "compact") {
+    return { kind: "compact" };
+  }
   return { kind: "message", text };
 }
 
@@ -4730,6 +4904,7 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/next - 打断当前任务，并执行队列中的下一条消息",
     "/steer - 将队列中的下一批消息注入当前任务",
     "/queue <message> - 将消息加入下一轮队列，不注入当前任务",
+    "/compact - 压缩当前 Codex thread 上下文；默认加入下一轮队列",
     "/thread [message] - 创建新话题"
   ];
   if (isGroupConversationType(context.type) && roleForSender(config, message.senderOpenId) === "owner") {
@@ -4761,6 +4936,9 @@ function classifyInitialRoute(
   if (parsed.kind === "exit") {
     return { routeKind: "queued_message", status: "queued", text: originalText };
   }
+  if (parsed.kind === "compact") {
+    return { routeKind: "queued_message", status: "queued", text: originalText };
+  }
   if (
     parsed.kind === "help" ||
     parsed.kind === "status" ||
@@ -4778,7 +4956,12 @@ function classifyInitialRoute(
   if (state.queueNextMessage) {
     return { routeKind: "queued_message", status: "queued", text: parsed.text };
   }
-  if (state.pendingBatch.length > 0 || state.active?.cancelRequested || state.active?.waiting) {
+  if (
+    state.pendingBatch.length > 0 ||
+    state.active?.cancelRequested ||
+    state.active?.waiting ||
+    state.active?.kind === "compact"
+  ) {
     return { routeKind: "queued_message", status: "queued", text: parsed.text };
   }
   if (state.active) {

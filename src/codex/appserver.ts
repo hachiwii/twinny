@@ -6,10 +6,12 @@ import type { RoleName } from "../types.js";
 import { CodexProtocolClient, createInitializeParams, type InitializeResponse } from "./protocol.js";
 import { resumeCodexThread, startCodexThread, type ThreadResumeResponse, type ThreadStartResponse } from "./thread.js";
 import {
+  compactCodexThread,
   interruptCodexTurn,
   startCodexTurn,
   steerCodexTurn,
   type CodexTurnInput,
+  type ThreadCompactStartOptions,
   type TurnStartOptions
 } from "./turn.js";
 
@@ -145,6 +147,13 @@ export class CodexAppServer extends EventEmitter {
 
   async startTurn(options: TurnStartOptions): Promise<import("../types.js").CodexTurnResult> {
     return startCodexTurn(this.protocol, options, { requestTimeoutMs: this.options.requestTimeoutMs });
+  }
+
+  async compactThread(options: ThreadCompactStartOptions & { cwd?: string }): Promise<import("../types.js").CodexTurnResult> {
+    if (options.cwd) {
+      await this.prepareThreadWorkspace(options.cwd);
+    }
+    return compactCodexThread(this.protocol, options, { requestTimeoutMs: this.options.requestTimeoutMs });
   }
 
   async steerTurn(options: { threadId: string; turnId: string; text?: string; input?: CodexTurnInput }): Promise<void> {
