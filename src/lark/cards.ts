@@ -120,7 +120,7 @@ export function renderTwinnyAgentCard(options: RenderTwinnyAgentCardOptions): La
   const parsedPlan = options.waiting?.kind === "plan" ? parsePlanMarkdown(options.waiting.planText) : undefined;
   const title = cardHeaderTitle(options, header.title, parsedPlan);
   const subtitle = cardHeaderSubtitle(options, header, parsedPlan);
-  const summaryContent = options.status === "finished" ? cardSummaryContent(options.summaryText ?? "") : undefined;
+  const summaryContent = cardListSummaryContent(options, title);
   return {
     schema: "2.0",
     config: {
@@ -820,6 +820,20 @@ function cardHeaderSubtitle(
     return header.title;
   }
   return header.subtitle ?? "";
+}
+
+function cardListSummaryContent(options: RenderTwinnyAgentCardOptions, title: string): string | undefined {
+  if (options.status === "finished") {
+    return cardSummaryContent(options.summaryText ?? "");
+  }
+  if (options.status === "waiting_plan" && options.waiting?.kind === "plan") {
+    return `[待确认计划] ${title}`;
+  }
+  if (options.status === "waiting_input" && options.waiting?.kind === "request_user_input") {
+    const count = options.waiting.questions.length;
+    return `[需要交互] ${count} 个问题待回答`;
+  }
+  return undefined;
 }
 
 function isPlanCardStatus(status: TwinnyAgentCardStatus): boolean {

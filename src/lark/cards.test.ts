@@ -17,6 +17,10 @@ function createOptions(overrides: Partial<RenderTwinnyAgentCardOptions>): Render
   };
 }
 
+function cardSummary(card: Record<string, unknown>): string | undefined {
+  return (card.config as { summary?: { content?: string } }).summary?.content;
+}
+
 function findButton(card: Record<string, unknown>, label: string): Record<string, unknown> | undefined {
   const queue: unknown[] = [(card.body as { elements: unknown[] }).elements];
   while (queue.length > 0) {
@@ -140,6 +144,7 @@ describe("renderTwinnyAgentCard", () => {
     }));
     const serialized = JSON.stringify(card);
 
+    expect(cardSummary(card)).toBe("[需要交互] 1 个问题待回答");
     expect(serialized).toContain("\"tag\":\"form\"");
     expect(findElementByTag(card, "select_static")).toMatchObject({
       initial_index: 1
@@ -205,6 +210,7 @@ describe("renderTwinnyAgentCard", () => {
     }));
     const serialized = JSON.stringify(card);
 
+    expect(cardSummary(card)).toBe("[待确认计划] 最小计划");
     expect(card.header).toMatchObject({
       title: { tag: "plain_text", content: "最小计划" },
       subtitle: { tag: "plain_text", content: "确认计划" },
@@ -243,6 +249,7 @@ describe("renderTwinnyAgentCard", () => {
     }));
     const serialized = JSON.stringify(card);
 
+    expect(cardSummary(card)).toBe("[待确认计划] 确认计划");
     expect(card.header).toMatchObject({
       title: { tag: "plain_text", content: "确认计划" },
       subtitle: { tag: "plain_text", content: "" },
