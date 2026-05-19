@@ -2589,8 +2589,7 @@ describe("ConversationManager", () => {
       const card = vi.mocked(lark.patchCard).mock.calls.find(([messageId]) => messageId === "card_m1_1")?.[1];
       expect(card).toBeDefined();
       const serialized = JSON.stringify(card);
-      expect(serialized).toContain("gpt-5.5 xhigh · 57% · ↑ 27 K ↓ 210");
-      expect(serialized).not.toContain("Cached");
+      expect(serialized).toContain("gpt-5.5 xhigh · 57% · ↑ 27 K (90% Cached) ↓ 210");
     });
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));

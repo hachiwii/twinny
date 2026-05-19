@@ -965,7 +965,20 @@ function formatCompactTokenUsage(stats: TwinnyAgentCardRuntimeStats): string | u
   if (inputTokens === 0 && outputTokens === 0) {
     return undefined;
   }
-  return `↑ ${formatCompactTokenCount(inputTokens)} ↓ ${formatCompactTokenCount(outputTokens)}`;
+  const cachedRatio = formatCachedInputRatio(inputTokens, stats.cachedInputTokens);
+  const input = cachedRatio
+    ? `${formatCompactTokenCount(inputTokens)} (${cachedRatio} Cached)`
+    : formatCompactTokenCount(inputTokens);
+  return `↑ ${input} ↓ ${formatCompactTokenCount(outputTokens)}`;
+}
+
+function formatCachedInputRatio(inputTokens: number, cachedInputTokens: number): string | undefined {
+  if (inputTokens <= 0) {
+    return undefined;
+  }
+  const cached = Math.max(0, Math.trunc(cachedInputTokens));
+  const percentage = Math.min(100, Math.max(0, (cached / inputTokens) * 100));
+  return `${Math.round(percentage)}%`;
 }
 
 function formatCompactTokenCount(value: number): string {
