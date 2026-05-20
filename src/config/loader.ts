@@ -6,9 +6,12 @@ import {
   DEFAULT_AGENT_MESSAGE_MODE,
   DEFAULT_LARK_COMPLETED_REACTION,
   DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
+  DEFAULT_LARK_MESSAGE_REDACTION_STRATEGY,
   DEFAULT_LARK_QUEUED_REACTION,
   DEFAULT_LARK_WORKING_REACTION,
   type AgentMessageMode,
+  type LarkMessageRedactionConfig,
+  type LarkMessageRedactionStrategy,
   type RoleName,
   type TwinnyConfig
 } from "../types.js";
@@ -34,7 +37,13 @@ const rawConfigSchema = z.object({
       queued_reaction: z.string().optional(),
       max_message_age_seconds: z.number().optional(),
       agent_message_mode: z.enum(["plain", "card"]).optional(),
-      icon_image_key: z.string().optional()
+      icon_image_key: z.string().optional(),
+      redaction: z
+        .object({
+          email: z.enum(["mask", "whitespace", "none"]).optional(),
+          chinese_phone_number: z.enum(["mask", "whitespace", "none"]).optional()
+        })
+        .optional()
     })
     .optional(),
   owner: z
@@ -65,6 +74,7 @@ export interface CreateTwinnyConfigInput {
     maxMessageAgeSeconds?: number;
     agentMessageMode?: AgentMessageMode;
     iconImageKey?: string;
+    messageRedaction?: Partial<LarkMessageRedactionConfig>;
   };
   owner: {
     openId: string;
@@ -112,7 +122,8 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
       queuedReaction: normalizeOptionalString(input.lark.queuedReaction) ?? DEFAULT_LARK_QUEUED_REACTION,
       maxMessageAgeSeconds: input.lark.maxMessageAgeSeconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
       agentMessageMode: input.lark.agentMessageMode ?? DEFAULT_AGENT_MESSAGE_MODE,
-      iconImageKey: normalizeOptionalString(input.lark.iconImageKey)
+      iconImageKey: normalizeOptionalString(input.lark.iconImageKey),
+      messageRedaction: normalizeMessageRedactionConfig(input.lark.messageRedaction)
     },
     owner: {
       openId: input.owner.openId,
@@ -192,7 +203,11 @@ export function parseTwinnyConfig(rawToml: string, options: LoadConfigOptions = 
       queuedReaction: normalizeOptionalString(parsed.lark?.queued_reaction) ?? DEFAULT_LARK_QUEUED_REACTION,
       maxMessageAgeSeconds: parsed.lark?.max_message_age_seconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
       agentMessageMode: parsed.lark?.agent_message_mode ?? DEFAULT_AGENT_MESSAGE_MODE,
-      iconImageKey: normalizeOptionalString(parsed.lark?.icon_image_key)
+      iconImageKey: normalizeOptionalString(parsed.lark?.icon_image_key),
+      messageRedaction: normalizeMessageRedactionConfig({
+        email: parsed.lark?.redaction?.email,
+        chinesePhoneNumber: parsed.lark?.redaction?.chinese_phone_number
+      })
     },
     owner: {
       openId: parsed.owner?.open_id ?? "",
@@ -262,6 +277,11 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   if (config.lark.agentMessageMode !== "plain" && config.lark.agentMessageMode !== "card") {
     issues.push("lark.agent_message_mode must be plain or card");
   }
+  for (const [key, strategy] of Object.entries(config.lark.messageRedaction)) {
+    if (!isMessageRedactionStrategy(strategy)) {
+      issues.push(`lark.redaction.${key} must be mask, whitespace, or none`);
+    }
+  }
   if (!config.owner.openId) issues.push("owner.open_id is required");
   if (!config.owner.displayName) issues.push("owner.display_name is required");
   if (!config.owner.tokenRef) issues.push("owner.token_ref is required");
@@ -309,7 +329,11 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
       queued_reaction: config.lark.queuedReaction,
       max_message_age_seconds: config.lark.maxMessageAgeSeconds,
       agent_message_mode: config.lark.agentMessageMode,
-      ...(config.lark.iconImageKey ? { icon_image_key: config.lark.iconImageKey } : {})
+      ...(config.lark.iconImageKey ? { icon_image_key: config.lark.iconImageKey } : {}),
+      redaction: {
+        email: config.lark.messageRedaction.email,
+        chinese_phone_number: config.lark.messageRedaction.chinesePhoneNumber
+      }
     },
     owner,
     roles: {
@@ -334,6 +358,25 @@ function normalizeOptionalString(value: string | undefined): string | undefined 
   }
   const trimmed = value.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function normalizeMessageRedactionConfig(
+  input: Partial<LarkMessageRedactionConfig> | undefined
+): LarkMessageRedactionConfig {
+  return {
+    email: normalizeMessageRedactionStrategy(input?.email),
+    chinesePhoneNumber: normalizeMessageRedactionStrategy(input?.chinesePhoneNumber)
+  };
+}
+
+function normalizeMessageRedactionStrategy(
+  strategy: LarkMessageRedactionStrategy | undefined
+): LarkMessageRedactionStrategy {
+  return strategy ?? DEFAULT_LARK_MESSAGE_REDACTION_STRATEGY;
+}
+
+function isMessageRedactionStrategy(value: unknown): value is LarkMessageRedactionStrategy {
+  return value === "mask" || value === "whitespace" || value === "none";
 }
 
 function patchLarkIconImageKey(rawToml: string, iconImageKey: string): string {

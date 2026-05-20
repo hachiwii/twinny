@@ -3,6 +3,7 @@ import { TenantAccessTokenManager } from "./auth.js";
 import { LarkMessageReader, LarkMessageSender, LarkMessageUnavailableError } from "./messages.js";
 import { LarkOpenApiClient } from "./openapi.js";
 import type { FetchLike, LarkLogger } from "./types.js";
+import type { LarkMessageRedactionConfig } from "../types.js";
 
 describe("LarkMessageSender", () => {
   it("replies with a text message through OpenAPI", async () => {
@@ -354,6 +355,61 @@ describe("LarkMessageSender", () => {
     });
   });
 
+  it("redacts sensitive text content before sending text and cards", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { message_id: "om_text" } },
+      { code: 0, data: { message_id: "om_card" } }
+    ]);
+    const sender = createSender(fetch);
+    const card = {
+      schema: "2.0",
+      body: {
+        elements: [
+          {
+            tag: "markdown",
+            content: "contact bob@example.com 13912345678",
+            behaviors: [{ type: "callback", value: { raw: "bob@example.com 13912345678" } }]
+          }
+        ]
+      }
+    };
+
+    await sender.replyText("om_source", "call alice@example.com 13812345678");
+    await sender.sendInteractiveCardToChatId("oc_group", card);
+
+    const textBody = JSON.parse(vi.mocked(fetch).mock.calls[1]![1]!.body as string) as { content: string };
+    expect(JSON.parse(textBody.content)).toEqual({ text: "call a***e@example.com 138****5678" });
+
+    const cardBody = JSON.parse(vi.mocked(fetch).mock.calls[2]![1]!.body as string) as { content: string };
+    expect(JSON.parse(cardBody.content)).toMatchObject({
+      body: {
+        elements: [
+          {
+            content: "contact b*b@example.com 139****5678",
+            behaviors: [{ value: { raw: "b*b@example.com 139****5678" } }]
+          }
+        ]
+      }
+    });
+  });
+
+  it("supports whitespace and none redaction strategies", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { message_id: "om_text" } }
+    ]);
+    const sender = createSender(fetch, undefined, {
+      email: "whitespace",
+      chinesePhoneNumber: "none"
+    });
+
+    await sender.replyText("om_source", "call alice@example.com 13812345678");
+
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[1]![1]!.body as string) as { content: string };
+    expect(JSON.parse(body.content)).toEqual({ text: "call alice @ example.com 13812345678" });
+  });
+
   it("forwards a thread to another thread through OpenAPI", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
@@ -515,9 +571,9 @@ describe("LarkMessageSender", () => {
   });
 });
 
-function createSender(fetch: FetchLike, logger?: LarkLogger) {
+function createSender(fetch: FetchLike, logger?: LarkLogger, redaction?: Partial<LarkMessageRedactionConfig>) {
   const openApiClient = createOpenApiClient(fetch);
-  return new LarkMessageSender({ openApiClient, logger });
+  return new LarkMessageSender({ openApiClient, logger, redaction });
 }
 
 function createReader(fetch: FetchLike) {

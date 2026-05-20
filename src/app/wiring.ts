@@ -106,7 +106,11 @@ export class TwinnyRuntime {
         appSecret
       });
       const openApiClient = new LarkOpenApiClient({ tokenManager });
-      const larkSender = new LarkMessageSender({ openApiClient, logger: this.log });
+      const larkSender = new LarkMessageSender({
+        openApiClient,
+        logger: this.log,
+        redaction: this.config.lark.messageRedaction
+      });
       const larkMessages = new LarkMessageReader({ openApiClient });
       const larkUsers = new LarkUserDirectory({ openApiClient });
       const larkChats = new LarkChatDirectory({ openApiClient });

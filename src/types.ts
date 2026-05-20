@@ -12,6 +12,8 @@ export type AgentMessageMode = "plain" | "card";
 
 export type AgentMessagePhase = "commentary" | "final_answer";
 
+export type LarkMessageRedactionStrategy = "mask" | "whitespace" | "none";
+
 export type CodexThreadMode = "default" | "plan";
 
 export type CodexThreadStatus = "idle" | "working" | "waiting";
@@ -45,6 +47,12 @@ export const DEFAULT_LARK_COMPLETED_REACTION = "DONE";
 export const DEFAULT_LARK_QUEUED_REACTION = "OneSecond";
 export const DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS = 60;
 export const DEFAULT_AGENT_MESSAGE_MODE: AgentMessageMode = "card";
+export const DEFAULT_LARK_MESSAGE_REDACTION_STRATEGY: LarkMessageRedactionStrategy = "mask";
+
+export interface LarkMessageRedactionConfig {
+  email: LarkMessageRedactionStrategy;
+  chinesePhoneNumber: LarkMessageRedactionStrategy;
+}
 
 export interface OwnerConfig {
   openId: string;
@@ -65,6 +73,7 @@ export interface LarkConfig {
   maxMessageAgeSeconds: number;
   agentMessageMode: AgentMessageMode;
   iconImageKey?: string;
+  messageRedaction: LarkMessageRedactionConfig;
 }
 
 export interface CodexConfig {

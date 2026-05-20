@@ -37,7 +37,11 @@ const config: TwinnyConfig = {
     completedReaction: "DONE",
     queuedReaction: "OneSecond",
     maxMessageAgeSeconds: 60,
-    agentMessageMode: "plain"
+    agentMessageMode: "plain",
+    messageRedaction: {
+      email: "mask",
+      chinesePhoneNumber: "mask"
+    }
   },
   owner: { openId: "ou_owner", displayName: "Owner" },
   roles: {

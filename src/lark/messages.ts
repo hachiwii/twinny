@@ -1,11 +1,13 @@
 import { toErrorMessage } from "../errors.js";
-import { DEFAULT_LARK_WORKING_REACTION, type LarkReactionHandle } from "../types.js";
+import { DEFAULT_LARK_WORKING_REACTION, type LarkMessageRedactionConfig, type LarkReactionHandle } from "../types.js";
 import { LarkOpenApiClient } from "./openapi.js";
+import { normalizeLarkMessageRedactionConfig, redactLarkMessageContent } from "./redactor.js";
 import type { LarkLogger, LarkSendMessageResult } from "./types.js";
 
 export interface LarkMessageSenderOptions {
   openApiClient: LarkOpenApiClient;
   logger?: LarkLogger;
+  redaction?: Partial<LarkMessageRedactionConfig>;
 }
 
 export interface LarkMessageReaderOptions {
@@ -64,10 +66,12 @@ export type LarkInteractiveCard = Record<string, unknown>;
 export class LarkMessageSender {
   private readonly openApiClient: LarkOpenApiClient;
   private readonly logger?: LarkLogger;
+  private readonly redaction: LarkMessageRedactionConfig;
 
   constructor(options: LarkMessageSenderOptions) {
     this.openApiClient = options.openApiClient;
     this.logger = options.logger;
+    this.redaction = normalizeLarkMessageRedactionConfig(options.redaction);
   }
 
   async replyText(messageId: string, text: string, options: TextMessageOptions = {}): Promise<LarkSendMessageResult> {
@@ -75,7 +79,7 @@ export class LarkMessageSender {
       method: "POST",
       signal: options.signal,
       body: {
-        content: JSON.stringify({ text }),
+        content: this.stringifyMessageContent({ text }),
         msg_type: "text",
         ...(options.replyInThread ? { reply_in_thread: true } : {}),
         ...(options.uuid ? { uuid: options.uuid } : {})
@@ -104,7 +108,7 @@ export class LarkMessageSender {
       method: "POST",
       signal: options.signal,
       body: {
-        content: JSON.stringify(createPostContent(content)),
+        content: this.stringifyMessageContent(createPostContent(content)),
         msg_type: "post",
         ...(options.replyInThread ? { reply_in_thread: true } : {}),
         ...(options.uuid ? { uuid: options.uuid } : {})
@@ -121,7 +125,7 @@ export class LarkMessageSender {
       method: "POST",
       signal: options.signal,
       body: {
-        content: JSON.stringify({ file_key: fileKey }),
+        content: this.stringifyMessageContent({ file_key: fileKey }),
         msg_type: "file",
         ...(options.uuid ? { uuid: options.uuid } : {})
       }
@@ -141,7 +145,7 @@ export class LarkMessageSender {
       method: "POST",
       signal: options.signal,
       body: {
-        content: JSON.stringify(card),
+        content: this.stringifyMessageContent(card),
         msg_type: "interactive",
         ...(options.replyInThread ? { reply_in_thread: true } : {}),
         ...(options.uuid ? { uuid: options.uuid } : {})
@@ -162,7 +166,7 @@ export class LarkMessageSender {
       method: "PATCH",
       signal: options.signal,
       body: {
-        content: JSON.stringify(card),
+        content: this.stringifyMessageContent(card),
         ...(options.uuid ? { uuid: options.uuid } : {})
       }
     });
@@ -220,7 +224,7 @@ export class LarkMessageSender {
       signal: options.signal,
       body: {
         receive_id: openId,
-        content: JSON.stringify({ text }),
+        content: this.stringifyMessageContent({ text }),
         msg_type: "text",
         ...(options.uuid ? { uuid: options.uuid } : {})
       }
@@ -240,7 +244,7 @@ export class LarkMessageSender {
       signal: options.signal,
       body: {
         receive_id: chatId,
-        content: JSON.stringify({ text }),
+        content: this.stringifyMessageContent({ text }),
         msg_type: "text",
         ...(options.uuid ? { uuid: options.uuid } : {})
       }
@@ -264,7 +268,7 @@ export class LarkMessageSender {
       signal: options.signal,
       body: {
         receive_id: chatId,
-        content: JSON.stringify(card),
+        content: this.stringifyMessageContent(card),
         msg_type: "interactive",
         ...(options.uuid ? { uuid: options.uuid } : {})
       }
@@ -360,6 +364,10 @@ export class LarkMessageSender {
 
   async deleteTypingReaction(handle: LarkReactionHandle | null | undefined, options: ReactionOptions = {}): Promise<void> {
     await this.deleteReaction(handle, options);
+  }
+
+  private stringifyMessageContent(content: unknown): string {
+    return JSON.stringify(redactLarkMessageContent(content, this.redaction));
   }
 }
 
