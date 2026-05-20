@@ -1552,6 +1552,81 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("preserves /thread post image resources in the proxy reply and Codex input", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_post_image" })),
+      startTurn: vi.fn(async ({ threadId }) => completed(threadId, "turn_1"))
+    });
+    const lark = createLarkResponder();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(async ({ outputDir }) => ({
+        path: `${outputDir}/img_1.jpg`,
+        resourceType: "image" as const,
+        fileKey: "img_1",
+        fileName: "img_1.jpg",
+        size: 111,
+        contentType: "image/jpeg"
+      }))
+    };
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: "card_oc_group_1",
+      raw: { data: { thread_id: "topic_thread_1" } }
+    });
+    vi.mocked(lark.replyPost).mockResolvedValueOnce({ messageId: "reply_post_image_1" });
+    const manager = createManager({ repository, codex, lark, larkFiles });
+
+    manager.submitIncoming(groupMessage("g_thread_post_image", "/thread see {{TWINNY_LARK_RESOURCE_0}} done", {
+      messageType: "post",
+      senderOpenId: "ou_guest",
+      resources: [
+        {
+          resourceType: "image",
+          fileKey: "img_1",
+          codexTag: "img",
+          textPlaceholder: "{{TWINNY_LARK_RESOURCE_0}}"
+        }
+      ]
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(lark.replyPost).toHaveBeenCalledWith(
+      "card_oc_group_1",
+      [
+        [
+          { tag: "text", text: "see " },
+          { tag: "img", image_key: "img_1" },
+          { tag: "text", text: " done" }
+        ]
+      ],
+      { replyInThread: true }
+    );
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: [
+          {
+            type: "text",
+            text:
+              '<lark_message lark_message_id="reply_post_image_1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+              'see <img path="/tmp/twinny/workspaces/group_oc_group/.twinny/lark_files/g_thread_post_image/img_1.jpg" lark_file_key="img_1" size="111">',
+            text_elements: []
+          },
+          {
+            type: "localImage",
+            path: "/tmp/twinny/workspaces/group_oc_group/.twinny/lark_files/g_thread_post_image/img_1.jpg",
+            detail: null
+          },
+          {
+            type: "text",
+            text: "</img> done\n</lark_message>",
+            text_elements: []
+          }
+        ]
+      })
+    );
+  });
+
   it("rejects /thread forwarding from non-text and non-post messages", async () => {
     const row = groupConversationRecord({ role: "owner", responseMode: "at" });
     const { repository } = createRepository(row);

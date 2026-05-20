@@ -1493,9 +1493,14 @@ export class ConversationManager {
     message: IncomingLarkMessage,
     text: string
   ): Promise<{ messageId: string; text: string; larkThreadId?: string }> {
-    const codexText = replaceMentionKeysForCodex(text, message.mentions);
+    const resourceText = threadTextWithDownloadedFiles(text, message);
+    const codexText = replaceMentionKeysForCodex(resourceText, message.mentions);
     const result = message.messageType === "post"
-      ? await this.options.lark.replyPost(anchorMessageId, postContentForThreadReply(text, message.mentions), { replyInThread: true })
+      ? await this.options.lark.replyPost(
+          anchorMessageId,
+          postContentForThreadReply(text, message.mentions, message.resources),
+          { replyInThread: true }
+        )
       : await this.options.lark.replyText(anchorMessageId, textForLarkReply(text, message.mentions), { replyInThread: true });
     const replyMessageId = nonEmptyString(result?.messageId);
     if (!replyMessageId) {
@@ -4971,15 +4976,40 @@ function textForLarkReply(text: string, mentions: IncomingLarkMessage["mentions"
     .join("");
 }
 
-function postContentForThreadReply(text: string, mentions: IncomingLarkMessage["mentions"]): LarkPostContent {
-  const paragraphs = text.split(/\r?\n/).map((line) => postParagraphForThreadReply(line, mentions));
+function threadTextWithDownloadedFiles(text: string, message: IncomingLarkMessage): string {
+  const downloadedFiles = message.downloadedFiles ?? [];
+  if (!downloadedFiles.some((file) => file.textPlaceholder)) {
+    return text;
+  }
+  return formatMessageTextWithDownloadedFiles(text, downloadedFiles, message.messageType);
+}
+
+function postContentForThreadReply(
+  text: string,
+  mentions: IncomingLarkMessage["mentions"],
+  resources: IncomingLarkMessage["resources"] = []
+): LarkPostContent {
+  const paragraphs = text.split(/\r?\n/).map((line) => postParagraphForThreadReply(line, mentions, resources));
   return paragraphs.length > 0 ? paragraphs : [[{ tag: "text", text: "" }]];
 }
 
-function postParagraphForThreadReply(text: string, mentions: IncomingLarkMessage["mentions"]): LarkPostNode[] {
-  const nodes = splitTextByMentions(text, mentions).map((part): LarkPostNode => {
+function postParagraphForThreadReply(
+  text: string,
+  mentions: IncomingLarkMessage["mentions"],
+  resources: IncomingLarkMessage["resources"]
+): LarkPostNode[] {
+  const nodes = splitThreadPostText(text, mentions, resources).map((part): LarkPostNode => {
     if (part.kind === "text") {
       return { tag: "text", text: part.text };
+    }
+    if (part.kind === "resource") {
+      if (part.resourceType === "image") {
+        return { tag: "img", image_key: part.fileKey };
+      }
+      if (part.codexTag === "video") {
+        return { tag: "media", file_key: part.fileKey };
+      }
+      return { tag: "text", text: part.placeholder };
     }
     return {
       tag: "at",
@@ -5001,6 +5031,27 @@ type ThreadMentionRef = { key: string; id: string; name?: string };
 type ThreadTextPart =
   | { kind: "text"; text: string }
   | { kind: "mention"; id: string; name?: string };
+
+type ThreadResourceRef = {
+  key: string;
+  resourceType: "image" | "file";
+  fileKey: string;
+  codexTag?: "img" | "video" | "file";
+};
+
+type ThreadPostPart =
+  | ThreadTextPart
+  | {
+      kind: "resource";
+      resourceType: "image" | "file";
+      fileKey: string;
+      codexTag?: "img" | "video" | "file";
+      placeholder: string;
+    };
+
+type ThreadPostRef =
+  | ({ kind: "mention" } & ThreadMentionRef)
+  | ({ kind: "resource" } & ThreadResourceRef);
 
 function splitTextByMentions(text: string, mentions: IncomingLarkMessage["mentions"]): ThreadTextPart[] {
   const refs = threadMentionRefs(mentions);
@@ -5030,6 +5081,58 @@ function splitTextByMentions(text: string, mentions: IncomingLarkMessage["mentio
   return parts;
 }
 
+function splitThreadPostText(
+  text: string,
+  mentions: IncomingLarkMessage["mentions"],
+  resources: IncomingLarkMessage["resources"]
+): ThreadPostPart[] {
+  const refs = threadPostRefs(mentions, resources);
+  if (refs.length === 0 || text.length === 0) {
+    return text.length > 0 ? [{ kind: "text", text }] : [];
+  }
+
+  const parts: ThreadPostPart[] = [];
+  let index = 0;
+  while (index < text.length) {
+    const ref = refs.find((candidate) => text.startsWith(candidate.key, index));
+    if (!ref) {
+      const nextIndex = index + 1;
+      const previous = parts[parts.length - 1];
+      const char = text.slice(index, nextIndex);
+      if (previous?.kind === "text") {
+        previous.text += char;
+      } else {
+        parts.push({ kind: "text", text: char });
+      }
+      index = nextIndex;
+      continue;
+    }
+
+    if (ref.kind === "mention") {
+      parts.push({ kind: "mention", id: ref.id, ...(ref.name ? { name: ref.name } : {}) });
+    } else {
+      parts.push({
+        kind: "resource",
+        resourceType: ref.resourceType,
+        fileKey: ref.fileKey,
+        ...(ref.codexTag ? { codexTag: ref.codexTag } : {}),
+        placeholder: ref.key
+      });
+    }
+    index += ref.key.length;
+  }
+  return parts;
+}
+
+function threadPostRefs(
+  mentions: IncomingLarkMessage["mentions"],
+  resources: IncomingLarkMessage["resources"]
+): ThreadPostRef[] {
+  const mentionRefs: ThreadPostRef[] = threadMentionRefs(mentions).map((ref) => ({ kind: "mention", ...ref }));
+  const resourceRefs: ThreadPostRef[] = threadResourceRefs(resources).map((ref) => ({ kind: "resource", ...ref }));
+  return [...mentionRefs, ...resourceRefs].sort((left, right) => right.key.length - left.key.length);
+}
+
 function threadMentionRefs(mentions: IncomingLarkMessage["mentions"]): ThreadMentionRef[] {
   const refs: ThreadMentionRef[] = [];
   for (const mention of mentions ?? []) {
@@ -5042,6 +5145,24 @@ function threadMentionRefs(mentions: IncomingLarkMessage["mentions"]): ThreadMen
       key,
       id,
       ...(mention.name ? { name: mention.name } : {})
+    });
+  }
+  return refs.sort((left, right) => right.key.length - left.key.length);
+}
+
+function threadResourceRefs(resources: IncomingLarkMessage["resources"]): ThreadResourceRef[] {
+  const refs: ThreadResourceRef[] = [];
+  for (const resource of resources ?? []) {
+    const key = nonEmptyString(resource.textPlaceholder);
+    const fileKey = nonEmptyString(resource.fileKey);
+    if (!key || !fileKey) {
+      continue;
+    }
+    refs.push({
+      key,
+      resourceType: resource.resourceType,
+      fileKey,
+      ...(resource.codexTag ? { codexTag: resource.codexTag } : {})
     });
   }
   return refs.sort((left, right) => right.key.length - left.key.length);
