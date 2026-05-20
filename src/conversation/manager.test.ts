@@ -1055,6 +1055,41 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_1", "turn_2"));
   });
 
+  it("starts the next queued message when Codex reports the interrupted turn is already inactive", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    vi.mocked(codex.interruptTurn).mockRejectedValueOnce(
+      new TwinnyError("no active turn to interrupt", "CODEX_REQUEST_FAILED", {
+        code: -32600,
+        message: "no active turn to interrupt"
+      })
+    );
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue queued one"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+
+    manager.submitIncoming(message("m3", "/next"));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ input: wrappedMessage("queued one", "m2") })
+    );
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(0);
+    expect(repository.markLarkMessagesInterrupted).toHaveBeenCalledWith(["m1"]);
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "m3",
+      "已打断当前任务，将执行队列中的下一条消息。队列剩余 0 条。"
+    );
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+    turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
+  });
+
   it("steers the next queued batch into the active turn on /steer", async () => {
     const { repository } = createRepository();
     const { codex, turns } = createDeferredCodex();

@@ -459,6 +459,8 @@ interface ActiveTurn {
   cancelRequested: boolean;
 }
 
+type ActiveTurnInterruptResult = "interrupted" | "missing" | "failed";
+
 interface ActiveTurnCardState {
   anchorMessageId: string;
   messageId?: string;
@@ -2562,7 +2564,7 @@ export class ConversationManager {
     const queued = state.pendingBatch.length;
     const nextBatchSize = countNextPendingBatch(state);
     const interrupted = await this.cancelActiveTurn(state, { waitForCompletion: true });
-    if (!interrupted) {
+    if (!interrupted || !state.active) {
       await this.startPendingBatch(state, context);
     }
     const summary = interrupted
@@ -3524,8 +3526,13 @@ export class ConversationManager {
     if (!options.waitForCompletion || noCompletionExpected) {
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
     }
+    let interruptResult: ActiveTurnInterruptResult = "missing";
     if (active.turnId) {
-      await this.interruptActiveTurnBestEffort(active);
+      interruptResult = await this.interruptActiveTurnBestEffort(active);
+    }
+    if (options.waitForCompletion && !noCompletionExpected && interruptResult === "missing") {
+      state.active = undefined;
+      await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
     }
     return true;
   }
@@ -3560,9 +3567,9 @@ export class ConversationManager {
     return true;
   }
 
-  private async interruptActiveTurnBestEffort(active: ActiveTurn): Promise<void> {
+  private async interruptActiveTurnBestEffort(active: ActiveTurn): Promise<ActiveTurnInterruptResult> {
     if (!active.turnId) {
-      return;
+      return "missing";
     }
     try {
       await this.options.codex.interruptTurn({
@@ -3570,8 +3577,10 @@ export class ConversationManager {
         threadId: active.threadId,
         turnId: active.turnId
       });
+      return "interrupted";
     } catch (error) {
       this.log.warn({ error, threadId: active.threadId, turnId: active.turnId }, "failed to interrupt codex turn");
+      return isNoActiveTurnToInterruptError(error) ? "missing" : "failed";
     }
   }
 
@@ -6781,6 +6790,10 @@ function isMissingRolloutError(error: unknown): boolean {
 
 function isMissingThreadError(error: unknown): boolean {
   return errorMessageIncludes(error, "thread not found");
+}
+
+function isNoActiveTurnToInterruptError(error: unknown): boolean {
+  return errorMessageIncludes(error, "no active turn to interrupt");
 }
 
 function errorMessageIncludes(error: unknown, fragment: string): boolean {
