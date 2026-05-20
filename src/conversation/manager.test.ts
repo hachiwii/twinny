@@ -1772,7 +1772,6 @@ describe("ConversationManager", () => {
       type: "group",
       chatId: "oc_group",
       name: "Team Room",
-      chatMode: "topic",
       responseMode: "at",
       role: "guest",
       workspace: "/tmp/twinny/workspaces/group_oc_group"
@@ -1798,7 +1797,6 @@ describe("ConversationManager", () => {
     );
     expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
       name: "Owner Room",
-      chatMode: "topic",
       responseMode: "all",
       role: "owner"
     });
@@ -1812,7 +1810,6 @@ describe("ConversationManager", () => {
     );
     expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
       name: "Renamed Room",
-      chatMode: "group",
       responseMode: "at",
       role: "owner"
     });

@@ -1,0 +1,2 @@
+-- The migration runner drops conversations.chat_mode idempotently for legacy
+-- databases because some historical repaired schemas may not have this column.

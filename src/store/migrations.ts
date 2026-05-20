@@ -15,7 +15,7 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 12;
+export const currentStoreSchemaVersion = 13;
 
 const initialMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const threadRolloutMigrationFile = fileURLToPath(new URL("../../migrations/0002_codex_thread_rollout.sql", import.meta.url));
@@ -29,6 +29,7 @@ const threadRolloutStateMigrationFile = fileURLToPath(new URL("../../migrations/
 const larkMessageEventDedupeMigrationFile = fileURLToPath(new URL("../../migrations/0010_lark_message_event_dedupe.sql", import.meta.url));
 const removeProjectConversationTypeMigrationFile = fileURLToPath(new URL("../../migrations/0011_remove_project_conversation_type.sql", import.meta.url));
 const threadPlanStatusMigrationFile = fileURLToPath(new URL("../../migrations/0012_thread_plan_status.sql", import.meta.url));
+const removeConversationChatModeMigrationFile = fileURLToPath(new URL("../../migrations/0013_remove_conversation_chat_mode.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -91,6 +92,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 12,
       name: "0012_thread_plan_status",
       sql: fs.readFileSync(threadPlanStatusMigrationFile, "utf8")
+    },
+    {
+      version: 13,
+      name: "0013_remove_conversation_chat_mode",
+      sql: fs.readFileSync(removeConversationChatModeMigrationFile, "utf8")
     }
   ];
 }
@@ -136,12 +142,18 @@ export function runStoreMigrations(db: Database.Database, options: RunMigrations
       db.pragma(`user_version = ${migration.version}`);
       lastVersion = migration.version;
     }
+    if (lastVersion >= 13) {
+      removeConversationChatModeColumnIfPresent(db);
+    }
     return lastVersion;
   });
 
   const appliedVersion = migrate();
   if (appliedVersion >= 8) {
     ensureThreadsSummarySchemaConsistency(db);
+  }
+  if (appliedVersion >= 13) {
+    removeConversationChatModeColumnIfPresent(db);
   }
   return appliedVersion;
 }
@@ -161,6 +173,16 @@ function tableExists(db: Database.Database, tableName: string): boolean {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
     ).get(tableName) !== undefined
   );
+}
+
+function removeConversationChatModeColumnIfPresent(db: Database.Database): void {
+  if (!tableExists(db, "conversations")) {
+    return;
+  }
+  const columns = getTableColumns(db, "conversations");
+  if (columns.has("chat_mode")) {
+    db.exec("ALTER TABLE conversations DROP COLUMN chat_mode");
+  }
 }
 
 function ensureTableColumn(

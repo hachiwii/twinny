@@ -70,7 +70,6 @@ describe("ConversationRepository", () => {
       type: "topic_group",
       chatId: "oc_group",
       name: "Topic Group",
-      chatMode: "topic",
       responseMode: "at",
       role: "owner",
       codexThreadId: "thread-group",
@@ -83,7 +82,6 @@ describe("ConversationRepository", () => {
       type: "topic_group",
       chatId: "oc_group",
       name: "Topic Group",
-      chatMode: "topic",
       responseMode: "at",
       role: "owner"
     });
@@ -93,13 +91,11 @@ describe("ConversationRepository", () => {
     const updated = repo.updateConversationSettings("group_oc_group", {
       type: "group",
       name: "Renamed Group",
-      chatMode: "group",
       responseMode: "none"
     });
     expect(updated).toMatchObject({
       type: "group",
       name: "Renamed Group",
-      chatMode: "group",
       responseMode: "none",
       role: "owner",
       updatedAt: 2000

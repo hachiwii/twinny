@@ -78,7 +78,7 @@ export interface ConversationRepository {
   ): Promise<ConversationRecord> | ConversationRecord;
   updateConversationSettings(
     conversationKey: string,
-    update: { type?: ConversationType; name?: string; chatMode?: LarkChatMode; responseMode?: ConversationResponseMode }
+    update: { type?: ConversationType; name?: string; responseMode?: ConversationResponseMode }
   ): Promise<ConversationRecord> | ConversationRecord;
   markThreadHasRollout(conversationKey: string, codexThreadId: string): Promise<void> | void;
   getCodexThreadById(codexThreadId: string): Promise<CodexThreadRecord | undefined> | CodexThreadRecord | undefined;
@@ -1341,7 +1341,6 @@ export class ConversationManager {
     if (existing) {
       await this.options.repository.updateConversationSettings(context.conversationKey, {
         name: groupInfo.name,
-        chatMode: groupInfo.chatMode,
         responseMode: parsed.responseMode
       });
     } else {
@@ -1356,7 +1355,6 @@ export class ConversationManager {
         type: context.type,
         chatId: message.chatId,
         name: groupInfo.name,
-        chatMode: groupInfo.chatMode,
         responseMode: parsed.responseMode,
         role,
         codexThreadId: thread.threadId,
@@ -1386,19 +1384,16 @@ export class ConversationManager {
   private async resolveGroupInfo(
     message: IncomingLarkMessage,
     existing?: ConversationRecord | null
-  ): Promise<{ name: string; chatMode?: LarkChatMode; groupMessageType?: LarkGroupMessageType }> {
-    let resolvedChatMode: LarkChatMode | undefined;
+  ): Promise<{ name: string; groupMessageType?: LarkGroupMessageType }> {
     let resolvedGroupMessageType: LarkGroupMessageType | undefined;
     if (this.options.larkChats?.getChatInfo) {
       try {
         const info = await this.options.larkChats.getChatInfo(message.chatId);
-        resolvedChatMode = info?.chatMode;
         resolvedGroupMessageType = info?.groupMessageType;
         const resolvedName = nonEmptyString(info?.name);
         if (resolvedName) {
           return {
             name: resolvedName,
-            chatMode: resolvedChatMode ?? existing?.chatMode,
             groupMessageType: resolvedGroupMessageType
           };
         }
@@ -1409,7 +1404,7 @@ export class ConversationManager {
       try {
         const resolved = nonEmptyString(await this.options.larkChats?.getChatName?.(message.chatId));
         if (resolved) {
-          return { name: resolved, chatMode: existing?.chatMode };
+          return { name: resolved };
         }
       } catch (error) {
         this.log.warn({ error, chatId: message.chatId }, "failed to resolve lark chat name");
@@ -1418,7 +1413,6 @@ export class ConversationManager {
 
     return {
       name: nonEmptyString(message.chatName) ?? nonEmptyString(existing?.name) ?? message.chatId,
-      chatMode: resolvedChatMode ?? existing?.chatMode,
       groupMessageType: resolvedGroupMessageType
     };
   }

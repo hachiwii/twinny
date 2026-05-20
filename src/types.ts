@@ -104,7 +104,6 @@ export interface ConversationRecord {
   type: ConversationType;
   chatId: string;
   name: string;
-  chatMode?: LarkChatMode;
   responseMode: ConversationResponseMode;
   role: RoleName;
   codexThreadId: string;
@@ -119,7 +118,6 @@ export interface NewConversationRecord {
   type: ConversationType;
   chatId: string;
   name: string;
-  chatMode?: LarkChatMode;
   responseMode?: ConversationResponseMode;
   role: RoleName;
   codexThreadId: string;
