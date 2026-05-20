@@ -1495,10 +1495,13 @@ export class ConversationManager {
   ): Promise<{ messageId: string; text: string; larkThreadId?: string }> {
     const resourceText = threadTextWithDownloadedFiles(text, message);
     const codexText = replaceMentionKeysForCodex(resourceText, message.mentions);
+    const postResources = message.messageType === "post"
+      ? await this.prepareThreadReplyPostResources(message)
+      : message.resources;
     const result = message.messageType === "post"
       ? await this.options.lark.replyPost(
           anchorMessageId,
-          postContentForThreadReply(text, message.mentions, message.resources),
+          postContentForThreadReply(text, message.mentions, postResources),
           { replyInThread: true }
         )
       : await this.options.lark.replyText(anchorMessageId, textForLarkReply(text, message.mentions), { replyInThread: true });
@@ -1507,6 +1510,38 @@ export class ConversationManager {
       throw new TwinnyError("Lark thread reply response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
     }
     return { messageId: replyMessageId, text: codexText, larkThreadId: extractLarkMessageThreadId(result?.raw) };
+  }
+
+  private async prepareThreadReplyPostResources(message: IncomingLarkMessage): Promise<IncomingLarkMessage["resources"]> {
+    const resources = message.resources ?? [];
+    if (!resources.some((resource) => resource.resourceType === "image" && resource.textPlaceholder)) {
+      return resources;
+    }
+    if (!this.options.larkFiles?.uploadImage) {
+      throw new TwinnyError("Lark image uploader is not configured", "LARK_FILE_UPLOADER_MISSING");
+    }
+
+    const preparedResources = [];
+    for (const resource of resources) {
+      if (resource.resourceType !== "image" || !resource.textPlaceholder) {
+        preparedResources.push(resource);
+        continue;
+      }
+      const downloaded = findDownloadedFileForThreadResource(resource, message.downloadedFiles);
+      if (!downloaded) {
+        throw new TwinnyError(
+          `Downloaded Lark image resource is missing for ${resource.fileKey}`,
+          "LARK_MESSAGE_RESOURCE_MISSING"
+        );
+      }
+      const uploaded = await this.options.larkFiles.uploadImage({
+        filePath: downloaded.path,
+        fileName: downloaded.fileName,
+        contentType: downloaded.contentType
+      });
+      preparedResources.push({ ...resource, fileKey: uploaded.imageKey });
+    }
+    return preparedResources;
   }
 
   private async replyThreadTextMessage(
@@ -5166,6 +5201,20 @@ function threadResourceRefs(resources: IncomingLarkMessage["resources"]): Thread
     });
   }
   return refs.sort((left, right) => right.key.length - left.key.length);
+}
+
+function findDownloadedFileForThreadResource(
+  resource: NonNullable<IncomingLarkMessage["resources"]>[number],
+  downloadedFiles: IncomingLarkMessage["downloadedFiles"]
+): NonNullable<IncomingLarkMessage["downloadedFiles"]>[number] | undefined {
+  return (downloadedFiles ?? []).find((downloaded) =>
+    downloaded.resourceType === resource.resourceType &&
+    downloaded.fileKey === resource.fileKey &&
+    (
+      !resource.textPlaceholder ||
+      downloaded.textPlaceholder === resource.textPlaceholder
+    )
+  );
 }
 
 function escapeLarkText(value: string): string {

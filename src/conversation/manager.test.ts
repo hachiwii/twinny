@@ -1572,7 +1572,8 @@ describe("ConversationManager", () => {
         fileName: "img_1.jpg",
         size: 111,
         contentType: "image/jpeg"
-      }))
+      })),
+      uploadImage: vi.fn(async () => ({ imageKey: "img_uploaded_1" }))
     };
     vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
       messageId: "card_oc_group_1",
@@ -1595,12 +1596,17 @@ describe("ConversationManager", () => {
     }));
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(larkFiles.uploadImage).toHaveBeenCalledWith({
+      filePath: "/tmp/twinny/workspaces/group_oc_group/.twinny/lark_files/g_thread_post_image/img_1.jpg",
+      fileName: "img_1.jpg",
+      contentType: "image/jpeg"
+    });
     expect(lark.replyPost).toHaveBeenCalledWith(
       "card_oc_group_1",
       [
         [
           { tag: "text", text: "see " },
-          { tag: "img", image_key: "img_1" },
+          { tag: "img", image_key: "img_uploaded_1" },
           { tag: "text", text: " done" }
         ]
       ],
