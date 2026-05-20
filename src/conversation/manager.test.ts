@@ -2428,6 +2428,38 @@ describe("ConversationManager", () => {
     expect(lark.replyText).toHaveBeenNthCalledWith(1, "m1", expect.stringMatching(/^WARN: .*previous context/));
   });
 
+  it("replaces a missing thread when Codex rejects turn start", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_missing" });
+    const { repository } = createRepository(row, { mainThreadHasRollout: false });
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_replacement" })),
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        if (threadId === "thread_missing") {
+          throw new TwinnyError("thread not found: thread_missing", "CODEX_REQUEST_FAILED", {
+            code: -32600,
+            message: "thread not found: thread_missing"
+          });
+        }
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({ id: "agent_1", text: "reply" });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyMarkdown).toHaveBeenCalledWith("m1", "reply"));
+
+    expect(row.codexThreadId).toBe("thread_replacement");
+    expect(codex.resumeThread).not.toHaveBeenCalled();
+    expect(codex.startTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({ threadId: "thread_missing" }));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(2, expect.objectContaining({ threadId: "thread_replacement" }));
+    expect(repository.getCodexThreadById("thread_replacement")).toMatchObject({ codexThreadHasRollout: true });
+    expect(repository.markLarkMessagesFailed).not.toHaveBeenCalled();
+    expect(lark.replyText).toHaveBeenNthCalledWith(1, "m1", expect.stringMatching(/^WARN: .*previous context/));
+  });
+
   it("sends completed agentMessage items and skips the turn-finished aggregate reply", async () => {
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {

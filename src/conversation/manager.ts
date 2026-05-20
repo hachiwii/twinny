@@ -2777,23 +2777,23 @@ export class ConversationManager {
     state.active = active;
     await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
 
-    const turnPromise = this.options.codex.startTurn({
-      role: params.role,
-      threadId: active.threadId,
-      input: params.input,
-      cwd: params.workspace,
-      approvalPolicy: "never",
-      mode: active.mode,
-      model: modelSettings.model,
-      effort: modelSettings.effort,
-      onTurnStarted: (turnId) => this.handleTurnStarted(state, active, turnId),
-      onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
-      onTokenUsage: (usage) => this.recordThreadTokenUsageBestEffort(state, active, usage),
-      onPlanUpdated: (plan) => this.handlePlanUpdated(state, active, plan),
-      onRequestUserInput: (request, responder) => this.handleRequestUserInput(state, active, request, responder)
-    });
-    void turnPromise
-      .then((result) => {
+    const runTurn = async (allowMissingThreadReplacement: boolean): Promise<void> => {
+      try {
+        const result = await this.options.codex.startTurn({
+          role: params.role,
+          threadId: active.threadId,
+          input: params.input,
+          cwd: params.workspace,
+          approvalPolicy: "never",
+          mode: active.mode,
+          model: modelSettings.model,
+          effort: modelSettings.effort,
+          onTurnStarted: (turnId) => this.handleTurnStarted(state, active, turnId),
+          onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
+          onTokenUsage: (usage) => this.recordThreadTokenUsageBestEffort(state, active, usage),
+          onPlanUpdated: (plan) => this.handlePlanUpdated(state, active, plan),
+          onRequestUserInput: (request, responder) => this.handleRequestUserInput(state, active, request, responder)
+        });
         active.completedStatus = result.status;
         active.resultText = result.text;
         active.resultError = result.error;
@@ -2809,31 +2809,86 @@ export class ConversationManager {
           },
           "conversation turn completed"
         );
-      })
-      .catch(async (error) => {
+      } catch (error) {
+        let failure = error;
+        if (
+          state.active === active &&
+          !active.cancelRequested &&
+          allowMissingThreadReplacement &&
+          !active.turnId &&
+          isMissingThreadError(error)
+        ) {
+          try {
+            await this.replaceMissingThreadForActiveTurn(active, error);
+            return await runTurn(false);
+          } catch (replacementError) {
+            failure = replacementError;
+          }
+        }
+
         if (state.active === active && !active.cancelRequested) {
-          if (isCodexProtocolClosedError(error)) {
+          if (isCodexProtocolClosedError(failure)) {
             await this.suspendActiveTurnForCodexAppServerExit(state, active);
             this.log.warn(
-              { error, messageId: active.replyMessageId, conversationKey: context.conversationKey, role: active.role },
+              { error: failure, messageId: active.replyMessageId, conversationKey: context.conversationKey, role: active.role },
               "codex protocol closed; leaving active turn recoverable"
             );
             return;
           }
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
-          this.log.error({ error, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation turn failed");
-          await this.failAgentCardBestEffort(state, active, toErrorMessage(error));
+          this.log.error({ error: failure, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation turn failed");
+          await this.failAgentCardBestEffort(state, active, toErrorMessage(failure));
           if (active.agentMessageMode !== "card" || active.card?.fallbackPlain || !active.card?.messageId) {
-            await this.replyErrorBestEffort(active.replyMessageId, error);
+            await this.replyErrorBestEffort(active.replyMessageId, failure);
           }
         } else {
-          this.log.debug({ error, conversationKey: context.conversationKey, threadId: active.threadId }, "ignored stale codex turn failure");
+          this.log.debug({ error: failure, conversationKey: context.conversationKey, threadId: active.threadId }, "ignored stale codex turn failure");
         }
-      })
+      }
+    };
+
+    void runTurn(true)
       .finally(() => {
         void state.controlQueue.enqueue(() => this.finishActiveTurn(state, context.conversationKey, active));
       });
     await this.createAgentCardBestEffort(state, active);
+  }
+
+  private async replaceMissingThreadForActiveTurn(active: ActiveTurn, error: unknown): Promise<void> {
+    const previousThreadId = active.threadId;
+    this.log.warn(
+      {
+        error,
+        conversationKey: active.conversationKey,
+        codexThreadId: previousThreadId
+      },
+      "codex turn thread missing; starting replacement thread"
+    );
+    await this.setThreadStatusBestEffort(active.conversationKey, previousThreadId, "idle");
+    const replacement = await this.options.codex.startThread({
+      role: active.role,
+      cwd: active.workspace,
+      approvalPolicy: "never"
+    });
+    await this.replaceThreadBindingBestEffort({
+      conversationKey: active.conversationKey,
+      codexThreadId: replacement.threadId,
+      role: active.role,
+      workspace: active.workspace,
+      larkThreadId: active.context.larkThreadId,
+      codexThreadHasRollout: false
+    });
+    active.threadId = replacement.threadId;
+    active.threadTokenUsage = await this.readThreadTokenUsageBestEffort(active.threadId);
+    active.turnStartThreadTokenUsage = active.threadTokenUsage;
+    active.turnTokenUsage = emptyThreadTokenUsageSnapshot();
+    await this.setThreadModeBestEffort(active.conversationKey, active.threadId, active.mode);
+    await this.markMessagesProcessingBestEffort([...active.processingMessageIds], {
+      conversationKey: active.conversationKey,
+      codexThreadId: active.threadId
+    });
+    await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
+    await this.notifyThreadReplacementBestEffort(active.replyMessageId, previousThreadId, active.threadId);
   }
 
   private async handleTurnStarted(state: ConversationState, active: ActiveTurn, turnId: string): Promise<void> {
@@ -6014,11 +6069,20 @@ function escapeRegExp(value: string): string {
 }
 
 function isMissingRolloutError(error: unknown): boolean {
-  if (error instanceof Error && error.message.includes("no rollout found")) {
+  return errorMessageIncludes(error, "no rollout found");
+}
+
+function isMissingThreadError(error: unknown): boolean {
+  return errorMessageIncludes(error, "thread not found");
+}
+
+function errorMessageIncludes(error: unknown, fragment: string): boolean {
+  const normalizedFragment = fragment.toLowerCase();
+  if (error instanceof Error && error.message.toLowerCase().includes(normalizedFragment)) {
     return true;
   }
   const cause = isRecord(error) ? error.cause : undefined;
-  return isRecord(cause) && typeof cause.message === "string" && cause.message.includes("no rollout found");
+  return isRecord(cause) && typeof cause.message === "string" && cause.message.toLowerCase().includes(normalizedFragment);
 }
 
 function isCodexProtocolClosedError(error: unknown): boolean {
