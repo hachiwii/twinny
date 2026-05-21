@@ -26,6 +26,7 @@ import { getRoleCodexHome } from "../roles/index.js";
 import { createConversationRepository, openRuntimeDatabase, type ConversationRepository, type TwinnyDatabase } from "../store/index.js";
 import type {
   CodexAgentMessage,
+  CodexImageGeneration,
   CodexPlanUpdate,
   CodexRequestUserInputRequest,
   CodexThreadMode,
@@ -445,6 +446,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       effort,
       onTurnStarted,
       onAgentMessage,
+      onImageGeneration,
       onTokenUsage,
       onPlanUpdated,
       onRequestUserInput
@@ -458,6 +460,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       effort?: string;
       onTurnStarted?: (turnId: string) => Promise<void> | void;
       onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
+      onImageGeneration?: (image: CodexImageGeneration) => Promise<void> | void;
       onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
       onPlanUpdated?: (plan: CodexPlanUpdate) => Promise<void> | void;
       onRequestUserInput?: (
@@ -474,6 +477,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
         effort,
         onTurnStarted,
         onAgentMessage,
+        onImageGeneration,
         onTokenUsage,
         onPlanUpdated,
         onRequestUserInput

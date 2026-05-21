@@ -2,6 +2,7 @@ import { TwinnyError, toErrorMessage } from "../errors.js";
 import type {
   AgentMessagePhase,
   CodexAgentMessage,
+  CodexImageGeneration,
   CodexPlanUpdate,
   CodexRequestUserInputParams,
   CodexRequestUserInputRequest,
@@ -53,6 +54,7 @@ export interface TurnStartOptions {
   effort?: string;
   onTurnStarted?: (turnId: string) => Promise<void> | void;
   onAgentMessage?: (message: CompletedAgentMessage) => Promise<void> | void;
+  onImageGeneration?: (image: CodexImageGeneration) => Promise<void> | void;
   onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
   onPlanUpdated?: (plan: CodexPlanUpdate) => Promise<void> | void;
   onRequestUserInput?: (
@@ -197,6 +199,7 @@ export async function startCodexTurn(
   const accumulator = new TurnOutputAccumulator(options.threadId, undefined, {
     onTurnStarted: options.onTurnStarted,
     onAgentMessage: options.onAgentMessage,
+    onImageGeneration: options.onImageGeneration,
     onTokenUsage: options.onTokenUsage,
     onPlanUpdated: options.onPlanUpdated
   });
@@ -283,6 +286,7 @@ export async function interruptCodexTurn(protocol: CodexProtocolClient, options:
 
 export class TurnOutputAccumulator {
   private readonly assistantMessages = new Map<string, string>();
+  private readonly generatedImages = new Map<string, CodexImageGeneration>();
   private readonly pendingAgentMessageCallbacks: Promise<void>[] = [];
   private agentMessageCallbackChain = Promise.resolve();
   private readonly startedAt = Date.now();
@@ -300,6 +304,7 @@ export class TurnOutputAccumulator {
     private readonly callbacks: {
       onTurnStarted?: (turnId: string) => Promise<void> | void;
       onAgentMessage?: (message: CompletedAgentMessage) => Promise<void> | void;
+      onImageGeneration?: (image: CodexImageGeneration) => Promise<void> | void;
       onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
       onPlanUpdated?: (plan: CodexPlanUpdate) => Promise<void> | void;
     } = {}
@@ -422,6 +427,13 @@ export class TurnOutputAccumulator {
         this.finalAnswerText = item.text;
       }
       this.emitAgentMessage(item);
+      return;
+    }
+
+    const image = extractImageGeneration(params.item);
+    if (image) {
+      this.recordImageGeneration(image);
+      this.emitImageGeneration(image);
     }
   }
 
@@ -447,6 +459,11 @@ export class TurnOutputAccumulator {
         if (message.phase === "final_answer") {
           this.finalAnswerText = message.text;
         }
+        continue;
+      }
+      const image = extractImageGeneration(item);
+      if (image) {
+        this.recordImageGeneration(image);
       }
     }
 
@@ -501,14 +518,20 @@ export class TurnOutputAccumulator {
   private toResult(): CodexTurnResult {
     const turn = this.completed?.turn;
     const status = turn?.status === "failed" ? "failed" : turn?.status === "interrupted" ? "interrupted" : "completed";
+    const generatedImages = Array.from(this.generatedImages.values());
     return {
       threadId: this.threadId,
       turnId: this.turnId,
       text: this.finalAnswerText ?? this.text,
       status,
       error: status === "failed" ? extractErrorMessage(turn?.error) : undefined,
-      durationMs: typeof turn?.durationMs === "number" ? turn.durationMs : Date.now() - this.startedAt
+      durationMs: typeof turn?.durationMs === "number" ? turn.durationMs : Date.now() - this.startedAt,
+      ...(generatedImages.length > 0 ? { generatedImages } : {})
     };
+  }
+
+  private recordImageGeneration(image: CodexImageGeneration): void {
+    this.generatedImages.set(image.id, image);
   }
 
   private emitAgentMessage(message: CompletedAgentMessage): void {
@@ -520,6 +543,22 @@ export class TurnOutputAccumulator {
       .catch((error: unknown) => {
         const parsedError =
           error instanceof Error ? error : new TwinnyError(toErrorMessage(error), "CODEX_AGENT_MESSAGE_CALLBACK_FAILED");
+        this.completionError = parsedError;
+        this.rejectWait?.(parsedError);
+      });
+    this.agentMessageCallbackChain = pending.then(() => undefined);
+    this.pendingAgentMessageCallbacks.push(pending);
+  }
+
+  private emitImageGeneration(image: CodexImageGeneration): void {
+    if (!this.callbacks.onImageGeneration) {
+      return;
+    }
+    const pending = this.agentMessageCallbackChain
+      .then(() => this.callbacks.onImageGeneration?.(image))
+      .catch((error: unknown) => {
+        const parsedError =
+          error instanceof Error ? error : new TwinnyError(toErrorMessage(error), "CODEX_IMAGE_GENERATION_CALLBACK_FAILED");
         this.completionError = parsedError;
         this.rejectWait?.(parsedError);
       });
@@ -552,6 +591,27 @@ function extractAgentMessage(item: unknown): CompletedAgentMessage | undefined {
   }
   const phase = agentMessagePhaseValue(item.phase);
   return phase === undefined ? { id, text } : { id, text, phase };
+}
+
+function extractImageGeneration(item: unknown): CodexImageGeneration | undefined {
+  if (!isRecord(item) || item.type !== "imageGeneration") {
+    return undefined;
+  }
+  const id = stringValue(item.id);
+  if (!id) {
+    return undefined;
+  }
+  const status = stringValue(item.status);
+  const savedPath = stringValue(item.savedPath) ?? stringValue(item.saved_path);
+  const revisedPrompt = stringValue(item.revisedPrompt) ?? stringValue(item.revised_prompt);
+  const result = stringValue(item.result);
+  return {
+    id,
+    ...(status ? { status } : {}),
+    ...(savedPath ? { savedPath } : {}),
+    ...(revisedPrompt ? { revisedPrompt } : {}),
+    ...(result ? { result } : {})
+  };
 }
 
 function extractPlanUpdate(params: ItemCompletedParams): CodexPlanUpdate | undefined {

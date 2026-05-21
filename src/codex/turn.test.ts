@@ -170,6 +170,73 @@ describe("TurnOutputAccumulator", () => {
     expect(messages).toEqual([{ id: "msg_1", text: "first" }]);
   });
 
+  it("collects imageGeneration items and emits item/completed callbacks", async () => {
+    const images: Array<{ id: string; savedPath?: string; status?: string }> = [];
+    const accumulator = new TurnOutputAccumulator("thread_123", undefined, {
+      onImageGeneration: (image) => {
+        images.push(image);
+      }
+    });
+
+    accumulator.record({
+      method: "turn/started",
+      params: {
+        threadId: "thread_123",
+        turn: { id: "turn_1" }
+      }
+    });
+    accumulator.record({
+      method: "item/completed",
+      params: {
+        threadId: "thread_123",
+        turnId: "turn_1",
+        item: {
+          type: "imageGeneration",
+          id: "ig_1",
+          status: "completed",
+          savedPath: "/tmp/generated.png",
+          revisedPrompt: "make an image"
+        }
+      }
+    });
+    accumulator.record({
+      method: "turn/completed",
+      params: {
+        threadId: "thread_123",
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          durationMs: 7,
+          items: [
+            {
+              type: "imageGeneration",
+              id: "ig_1",
+              status: "completed",
+              savedPath: "/tmp/generated.png",
+              revisedPrompt: "make an image"
+            }
+          ]
+        }
+      }
+    });
+
+    await expect(accumulator.wait()).resolves.toMatchObject({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      text: "",
+      status: "completed",
+      generatedImages: [
+        {
+          id: "ig_1",
+          status: "completed",
+          savedPath: "/tmp/generated.png",
+          revisedPrompt: "make an image"
+        }
+      ]
+    });
+    expect(images).toEqual([{ id: "ig_1", status: "completed", savedPath: "/tmp/generated.png", revisedPrompt: "make an image" }]);
+  });
+
   it("preserves agentMessage phase and prefers final answer text in turn results", async () => {
     const messages: Array<{ id: string; text: string; phase?: "commentary" | "final_answer" | null }> = [];
     const accumulator = new TurnOutputAccumulator("thread_123", undefined, {

@@ -29,6 +29,7 @@ import type {
   CodexThreadTokenUsageUpdate,
   CodexTurnResult,
   CodexAgentMessage,
+  CodexImageGeneration,
   CodexPlanUpdate,
   CodexRequestUserInputRequest,
   CodexRequestUserInputResponse,
@@ -300,6 +301,7 @@ export interface CodexBridge {
     effort?: string;
     onTurnStarted?: (turnId: string) => Promise<void> | void;
     onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
+    onImageGeneration?: (image: CodexImageGeneration) => Promise<void> | void;
     onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
     onPlanUpdated?: (plan: CodexPlanUpdate) => Promise<void> | void;
     onRequestUserInput?: (
@@ -491,6 +493,7 @@ interface ActiveTurn {
   completedStatus?: CodexTurnResult["status"];
   resultText?: string;
   resultError?: string;
+  generatedImagePaths: string[];
   finalAgentMessageText?: string;
   sawAgentMessagePhase?: boolean;
   card?: ActiveTurnCardState;
@@ -2379,6 +2382,7 @@ export class ConversationManager {
       threadTokenUsage: emptyThreadTokenUsageSnapshot(),
       turnStartThreadTokenUsage: emptyThreadTokenUsageSnapshot(),
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      generatedImagePaths: [],
       reaction: await this.addReactionBestEffort(message.messageId),
       card:
         agentMessageMode === "card"
@@ -2411,11 +2415,13 @@ export class ConversationManager {
           effort: modelSettings.effort,
           onTurnStarted: (turnId) => this.handleSideTurnStarted(state, active, turnId),
           onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
+          onImageGeneration: (image) => this.recordImageGenerationForActiveBestEffort(state, active, image),
           onTokenUsage: (usage) => this.recordSideTokenUsageBestEffort(state, active, usage)
         });
         active.completedStatus = result.status;
         active.resultText = result.text;
         active.resultError = result.error;
+        active.generatedImagePaths = mergeGeneratedImagePaths(active.generatedImagePaths, result.generatedImages);
         this.log.info(
           {
             messageId: message.messageId,
@@ -3242,6 +3248,7 @@ export class ConversationManager {
       threadTokenUsage,
       turnStartThreadTokenUsage: threadTokenUsage,
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      generatedImagePaths: [],
       reaction: await this.addReactionBestEffort(message.messageId),
       card:
         agentMessageMode === "card"
@@ -3491,6 +3498,7 @@ export class ConversationManager {
       threadTokenUsage,
       turnStartThreadTokenUsage: threadTokenUsage,
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      generatedImagePaths: [],
       reaction: await this.addReactionBestEffort(anchor.messageId),
       card:
         agentMessageMode === "card"
@@ -3524,6 +3532,7 @@ export class ConversationManager {
           effort: modelSettings.effort,
           onTurnStarted: (turnId) => this.handleTurnStarted(state, active, turnId),
           onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
+          onImageGeneration: (image) => this.recordImageGenerationForActiveBestEffort(state, active, image),
           onTokenUsage: (usage) => this.recordThreadTokenUsageBestEffort(state, active, usage),
           onPlanUpdated: (plan) => this.handlePlanUpdated(state, active, plan),
           onRequestUserInput: (request, responder) => this.handleRequestUserInput(state, active, request, responder)
@@ -3531,6 +3540,7 @@ export class ConversationManager {
         active.completedStatus = result.status;
         active.resultText = result.text;
         active.resultError = result.error;
+        active.generatedImagePaths = mergeGeneratedImagePaths(active.generatedImagePaths, result.generatedImages);
         this.log.info(
           {
             messageId: anchor.messageId,
@@ -4720,6 +4730,59 @@ export class ConversationManager {
     await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
   }
 
+  private async recordImageGenerationForActiveBestEffort(
+    state: ConversationState,
+    active: ActiveTurn,
+    image: CodexImageGeneration
+  ): Promise<void> {
+    const imagePath = codexImageGenerationPath(image);
+    if (!imagePath || !isActiveTurnCurrent(state, active) || active.cancelRequested) {
+      return;
+    }
+    active.generatedImagePaths = mergeGeneratedImagePaths(active.generatedImagePaths, [image]);
+    if (active.agentMessageMode !== "card") {
+      return;
+    }
+    await state.controlQueue.enqueue(async () => {
+      if (!isActiveTurnCurrent(state, active) || active.cancelRequested) {
+        return;
+      }
+      await this.updateAgentCardWithGeneratedImageBestEffort(state, active, image.id, imagePath);
+    });
+  }
+
+  private async updateAgentCardWithGeneratedImageBestEffort(
+    state: ConversationState,
+    active: ActiveTurn,
+    imageId: string,
+    imagePath: string
+  ): Promise<void> {
+    const card = active.card;
+    if (!card || card.fallbackPlain) {
+      return;
+    }
+    const messageId = `image-generation:${imageId}`;
+    if (!card.messages.some((message) => message.id === messageId)) {
+      card.messages.push({
+        id: messageId,
+        text: `[已生成图片] ${imagePath}`,
+        processOnly: true
+      });
+    }
+
+    try {
+      if (!card.messageId) {
+        await this.createAgentCardBestEffort(state, active);
+        return;
+      }
+      await this.patchAgentCardBestEffort(state, active, "working");
+    } catch (error) {
+      this.log.warn({ error, messageId: active.replyMessageId, imagePath }, "failed to update agent card with generated image");
+      card.fallbackPlain = true;
+      this.stopAgentCardTimer(active);
+    }
+  }
+
   private async updateAgentCardWithMessageBestEffort(
     state: ConversationState,
     active: ActiveTurn,
@@ -4893,7 +4956,7 @@ export class ConversationManager {
             active.finalAgentMessageText,
             active.sawAgentMessagePhase === true
           );
-      const output = await this.prepareAgentFinalCardOutputForLark(final.text, active.workspace);
+      const output = await this.prepareAgentFinalCardOutputForLark(final.text, active.workspace, active.generatedImagePaths);
       const rendered = this.renderAgentCard(state, active, "finished", output.elements, undefined, final.processMessages, output.summaryText);
       const previousMessageId = card.messageId;
       const shouldUpdateInPlace =
@@ -5215,7 +5278,7 @@ export class ConversationManager {
     workspace: string,
     options: PrepareAgentReplyOptions = {}
   ): Promise<PreparedAgentLarkReply | undefined> {
-    if (!text.split(/\r?\n/).some((line) => line.trimStart().startsWith("SEND_TO_LARK:"))) {
+    if (!containsSendToLarkDirective(text)) {
       return undefined;
     }
 
@@ -5273,10 +5336,15 @@ export class ConversationManager {
     };
   }
 
-  private async prepareAgentFinalCardOutputForLark(text: string, workspace: string): Promise<PreparedAgentCardReply> {
+  private async prepareAgentFinalCardOutputForLark(
+    text: string,
+    workspace: string,
+    generatedImagePaths: string[] = []
+  ): Promise<PreparedAgentCardReply> {
     const elements: LarkCardElement[] = [];
     const files: PreparedLarkFileReply[] = [];
     const pendingText: string[] = [];
+    const hasSendToLarkDirective = containsSendToLarkDirective(text);
     const flushText = (): void => {
       const markdown = renderCodexMentionTagsForCardMarkdown(pendingText.join("\n").trim());
       pendingText.splice(0);
@@ -5332,6 +5400,23 @@ export class ConversationManager {
       }
     }
     flushText();
+    if (!hasSendToLarkDirective) {
+      for (const imagePath of generatedImagePaths) {
+        try {
+          if (!this.options.larkFiles?.uploadImage) {
+            throw new Error("Lark image uploader is not configured");
+          }
+          const uploaded = await this.options.larkFiles.uploadImage({
+            filePath: imagePath,
+            fileName: path.basename(imagePath),
+            contentType: contentTypeForFileName(imagePath)
+          });
+          elements.push(imageElement(uploaded.imageKey));
+        } catch (error) {
+          elements.push(markdownElement(formatSendToLarkError(toErrorMessage(error))));
+        }
+      }
+    }
 
     return {
       elements: elements.length > 0 ? elements : [markdownElement("")],
@@ -5474,6 +5559,10 @@ function splitCodexMentionText(text: string): CodexMentionTextPart[] {
 
 function isSafeLarkMentionOpenId(openId: string): boolean {
   return /^[A-Za-z0-9_:-]{1,128}$/.test(openId);
+}
+
+function containsSendToLarkDirective(text: string): boolean {
+  return text.split(/\r?\n/).some((line) => line.trimStart().startsWith("SEND_TO_LARK:"));
 }
 
 function parseSendToLarkDirective(line: string): SendToLarkDirective {
@@ -5672,6 +5761,26 @@ function isSideTurnCurrent(state: ConversationState, active: ActiveTurn): boolea
 
 function isActiveTurnCurrent(state: ConversationState, active: ActiveTurn): boolean {
   return active.kind === "side" ? isSideTurnCurrent(state, active) : state.active === active;
+}
+
+function codexImageGenerationPath(image: CodexImageGeneration): string | undefined {
+  return nonEmptyString(image.savedPath);
+}
+
+function mergeGeneratedImagePaths(paths: string[], images?: CodexImageGeneration[]): string[] {
+  if (!images?.length) {
+    return paths;
+  }
+  const merged = [...paths];
+  const seen = new Set(merged);
+  for (const image of images) {
+    const imagePath = codexImageGenerationPath(image);
+    if (imagePath && !seen.has(imagePath)) {
+      seen.add(imagePath);
+      merged.push(imagePath);
+    }
+  }
+  return merged;
 }
 
 function allocateSideId(state: ConversationState): number {

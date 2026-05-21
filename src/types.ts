@@ -24,6 +24,14 @@ export interface CodexAgentMessage {
   phase?: AgentMessagePhase | null;
 }
 
+export interface CodexImageGeneration {
+  id: string;
+  status?: string;
+  savedPath?: string;
+  revisedPrompt?: string;
+  result?: string;
+}
+
 export type LarkMessageRouteKind =
   | "message"
   | "side"
@@ -280,6 +288,7 @@ export interface CodexTurnResult {
   status: "completed" | "failed" | "interrupted";
   error?: string;
   durationMs?: number;
+  generatedImages?: CodexImageGeneration[];
 }
 
 export interface CodexRequestUserInputOption {

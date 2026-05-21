@@ -3643,6 +3643,125 @@ describe("ConversationManager", () => {
     expect(lark.replyMarkdown).not.toHaveBeenCalled();
   });
 
+  it("shows imageGeneration placeholders and appends generated images to final cards", async () => {
+    const generatedPath = path.join(os.tmpdir(), "twinny-generated-image.png");
+    const generatedImage = {
+      id: "ig_1",
+      status: "completed",
+      savedPath: generatedPath
+    };
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onImageGeneration }) => {
+        await onTurnStarted?.("turn_1");
+        await onImageGeneration?.(generatedImage);
+        return {
+          threadId,
+          turnId: "turn_1",
+          text: "",
+          status: "completed" as const,
+          generatedImages: [generatedImage]
+        };
+      })
+    });
+    const lark = createLarkResponder();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(),
+      uploadImage: vi.fn(async () => ({ imageKey: "img_generated" }))
+    };
+    const manager = createManager({ codex, lark, larkFiles, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() =>
+      expect(lark.replyCard).toHaveBeenNthCalledWith(
+        2,
+        "m1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+
+    expect(larkFiles.uploadImage).toHaveBeenCalledWith({
+      filePath: generatedPath,
+      fileName: "twinny-generated-image.png",
+      contentType: "image/png"
+    });
+    expect(JSON.stringify(vi.mocked(lark.patchCard).mock.calls)).toContain(`[已生成图片] ${generatedPath}`);
+    const finalCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const serialized = JSON.stringify(finalCard);
+    expect(serialized).toContain(`[已生成图片] ${generatedPath}`);
+    expect(serialized).toContain("img_generated");
+  });
+
+  it("does not auto-append generated images when the final card output has SEND_TO_LARK directives", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-card-generated-image-"));
+    const workspaceRoot = path.join(tempRoot, "workspaces");
+    const workspace = path.join(workspaceRoot, "p2p_ou_guest");
+    fs.mkdirSync(workspace, { recursive: true });
+    const explicitPath = path.join(workspace, "explicit.png");
+    fs.writeFileSync(explicitPath, "png");
+    const generatedPath = path.join(os.tmpdir(), "twinny-generated-skipped.png");
+    const generatedImage = {
+      id: "ig_1",
+      status: "completed",
+      savedPath: generatedPath
+    };
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onImageGeneration, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onImageGeneration?.(generatedImage);
+        await onAgentMessage?.({
+          id: "agent_1",
+          phase: "final_answer",
+          text: `SEND_TO_LARK: <img path="${explicitPath}"></img>`
+        });
+        return {
+          threadId,
+          turnId: "turn_1",
+          text: `SEND_TO_LARK: <img path="${explicitPath}"></img>`,
+          status: "completed" as const,
+          generatedImages: [generatedImage]
+        };
+      })
+    });
+    const lark = createLarkResponder();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(),
+      uploadImage: vi.fn(async ({ filePath }) => ({
+        imageKey: filePath === explicitPath ? "img_explicit" : "img_generated"
+      }))
+    };
+    const manager = createManager({ codex, lark, larkFiles, workspaceRoot, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() =>
+      expect(lark.replyCard).toHaveBeenNthCalledWith(
+        2,
+        "m1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+
+    expect(larkFiles.uploadImage).toHaveBeenCalledTimes(1);
+    expect(larkFiles.uploadImage).toHaveBeenCalledWith({
+      filePath: explicitPath,
+      fileName: "explicit.png",
+      contentType: "image/png"
+    });
+    const finalCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const serialized = JSON.stringify(finalCard);
+    expect(serialized).toContain("img_explicit");
+    expect(serialized).not.toContain("img_generated");
+  });
+
   it("renders Codex Lark mention tags only from the final card output", async () => {
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
