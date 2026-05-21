@@ -377,7 +377,7 @@ function bodyElements(options: RenderTwinnyAgentCardOptions, parsedPlan?: Parsed
   const elements = workingProcessElements(options.messages);
   elements.push(elapsedElement(options.elapsedMs, options.runtimeStats, options.mode));
   if (options.status === "failed" && options.error) {
-    elements.push(markdownElement(`- ${sanitizeProcessText(options.error)}`, { text_color: "red" }));
+    elements.push(markdownElement(`- [ERROR] ${sanitizeProcessText(options.error)}`));
   }
   if (options.status === "working") {
     elements.push(buttonsElement(options));

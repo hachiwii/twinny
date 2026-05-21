@@ -395,6 +395,25 @@ describe("renderTwinnyAgentCard", () => {
     expect(JSON.stringify(card)).toContain("追加模式：新消息将和排队消息一起发送。");
   });
 
+  it("renders failed errors as schema-valid markdown", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "failed",
+      error: "Codex app-server reported an error"
+    }));
+    const markdownElements = findElementsByTag(card, "markdown");
+
+    expect(card.header).toMatchObject({
+      title: { tag: "plain_text", content: "发生错误" },
+      template: "red"
+    });
+    expect(markdownElements).toContainEqual(
+      expect.objectContaining({
+        content: "- [ERROR] Codex app-server reported an error"
+      })
+    );
+    expect(markdownElements.some((element) => Object.hasOwn(element, "text_color"))).toBe(false);
+  });
+
   it("adds model, context, and compact token usage to the plain-text elapsed footer", () => {
     const card = renderTwinnyAgentCard(createOptions({
       elapsedMs: 150_000,
