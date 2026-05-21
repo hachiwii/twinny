@@ -227,6 +227,81 @@ describe("Lark to Codex integration flow", () => {
     expect(larkOut(trace).some((entry) => entry.method === "DELETE" && entry.path === "/im/v1/messages/m2/reactions/queued_m2")).toBe(true);
   });
 
+  it("runs a queued /goal command only after the active turn completes", async () => {
+    const harness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        delayMs: 160,
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "turn_1",
+              status: "completed",
+              durationMs: 160,
+              items: [{ type: "agentMessage", id: "active_done", text: "active done", phase: "final_answer" }]
+            }
+          }
+        }
+      }
+    ));
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_goal_active", messageId: "m_goal_active", text: "active before queued goal" })
+    }));
+    await harness.waitForTrace((trace) => codexOut(trace, "turn/start").length === 1, "active turn/start");
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({
+        eventId: "e_goal_queued",
+        messageId: "m_goal_queued",
+        text: "/queue /goal ship queued goal /plan ignored"
+      })
+    }));
+    await harness.waitForExpect(() => {
+      expect(harness.repository.getLarkMessageById("m_goal_queued")).toMatchObject({
+        routeKind: "goal_message",
+        status: "queued",
+        text: "ship queued goal /plan ignored"
+      });
+    });
+    await waitForDelay(40);
+    expect(codexOut(harness.readTrace(), "thread/goal/set")).toHaveLength(0);
+
+    await harness.waitForTrace((trace) => codexOut(trace, "thread/goal/set").length === 1, "queued goal set");
+    await harness.waitForTrace(
+      (trace) => larkOut(trace).some((entry) => entry.method === "PATCH" && traceText(entry).includes("已实现目标") && traceText(entry).includes("goal complete")),
+      "queued goal completed card"
+    );
+
+    const trace = harness.readTrace();
+    const goalSet = codexOut(trace, "thread/goal/set")[0]!;
+    expect(goalSet.message.params).toMatchObject({
+      threadId: "guest_thread_1",
+      objective: "ship queued goal /plan ignored",
+      status: "active"
+    });
+    expect(goalSet.message.params).not.toHaveProperty("tokenBudget");
+    expect(codexOut(trace, "turn/start")).toHaveLength(1);
+    expect(harness.repository.getLarkMessageById("m_goal_active")).toMatchObject({ status: "completed" });
+    expect(harness.repository.getLarkMessageById("m_goal_queued")).toMatchObject({ status: "completed" });
+    expectOrder(trace, [
+      ["active turn/start", (entry) => isCodexMethod(entry, "turn/start")],
+      ["active done card", (entry) => entry.kind === "lark.out" && entry.method === "PATCH" && traceText(entry).includes("active done")],
+      ["queued goal set", (entry) => isCodexMethod(entry, "thread/goal/set")],
+      ["queued goal complete card", (entry) => entry.kind === "lark.out" && entry.method === "PATCH" && traceText(entry).includes("已实现目标")]
+    ]);
+  });
+
   it("covers plan mode questions before accepting and implementing the plan", async () => {
     const harness = await IntegrationHarness.create(`
 {"role":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1"}}}}

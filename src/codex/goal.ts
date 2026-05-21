@@ -193,6 +193,7 @@ export async function resumeCodexThreadGoal(
 
 class GoalOutputAccumulator {
   private readonly assistantMessages = new Map<string, string>();
+  private readonly emittedAgentMessageIds = new Set<string>();
   private readonly pendingAgentMessageCallbacks: Promise<void>[] = [];
   private readonly completedTurnIds = new Set<string>();
   private agentMessageCallbackChain = Promise.resolve();
@@ -336,7 +337,7 @@ class GoalOutputAccumulator {
     if (item.phase === "final_answer") {
       this.finalAnswerText = item.text;
     }
-    this.emitAgentMessage(item);
+    this.emitAgentMessageOnce(item);
   }
 
   private recordTurnCompleted(params: unknown): void {
@@ -355,6 +356,7 @@ class GoalOutputAccumulator {
         if (message.phase === "final_answer") {
           this.finalAnswerText = message.text;
         }
+        this.emitAgentMessageOnce(message);
       }
     }
     this.resolveTerminalIfReady();
@@ -428,6 +430,14 @@ class GoalOutputAccumulator {
       });
     this.agentMessageCallbackChain = pending.then(() => undefined);
     this.pendingAgentMessageCallbacks.push(pending);
+  }
+
+  private emitAgentMessageOnce(message: CodexAgentMessage): void {
+    if (this.emittedAgentMessageIds.has(message.id)) {
+      return;
+    }
+    this.emittedAgentMessageIds.add(message.id);
+    this.emitAgentMessage(message);
   }
 
   private terminalReady(): boolean {
