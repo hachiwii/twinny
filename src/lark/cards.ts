@@ -180,24 +180,18 @@ export function renderTwinnyAgentCard(options: RenderTwinnyAgentCardOptions): La
 }
 
 export function renderTwinnyThreadSummaryCard(options: RenderTwinnyThreadSummaryCardOptions): LarkCardJson {
-  const creator = options.creatorOpenId ? `<at id=${options.creatorOpenId}></at>` : "未知";
-  const contextUsage = formatContextUsage(options.contextTokens, options.contextWindow);
-  const rows = [
-    ["Turn", String(options.turnCount)],
-    ["Input Token", formatInteger(options.inputTokens)],
-    ["Output Token", formatInteger(options.outputTokens)],
-    ["Cache Input Token", formatInteger(options.cachedInputTokens)],
-    ["Reasoning Token", formatInteger(options.reasoningOutputTokens)],
-    ["Total Token", formatInteger(options.totalTokens)],
-    ["总工作时间", formatElapsed(options.totalWorkDurationMs)],
-    ["Context 用量", contextUsage]
-  ];
   return {
     schema: "2.0",
     config: {
       update_multi: true,
-      summary: {
-        content: "新会话"
+      style: {
+        text_size: {
+          normal_v2: {
+            default: "normal",
+            pc: "normal",
+            mobile: "heading"
+          }
+        }
       }
     },
     body: {
@@ -208,14 +202,28 @@ export function renderTwinnyThreadSummaryCard(options: RenderTwinnyThreadSummary
       vertical_align: "top",
       padding: "12px 12px 12px 12px",
       elements: [
-        markdownElement(
-          [
-            `创建人：${creator}`,
-            `创建时间：${formatTimestamp(options.createdAt)}`,
-            `Codex Thread ID：${options.codexThreadId}`
-          ].join("\n")
-        ),
-        markdownElement(markdownTable(["指标", "值"], rows))
+        {
+          tag: "column_set",
+          horizontal_spacing: "8px",
+          horizontal_align: "left",
+          columns: [
+            threadMetricColumn("输入", formatCompactTokenCount(options.inputTokens)),
+            threadMetricColumn("输出", formatCompactTokenCount(options.outputTokens)),
+            threadMetricColumn("时长", formatElapsed(options.totalWorkDurationMs))
+          ],
+          margin: "0px 0px 0px 0px"
+        },
+        {
+          tag: "div",
+          text: {
+            tag: "plain_text",
+            content: options.codexThreadId,
+            text_size: "notation",
+            text_align: "left",
+            text_color: "grey"
+          },
+          margin: "0px 0px 0px 0px"
+        }
       ]
     },
     header: {
@@ -228,17 +236,36 @@ export function renderTwinnyThreadSummaryCard(options: RenderTwinnyThreadSummary
         content: ""
       },
       template: "blue",
-      ...(options.iconImageKey
-        ? {
-            icon: {
-              tag: "custom_icon",
-              img_key: options.iconImageKey
-            }
-          }
-        : {}),
+      icon: threadSummaryHeaderIcon(options.iconImageKey),
       padding: "12px 12px 12px 12px"
     }
   };
+}
+
+function threadMetricColumn(label: string, value: string): LarkCardElement {
+  return {
+    tag: "column",
+    width: "weighted",
+    elements: [
+      markdownElement(`**${label}**\n${value}`, {
+        text_align: "center"
+      })
+    ],
+    vertical_align: "top",
+    weight: 1
+  };
+}
+
+function threadSummaryHeaderIcon(iconImageKey: string | undefined): Record<string, string> {
+  return iconImageKey
+    ? {
+        tag: "custom_icon",
+        img_key: iconImageKey
+      }
+    : {
+        tag: "standard_icon",
+        token: "table-group_outlined"
+      };
 }
 
 export function markdownElement(content: string, extra: Record<string, unknown> = {}): LarkCardElement {
@@ -1001,10 +1028,6 @@ function formatElapsed(elapsedMs: number): string {
   return `${seconds}s`;
 }
 
-function formatInteger(value: number): string {
-  return Math.max(0, Math.trunc(value)).toLocaleString("en-US");
-}
-
 function runtimeStatParts(stats: TwinnyAgentCardRuntimeStats | undefined): string[] {
   if (!stats) {
     return [];
@@ -1076,46 +1099,6 @@ function formatCompactTokenCount(value: number): string {
   }
   const formatted = String(rounded);
   return unitIndex === 0 ? formatted : `${formatted} ${units[unitIndex]}`;
-}
-
-function formatContextUsage(contextTokens: number, contextWindow: number): string {
-  const tokens = Math.max(0, Math.trunc(contextTokens));
-  const window = Math.max(0, Math.trunc(contextWindow));
-  if (window <= 0) {
-    return formatInteger(tokens);
-  }
-  const percentage = Math.min(100, (tokens / window) * 100);
-  return `${formatInteger(tokens)} / ${formatInteger(window)} (${percentage.toFixed(1)}%)`;
-}
-
-function formatTimestamp(timestamp: number): string {
-  if (!Number.isFinite(timestamp) || timestamp <= 0) {
-    return "未知";
-  }
-  const date = new Date(timestamp);
-  const year = date.getFullYear();
-  const month = pad2(date.getMonth() + 1);
-  const day = pad2(date.getDate());
-  const hours = pad2(date.getHours());
-  const minutes = pad2(date.getMinutes());
-  const seconds = pad2(date.getSeconds());
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-}
-
-function pad2(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
-function markdownTable(headers: [string, string], rows: string[][]): string {
-  return [
-    `| ${headers.map(escapeMarkdownTableCell).join(" | ")} |`,
-    "| --- | --- |",
-    ...rows.map((row) => `| ${escapeMarkdownTableCell(row[0] ?? "")} | ${escapeMarkdownTableCell(row[1] ?? "")} |`)
-  ].join("\n");
-}
-
-function escapeMarkdownTableCell(value: string): string {
-  return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 }
 
 function uniqueNonEmpty(values: string[] | undefined): string[] {

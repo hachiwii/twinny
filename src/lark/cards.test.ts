@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   markdownElement,
   renderTwinnyAgentCard,
+  renderTwinnyThreadSummaryCard,
   type RenderTwinnyAgentCardOptions
 } from "./cards.js";
 
@@ -487,5 +488,64 @@ describe("renderTwinnyAgentCard", () => {
 
     expect(serialized).not.toContain("工作过程");
     expect(serialized).not.toContain("暂无进度");
+  });
+});
+
+describe("renderTwinnyThreadSummaryCard", () => {
+  it("renders the compact thread summary layout", () => {
+    const card = renderTwinnyThreadSummaryCard({
+      creatorOpenId: "ou_guest",
+      createdAt: 1,
+      codexThreadId: "019e4af0-176c-7301-8d5c-2e642472826c",
+      turnCount: 4,
+      inputTokens: 32_200_000,
+      outputTokens: 342_000,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 32_542_000,
+      totalWorkDurationMs: 3_330_000,
+      contextTokens: 0,
+      contextWindow: 0
+    });
+
+    expect(card.config).toEqual({
+      update_multi: true,
+      style: {
+        text_size: {
+          normal_v2: {
+            default: "normal",
+            pc: "normal",
+            mobile: "heading"
+          }
+        }
+      }
+    });
+    expect(card.header).toMatchObject({
+      title: { tag: "plain_text", content: "新会话" },
+      template: "blue",
+      icon: { tag: "standard_icon", token: "table-group_outlined" }
+    });
+    expect(card.body).toMatchObject({
+      elements: [
+        {
+          tag: "column_set",
+          columns: [
+            { elements: [expect.objectContaining({ content: "**输入**\n32.2 M", text_align: "center" })] },
+            { elements: [expect.objectContaining({ content: "**输出**\n342 K", text_align: "center" })] },
+            { elements: [expect.objectContaining({ content: "**时长**\n55m30s", text_align: "center" })] }
+          ]
+        },
+        {
+          tag: "div",
+          text: {
+            tag: "plain_text",
+            content: "019e4af0-176c-7301-8d5c-2e642472826c",
+            text_size: "notation",
+            text_align: "left",
+            text_color: "grey"
+          }
+        }
+      ]
+    });
   });
 });

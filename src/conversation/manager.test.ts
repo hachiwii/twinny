@@ -218,10 +218,10 @@ describe("ConversationManager", () => {
       const summaryCard = vi.mocked(lark.patchCard).mock.calls.find(([messageId]) => messageId === "card_thread_1")?.[1];
       expect(summaryCard).toBeDefined();
       const serialized = JSON.stringify(summaryCard);
-      expect(serialized).toContain("Total Token");
-      expect(serialized).toContain("42");
-      expect(serialized).toContain("总工作时间");
-      expect(serialized).toContain("7s");
+      expect(serialized).toContain("**输入**\\n0");
+      expect(serialized).toContain("**输出**\\n0");
+      expect(serialized).toContain("**时长**\\n7s");
+      expect(serialized).toContain("thread_1");
     } finally {
       if (startTimeout) {
         clearTimeout(startTimeout);
@@ -1374,7 +1374,11 @@ describe("ConversationManager", () => {
       creatorOpenId: "ou_guest",
       cardMessageId: "card_oc_group_1"
     });
-    expect(lark.replyText).toHaveBeenCalledWith("card_oc_group_1", "新话题已创建", { replyInThread: true });
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "card_oc_group_1",
+      '话题由 <at user_id="ou_guest">Guest User</at> 创建',
+      { replyInThread: true }
+    );
     expect(codex.startTurn).not.toHaveBeenCalled();
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_thread"]);
   });
@@ -1407,10 +1411,15 @@ describe("ConversationManager", () => {
       messageId: cardMessageId,
       raw: {}
     });
-    vi.mocked(lark.replyText).mockResolvedValueOnce({
-      messageId: "reply_thread_1",
-      raw: { data: { thread_id: cardThreadId } }
-    });
+    vi.mocked(lark.replyText)
+      .mockResolvedValueOnce({
+        messageId: "reply_thread_intro_1",
+        raw: { data: { thread_id: cardThreadId } }
+      })
+      .mockResolvedValueOnce({
+        messageId: "reply_thread_1",
+        raw: { data: { thread_id: cardThreadId } }
+      });
     const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
 
     manager.submitIncoming(groupMessage("g_thread", "/thread topic first", {
@@ -1428,7 +1437,13 @@ describe("ConversationManager", () => {
         cardMessageId: "card_oc_group_1"
       })
     );
-    expect(lark.replyText).toHaveBeenCalledWith(cardMessageId, "topic first", { replyInThread: true });
+    expect(lark.replyText).toHaveBeenNthCalledWith(
+      1,
+      cardMessageId,
+      '话题由 <at user_id="ou_guest">Guest User</at> 创建',
+      { replyInThread: true }
+    );
+    expect(lark.replyText).toHaveBeenNthCalledWith(2, cardMessageId, "topic first", { replyInThread: true });
     expect(lark.recallMessage).toHaveBeenCalledWith("g_thread");
     expect(codex.resumeThread).not.toHaveBeenCalled();
     expect(codex.startThread).toHaveBeenCalledTimes(1);
@@ -1515,10 +1530,15 @@ describe("ConversationManager", () => {
       messageId: cardMessageId,
       raw: {}
     });
-    vi.mocked(lark.replyText).mockResolvedValueOnce({
-      messageId: "reply_thread_plan_1",
-      raw: { data: { thread_id: cardThreadId } }
-    });
+    vi.mocked(lark.replyText)
+      .mockResolvedValueOnce({
+        messageId: "reply_thread_plan_intro_1",
+        raw: { data: { thread_id: cardThreadId } }
+      })
+      .mockResolvedValueOnce({
+        messageId: "reply_thread_plan_1",
+        raw: { data: { thread_id: cardThreadId } }
+      });
     const manager = createManager({ repository, codex, lark });
 
     manager.submitIncoming(groupMessage("g_thread_plan", "/thread /plan investigate plan mode", {
@@ -1526,7 +1546,13 @@ describe("ConversationManager", () => {
     }));
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
-    expect(lark.replyText).toHaveBeenCalledWith(cardMessageId, "/plan investigate plan mode", { replyInThread: true });
+    expect(lark.replyText).toHaveBeenNthCalledWith(
+      1,
+      cardMessageId,
+      '话题由 <at user_id="ou_guest">Guest User</at> 创建',
+      { replyInThread: true }
+    );
+    expect(lark.replyText).toHaveBeenNthCalledWith(2, cardMessageId, "/plan investigate plan mode", { replyInThread: true });
     expect(lark.recallMessage).toHaveBeenCalledWith("g_thread_plan");
     expect(repository.updateCodexThreadMode).toHaveBeenCalledWith("group_oc_group", "thread_thread_plan", "plan");
     expect(codex.startTurn).toHaveBeenCalledWith(
@@ -1599,7 +1625,7 @@ describe("ConversationManager", () => {
     expect(lark.replyText).toHaveBeenNthCalledWith(
       1,
       "card_oc_group_1",
-      expect.stringContaining("从 Codex thread thread_group fork 出来"),
+      '话题由 <at user_id="ou_guest">Guest User</at> 创建，分叉自 thread_group',
       { replyInThread: true }
     );
     expect(lark.replyText).toHaveBeenNthCalledWith(
@@ -1692,7 +1718,7 @@ describe("ConversationManager", () => {
     expect(lark.replyText).toHaveBeenNthCalledWith(
       1,
       "card_oc_group_1",
-      expect.stringContaining("从 Codex thread thread_topic_source fork 出来"),
+      '话题由 <at user_id="ou_guest">Guest User</at> 创建，分叉自 thread_topic_source',
       { replyInThread: true }
     );
     expect(lark.recallMessage).toHaveBeenCalledWith("g_fork_nested");
@@ -1942,7 +1968,12 @@ describe("ConversationManager", () => {
       messageId: "card_oc_group_1",
       raw: { data: { thread_id: "topic_thread_1" } }
     });
-    vi.mocked(lark.replyText).mockResolvedValueOnce({ messageId: "reply_thread_1" });
+    vi.mocked(lark.replyText)
+      .mockResolvedValueOnce({
+        messageId: "reply_thread_intro_1",
+        raw: { data: { thread_id: "topic_thread_1" } }
+      })
+      .mockResolvedValueOnce({ messageId: "reply_thread_1" });
     const manager = createManager({ repository, codex, lark });
 
     manager.submitIncoming(groupMessage("g_thread_mention", "/thread hi @_user_1", {
@@ -1951,7 +1982,14 @@ describe("ConversationManager", () => {
     }));
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
-    expect(lark.replyText).toHaveBeenCalledWith(
+    expect(lark.replyText).toHaveBeenNthCalledWith(
+      1,
+      "card_oc_group_1",
+      '话题由 <at user_id="ou_guest">Guest User</at> 创建',
+      { replyInThread: true }
+    );
+    expect(lark.replyText).toHaveBeenNthCalledWith(
+      2,
       "card_oc_group_1",
       "hi <at user_id=\"ou_alice\">Alice</at>",
       { replyInThread: true }
@@ -1976,6 +2014,10 @@ describe("ConversationManager", () => {
       messageId: "card_oc_group_1",
       raw: { data: { thread_id: "topic_thread_1" } }
     });
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_thread_intro_1",
+      raw: { data: { thread_id: "topic_thread_1" } }
+    });
     vi.mocked(lark.replyPost).mockResolvedValueOnce({ messageId: "reply_post_1" });
     const manager = createManager({ repository, codex, lark });
 
@@ -1986,7 +2028,11 @@ describe("ConversationManager", () => {
     }));
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
-    expect(lark.replyText).not.toHaveBeenCalledWith("card_oc_group_1", expect.any(String));
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "card_oc_group_1",
+      '话题由 <at user_id="ou_guest">Guest User</at> 创建',
+      { replyInThread: true }
+    );
     expect(lark.replyPost).toHaveBeenCalledWith(
       "card_oc_group_1",
       [
@@ -2029,6 +2075,10 @@ describe("ConversationManager", () => {
       messageId: "card_oc_group_1",
       raw: { data: { thread_id: "topic_thread_1" } }
     });
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_thread_intro_1",
+      raw: { data: { thread_id: "topic_thread_1" } }
+    });
     vi.mocked(lark.replyPost).mockResolvedValueOnce({ messageId: "reply_post_image_1" });
     const manager = createManager({ repository, codex, lark, larkFiles });
 
@@ -2051,6 +2101,11 @@ describe("ConversationManager", () => {
       fileName: "img_1.jpg",
       contentType: "image/jpeg"
     });
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "card_oc_group_1",
+      '话题由 <at user_id="ou_guest">Guest User</at> 创建',
+      { replyInThread: true }
+    );
     expect(lark.replyPost).toHaveBeenCalledWith(
       "card_oc_group_1",
       [
@@ -2139,17 +2194,28 @@ describe("ConversationManager", () => {
       messageId: "card_dm_thread_1",
       raw: { data: { thread_id: "dm_thread_1" } }
     });
-    vi.mocked(lark.replyText).mockResolvedValueOnce({
-      messageId: "reply_dm_thread_1",
-      raw: { data: { thread_id: "dm_thread_1" } }
-    });
+    vi.mocked(lark.replyText)
+      .mockResolvedValueOnce({
+        messageId: "reply_dm_thread_intro_1",
+        raw: { data: { thread_id: "dm_thread_1" } }
+      })
+      .mockResolvedValueOnce({
+        messageId: "reply_dm_thread_1",
+        raw: { data: { thread_id: "dm_thread_1" } }
+      });
     const manager = createManager({ repository, codex, lark });
 
     manager.submitIncoming(message("m_thread", "/thread hello", { senderOpenId: "ou_guest" }));
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     expect(lark.replyCard).toHaveBeenCalledWith("m_thread", expect.any(Object), { replyInThread: true });
-    expect(lark.replyText).toHaveBeenCalledWith("card_dm_thread_1", "hello", { replyInThread: true });
+    expect(lark.replyText).toHaveBeenNthCalledWith(
+      1,
+      "card_dm_thread_1",
+      '话题由 <at user_id="ou_guest">Guest User</at> 创建',
+      { replyInThread: true }
+    );
+    expect(lark.replyText).toHaveBeenNthCalledWith(2, "card_dm_thread_1", "hello", { replyInThread: true });
     expect(lark.sendCardToChatId).not.toHaveBeenCalled();
     expect(lark.recallMessage).not.toHaveBeenCalled();
     expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({

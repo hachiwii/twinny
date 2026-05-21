@@ -1789,10 +1789,11 @@ export class ConversationManager {
       return;
     }
 
+    const intro = await this.replyThreadTextMessage(topic.cardMessageId, formatTopicCreatedMessage(message));
+    topic = await this.updateSessionTopicThreadId(context, topic, intro.larkThreadId);
+
     const threadText = text.trim();
     if (!threadText) {
-      const reply = await this.replyThreadTextMessage(topic.cardMessageId, "新话题已创建");
-      await this.updateSessionTopicThreadId(context, topic, reply.larkThreadId);
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
@@ -1801,7 +1802,6 @@ export class ConversationManager {
     if (isGroupConversationType(context.type)) {
       await this.recallMessageBestEffort(message.messageId, "failed to recall original /thread command after proxy reply");
     }
-    topic = await this.updateSessionTopicThreadId(context, topic, proxy.larkThreadId);
     const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
     const proxyMessage = createThreadReplyMessage(context, message, proxy.messageId, topic.larkThreadId, proxy.text);
     const proxyState = this.getState(proxyContext.stateKey);
@@ -1894,7 +1894,7 @@ export class ConversationManager {
 
     const intro = await this.replyThreadTextMessage(
       topic.cardMessageId,
-      formatForkIntroMessage(forkedAt, sourceThread.threadId)
+      formatTopicCreatedMessage(message, { forkedFromThreadId: sourceThread.threadId })
     );
     topic = await this.updateSessionTopicThreadId(context, topic, intro.larkThreadId);
 
@@ -1908,7 +1908,6 @@ export class ConversationManager {
     if (isGroupConversationType(context.type)) {
       await this.recallMessageBestEffort(message.messageId, "failed to recall original /fork command after proxy reply");
     }
-    topic = await this.updateSessionTopicThreadId(context, topic, proxy.larkThreadId);
     const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
     const proxyMessage = createThreadReplyMessage(context, message, proxy.messageId, topic.larkThreadId, proxy.text);
     const proxyState = this.getState(proxyContext.stateKey);
@@ -6388,23 +6387,14 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
   return lines.join("\n");
 }
 
-function formatForkIntroMessage(forkedAt: number, sourceThreadId: string): string {
-  return `该 Thread 于 ${formatLocalTimestamp(forkedAt)} 从 Codex thread ${sourceThreadId} fork 出来。`;
-}
-
-function formatLocalTimestamp(timestamp: number): string {
-  if (!Number.isFinite(timestamp) || timestamp <= 0) {
-    return "未知时间";
-  }
-  const date = new Date(timestamp);
-  return [
-    `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`,
-    `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`
-  ].join(" ");
-}
-
-function pad2(value: number): string {
-  return String(value).padStart(2, "0");
+function formatTopicCreatedMessage(
+  message: IncomingLarkMessage,
+  options: { forkedFromThreadId?: string } = {}
+): string {
+  const creatorName = escapeLarkText(nonEmptyString(message.senderName) ?? message.senderOpenId);
+  const creator = `<at user_id="${escapeLarkTextAttribute(message.senderOpenId)}">${creatorName}</at>`;
+  const forkSuffix = options.forkedFromThreadId ? `，分叉自 ${escapeLarkText(options.forkedFromThreadId)}` : "";
+  return `话题由 ${creator} 创建${forkSuffix}`;
 }
 
 function classifyInitialRoute(
