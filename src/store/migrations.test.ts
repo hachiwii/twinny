@@ -130,7 +130,9 @@ describe("store migrations", () => {
         { name: "completed_at", type: "INTEGER", notnull: 0, pk: 0 },
         { name: "failed_at", type: "INTEGER", notnull: 0, pk: 0 },
         { name: "cleared_at", type: "INTEGER", notnull: 0, pk: 0 },
-        { name: "raw_event_json", type: "TEXT", notnull: 0, pk: 0 }
+        { name: "raw_event_json", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "side_id", type: "INTEGER", notnull: 0, pk: 0 },
+        { name: "agent_card_message_id", type: "TEXT", notnull: 0, pk: 0 }
       ]);
       const messageIndexes = db
         .prepare<[], SqliteNameRow>(

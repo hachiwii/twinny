@@ -59,6 +59,8 @@ export interface RenderTwinnyAgentCardOptions {
   runId: number;
   iconImageKey?: string;
   mode?: CodexThreadMode;
+  subtitle?: string;
+  hideQueueControls?: boolean;
   waiting?: TwinnyAgentCardWaiting;
   finalElements?: LarkCardElement[];
   mentionOpenIds?: string[];
@@ -381,7 +383,9 @@ function bodyElements(options: RenderTwinnyAgentCardOptions, parsedPlan?: Parsed
   }
   if (options.status === "working") {
     elements.push(buttonsElement(options));
-    elements.push(queueModeHintElement(options));
+    if (!options.hideQueueControls) {
+      elements.push(queueModeHintElement(options));
+    }
   }
   return elements;
 }
@@ -462,14 +466,18 @@ function buttonsElement(options: RenderTwinnyAgentCardOptions): LarkCardElement 
       action: "next",
       stateKey: options.stateKey,
       runId: options.runId
-    }),
-    buttonElement(options.queueNextMessage ? "关闭排队" : "开启排队", queueButtonType, {
-      twinny: true,
-      action: "queue",
-      stateKey: options.stateKey,
-      runId: options.runId
     })
   ];
+  if (!options.hideQueueControls) {
+    buttons.push(
+      buttonElement(options.queueNextMessage ? "关闭排队" : "开启排队", queueButtonType, {
+        twinny: true,
+        action: "queue",
+        stateKey: options.stateKey,
+        runId: options.runId
+      })
+    );
+  }
   return {
     tag: "column_set",
     horizontal_spacing: "8px",
@@ -913,6 +921,9 @@ function cardHeaderSubtitle(
   header: { title: string; subtitle?: string },
   parsedPlan: ParsedPlanMarkdown | undefined
 ): string {
+  if (options.subtitle) {
+    return options.subtitle;
+  }
   if (options.status === "waiting_input" && options.waiting?.kind === "request_user_input") {
     const count = options.waiting.questions.length;
     return `${count} 个问题待回答`;

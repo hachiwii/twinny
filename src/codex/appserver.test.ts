@@ -79,6 +79,18 @@ describe("CodexAppServer", () => {
         thread: { id: "thread-forked", forkedFromId: "thread-existing" }
       });
       await expect(
+        server.forkThread("thread-existing", workspace, {
+          ephemeral: true,
+          developerInstructions: "side instructions",
+          model: "gpt-5.5",
+          effort: "medium"
+        })
+      ).resolves.toMatchObject({
+        thread: { id: "thread-forked", forkedFromId: "thread-existing" }
+      });
+      await expect(server.injectThreadItems("thread-forked", [{ type: "message" }])).resolves.toBeUndefined();
+      await expect(server.unsubscribeThread("thread-forked")).resolves.toBeUndefined();
+      await expect(
         server.startTurn({
           threadId: "thread-existing",
           text: "hello from lark",
@@ -138,6 +150,25 @@ describe("CodexAppServer", () => {
           persistExtendedHistory: true,
           excludeTurns: true
         }
+      });
+      expect(sent.filter((message) => message.method === "thread/fork")[1]).toMatchObject({
+        params: {
+          threadId: "thread-existing",
+          cwd: workspace,
+          approvalPolicy: "never",
+          persistExtendedHistory: false,
+          excludeTurns: true,
+          ephemeral: true,
+          developerInstructions: "side instructions",
+          model: "gpt-5.5",
+          config: { model_reasoning_effort: "medium" }
+        }
+      });
+      expect(sent.find((message) => message.method === "thread/inject_items")).toMatchObject({
+        params: { threadId: "thread-forked", items: [{ type: "message" }] }
+      });
+      expect(sent.find((message) => message.method === "thread/unsubscribe")).toMatchObject({
+        params: { threadId: "thread-forked" }
       });
       expect(sent.find((message) => message.method === "turn/start")).toMatchObject({
         params: {
@@ -300,6 +331,14 @@ rl.on("line", (line) => {
   }
   if (message.method === "thread/fork") {
     send({ id: message.id, result: { thread: { id: "thread-forked", forkedFromId: message.params.threadId } } });
+    return;
+  }
+  if (message.method === "thread/inject_items") {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === "thread/unsubscribe") {
+    send({ id: message.id, result: { status: "unsubscribed" } });
     return;
   }
   if (message.method === "turn/start") {

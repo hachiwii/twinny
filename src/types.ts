@@ -26,6 +26,7 @@ export interface CodexAgentMessage {
 
 export type LarkMessageRouteKind =
   | "message"
+  | "side"
   | "steered_message"
   | "queued_message"
   | "control_message"
@@ -179,6 +180,8 @@ export interface LarkMessageRecord {
   completedAt?: number;
   failedAt?: number;
   clearedAt?: number;
+  sideId?: number;
+  agentCardMessageId?: string;
   rawEventJson?: string;
 }
 

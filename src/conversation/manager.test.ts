@@ -1709,6 +1709,227 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("runs /side as an ephemeral default-mode turn with a numbered temporary card", async () => {
+    const sideTurn = deferred<CodexTurnResult>();
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_1",
+          conversationKey: "p2p_ou_guest",
+          role: "guest",
+          mode: "plan"
+        })
+      ]
+    });
+    const codex = createCodex({
+      forkThread: vi.fn(async () => ({ threadId: "thread_1_side_1" })),
+      startTurn: vi.fn((params) => {
+        void params.onTurnStarted?.("side_turn_1");
+        return sideTurn.promise;
+      })
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m_side", "/side /plan inspect this"));
+
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    expect(codex.forkThread).toHaveBeenCalledWith({
+      role: "guest",
+      threadId: "thread_1",
+      cwd: "/tmp/twinny/workspaces/p2p_ou_guest",
+      approvalPolicy: "never",
+      ephemeral: true,
+      developerInstructions: expect.stringContaining("You are in a side conversation"),
+      model: undefined,
+      effort: undefined
+    });
+    expect(codex.injectThreadItems).toHaveBeenCalledWith({
+      role: "guest",
+      threadId: "thread_1_side_1",
+      items: [
+        expect.objectContaining({
+          type: "message",
+          role: "user",
+          content: [
+            expect.objectContaining({
+              type: "input_text",
+              text: expect.stringContaining("Side conversation boundary")
+            })
+          ]
+        })
+      ]
+    });
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "guest",
+        threadId: "thread_1_side_1",
+        mode: "default",
+        input: wrappedMessage("/plan inspect this", "m_side")
+      })
+    );
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "m_side",
+        routeKind: "side",
+        status: "processing",
+        text: "/plan inspect this"
+      })
+    );
+    expect(repository.updateLarkMessageSideMetadata).toHaveBeenCalledWith("m_side", { sideId: 1 });
+    expect(repository.updateLarkMessageSideMetadata).toHaveBeenCalledWith("m_side", {
+      agentCardMessageId: "card_m_side_1"
+    });
+    expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m_side"], {
+      conversationKey: "p2p_ou_guest",
+      codexThreadId: "thread_1_side_1"
+    });
+    expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m_side"], {
+      conversationKey: "p2p_ou_guest",
+      codexThreadId: "thread_1_side_1",
+      codexTurnId: "side_turn_1"
+    });
+    expect(repository.upsertCodexThread).not.toHaveBeenCalled();
+    expect(repository.updateCodexThreadMode).not.toHaveBeenCalled();
+    expect(repository.updateCodexThreadTokenUsage).not.toHaveBeenCalled();
+
+    const workingCard = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
+    expect(workingCard).toMatchObject({
+      header: {
+        subtitle: { tag: "plain_text", content: "临时会话 [1]" }
+      }
+    });
+    const serializedCard = JSON.stringify(workingCard);
+    expect(serializedCard).toContain("打断");
+    expect(serializedCard).not.toContain("开启排队");
+    expect(serializedCard).not.toContain("排队模式");
+
+    sideTurn.resolve(completed("thread_1_side_1", "side_turn_1"));
+    await waitForExpect(() => expect(codex.unsubscribeThread).toHaveBeenCalledWith({
+      role: "guest",
+      threadId: "thread_1_side_1"
+    }));
+  });
+
+  it("allocates the smallest free side id and releases it after completion", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    let forkCount = 0;
+    vi.mocked(codex.forkThread).mockImplementation(async ({ threadId }) => ({
+      threadId: `${threadId}_side_${++forkCount}`
+    }));
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m_side_1", "/side first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m_side_2", "/btw second"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    expect(repository.updateLarkMessageSideMetadata).toHaveBeenCalledWith("m_side_1", { sideId: 1 });
+    expect(repository.updateLarkMessageSideMetadata).toHaveBeenCalledWith("m_side_2", { sideId: 2 });
+
+    turns[0]!.resolve(completed("thread_1_side_1", "turn_1"));
+    await waitForExpect(() => expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m_side_1"]));
+    await waitForExpect(() => expect(codex.unsubscribeThread).toHaveBeenCalledWith({
+      role: "guest",
+      threadId: "thread_1_side_1"
+    }));
+
+    manager.submitIncoming(message("m_side_3", "/side third"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    expect(repository.updateLarkMessageSideMetadata).toHaveBeenCalledWith("m_side_3", { sideId: 1 });
+
+    turns[1]!.resolve(completed("thread_1_side_2", "turn_2"));
+    turns[2]!.resolve(completed("thread_1_side_3", "turn_3"));
+  });
+
+  it("stops a numbered side turn without interrupting the main turn", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    vi.mocked(codex.forkThread).mockResolvedValue({ threadId: "thread_1_side" });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m_main", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m_side", "/side inspect"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    manager.submitIncoming(message("m_stop_side", "/stop 1"));
+
+    await waitForExpect(() =>
+      expect(codex.interruptTurn).toHaveBeenCalledWith(expect.objectContaining({
+        role: "guest",
+        threadId: "thread_1_side",
+        turnId: "turn_2"
+      }))
+    );
+    expect(codex.interruptTurn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "thread_1", turnId: "turn_1" })
+    );
+    expect(repository.markLarkMessagesInterrupted).toHaveBeenCalledWith(["m_side"]);
+    expect(repository.markLarkMessagesInterrupted).not.toHaveBeenCalledWith(["m_main"]);
+    expect(lark.replyText).toHaveBeenCalledWith("m_stop_side", "已停止临时会话 [1]。");
+
+    turns[1]!.resolve(completed("thread_1_side", "turn_2", "interrupted"));
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+  });
+
+  it("stops every running side turn on /stop all", async () => {
+    const { repository } = createRepository(groupConversationRecord({ role: "guest" }));
+    const { codex, turns } = createDeferredCodex();
+    let forkCount = 0;
+    vi.mocked(codex.forkThread).mockImplementation(async ({ threadId }) => ({
+      threadId: `${threadId}_side_${++forkCount}`
+    }));
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_side_1", "/side first", { senderOpenId: "ou_guest" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("g_side_2", "/side second", { senderOpenId: "ou_other" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    manager.submitIncoming(groupMessage("g_stop_all", "/stop all", { senderOpenId: "ou_third" }));
+
+    await waitForExpect(() => expect(codex.interruptTurn).toHaveBeenCalledTimes(2));
+    expect(codex.interruptTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "guest", threadId: "thread_group_side_1", turnId: "turn_1" })
+    );
+    expect(codex.interruptTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "guest", threadId: "thread_group_side_2", turnId: "turn_2" })
+    );
+    expect(repository.markLarkMessagesInterrupted).toHaveBeenCalledWith(["g_side_1"]);
+    expect(repository.markLarkMessagesInterrupted).toHaveBeenCalledWith(["g_side_2"]);
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "g_stop_all",
+      "已停止当前任务，清空 0 条待处理消息，停止 2 个临时会话。当前没有正在运行的主任务。"
+    );
+
+    turns[0]!.resolve(completed("thread_group_side_1", "turn_1", "interrupted"));
+    turns[1]!.resolve(completed("thread_group_side_2", "turn_2", "interrupted"));
+  });
+
+  it("rejects /side nested under /thread or /fork", async () => {
+    const { repository } = createRepository(groupConversationRecord({ role: "owner" }));
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_thread_side", "/thread /side no"));
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith("g_thread_side", "side 只能作为最外层指令使用。")
+    );
+
+    manager.submitIncoming(groupMessage("g_fork_side", "/fork /side no"));
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith("g_fork_side", "side 只能作为最外层指令使用。")
+    );
+    expect(codex.startThread).not.toHaveBeenCalled();
+    expect(codex.forkThread).not.toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+  });
+
   it("rebuilds /thread text replies with send-side at mentions", async () => {
     const row = groupConversationRecord({ role: "owner", responseMode: "at" });
     const { repository } = createRepository(row);
@@ -4715,6 +4936,74 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("fails processing side messages on startup recovery and patches the side card", async () => {
+    const record = larkMessageRecord({
+      larkMessageId: "m_side_recover",
+      routeKind: "side",
+      status: "processing",
+      text: "stale side",
+      codexThreadId: "thread_side_recover",
+      codexTurnId: "turn_side_recover",
+      sideId: 1,
+      agentCardMessageId: "card_side_recover"
+    });
+    const { repository } = createRepository(conversationRecord(), { larkMessages: [record] });
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    await manager.recoverUnfinishedMessages();
+
+    expect(repository.markLarkMessagesFailed).toHaveBeenCalledWith(["m_side_recover"]);
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(lark.patchCard).toHaveBeenCalledWith(
+      "card_side_recover",
+      expect.objectContaining({
+        header: expect.objectContaining({
+          template: "red",
+          title: { tag: "plain_text", content: "发生错误" },
+          subtitle: { tag: "plain_text", content: "临时会话 [1]" }
+        })
+      })
+    );
+    const failedCard = vi.mocked(lark.patchCard).mock.calls[0]![1] as Record<string, unknown>;
+    expect(JSON.stringify(failedCard)).toContain("Twinny 服务退出");
+  });
+
+  it("fails running side turns during shutdown with the service-exit error", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    vi.mocked(codex.forkThread).mockResolvedValue({ threadId: "thread_1_side" });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m_side_shutdown", "/side inspect"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    await manager.shutdown();
+
+    expect(repository.markLarkMessagesFailed).toHaveBeenCalledWith(["m_side_shutdown"]);
+    expect(codex.interruptTurn).toHaveBeenCalledWith(expect.objectContaining({
+      role: "guest",
+      threadId: "thread_1_side",
+      turnId: "turn_1"
+    }));
+    expect(lark.patchCard).toHaveBeenCalledWith(
+      "card_m_side_shutdown_1",
+      expect.objectContaining({
+        header: expect.objectContaining({
+          template: "red",
+          title: { tag: "plain_text", content: "发生错误" },
+          subtitle: { tag: "plain_text", content: "临时会话 [1]" }
+        })
+      })
+    );
+    const failedCard = vi.mocked(lark.patchCard).mock.calls[0]![1] as Record<string, unknown>;
+    expect(JSON.stringify(failedCard)).toContain("Twinny 服务退出");
+
+    turns[0]!.resolve(completed("thread_1_side", "turn_1", "interrupted"));
+  });
+
   it("rejects new submissions during shutdown without clearing unfinished message state", async () => {
     const { codex } = createDeferredCodex();
     const lark = createLarkResponder();
@@ -4915,6 +5204,8 @@ function createCodex(overrides: Partial<CodexBridge> = {}): CodexBridge {
     startThread: vi.fn(async () => ({ threadId: "thread_1" })),
     resumeThread: vi.fn(async ({ threadId }) => ({ threadId })),
     forkThread: vi.fn(async ({ threadId }) => ({ threadId: `${threadId}_fork` })),
+    injectThreadItems: vi.fn(async () => undefined),
+    unsubscribeThread: vi.fn(async () => undefined),
     startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
       await onTurnStarted?.("turn_1");
       return completed(threadId, "turn_1");
@@ -5191,7 +5482,7 @@ function createRepository(initial?: ConversationRecord, options: {
       getCodexThreadWorkStats: vi.fn((codexThreadId) => {
         const turns = new Map<string, { startedAt: number; terminalAt?: number }>();
         for (const message of larkMessages.values()) {
-          if (message.codexThreadId !== codexThreadId || !message.codexTurnId || !message.processingStartedAt) {
+          if (message.routeKind === "side" || message.codexThreadId !== codexThreadId || !message.codexTurnId || !message.processingStartedAt) {
             continue;
           }
           const existing = turns.get(message.codexTurnId);
@@ -5225,6 +5516,8 @@ function createRepository(initial?: ConversationRecord, options: {
           status: input.status,
           text: input.text,
           larkCreateTime: input.larkCreateTime,
+          sideId: input.sideId,
+          agentCardMessageId: input.agentCardMessageId,
           rawEventJson: input.rawEventJson
         });
         if (input.larkMessageId) {
@@ -5241,6 +5534,16 @@ function createRepository(initial?: ConversationRecord, options: {
           return false;
         }
         existing.status = "recalled";
+        existing.updatedAt = Date.now();
+        return true;
+      }),
+      updateLarkMessageSideMetadata: vi.fn((larkMessageId, update) => {
+        const existing = larkMessages.get(larkMessageId);
+        if (!existing) {
+          return false;
+        }
+        existing.sideId = update.sideId ?? existing.sideId;
+        existing.agentCardMessageId = update.agentCardMessageId ?? existing.agentCardMessageId;
         existing.updatedAt = Date.now();
         return true;
       }),
@@ -5270,10 +5573,50 @@ function createRepository(initial?: ConversationRecord, options: {
         }
       }),
       markLarkMessagesSteered: vi.fn(),
-      markLarkMessagesCompleted: vi.fn(),
-      markLarkMessagesFailed: vi.fn(),
-      markLarkMessagesInterrupted: vi.fn(),
-      markLarkMessagesCleared: vi.fn()
+      markLarkMessagesCompleted: vi.fn((messageIds) => {
+        const now = Date.now();
+        for (const messageId of messageIds) {
+          const existing = larkMessages.get(messageId);
+          if (existing) {
+            existing.status = "completed";
+            existing.completedAt = existing.completedAt ?? now;
+            existing.updatedAt = now;
+          }
+        }
+      }),
+      markLarkMessagesFailed: vi.fn((messageIds) => {
+        const now = Date.now();
+        for (const messageId of messageIds) {
+          const existing = larkMessages.get(messageId);
+          if (existing) {
+            existing.status = "failed";
+            existing.failedAt = existing.failedAt ?? now;
+            existing.updatedAt = now;
+          }
+        }
+      }),
+      markLarkMessagesInterrupted: vi.fn((messageIds) => {
+        const now = Date.now();
+        for (const messageId of messageIds) {
+          const existing = larkMessages.get(messageId);
+          if (existing) {
+            existing.status = "interrupted";
+            existing.failedAt = existing.failedAt ?? now;
+            existing.updatedAt = now;
+          }
+        }
+      }),
+      markLarkMessagesCleared: vi.fn((messageIds) => {
+        const now = Date.now();
+        for (const messageId of messageIds) {
+          const existing = larkMessages.get(messageId);
+          if (existing) {
+            existing.status = "cleared";
+            existing.clearedAt = existing.clearedAt ?? now;
+            existing.updatedAt = now;
+          }
+        }
+      })
     }
   };
 }

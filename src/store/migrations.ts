@@ -15,7 +15,7 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 13;
+export const currentStoreSchemaVersion = 14;
 
 const initialMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const threadRolloutMigrationFile = fileURLToPath(new URL("../../migrations/0002_codex_thread_rollout.sql", import.meta.url));
@@ -30,6 +30,7 @@ const larkMessageEventDedupeMigrationFile = fileURLToPath(new URL("../../migrati
 const removeProjectConversationTypeMigrationFile = fileURLToPath(new URL("../../migrations/0011_remove_project_conversation_type.sql", import.meta.url));
 const threadPlanStatusMigrationFile = fileURLToPath(new URL("../../migrations/0012_thread_plan_status.sql", import.meta.url));
 const removeConversationChatModeMigrationFile = fileURLToPath(new URL("../../migrations/0013_remove_conversation_chat_mode.sql", import.meta.url));
+const sideMessagesMigrationFile = fileURLToPath(new URL("../../migrations/0014_side_messages.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -97,6 +98,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 13,
       name: "0013_remove_conversation_chat_mode",
       sql: fs.readFileSync(removeConversationChatModeMigrationFile, "utf8")
+    },
+    {
+      version: 14,
+      name: "0014_side_messages",
+      sql: fs.readFileSync(sideMessagesMigrationFile, "utf8")
     }
   ];
 }
@@ -234,6 +240,10 @@ function ensureThreadsSummarySchemaConsistency(db: Database.Database): void {
 
   if (larkMessagesColumns.has("codex_thread_id") && !larkMessagesColumns.has("thread_id")) {
     db.exec("ALTER TABLE lark_messages RENAME COLUMN codex_thread_id TO thread_id");
+  }
+  if (tableExists(db, "lark_messages") && getStoreSchemaVersion(db) >= 14) {
+    ensureTableColumn(db, "lark_messages", "side_id", "side_id INTEGER");
+    ensureTableColumn(db, "lark_messages", "agent_card_message_id", "agent_card_message_id TEXT");
   }
 
   ensureTableColumn(db, threadsTable, "creator_open_id", "creator_open_id TEXT");

@@ -6,8 +6,10 @@ import type { RoleName } from "../types.js";
 import { CodexProtocolClient, createInitializeParams, type InitializeResponse } from "./protocol.js";
 import {
   forkCodexThread,
+  injectCodexThreadItems,
   resumeCodexThread,
   startCodexThread,
+  unsubscribeCodexThread,
   type ThreadForkResponse,
   type ThreadResumeResponse,
   type ThreadStartResponse
@@ -152,9 +154,21 @@ export class CodexAppServer extends EventEmitter {
     return resumeCodexThread(this.protocol, threadId, { cwd });
   }
 
-  async forkThread(threadId: string, cwd: string): Promise<ThreadForkResponse> {
+  async forkThread(
+    threadId: string,
+    cwd: string,
+    options: { ephemeral?: boolean; developerInstructions?: string; model?: string; effort?: string } = {}
+  ): Promise<ThreadForkResponse> {
     await this.prepareThreadWorkspace(cwd);
-    return forkCodexThread(this.protocol, threadId, { cwd });
+    return forkCodexThread(this.protocol, threadId, { cwd, ...options });
+  }
+
+  async injectThreadItems(threadId: string, items: unknown[]): Promise<void> {
+    await injectCodexThreadItems(this.protocol, { threadId, items });
+  }
+
+  async unsubscribeThread(threadId: string): Promise<void> {
+    await unsubscribeCodexThread(this.protocol, threadId);
   }
 
   async startTurn(options: TurnStartOptions): Promise<import("../types.js").CodexTurnResult> {

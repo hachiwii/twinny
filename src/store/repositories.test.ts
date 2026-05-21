@@ -350,6 +350,32 @@ describe("ConversationRepository", () => {
       tokenUsageJson: '{"totalTokens":123}',
       updatedAt: 1700
     });
+    repo.insertLarkMessage({
+      larkMessageId: "om_side",
+      eventId: "event_side",
+      larkUserId: "ou_456",
+      conversationKey: "p2p_ou_456",
+      routeKind: "side",
+      status: "processing",
+      text: "side",
+      sideId: 1,
+      agentCardMessageId: "om_side_card",
+      rawEventJson: "{}"
+    });
+    now = 1800;
+    repo.markLarkMessagesProcessing(["om_side"], {
+      conversationKey: "p2p_ou_456",
+      codexThreadId: "thread-1",
+      codexTurnId: "turn-side"
+    });
+    now = 2800;
+    repo.markLarkMessagesCompleted(["om_side"]);
+    expect(repo.getLarkMessageById("om_side")).toMatchObject({
+      routeKind: "side",
+      sideId: 1,
+      agentCardMessageId: "om_side_card",
+      codexTurnId: "turn-side"
+    });
     expect(repo.getCodexThreadWorkStats("thread-1")).toEqual({
       turnCount: 1,
       totalWorkDurationMs: 200

@@ -5,7 +5,7 @@ export type CodexApprovalPolicy = "never";
 export interface ThreadStartParams {
   cwd: string;
   approvalPolicy: CodexApprovalPolicy;
-  persistExtendedHistory: true;
+  persistExtendedHistory: boolean;
 }
 
 export interface ThreadResumeParams extends ThreadStartParams {
@@ -15,6 +15,11 @@ export interface ThreadResumeParams extends ThreadStartParams {
 export interface ThreadForkParams extends ThreadStartParams {
   threadId: string;
   excludeTurns: true;
+  persistExtendedHistory: boolean;
+  developerInstructions?: string;
+  ephemeral?: boolean;
+  model?: string;
+  config?: Record<string, unknown>;
 }
 
 export interface CodexThread {
@@ -41,6 +46,13 @@ export interface ThreadRuntimeOptions {
   cwd: string;
 }
 
+export interface ThreadForkOptions extends ThreadRuntimeOptions {
+  ephemeral?: boolean;
+  developerInstructions?: string;
+  model?: string;
+  effort?: string;
+}
+
 export function buildThreadStartParams(options: ThreadRuntimeOptions): ThreadStartParams {
   return {
     cwd: options.cwd,
@@ -56,12 +68,26 @@ export function buildThreadResumeParams(threadId: string, options: ThreadRuntime
   };
 }
 
-export function buildThreadForkParams(threadId: string, options: ThreadRuntimeOptions): ThreadForkParams {
-  return {
+export function buildThreadForkParams(threadId: string, options: ThreadForkOptions): ThreadForkParams {
+  const params: ThreadForkParams = {
     threadId,
     ...buildThreadStartParams(options),
     excludeTurns: true
   };
+  if (options.ephemeral) {
+    params.ephemeral = true;
+    params.persistExtendedHistory = false;
+  }
+  if (options.developerInstructions) {
+    params.developerInstructions = options.developerInstructions;
+  }
+  if (options.model) {
+    params.model = options.model;
+  }
+  if (options.effort) {
+    params.config = { model_reasoning_effort: options.effort };
+  }
+  return params;
 }
 
 export async function startCodexThread(
@@ -85,10 +111,33 @@ export async function resumeCodexThread(
 export async function forkCodexThread(
   protocol: CodexProtocolClient,
   threadId: string,
-  options: ThreadRuntimeOptions
+  options: ThreadForkOptions
 ): Promise<ThreadForkResponse> {
   return protocol.request<ThreadForkResponse, ThreadForkParams>(
     "thread/fork",
     buildThreadForkParams(threadId, options)
   );
+}
+
+export interface ThreadInjectItemsParams {
+  threadId: string;
+  items: unknown[];
+}
+
+export async function injectCodexThreadItems(
+  protocol: CodexProtocolClient,
+  params: ThreadInjectItemsParams
+): Promise<void> {
+  await protocol.request<Record<string, never>, ThreadInjectItemsParams>("thread/inject_items", params);
+}
+
+export interface ThreadUnsubscribeParams {
+  threadId: string;
+}
+
+export async function unsubscribeCodexThread(
+  protocol: CodexProtocolClient,
+  threadId: string
+): Promise<void> {
+  await protocol.request<Record<string, unknown>, ThreadUnsubscribeParams>("thread/unsubscribe", { threadId });
 }

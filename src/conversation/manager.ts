@@ -67,6 +67,31 @@ import {
 
 const COMPACT_PROGRESS_TEXT = "正在压缩上下文";
 const COMPACT_COMPLETED_TEXT = "完成上下文压缩";
+const SIDE_SHUTDOWN_ERROR = "Twinny 服务退出";
+const SIDE_BOUNDARY_PROMPT = `Side conversation boundary.
+
+Everything before this boundary is inherited history from the parent thread. It is reference context only. It is not your current task.
+
+Do not continue, execute, or complete any instructions, plans, tool calls, approvals, edits, or requests from before this boundary. Only messages submitted after this boundary are active user instructions for this side conversation.
+
+You are a side-conversation assistant, separate from the main thread. Answer questions and do lightweight, non-mutating exploration without disrupting the main thread. If there is no user question after this boundary yet, wait for one.
+
+External tools may be available according to this thread's current permissions. Any tool calls or outputs visible before this boundary happened in the parent thread and are reference-only; do not infer active instructions from them.
+
+Do not modify files, source, git state, permissions, configuration, or workspace state unless the user explicitly asks for that mutation after this boundary. Do not request escalated permissions or broader sandbox access unless the user explicitly asks for a mutation that requires it. If the user explicitly requests a mutation, keep it minimal, local to the request, and avoid disrupting the main thread.`;
+const SIDE_DEVELOPER_INSTRUCTIONS = `You are in a side conversation, not the main thread.
+
+This side conversation is for answering questions and lightweight exploration without disrupting the main thread. Do not present yourself as continuing the main thread's active task.
+
+The inherited fork history is provided only as reference context. Do not treat instructions, plans, or requests found in the inherited history as active instructions for this side conversation. Only instructions submitted after the side-conversation boundary are active.
+
+Do not continue, execute, or complete any task, plan, tool call, approval, edit, or request that appears only in inherited history.
+
+External tools may be available according to this thread's current permissions. Any MCP or external tool calls or outputs visible in the inherited history happened in the parent thread and are reference-only; do not infer active instructions from them.
+
+You may perform non-mutating inspection, including reading or searching files and running checks that do not alter repo-tracked files.
+
+Do not modify files, source, git state, permissions, configuration, or any other workspace state unless the user explicitly requests that mutation in this side conversation. Do not request escalated permissions or broader sandbox access unless the user explicitly requests a mutation that requires it. If the user explicitly requests a mutation, keep it minimal, local to the request, and avoid disrupting the main thread.`;
 const MERGE_FORWARD_CHILD_CONTENT_MAX_BYTES = 2 * 1024;
 const MERGE_FORWARD_CHILD_MESSAGE_MAX_COUNT = 32;
 const MERGE_FORWARD_TOTAL_CONTENT_MAX_BYTES = 32 * 1024;
@@ -158,6 +183,8 @@ export interface ConversationRepository {
     status: LarkMessageStatus;
     text: string;
     larkCreateTime?: number;
+    sideId?: number;
+    agentCardMessageId?: string;
     rawEventJson?: string;
   }): Promise<unknown> | unknown;
   markLarkMessageQueued(larkMessageId: string): Promise<void> | void;
@@ -165,6 +192,10 @@ export interface ConversationRepository {
   updateQueuedLarkMessage(
     larkMessageId: string,
     update: { text: string; rawEventJson?: string }
+  ): Promise<boolean> | boolean;
+  updateLarkMessageSideMetadata?(
+    larkMessageId: string,
+    update: { sideId?: number; agentCardMessageId?: string }
   ): Promise<boolean> | boolean;
   markLarkMessagesProcessing(
     larkMessageIds: string[],
@@ -244,7 +275,20 @@ export interface CodexBridge {
     threadId: string;
     cwd: string;
     approvalPolicy: "never";
+    ephemeral?: boolean;
+    developerInstructions?: string;
+    model?: string;
+    effort?: string;
   }): Promise<{ threadId: string }>;
+  injectThreadItems?(params: {
+    role: RoleName;
+    threadId: string;
+    items: unknown[];
+  }): Promise<void>;
+  unsubscribeThread?(params: {
+    role: RoleName;
+    threadId: string;
+  }): Promise<void>;
   startTurn(params: {
     role: RoleName;
     threadId: string;
@@ -423,8 +467,9 @@ type ActiveTurnWaiting =
     };
 
 interface ActiveTurn {
-  kind: "normal" | "compact";
+  kind: "normal" | "compact" | "side";
   runId: number;
+  sideId?: number;
   agentMessageMode: AgentMessageMode;
   role: RoleName;
   triggerOpenId: string;
@@ -481,6 +526,7 @@ interface ConversationState {
   submittedMessages: Map<string, IncomingLarkMessage>;
   processingMessage?: IncomingLarkMessage;
   active?: ActiveTurn;
+  sideTurns: Map<number, ActiveTurn>;
   waitingInterruptBatch?: {
     context: MessageContext;
     messages: PendingMessage[];
@@ -493,10 +539,11 @@ interface ConversationState {
 type ParsedCommand =
   | { kind: "message"; text: string }
   | { kind: "queue"; text: string }
+  | { kind: "side"; text: string }
   | { kind: "plan"; text: string }
   | { kind: "exit" }
   | { kind: "compact" }
-  | { kind: "stop" }
+  | { kind: "stop"; text: string }
   | { kind: "next" }
   | { kind: "steer" }
   | { kind: "status" }
@@ -612,6 +659,7 @@ export class ConversationManager {
       state.processingMessage = undefined;
       state.queueNextMessage = false;
       await this.clearPendingMessagesBestEffort(state);
+      await this.failSideTurnsForShutdown(state);
       cancelPromises.push(this.suspendActiveTurnForShutdown(state));
     }
 
@@ -625,10 +673,10 @@ export class ConversationManager {
         state.controlQueue.enqueue(async () => {
           const active = state.active;
           if (!active || active.role !== role) {
-            return 0;
+            return this.failSideTurnsForRole(state, role, "Codex app-server exited");
           }
           await this.suspendActiveTurnForCodexAppServerExit(state, active);
-          return 1;
+          return 1 + await this.failSideTurnsForRole(state, role, "Codex app-server exited");
         })
       );
     }
@@ -650,6 +698,13 @@ export class ConversationManager {
 
     for (const record of records) {
       const context = contextForRecoveredRecord(record);
+      if (record.routeKind === "side") {
+        if (record.larkMessageId) {
+          await this.markMessagesFailedBestEffort([record.larkMessageId]);
+          await this.patchRecoveredSideCardFailedBestEffort(record, context, SIDE_SHUTDOWN_ERROR);
+        }
+        continue;
+      }
       if (options.role) {
         const role = await this.roleForRecoverableRecord(record, context);
         if (role !== options.role) {
@@ -1339,6 +1394,9 @@ export class ConversationManager {
     if (parsed.kind !== "stop" && parsed.kind !== "next" && parsed.kind !== "steer") {
       return false;
     }
+    if (parsed.kind === "stop" && /^\d+$/.test(parsed.text.trim())) {
+      return false;
+    }
     const active = state.active;
     return active !== undefined && !this.canControlActiveTurn(active, message.senderOpenId);
   }
@@ -1362,7 +1420,7 @@ export class ConversationManager {
       return;
     }
     if (parsed.kind === "stop") {
-      await this.handleStopCommand(state, message);
+      await this.handleStopCommand(state, message, parsed.text);
       return;
     }
     if (parsed.kind === "next") {
@@ -1391,6 +1449,10 @@ export class ConversationManager {
     }
     if (parsed.kind === "queue") {
       await this.handleQueueCommand(state, context, message, parsed.text);
+      return;
+    }
+    if (parsed.kind === "side") {
+      await this.handleSideCommand(state, context, message, parsed.text);
       return;
     }
     if (parsed.kind === "plan") {
@@ -1700,6 +1762,11 @@ export class ConversationManager {
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
+    if (parseSlashCommand(text).kind === "side") {
+      await this.replyControlBestEffort(message.messageId, "side 只能作为最外层指令使用。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
     const chatId = context.type === "p2p"
       ? message.senderOpenId
       : nonEmptyString(message.larkGroupId) ?? nonEmptyString(message.chatId);
@@ -1749,6 +1816,11 @@ export class ConversationManager {
   ): Promise<void> {
     if (!isThreadCommandMessageType(message.messageType)) {
       await this.replyControlBestEffort(message.messageId, "fork 只支持 text/post 消息。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (parseSlashCommand(text).kind === "side") {
+      await this.replyControlBestEffort(message.messageId, "side 只能作为最外层指令使用。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
@@ -2084,6 +2156,7 @@ export class ConversationManager {
       cleared += clearedMessages.length;
       await this.markPendingMessagesClearedBestEffort(clearedMessages);
       await this.cancelActiveTurn(state);
+      await this.cancelAllSideTurns(state);
     }
     return cleared;
   }
@@ -2190,6 +2263,191 @@ export class ConversationManager {
     } else if (!state.active) {
       await this.startPendingBatch(state, context);
     }
+  }
+
+  private async handleSideCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    const sideText = text.trim();
+    if (!sideText) {
+      await this.replyControlBestEffort(message.messageId, "用法：/side <message>");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (!this.options.codex.injectThreadItems) {
+      await this.replyControlBestEffort(message.messageId, "当前 Codex app-server 不支持临时会话。");
+      await this.markMessagesFailedBestEffort([message.messageId]);
+      return;
+    }
+
+    const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+    if (!conversation) {
+      await this.replyControlBestEffort(message.messageId, "当前会话还没有可 side 的 Codex thread。");
+      await this.markMessagesFailedBestEffort([message.messageId]);
+      return;
+    }
+
+    const sourceThread = await this.resolveForkSourceThread(state, context, conversation);
+    if (!sourceThread.threadId) {
+      await this.replyControlBestEffort(message.messageId, "当前话题还没有绑定可 side 的 Codex thread。");
+      await this.markMessagesFailedBestEffort([message.messageId]);
+      return;
+    }
+    if (sourceThread.record && !sourceThread.record.codexThreadHasRollout) {
+      await this.replyControlBestEffort(message.messageId, "当前 Codex thread 还没有可 side 的历史，请先完成一轮对话。");
+      await this.markMessagesFailedBestEffort([message.messageId]);
+      return;
+    }
+
+    const sideId = allocateSideId(state);
+    await this.updateSideMessageMetadataBestEffort(message.messageId, { sideId });
+    const pending = toPendingMessage(message, sideText, { queueBoundary: true });
+    await this.beginSideTurn(state, context, {
+      message: pending,
+      sideId,
+      role: conversation.role,
+      sourceThreadId: sourceThread.threadId,
+      workspace: conversation.workspace
+    });
+  }
+
+  private async beginSideTurn(
+    state: ConversationState,
+    context: MessageContext,
+    params: {
+      message: PendingMessage;
+      sideId: number;
+      role: RoleName;
+      sourceThreadId: string;
+      workspace: string;
+    }
+  ): Promise<void> {
+    const message = params.message;
+    const startedAt = Date.now();
+    const agentMessageMode = this.options.config.lark.agentMessageMode;
+    const modelSettings = await this.readCodexTurnModelSettingsBestEffort(params.role, params.workspace);
+    let forkedThreadId: string;
+    try {
+      const forked = await this.options.codex.forkThread({
+        role: params.role,
+        threadId: params.sourceThreadId,
+        cwd: params.workspace,
+        approvalPolicy: "never",
+        ephemeral: true,
+        developerInstructions: SIDE_DEVELOPER_INSTRUCTIONS,
+        model: modelSettings.model,
+        effort: modelSettings.effort
+      });
+      forkedThreadId = forked.threadId;
+      await this.options.codex.injectThreadItems?.({
+        role: params.role,
+        threadId: forkedThreadId,
+        items: [sideBoundaryResponseItem()]
+      });
+    } catch (error) {
+      const messageText = isMissingRolloutError(error)
+        ? "当前 Codex thread 还没有可 side 的历史，请先完成一轮对话。"
+        : toErrorMessage(error);
+      await this.markMessagesFailedBestEffort([message.messageId]);
+      await this.replyErrorBestEffort(message.messageId, messageText);
+      return;
+    }
+
+    await this.markPendingMessagesProcessingBestEffort([message], {
+      conversationKey: context.conversationKey,
+      codexThreadId: forkedThreadId
+    });
+    const active: ActiveTurn = {
+      kind: "side",
+      sideId: params.sideId,
+      runId: ++state.nextRunId,
+      agentMessageMode,
+      role: params.role,
+      triggerOpenId: message.original.senderOpenId,
+      threadId: forkedThreadId,
+      workspace: params.workspace,
+      conversationKey: context.conversationKey,
+      context,
+      replyMessageId: message.messageId,
+      startedAt,
+      model: modelSettings.model,
+      modelReasoningEffort: modelSettings.effort,
+      mode: "default",
+      threadTokenUsage: emptyThreadTokenUsageSnapshot(),
+      turnStartThreadTokenUsage: emptyThreadTokenUsageSnapshot(),
+      turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      reaction: await this.addReactionBestEffort(message.messageId),
+      card:
+        agentMessageMode === "card"
+          ? {
+              anchorMessageId: message.messageId,
+              startedAt,
+              messages: [],
+              fallbackPlain: false
+            }
+          : undefined,
+      pendingSteers: [],
+      messagesById: new Map([[message.messageId, message]]),
+      messageIds: new Set([message.messageId]),
+      processingMessageIds: new Set([message.messageId]),
+      steeredMessageIds: new Set(),
+      cancelRequested: false
+    };
+    state.sideTurns.set(params.sideId, active);
+
+    const runTurn = async (): Promise<void> => {
+      try {
+        const result = await this.options.codex.startTurn({
+          role: params.role,
+          threadId: active.threadId,
+          input: formatPendingMessageForCodexInput(message),
+          cwd: params.workspace,
+          approvalPolicy: "never",
+          mode: "default",
+          model: modelSettings.model,
+          effort: modelSettings.effort,
+          onTurnStarted: (turnId) => this.handleSideTurnStarted(state, active, turnId),
+          onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
+          onTokenUsage: (usage) => this.recordSideTokenUsageBestEffort(state, active, usage)
+        });
+        active.completedStatus = result.status;
+        active.resultText = result.text;
+        active.resultError = result.error;
+        this.log.info(
+          {
+            messageId: message.messageId,
+            conversationKey: context.conversationKey,
+            role: params.role,
+            codexThreadId: active.threadId,
+            turnId: result.turnId,
+            sideId: params.sideId,
+            status: result.status,
+            durationMs: Date.now() - startedAt
+          },
+          "conversation side turn completed"
+        );
+      } catch (error) {
+        if (isSideTurnCurrent(state, active) && !active.cancelRequested) {
+          await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
+          this.log.error({ error, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation side turn failed");
+          await this.failAgentCardBestEffort(state, active, toErrorMessage(error));
+          if (active.agentMessageMode !== "card" || active.card?.fallbackPlain || !active.card?.messageId) {
+            await this.replyErrorBestEffort(active.replyMessageId, error);
+          }
+        } else {
+          this.log.debug({ error, conversationKey: context.conversationKey, threadId: active.threadId }, "ignored stale codex side turn failure");
+        }
+      }
+    };
+
+    void runTurn()
+      .finally(() => {
+        void state.controlQueue.enqueue(() => this.finishSideTurn(state, active));
+      });
+    await this.createAgentCardBestEffort(state, active);
   }
 
   private async handlePlanCommand(
@@ -2334,7 +2592,41 @@ export class ConversationManager {
     }
   }
 
-  private async handleStopCommand(state: ConversationState, message: IncomingLarkMessage): Promise<void> {
+  private async handleStopCommand(state: ConversationState, message: IncomingLarkMessage, text: string): Promise<void> {
+    const target = text.trim().toLowerCase();
+    if (target === "all") {
+      const { cleared, interrupted } = await this.stopConversationState(state);
+      const stoppedSides = await this.cancelAllSideTurns(state);
+      await this.replyControlBestEffort(
+        message.messageId,
+        `已停止当前任务，清空 ${cleared} 条待处理消息，停止 ${stoppedSides} 个临时会话。${interrupted ? "" : "当前没有正在运行的主任务。"}`
+      );
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (target.length > 0) {
+      const sideId = Number.parseInt(target, 10);
+      if (!Number.isInteger(sideId) || String(sideId) !== target || sideId <= 0) {
+        await this.replyControlBestEffort(message.messageId, "用法：/stop [all|<side_id>]");
+        await this.markMessagesCompletedBestEffort([message.messageId]);
+        return;
+      }
+      const side = state.sideTurns.get(sideId);
+      if (!side) {
+        await this.replyControlBestEffort(message.messageId, `临时会话 [${sideId}] 不存在或已结束。`);
+        await this.markMessagesCompletedBestEffort([message.messageId]);
+        return;
+      }
+      if (!this.canControlActiveTurn(side, message.senderOpenId)) {
+        await this.replyControlBestEffort(message.messageId, `无权停止临时会话 [${sideId}]。`);
+        await this.markMessagesCompletedBestEffort([message.messageId]);
+        return;
+      }
+      await this.cancelSideTurn(state, side);
+      await this.replyControlBestEffort(message.messageId, `已停止临时会话 [${sideId}]。`);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
     const { cleared, interrupted } = await this.stopConversationState(state);
     const summary = interrupted
       ? `已停止当前任务，清空 ${cleared} 条待处理消息。`
@@ -2363,16 +2655,11 @@ export class ConversationManager {
       return;
     }
 
-    const active = state.active;
+    const active = this.findActiveTurnForCardAction(state, action, command);
     if (!active) {
       return;
     }
-    const invalid =
-      active.runId !== command.runId ||
-      active.context.stateKey !== command.stateKey ||
-      (action.openMessageId !== undefined && active.card?.messageId !== undefined && action.openMessageId !== active.card.messageId) ||
-      !this.canControlActiveTurn(active, action.operatorOpenId);
-    if (invalid) {
+    if (active.kind === "side" && command.action !== "next" && command.action !== "stop") {
       return;
     }
 
@@ -2380,10 +2667,18 @@ export class ConversationManager {
     try {
       switch (command.action) {
         case "stop":
-          await this.executeStopAction(state);
+          if (active.kind === "side") {
+            await this.cancelSideTurn(state, active);
+          } else {
+            await this.executeStopAction(state);
+          }
           break;
         case "next":
-          await this.executeNextAction(state, active.context);
+          if (active.kind === "side") {
+            await this.cancelSideTurn(state, active);
+          } else {
+            await this.executeNextAction(state, active.context);
+          }
           break;
         case "queue":
           await this.executeQueueAction(state, active);
@@ -2407,6 +2702,23 @@ export class ConversationManager {
     } finally {
       await this.recordCardActionBestEffort(action, command, status, active);
     }
+  }
+
+  private findActiveTurnForCardAction(
+    state: ConversationState,
+    action: IncomingLarkCardAction,
+    command: ParsedCardActionCommand
+  ): ActiveTurn | undefined {
+    const candidates = [
+      ...(state.active ? [state.active] : []),
+      ...state.sideTurns.values()
+    ];
+    return candidates.find((active) =>
+      active.runId === command.runId &&
+      active.context.stateKey === command.stateKey &&
+      (action.openMessageId === undefined || active.card?.messageId === undefined || action.openMessageId === active.card.messageId) &&
+      this.canControlActiveTurn(active, action.operatorOpenId)
+    );
   }
 
   private async executeStopAction(state: ConversationState): Promise<void> {
@@ -3342,6 +3654,42 @@ export class ConversationManager {
     });
   }
 
+  private async handleSideTurnStarted(state: ConversationState, active: ActiveTurn, turnId: string): Promise<void> {
+    await state.controlQueue.enqueue(async () => {
+      if (active.turnId && active.turnId !== turnId) {
+        return;
+      }
+      active.turnId = turnId;
+      if (active.cancelRequested) {
+        await this.interruptActiveTurnBestEffort(active);
+        return;
+      }
+      if (!isSideTurnCurrent(state, active)) {
+        return;
+      }
+      await this.markMessagesProcessingBestEffort([...active.processingMessageIds], {
+        conversationKey: active.conversationKey,
+        codexThreadId: active.threadId,
+        codexTurnId: turnId
+      });
+    });
+  }
+
+  private async recordSideTokenUsageBestEffort(
+    state: ConversationState,
+    active: ActiveTurn,
+    usage: CodexThreadTokenUsageUpdate
+  ): Promise<void> {
+    try {
+      const tokenUsage = extractThreadTokenUsage(usage);
+      active.threadTokenUsage = tokenUsage;
+      active.turnTokenUsage = subtractThreadTokenUsage(tokenUsage, active.turnStartThreadTokenUsage);
+      this.patchActiveAgentCardTokenUsageBestEffort(state, active);
+    } catch (error) {
+      this.log.warn({ error, threadId: usage.threadId, totalTokens: usage.totalTokens }, "failed to record side token usage");
+    }
+  }
+
   private async flushPendingSteers(state: ConversationState, active: ActiveTurn): Promise<void> {
     if (!active.turnId || active.pendingSteers.length === 0) {
       return;
@@ -3498,6 +3846,29 @@ export class ConversationManager {
     await this.startPendingBatch(state, active.context);
   }
 
+  private async finishSideTurn(state: ConversationState, active: ActiveTurn): Promise<void> {
+    if (!isSideTurnCurrent(state, active)) {
+      await this.clearReactionBestEffort(active);
+      this.stopAgentCardTimer(active);
+      await this.unsubscribeSideThreadBestEffort(active);
+      return;
+    }
+    if (active.sideId !== undefined) {
+      state.sideTurns.delete(active.sideId);
+    }
+    await this.clearReactionBestEffort(active);
+    if (!active.cancelRequested && active.completedStatus === "completed") {
+      await this.markMessagesCompletedBestEffort([...active.processingMessageIds]);
+      await this.completeAgentCardBestEffort(state, active);
+    } else if (!active.cancelRequested) {
+      await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
+      await this.failAgentCardBestEffort(state, active, active.resultError ?? "Codex side turn failed");
+    }
+    await this.addCompletedReactionBestEffort(active);
+    this.stopAgentCardTimer(active);
+    await this.unsubscribeSideThreadBestEffort(active);
+  }
+
   private clearPendingMessages(state: ConversationState): PendingMessage[] {
     const batchPending = state.pendingBatch.splice(0);
     const waitingInterruptPending = state.waitingInterruptBatch?.messages.splice(0) ?? [];
@@ -3541,6 +3912,84 @@ export class ConversationManager {
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
     }
     return true;
+  }
+
+  private async cancelSideTurn(state: ConversationState, active: ActiveTurn): Promise<boolean> {
+    if (!isSideTurnCurrent(state, active) || active.cancelRequested) {
+      return false;
+    }
+    active.cancelRequested = true;
+    active.pendingSteers = [];
+    await this.clearReactionBestEffort(active);
+    await this.markMessagesInterruptedBestEffort([...active.processingMessageIds]);
+    await this.interruptAgentCardBestEffort(state, active);
+    if (active.turnId) {
+      await this.interruptActiveTurnBestEffort(active);
+    }
+    return true;
+  }
+
+  private async cancelAllSideTurns(state: ConversationState, openId?: string): Promise<number> {
+    let stopped = 0;
+    for (const active of [...state.sideTurns.values()]) {
+      if (openId && !this.canControlActiveTurn(active, openId)) {
+        continue;
+      }
+      if (await this.cancelSideTurn(state, active)) {
+        stopped += 1;
+      }
+    }
+    return stopped;
+  }
+
+  private async failSideTurnForShutdown(
+    state: ConversationState,
+    active: ActiveTurn,
+    error = SIDE_SHUTDOWN_ERROR
+  ): Promise<boolean> {
+    if (!isSideTurnCurrent(state, active)) {
+      return false;
+    }
+    if (active.sideId !== undefined) {
+      state.sideTurns.delete(active.sideId);
+    }
+    active.cancelRequested = true;
+    active.pendingSteers = [];
+    await this.clearReactionBestEffort(active);
+    await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
+    await this.failAgentCardBestEffort(state, active, error);
+    if (active.agentMessageMode !== "card" || active.card?.fallbackPlain || !active.card?.messageId) {
+      await this.replyErrorBestEffort(active.replyMessageId, error);
+    }
+    if (active.turnId) {
+      await this.interruptActiveTurnBestEffort(active);
+    }
+    this.stopAgentCardTimer(active);
+    await this.unsubscribeSideThreadBestEffort(active);
+    return true;
+  }
+
+  private async failSideTurnsForShutdown(state: ConversationState, error = SIDE_SHUTDOWN_ERROR): Promise<number> {
+    let failed = 0;
+    for (const active of [...state.sideTurns.values()]) {
+      if (await this.failSideTurnForShutdown(state, active, error)) {
+        failed += 1;
+      }
+    }
+    return failed;
+  }
+
+  private async failSideTurnsForRole(state: ConversationState, role: RoleName, error: string): Promise<number> {
+    let failed = 0;
+    for (const active of [...state.sideTurns.values()]) {
+      if (active.role !== role) {
+        continue;
+      }
+      if (await this.failSideTurnForShutdown(state, active, error)) {
+        failed += 1;
+      }
+    }
+    return failed;
   }
 
   private async suspendActiveTurnForCodexAppServerExit(state: ConversationState, active: ActiveTurn): Promise<boolean> {
@@ -3587,6 +4036,20 @@ export class ConversationManager {
     } catch (error) {
       this.log.warn({ error, threadId: active.threadId, turnId: active.turnId }, "failed to interrupt codex turn");
       return isNoActiveTurnToInterruptError(error) ? "missing" : "failed";
+    }
+  }
+
+  private async unsubscribeSideThreadBestEffort(active: ActiveTurn): Promise<void> {
+    if (active.kind !== "side" || !this.options.codex.unsubscribeThread) {
+      return;
+    }
+    try {
+      await this.options.codex.unsubscribeThread({
+        role: active.role,
+        threadId: active.threadId
+      });
+    } catch (error) {
+      this.log.warn({ error, threadId: active.threadId }, "failed to unsubscribe side codex thread");
     }
   }
 
@@ -3750,7 +4213,7 @@ export class ConversationManager {
   private patchActiveAgentCardTokenUsageBestEffort(state: ConversationState, active: ActiveTurn): void {
     void state.controlQueue
       .enqueue(async () => {
-        if (state.active !== active || active.cancelRequested || active.completedStatus !== undefined) {
+        if (!isActiveTurnCurrent(state, active) || active.cancelRequested || active.completedStatus !== undefined) {
           return;
         }
         await this.patchAgentCardBestEffort(state, active, "working");
@@ -3837,6 +4300,20 @@ export class ConversationManager {
       await this.options.repository.updateQueuedLarkMessage(messageId, update);
     } catch (error) {
       this.log.warn({ error, messageId }, "failed to update queued lark message");
+    }
+  }
+
+  private async updateSideMessageMetadataBestEffort(
+    messageId: string,
+    update: { sideId?: number; agentCardMessageId?: string }
+  ): Promise<void> {
+    if (!this.options.repository.updateLarkMessageSideMetadata) {
+      return;
+    }
+    try {
+      await this.options.repository.updateLarkMessageSideMetadata(messageId, update);
+    } catch (error) {
+      this.log.warn({ error, messageId }, "failed to update side lark message metadata");
     }
   }
 
@@ -4064,6 +4541,7 @@ export class ConversationManager {
     const state: ConversationState = {
       controlQueue: new SerialQueue(),
       submittedMessages: new Map(),
+      sideTurns: new Map(),
       pendingBatch: [],
       queueNextMessage: false,
       nextRunId: 0
@@ -4227,12 +4705,12 @@ export class ConversationManager {
     active: ActiveTurn,
     agentMessage: CodexAgentMessage
   ): Promise<void> {
-    if (state.active !== active || active.cancelRequested) {
+    if (!isActiveTurnCurrent(state, active) || active.cancelRequested) {
       return;
     }
     if (active.agentMessageMode === "card") {
       await state.controlQueue.enqueue(async () => {
-        if (state.active !== active || active.cancelRequested) {
+        if (!isActiveTurnCurrent(state, active) || active.cancelRequested) {
           return;
         }
         await this.updateAgentCardWithMessageBestEffort(state, active, agentMessage);
@@ -4297,6 +4775,9 @@ export class ConversationManager {
       }
       card.messageId = result.messageId;
       active.lastAgentReplyMessageId = result.messageId;
+      if (active.kind === "side") {
+        await this.updateSideMessageMetadataBestEffort(active.replyMessageId, { agentCardMessageId: result.messageId });
+      }
       card.lastRenderedJson = JSON.stringify(rendered);
       this.startAgentCardTimer(state, active);
       return true;
@@ -4514,6 +4995,37 @@ export class ConversationManager {
     }
   }
 
+  private async patchRecoveredSideCardFailedBestEffort(
+    record: LarkMessageRecord,
+    context: MessageContext,
+    error: string
+  ): Promise<void> {
+    if (!record.agentCardMessageId) {
+      return;
+    }
+    try {
+      await this.options.lark.patchCard(
+        record.agentCardMessageId,
+        renderTwinnyAgentCard({
+          status: "failed",
+          messages: [],
+          elapsedMs: Math.max(Date.now() - (record.processingStartedAt ?? record.receivedAt), 0),
+          queueDepth: 0,
+          queueNextMessage: false,
+          stateKey: context.stateKey,
+          runId: 0,
+          iconImageKey: this.options.config.lark.iconImageKey,
+          mode: "default",
+          subtitle: record.sideId === undefined ? "临时会话" : `临时会话 [${record.sideId}]`,
+          hideQueueControls: true,
+          error
+        })
+      );
+    } catch (patchError) {
+      this.log.warn({ error: patchError, messageId: record.agentCardMessageId }, "failed to update recovered side card");
+    }
+  }
+
   private async interruptAgentCardBestEffort(state: ConversationState, active: ActiveTurn): Promise<void> {
     this.stopAgentCardTimer(active);
     try {
@@ -4546,7 +5058,7 @@ export class ConversationManager {
     card.timer = setInterval(() => {
       void state.controlQueue
         .enqueue(async () => {
-          if (state.active !== active || active.cancelRequested) {
+          if (!isActiveTurnCurrent(state, active) || active.cancelRequested) {
             return;
           }
           await this.patchAgentCardBestEffort(state, active, "working");
@@ -4614,12 +5126,14 @@ export class ConversationManager {
       messages: renderedMessages,
       elapsedMs: Date.now() - active.startedAt,
       runtimeStats: activeTurnRuntimeStats(active),
-      queueDepth: state.pendingBatch.length,
-      queueNextMessage: state.queueNextMessage,
+      queueDepth: active.kind === "side" ? 0 : state.pendingBatch.length,
+      queueNextMessage: active.kind === "side" ? false : state.queueNextMessage,
       stateKey: active.context.stateKey,
       runId: active.runId,
       iconImageKey: this.options.config.lark.iconImageKey,
       mode: active.mode,
+      subtitle: active.kind === "side" ? sideCardSubtitle(active) : undefined,
+      hideQueueControls: active.kind === "side",
       waiting:
         status === "waiting_input" ||
         status === "waiting_plan" ||
@@ -5048,7 +5562,7 @@ function parseSlashCommand(text: string): ParsedCommand {
   const command = match[1]!.toLowerCase();
   const rest = match[2]?.trim() ?? "";
   if (command === "stop") {
-    return { kind: "stop" };
+    return { kind: "stop", text: rest };
   }
   if (command === "next") {
     return { kind: "next" };
@@ -5079,6 +5593,9 @@ function parseSlashCommand(text: string): ParsedCommand {
   }
   if (command === "queue") {
     return { kind: "queue", text: rest };
+  }
+  if (command === "side" || command === "btw") {
+    return { kind: "side", text: rest };
   }
   if (command === "plan") {
     return { kind: "plan", text: rest };
@@ -5147,6 +5664,39 @@ function activeTurnWorkDurationMs(codexThreadId: string, active: ActiveTurn | un
   }
   const durationMs = now - active.startedAt;
   return Number.isFinite(durationMs) && durationMs > 0 ? Math.trunc(durationMs) : 0;
+}
+
+function isSideTurnCurrent(state: ConversationState, active: ActiveTurn): boolean {
+  return active.kind === "side" && active.sideId !== undefined && state.sideTurns.get(active.sideId) === active;
+}
+
+function isActiveTurnCurrent(state: ConversationState, active: ActiveTurn): boolean {
+  return active.kind === "side" ? isSideTurnCurrent(state, active) : state.active === active;
+}
+
+function allocateSideId(state: ConversationState): number {
+  let sideId = 1;
+  while (state.sideTurns.has(sideId)) {
+    sideId += 1;
+  }
+  return sideId;
+}
+
+function sideCardSubtitle(active: ActiveTurn): string {
+  return active.sideId === undefined ? "临时会话" : `临时会话 [${active.sideId}]`;
+}
+
+function sideBoundaryResponseItem(): Record<string, unknown> {
+  return {
+    type: "message",
+    role: "user",
+    content: [
+      {
+        type: "input_text",
+        text: SIDE_BOUNDARY_PROMPT
+      }
+    ]
+  };
 }
 
 function activeTurnRuntimeStats(active: ActiveTurn): TwinnyAgentCardRuntimeStats {
@@ -5715,6 +6265,7 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/next - 打断当前任务，并执行队列中的下一条消息",
     "/steer - 将队列中的下一批消息注入当前任务",
     "/queue <message> - 将消息加入下一轮队列，不注入当前任务",
+    "/side <message> 或 /btw <message> - 基于当前 Codex thread 发起临时会话",
     "/compact - 压缩当前 Codex thread 上下文；默认加入下一轮队列",
     "/thread [message] - 创建新话题",
     "/fork [message] - 从当前 Codex thread fork 出新话题"
@@ -5767,6 +6318,9 @@ function classifyInitialRoute(
   }
   if (parsed.kind === "queue" && parsed.text.length > 0) {
     return { routeKind: "queued_message", status: "queued", text: parsed.text };
+  }
+  if (parsed.kind === "side") {
+    return { routeKind: "side", status: "processing", text: parsed.text };
   }
   if (parsed.kind === "plan") {
     return { routeKind: "queued_message", status: "queued", text: parsed.text };

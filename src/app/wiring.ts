@@ -384,6 +384,7 @@ export function adaptConversationRepository(repository: ConversationRepository) 
     markLarkMessageQueued: repository.markLarkMessageQueued.bind(repository),
     markLarkMessageRecalled: repository.markLarkMessageRecalled.bind(repository),
     updateQueuedLarkMessage: repository.updateQueuedLarkMessage.bind(repository),
+    updateLarkMessageSideMetadata: repository.updateLarkMessageSideMetadata.bind(repository),
     markLarkMessagesProcessing: repository.markLarkMessagesProcessing.bind(repository),
     markLarkMessagesSteered: repository.markLarkMessagesSteered.bind(repository),
     markLarkMessagesCompleted: repository.markLarkMessagesCompleted.bind(repository),
@@ -403,9 +404,36 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       const response = await pool.get(role).resumeThread(threadId, cwd);
       return { threadId: response.thread.id };
     },
-    forkThread: async ({ role, threadId, cwd }: { role: RoleName; threadId: string; cwd: string }) => {
-      const response = await pool.get(role).forkThread(threadId, cwd);
+    forkThread: async ({
+      role,
+      threadId,
+      cwd,
+      ephemeral,
+      developerInstructions,
+      model,
+      effort
+    }: {
+      role: RoleName;
+      threadId: string;
+      cwd: string;
+      ephemeral?: boolean;
+      developerInstructions?: string;
+      model?: string;
+      effort?: string;
+    }) => {
+      const response = await pool.get(role).forkThread(threadId, cwd, {
+        ephemeral,
+        developerInstructions,
+        model,
+        effort
+      });
       return { threadId: response.thread.id };
+    },
+    injectThreadItems: async ({ role, threadId, items }: { role: RoleName; threadId: string; items: unknown[] }) => {
+      await pool.get(role).injectThreadItems(threadId, items);
+    },
+    unsubscribeThread: async ({ role, threadId }: { role: RoleName; threadId: string }) => {
+      await pool.get(role).unsubscribeThread(threadId);
     },
     startTurn: async ({
       role,

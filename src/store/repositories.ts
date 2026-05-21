@@ -97,6 +97,8 @@ interface LarkMessageRow {
   completed_at: number | null;
   failed_at: number | null;
   cleared_at: number | null;
+  side_id: number | null;
+  agent_card_message_id: string | null;
   raw_event_json: string | null;
 }
 
@@ -123,6 +125,8 @@ export interface InsertLarkMessageInput {
   status: LarkMessageStatus;
   text: string;
   larkCreateTime?: number;
+  sideId?: number;
+  agentCardMessageId?: string;
   rawEventJson?: string;
 }
 
@@ -228,6 +232,7 @@ export class ConversationRepository {
   ]>;
   private readonly updateLarkMessageQueuedStatement: Database.Statement<[number, string]>;
   private readonly updateQueuedLarkMessageStatement: Database.Statement<[string, string | null, number, string]>;
+  private readonly updateLarkMessageSideMetadataStatement: Database.Statement<[number | null, string | null, number, string]>;
   private readonly updateLarkMessageRecalledStatement: Database.Statement<[number, string]>;
   private readonly updateLarkMessageCompletedStatement: Database.Statement<[number, number, string]>;
   private readonly updateLarkMessageFailedStatement: Database.Statement<[number, number, string]>;
@@ -477,6 +482,7 @@ export class ConversationRepository {
         WHERE thread_id = ?
           AND codex_turn_id IS NOT NULL
           AND processing_started_at IS NOT NULL
+          AND route_kind <> 'side'
         GROUP BY codex_turn_id
       )
     `);
@@ -494,6 +500,8 @@ export class ConversationRepository {
         status,
         text,
         lark_create_time,
+        side_id,
+        agent_card_message_id,
         received_at,
         updated_at,
         raw_event_json
@@ -510,6 +518,8 @@ export class ConversationRepository {
         @status,
         @text,
         @larkCreateTime,
+        @sideId,
+        @agentCardMessageId,
         @receivedAt,
         @updatedAt,
         @rawEventJson
@@ -556,6 +566,13 @@ export class ConversationRepository {
           updated_at = ?
       WHERE lark_message_id = ?
         AND status = 'queued'
+    `);
+    this.updateLarkMessageSideMetadataStatement = this.db.prepare(`
+      UPDATE lark_messages
+      SET side_id = COALESCE(?, side_id),
+          agent_card_message_id = COALESCE(?, agent_card_message_id),
+          updated_at = ?
+      WHERE lark_message_id = ?
     `);
     this.updateLarkMessageRecalledStatement = this.db.prepare(`
       UPDATE lark_messages
@@ -904,6 +921,8 @@ export class ConversationRepository {
       status: input.status,
       text: input.text,
       larkCreateTime: input.larkCreateTime ?? null,
+      sideId: input.sideId ?? null,
+      agentCardMessageId: input.agentCardMessageId ?? null,
       receivedAt: now,
       updatedAt: now,
       rawEventJson: input.rawEventJson ?? null
@@ -935,6 +954,20 @@ export class ConversationRepository {
     const result = this.updateQueuedLarkMessageStatement.run(
       update.text,
       update.rawEventJson ?? null,
+      this.now(),
+      larkMessageId
+    );
+    return result.changes > 0;
+  }
+
+  updateLarkMessageSideMetadata(
+    larkMessageId: string,
+    update: { sideId?: number; agentCardMessageId?: string }
+  ): boolean {
+    assertNonEmpty(larkMessageId, "larkMessageId");
+    const result = this.updateLarkMessageSideMetadataStatement.run(
+      update.sideId ?? null,
+      update.agentCardMessageId ?? null,
       this.now(),
       larkMessageId
     );
@@ -1155,6 +1188,8 @@ function mapRequiredLarkMessageRow(row: LarkMessageRow): LarkMessageRecord {
     completedAt: row.completed_at ?? undefined,
     failedAt: row.failed_at ?? undefined,
     clearedAt: row.cleared_at ?? undefined,
+    sideId: row.side_id ?? undefined,
+    agentCardMessageId: row.agent_card_message_id ?? undefined,
     rawEventJson: row.raw_event_json ?? undefined
   };
 }
@@ -1257,6 +1292,7 @@ function assertValidRouteKind(routeKind: LarkMessageRouteKind): void {
     routeKind !== "message" &&
     routeKind !== "steered_message" &&
     routeKind !== "queued_message" &&
+    routeKind !== "side" &&
     routeKind !== "control_message" &&
     routeKind !== "card_action" &&
     routeKind !== "menu_action"

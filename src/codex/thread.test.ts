@@ -28,4 +28,26 @@ describe("codex thread payloads", () => {
       excludeTurns: true
     });
   });
+
+  it("builds ephemeral side thread/fork with side instructions and no persistence", () => {
+    expect(
+      buildThreadForkParams("thread_123", {
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        ephemeral: true,
+        developerInstructions: "side instructions",
+        model: "gpt-5.5",
+        effort: "medium"
+      })
+    ).toEqual({
+      threadId: "thread_123",
+      cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+      approvalPolicy: "never",
+      persistExtendedHistory: false,
+      excludeTurns: true,
+      ephemeral: true,
+      developerInstructions: "side instructions",
+      model: "gpt-5.5",
+      config: { model_reasoning_effort: "medium" }
+    });
+  });
 });
