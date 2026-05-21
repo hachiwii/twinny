@@ -250,8 +250,8 @@ export class TwinnyRuntime {
     if (this.stopped) {
       return;
     }
-    await this.conversation?.recoverUnfinishedMessages({ role });
-    this.log.info({ role, suspended }, "codex app-server recovered after exit");
+    const recovered = (await this.conversation?.recoverSuspendedActiveTurnsForCodexAppServerExit(role)) ?? 0;
+    this.log.info({ role, suspended, recovered }, "codex app-server recovered after exit");
   }
 
   private async shutdownConversation(): Promise<void> {

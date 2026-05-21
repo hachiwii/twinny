@@ -383,6 +383,156 @@ describe("Lark to Codex integration flow", () => {
     ]);
   });
 
+  it("does not duplicate queued messages when recovering an active goal after app-server restart", async () => {
+    const harness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        on: { method: "thread/goal/set", nth: 1 },
+        reply: {
+          goal: {
+            threadId: "guest_thread_1",
+            objective: "keep goal running",
+            status: "active",
+            tokenBudget: null,
+            tokensUsed: 0,
+            timeUsedSeconds: 0,
+            createdAt: 1,
+            updatedAt: 1
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "goal_turn_before_restart" } } }
+      },
+      {
+        role: "guest",
+        on: { method: "thread/goal/get", nth: 1 },
+        reply: {
+          goal: {
+            threadId: "guest_thread_1",
+            objective: "keep goal running",
+            status: "active",
+            tokenBudget: null,
+            tokensUsed: 0,
+            timeUsedSeconds: 0,
+            createdAt: 1,
+            updatedAt: 1
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/get", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "goal_turn_after_restart" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/get", nth: 1 },
+        delayMs: 60,
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "goal_turn_after_restart",
+              status: "completed",
+              durationMs: 60,
+              items: [{ type: "agentMessage", id: "goal_after_restart_final", text: "goal after restart complete", phase: "final_answer" }]
+            }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/get", nth: 1 },
+        delayMs: 70,
+        notify: {
+          method: "thread/goal/updated",
+          params: {
+            threadId: "guest_thread_1",
+            turnId: "goal_turn_after_restart",
+            goal: {
+              threadId: "guest_thread_1",
+              objective: "keep goal running",
+              status: "complete",
+              tokenBudget: null,
+              tokensUsed: 0,
+              timeUsedSeconds: 0,
+              createdAt: 1,
+              updatedAt: 2
+            }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        delayMs: 20,
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "turn_1",
+              status: "completed",
+              durationMs: 20,
+              items: [{ type: "agentMessage", id: "queued_after_restart_done_1", text: "queued after restart done", phase: "final_answer" }]
+            }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 2 },
+        delayMs: 20,
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "turn_2",
+              status: "completed",
+              durationMs: 20,
+              items: [{ type: "agentMessage", id: "queued_after_restart_done_2", text: "queued after restart done again", phase: "final_answer" }]
+            }
+          }
+        }
+      }
+    ));
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_goal_restart", messageId: "m_goal_restart", text: "/goal keep goal running" })
+    }));
+    await harness.waitForTrace((trace) => codexOut(trace, "thread/goal/set").length === 1, "goal set before restart");
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_queue_restart", messageId: "m_queue_restart", text: "/queue queued after restart" })
+    }));
+    await harness.waitForExpect(() => {
+      expect(harness.repository.getLarkMessageById("m_queue_restart")).toMatchObject({ status: "queued" });
+    });
+
+    await harness.recoverCodexAppServer("guest");
+    await harness.waitForTrace((trace) => codexOut(trace, "thread/goal/get").length === 1, "goal recovered after restart");
+    await harness.waitForTrace(
+      (trace) => larkOut(trace).some((entry) => entry.method === "PATCH" && traceText(entry).includes("已实现目标")),
+      "recovered goal completed"
+    );
+    await harness.waitForTrace(
+      (trace) => codexOut(trace, "turn/start").some((entry) => traceText(entry).includes("queued after restart")),
+      "queued message started after recovered goal"
+    );
+    await waitForDelay(150);
+
+    const queuedStarts = codexOut(harness.readTrace(), "turn/start")
+      .filter((entry) => traceText(entry).includes("queued after restart"));
+    expect(queuedStarts).toHaveLength(1);
+  });
+
   it("covers plan mode questions before accepting and implementing the plan", async () => {
     const harness = await IntegrationHarness.create(`
 {"role":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1"}}}}
@@ -1275,6 +1425,7 @@ class IntegrationHarness {
 
   private readonly db: TwinnyDatabase;
   private readonly pool: RoleCodexAppServerPool;
+  private readonly manager: ConversationManager;
   private readonly consumer: LarkEventConsumer;
   private readonly registered: Record<string, (data: unknown) => unknown> = {};
   private disposed = false;
@@ -1285,6 +1436,7 @@ class IntegrationHarness {
     db: TwinnyDatabase;
     repository: StoreConversationRepository;
     pool: RoleCodexAppServerPool;
+    manager: ConversationManager;
     consumer: LarkEventConsumer;
     registered: Record<string, (data: unknown) => unknown>;
   }) {
@@ -1293,6 +1445,7 @@ class IntegrationHarness {
     this.db = options.db;
     this.repository = options.repository;
     this.pool = options.pool;
+    this.manager = options.manager;
     this.consumer = options.consumer;
     Object.assign(this.registered, options.registered);
   }
@@ -1391,6 +1544,7 @@ class IntegrationHarness {
       db,
       repository,
       pool,
+      manager,
       consumer,
       registered
     });
@@ -1433,6 +1587,13 @@ class IntegrationHarness {
       }
     }
     throw lastError;
+  }
+
+  async recoverCodexAppServer(role: RoleName): Promise<void> {
+    await this.manager.suspendActiveTurnsForCodexAppServerExit(role);
+    await this.pool.get(role).stop();
+    await this.pool.restart(role);
+    await this.manager.recoverSuspendedActiveTurnsForCodexAppServerExit(role);
   }
 
   readTrace(): TraceEntry[] {

@@ -579,6 +579,7 @@ interface ConversationState {
   submittedMessages: Map<string, IncomingLarkMessage>;
   processingMessage?: IncomingLarkMessage;
   active?: ActiveTurn;
+  suspendedActiveTurns: ActiveTurn[];
   sideTurns: Map<number, ActiveTurn>;
   waitingInterruptBatch?: {
     context: MessageContext;
@@ -735,6 +736,30 @@ export class ConversationManager {
       );
     }
     const counts = await Promise.all(suspendPromises);
+    return counts.reduce((sum, count) => sum + count, 0);
+  }
+
+  async recoverSuspendedActiveTurnsForCodexAppServerExit(role: RoleName): Promise<number> {
+    const recoverPromises: Promise<number>[] = [];
+    for (const state of this.states.values()) {
+      recoverPromises.push(
+        state.controlQueue.enqueue(async () => {
+          if (state.active) {
+            return 0;
+          }
+          const index = state.suspendedActiveTurns.findIndex((active) => active.role === role);
+          if (index < 0) {
+            return 0;
+          }
+          const [active] = state.suspendedActiveTurns.splice(index, 1);
+          if (!active) {
+            return 0;
+          }
+          return (await this.recoverSuspendedActiveTurnForCodexAppServerExit(state, active)) ? 1 : 0;
+        })
+      );
+    }
+    const counts = await Promise.all(recoverPromises);
     return counts.reduce((sum, count) => sum + count, 0);
   }
 
@@ -2270,6 +2295,10 @@ export class ConversationManager {
     }
     const pending = toPendingMessage(message, text, { queueBoundary: queueByMenu });
     const active = state.active;
+    if (!active && state.suspendedActiveTurns.length > 0) {
+      await this.queuePendingMessage(state, context, pending);
+      return;
+    }
     if (state.waitingInterruptBatch) {
       const batchOwnerOpenId = state.waitingInterruptBatch.messages[0]?.original.senderOpenId;
       if (batchOwnerOpenId && message.senderOpenId === batchOwnerOpenId) {
@@ -2301,7 +2330,7 @@ export class ConversationManager {
         await this.addQueuedReactionBestEffort(pending);
       }
       state.pendingBatch.push(pending);
-      if (!active) {
+      if (!active && state.suspendedActiveTurns.length === 0) {
         await this.startPendingBatch(state, context);
       }
       return;
@@ -2309,7 +2338,7 @@ export class ConversationManager {
     if (state.pendingBatch.length > 0 || active?.cancelRequested) {
       await this.addQueuedReactionBestEffort(pending);
       state.pendingBatch.push(pending);
-      if (!active) {
+      if (!active && state.suspendedActiveTurns.length === 0) {
         await this.startPendingBatch(state, context);
       }
       return;
@@ -2359,13 +2388,13 @@ export class ConversationManager {
       await this.tryConsumeWaitingQueue(state, active);
       return;
     }
-    if (state.active || state.pendingBatch.length > 0) {
+    if (state.active || state.suspendedActiveTurns.length > 0 || state.pendingBatch.length > 0) {
       await this.addQueuedReactionBestEffort(pending);
     }
     state.pendingBatch.push(pending);
     if (state.active?.waiting) {
       await this.tryConsumeWaitingQueue(state, state.active);
-    } else if (!state.active) {
+    } else if (!state.active && state.suspendedActiveTurns.length === 0) {
       await this.startPendingBatch(state, context);
     }
   }
@@ -2386,13 +2415,13 @@ export class ConversationManager {
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
-    if (state.active || state.pendingBatch.length > 0) {
+    if (state.active || state.suspendedActiveTurns.length > 0 || state.pendingBatch.length > 0) {
       await this.addQueuedReactionBestEffort(pending);
     }
     state.pendingBatch.push(pending);
     if (state.active?.waiting) {
       await this.tryConsumeWaitingQueue(state, state.active);
-    } else if (!state.active) {
+    } else if (!state.active && state.suspendedActiveTurns.length === 0) {
       await this.startPendingBatch(state, context);
     }
   }
@@ -2606,13 +2635,13 @@ export class ConversationManager {
       queueBoundary: true,
       control: "plan_on"
     });
-    if (state.active || state.pendingBatch.length > 0) {
+    if (state.active || state.suspendedActiveTurns.length > 0 || state.pendingBatch.length > 0) {
       await this.addQueuedReactionBestEffort(pending);
     }
     state.pendingBatch.push(pending);
     if (state.active?.waiting) {
       await this.tryConsumeWaitingQueue(state, state.active);
-    } else if (!state.active) {
+    } else if (!state.active && state.suspendedActiveTurns.length === 0) {
       await this.startPendingBatch(state, context);
     }
   }
@@ -2627,13 +2656,13 @@ export class ConversationManager {
       queueBoundary: true,
       control: "plan_off"
     });
-    if (state.active || state.pendingBatch.length > 0) {
+    if (state.active || state.suspendedActiveTurns.length > 0 || state.pendingBatch.length > 0) {
       await this.addQueuedReactionBestEffort(pending);
     }
     state.pendingBatch.push(pending);
     if (state.active?.waiting) {
       await this.tryConsumeWaitingQueue(state, state.active);
-    } else if (!state.active) {
+    } else if (!state.active && state.suspendedActiveTurns.length === 0) {
       await this.startPendingBatch(state, context);
     }
   }
@@ -2648,13 +2677,13 @@ export class ConversationManager {
       queueBoundary: true,
       control: "compact"
     });
-    if (state.active || state.pendingBatch.length > 0) {
+    if (state.active || state.suspendedActiveTurns.length > 0 || state.pendingBatch.length > 0) {
       await this.addQueuedReactionBestEffort(pending);
     }
     state.pendingBatch.push(pending);
     if (state.active?.waiting) {
       await this.tryConsumeWaitingQueue(state, state.active);
-    } else if (!state.active) {
+    } else if (!state.active && state.suspendedActiveTurns.length === 0) {
       await this.startPendingBatch(state, context);
     }
   }
@@ -3247,7 +3276,7 @@ export class ConversationManager {
   }
 
   private async startPendingBatch(state: ConversationState, context: MessageContext): Promise<void> {
-    while (!state.active && state.pendingBatch.length > 0) {
+    while (!state.active && state.suspendedActiveTurns.length === 0 && state.pendingBatch.length > 0) {
       const first = state.pendingBatch[0]!;
       if (first.control) {
         state.pendingBatch.shift();
@@ -3271,7 +3300,7 @@ export class ConversationManager {
     await this.addQueuedReactionBestEffort(message);
     state.pendingBatch.push(message);
     await this.markPendingMessagesQueuedBestEffort([message]);
-    if (!state.active) {
+    if (!state.active && state.suspendedActiveTurns.length === 0) {
       await this.startPendingBatch(state, context);
     }
   }
@@ -3374,6 +3403,7 @@ export class ConversationManager {
       role: RoleName;
       threadId: string;
       workspace: string;
+      card?: ActiveTurnCardState;
     }
   ): Promise<void> {
     const message = params.message;
@@ -3409,7 +3439,7 @@ export class ConversationManager {
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
       generatedImagePaths: [],
       reaction: await this.addReactionBestEffort(message.messageId),
-      card:
+      card: params.card ?? (
         agentMessageMode === "card"
           ? {
               anchorMessageId: message.messageId,
@@ -3417,7 +3447,8 @@ export class ConversationManager {
               messages: [],
               fallbackPlain: false
             }
-          : undefined,
+          : undefined
+      ),
       pendingSteers: [],
       messagesById: new Map([[message.messageId, message]]),
       messageIds: new Set([message.messageId]),
@@ -3579,6 +3610,7 @@ export class ConversationManager {
       threadId: string;
       workspace: string;
       recovering: boolean;
+      card?: ActiveTurnCardState;
     }
   ): Promise<void> {
     if (params.messages.length === 0) {
@@ -3632,7 +3664,7 @@ export class ConversationManager {
         title: goalWorkingTitle(content),
         recovering: params.recovering
       },
-      card:
+      card: params.card ?? (
         agentMessageMode === "card"
           ? {
               anchorMessageId: anchor.messageId,
@@ -3640,7 +3672,8 @@ export class ConversationManager {
               messages: [{ id: `goal:${anchor.messageId}:set`, text: `[设置目标] ${content}` }],
               fallbackPlain: false
             }
-          : undefined,
+          : undefined
+      ),
       pendingSteers: [],
       messagesById: new Map(params.messages.map((message) => [message.messageId, message])),
       messageIds: new Set(params.messages.map((message) => message.messageId)),
@@ -3771,6 +3804,7 @@ export class ConversationManager {
       workspace: string;
       input: CodexTurnInput;
       initialCardMessages?: TwinnyAgentCardMessage[];
+      card?: ActiveTurnCardState;
     }
   ): Promise<void> {
     if (params.messages.length === 0) {
@@ -3809,7 +3843,7 @@ export class ConversationManager {
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
       generatedImagePaths: [],
       reaction: await this.addReactionBestEffort(anchor.messageId),
-      card:
+      card: params.card ?? (
         agentMessageMode === "card"
           ? {
               anchorMessageId: anchor.messageId,
@@ -3817,7 +3851,8 @@ export class ConversationManager {
               messages: params.initialCardMessages ? [...params.initialCardMessages] : [],
               fallbackPlain: false
             }
-          : undefined,
+          : undefined
+      ),
       pendingSteers: [],
       messagesById: new Map(params.messages.map((message) => [message.messageId, message])),
       messageIds: new Set(params.messages.map((message) => message.messageId)),
@@ -4319,11 +4354,60 @@ export class ConversationManager {
       return false;
     }
     state.active = undefined;
+    if (!state.suspendedActiveTurns.includes(active)) {
+      state.suspendedActiveTurns.push(active);
+    }
     active.cancelRequested = true;
     active.pendingSteers = [];
     await this.clearReactionBestEffort(active);
     await this.pauseAgentCardForShutdownBestEffort(state, active);
     await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
+    return true;
+  }
+
+  private async recoverSuspendedActiveTurnForCodexAppServerExit(
+    state: ConversationState,
+    active: ActiveTurn
+  ): Promise<boolean> {
+    if (state.active) {
+      state.suspendedActiveTurns.unshift(active);
+      return false;
+    }
+    const messages = suspendedActiveTurnMessagesForRecovery(active);
+    if (messages.length === 0) {
+      await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
+      return false;
+    }
+    if (active.kind === "compact") {
+      await this.beginCompactTurn(state, active.context, {
+        message: messages[messages.length - 1]!,
+        role: active.role,
+        threadId: active.threadId,
+        workspace: active.workspace,
+        card: cloneActiveTurnCardForRecovery(active.card)
+      });
+      return true;
+    }
+    if (active.kind === "goal") {
+      await this.setThreadModeBestEffort(active.conversationKey, active.threadId, "default");
+      await this.beginGoalTurn(state, active.context, {
+        messages,
+        role: active.role,
+        threadId: active.threadId,
+        workspace: active.workspace,
+        recovering: true,
+        card: cloneActiveTurnCardForRecovery(active.card)
+      });
+      return true;
+    }
+    await this.beginActiveTurn(state, active.context, {
+      messages,
+      role: active.role,
+      threadId: active.threadId,
+      workspace: active.workspace,
+      input: ConversationManager.recoveryPrompt,
+      card: cloneActiveTurnCardForRecovery(active.card)
+    });
     return true;
   }
 
@@ -4877,6 +4961,7 @@ export class ConversationManager {
     const state: ConversationState = {
       controlQueue: new SerialQueue(),
       submittedMessages: new Map(),
+      suspendedActiveTurns: [],
       sideTurns: new Map(),
       pendingBatch: [],
       queueNextMessage: false,
@@ -5157,6 +5242,8 @@ export class ConversationManager {
       return false;
     }
     if (card.messageId) {
+      await this.patchAgentCardBestEffort(state, active, "working");
+      this.startAgentCardTimer(state, active);
       return true;
     }
     try {
@@ -6861,6 +6948,7 @@ function classifyInitialRoute(
   }
   if (
     state.pendingBatch.length > 0 ||
+    state.suspendedActiveTurns.length > 0 ||
     state.active?.cancelRequested ||
     state.active?.waiting ||
     state.active?.kind === "compact"
@@ -6901,6 +6989,33 @@ function countNextPendingBatch(state: ConversationState): number {
     }
   }
   return state.pendingBatch.length;
+}
+
+function suspendedActiveTurnMessagesForRecovery(active: ActiveTurn): PendingMessage[] {
+  const recoverAllMessages = active.kind === "goal" || active.processingMessageIds.size === 0;
+  const recoverableIds = recoverAllMessages ? active.messageIds : active.processingMessageIds;
+  const messages: PendingMessage[] = [];
+  for (const messageId of active.messageIds) {
+    if (!recoverableIds.has(messageId)) {
+      continue;
+    }
+    const message = active.messagesById.get(messageId);
+    if (message) {
+      messages.push(message);
+    }
+  }
+  return messages;
+}
+
+function cloneActiveTurnCardForRecovery(card: ActiveTurnCardState | undefined): ActiveTurnCardState | undefined {
+  if (!card) {
+    return undefined;
+  }
+  return {
+    ...card,
+    messages: [...card.messages],
+    timer: undefined
+  };
 }
 
 function splitFinalAgentCardMessages(
