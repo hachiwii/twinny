@@ -250,6 +250,78 @@ describe("Lark to Codex integration flow", () => {
             }
           }
         }
+      },
+      {
+        role: "guest",
+        on: { method: "thread/goal/set", nth: 1 },
+        reply: {
+          goal: {
+            threadId: "guest_thread_1",
+            objective: "ship queued goal /plan ignored",
+            status: "active",
+            tokenBudget: null,
+            tokensUsed: 0,
+            timeUsedSeconds: 0,
+            createdAt: 1,
+            updatedAt: 1
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "goal_turn_queued" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        notify: {
+          method: "item/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turnId: "goal_turn_queued",
+            item: { type: "agentMessage", id: "queued_goal_final", text: "goal complete", phase: "final_answer" }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        delayMs: 500,
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "goal_turn_queued",
+              status: "completed",
+              durationMs: 500,
+              items: [{ type: "agentMessage", id: "queued_goal_final", text: "goal complete", phase: "final_answer" }]
+            }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        delayMs: 520,
+        notify: {
+          method: "thread/goal/updated",
+          params: {
+            threadId: "guest_thread_1",
+            turnId: "goal_turn_queued",
+            goal: {
+              threadId: "guest_thread_1",
+              objective: "ship queued goal /plan ignored",
+              status: "complete",
+              tokenBudget: null,
+              tokensUsed: 0,
+              timeUsedSeconds: 0,
+              createdAt: 1,
+              updatedAt: 2
+            }
+          }
+        }
       }
     ));
 
@@ -278,6 +350,15 @@ describe("Lark to Codex integration flow", () => {
     expect(codexOut(harness.readTrace(), "thread/goal/set")).toHaveLength(0);
 
     await harness.waitForTrace((trace) => codexOut(trace, "thread/goal/set").length === 1, "queued goal set");
+    await harness.waitForTrace(
+      (trace) => larkOut(trace).some((entry) => entry.method === "PATCH" && traceText(entry).includes("实现目标中") && traceText(entry).includes("goal complete")),
+      "queued goal final while still working"
+    );
+    expect(harness.repository.getLarkMessageById("m_goal_queued")).toMatchObject({ status: "processing" });
+    expect(
+      larkOut(harness.readTrace()).some((entry) => entry.method === "PATCH" && traceText(entry).includes("已实现目标"))
+    ).toBe(false);
+
     await harness.waitForTrace(
       (trace) => larkOut(trace).some((entry) => entry.method === "PATCH" && traceText(entry).includes("已实现目标") && traceText(entry).includes("goal complete")),
       "queued goal completed card"
