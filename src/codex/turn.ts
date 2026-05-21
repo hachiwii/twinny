@@ -631,7 +631,7 @@ function extractPlanUpdate(params: ItemCompletedParams): CodexPlanUpdate | undef
   };
 }
 
-function handleTurnServerRequest(
+export function handleTurnServerRequest(
   protocol: CodexProtocolClient,
   options: TurnStartOptions,
   request: CodexRequestMessage

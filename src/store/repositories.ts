@@ -482,7 +482,7 @@ export class ConversationRepository {
         WHERE thread_id = ?
           AND codex_turn_id IS NOT NULL
           AND processing_started_at IS NOT NULL
-          AND route_kind <> 'side'
+          AND route_kind <> 'side_message'
         GROUP BY codex_turn_id
       )
     `);
@@ -1292,7 +1292,8 @@ function assertValidRouteKind(routeKind: LarkMessageRouteKind): void {
     routeKind !== "message" &&
     routeKind !== "steered_message" &&
     routeKind !== "queued_message" &&
-    routeKind !== "side" &&
+    routeKind !== "side_message" &&
+    routeKind !== "goal_message" &&
     routeKind !== "control_message" &&
     routeKind !== "card_action" &&
     routeKind !== "menu_action"

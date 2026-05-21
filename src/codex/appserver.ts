@@ -5,6 +5,16 @@ import { ensureGuestWorkspaceProjectTrusted } from "../roles/index.js";
 import type { RoleName } from "../types.js";
 import { CodexProtocolClient, createInitializeParams, type InitializeResponse } from "./protocol.js";
 import {
+  clearCodexThreadGoal,
+  getCodexThreadGoal,
+  resumeCodexThreadGoal,
+  runCodexThreadGoal,
+  setCodexThreadGoal,
+  type GoalResumeOptions,
+  type GoalRunOptions,
+  type ThreadGoal
+} from "./goal.js";
+import {
   forkCodexThread,
   injectCodexThreadItems,
   resumeCodexThread,
@@ -192,6 +202,29 @@ export class CodexAppServer extends EventEmitter {
 
   async readAccountRateLimits(): Promise<unknown> {
     return this.protocol.request("account/rateLimits/read");
+  }
+
+  async setThreadGoal(threadId: string, objective: string): Promise<ThreadGoal> {
+    return setCodexThreadGoal(this.protocol, { threadId, objective }, { requestTimeoutMs: this.options.requestTimeoutMs });
+  }
+
+  async getThreadGoal(threadId: string): Promise<ThreadGoal | null> {
+    return getCodexThreadGoal(this.protocol, threadId, { requestTimeoutMs: this.options.requestTimeoutMs });
+  }
+
+  async clearThreadGoal(threadId: string): Promise<void> {
+    await clearCodexThreadGoal(this.protocol, threadId, { requestTimeoutMs: this.options.requestTimeoutMs });
+  }
+
+  async runGoal(options: GoalRunOptions): Promise<import("../types.js").CodexTurnResult> {
+    return runCodexThreadGoal(this.protocol, options, { requestTimeoutMs: this.options.requestTimeoutMs });
+  }
+
+  async resumeGoal(options: GoalResumeOptions): Promise<import("../types.js").CodexTurnResult> {
+    if (options.cwd) {
+      await this.prepareThreadWorkspace(options.cwd);
+    }
+    return resumeCodexThreadGoal(this.protocol, options, { requestTimeoutMs: this.options.requestTimeoutMs });
   }
 
   async stop(signal: NodeJS.Signals = "SIGTERM"): Promise<void> {

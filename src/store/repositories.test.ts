@@ -355,7 +355,7 @@ describe("ConversationRepository", () => {
       eventId: "event_side",
       larkUserId: "ou_456",
       conversationKey: "p2p_ou_456",
-      routeKind: "side",
+      routeKind: "side_message",
       status: "processing",
       text: "side",
       sideId: 1,
@@ -371,7 +371,7 @@ describe("ConversationRepository", () => {
     now = 2800;
     repo.markLarkMessagesCompleted(["om_side"]);
     expect(repo.getLarkMessageById("om_side")).toMatchObject({
-      routeKind: "side",
+      routeKind: "side_message",
       sideId: 1,
       agentCardMessageId: "om_side_card",
       codexTurnId: "turn-side"

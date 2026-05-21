@@ -109,6 +109,22 @@ describe("CodexAppServer", () => {
         status: "completed",
         durationMs: 3
       });
+      await expect(server.runGoal({ threadId: "thread-existing", objective: "finish goal" })).resolves.toMatchObject({
+        threadId: "thread-existing",
+        turnId: "goal-turn-1",
+        text: "goal completed",
+        status: "completed"
+      });
+      await expect(server.getThreadGoal("thread-existing")).resolves.toMatchObject({
+        threadId: "thread-existing",
+        objective: "finish goal",
+        status: "complete"
+      });
+      await expect(server.resumeGoal({ threadId: "thread-existing", cwd: workspace })).resolves.toMatchObject({
+        threadId: "thread-existing",
+        status: "completed"
+      });
+      await expect(server.clearThreadGoal("thread-existing")).resolves.toBeUndefined();
       await expect(
         server.steerTurn({
           threadId: "thread-existing",
@@ -182,6 +198,21 @@ describe("CodexAppServer", () => {
         params: {
           threadId: "thread-existing"
         }
+      });
+      const goalSet = sent.find((message) => message.method === "thread/goal/set");
+      expect(goalSet).toMatchObject({
+        params: {
+          threadId: "thread-existing",
+          objective: "finish goal",
+          status: "active"
+        }
+      });
+      expect(goalSet?.params).not.toHaveProperty("tokenBudget");
+      expect(sent.find((message) => message.method === "thread/goal/get")).toMatchObject({
+        params: { threadId: "thread-existing" }
+      });
+      expect(sent.find((message) => message.method === "thread/goal/clear")).toMatchObject({
+        params: { threadId: "thread-existing" }
       });
       expect(sent.find((message) => message.method === "turn/steer")).toMatchObject({
         params: {
@@ -300,6 +331,7 @@ import readline from "node:readline";
 
 const captureFile = ${JSON.stringify(captureFile)};
 const rl = readline.createInterface({ input: process.stdin });
+const goals = new Map();
 
 function send(message) {
   process.stdout.write(JSON.stringify(message) + "\\n");
@@ -327,6 +359,64 @@ rl.on("line", (line) => {
   }
   if (message.method === "thread/resume") {
     send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+    return;
+  }
+  if (message.method === "thread/goal/set") {
+    const goal = {
+      threadId: message.params.threadId,
+      objective: message.params.objective ?? "goal",
+      status: message.params.status ?? "active",
+      tokenBudget: message.params.tokenBudget ?? null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 1
+    };
+    goals.set(message.params.threadId, goal);
+    send({ id: message.id, result: { goal } });
+    send({
+      method: "turn/started",
+      params: { threadId: message.params.threadId, turn: { id: "goal-turn-1" } }
+    });
+    send({
+      method: "item/completed",
+      params: {
+        threadId: message.params.threadId,
+        turnId: "goal-turn-1",
+        item: { type: "agentMessage", id: "goal-msg-1", text: "goal progress", phase: "commentary" },
+        completedAtMs: Date.now()
+      }
+    });
+    send({
+      method: "turn/completed",
+      params: {
+        threadId: message.params.threadId,
+        turn: {
+          id: "goal-turn-1",
+          status: "completed",
+          durationMs: 5,
+          items: [{ type: "agentMessage", id: "goal-msg-2", text: "goal completed", phase: "final_answer" }]
+        }
+      }
+    });
+    const completedGoal = { ...goal, status: "complete", updatedAt: 2 };
+    goals.set(message.params.threadId, completedGoal);
+    send({
+      method: "thread/goal/updated",
+      params: { threadId: message.params.threadId, turnId: "goal-turn-1", goal: completedGoal }
+    });
+    return;
+  }
+  if (message.method === "thread/goal/get") {
+    send({ id: message.id, result: { goal: goals.get(message.params.threadId) ?? null } });
+    return;
+  }
+  if (message.method === "thread/goal/clear") {
+    const cleared = goals.delete(message.params.threadId);
+    send({ id: message.id, result: { cleared } });
+    if (cleared) {
+      send({ method: "thread/goal/cleared", params: { threadId: message.params.threadId } });
+    }
     return;
   }
   if (message.method === "thread/fork") {

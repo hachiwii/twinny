@@ -7,7 +7,7 @@ import {
   writeLarkIconImageKey
 } from "../config/index.js";
 import { RoleCodexAppServerPool } from "../codex/index.js";
-import { ConversationManager } from "../conversation/manager.js";
+import { ConversationManager, type CodexBridge } from "../conversation/manager.js";
 import {
   LarkEventConsumer,
   LarkFileDownloader,
@@ -501,6 +501,39 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
         onTurnStarted,
         onTokenUsage
       }),
+    setThreadGoal: async ({
+      role,
+      threadId,
+      objective
+    }: {
+      role: RoleName;
+      threadId: string;
+      objective: string;
+    }) => pool.get(role).setThreadGoal(threadId, objective),
+    getThreadGoal: async ({
+      role,
+      threadId
+    }: {
+      role: RoleName;
+      threadId: string;
+    }) => pool.get(role).getThreadGoal(threadId),
+    clearThreadGoal: async ({
+      role,
+      threadId
+    }: {
+      role: RoleName;
+      threadId: string;
+    }): Promise<void> => {
+      await pool.get(role).clearThreadGoal(threadId);
+    },
+    runGoal: async ({
+      role,
+      ...options
+    }: Parameters<NonNullable<CodexBridge["runGoal"]>>[0]) => pool.get(role).runGoal(options),
+    resumeGoal: async ({
+      role,
+      ...options
+    }: Parameters<NonNullable<CodexBridge["resumeGoal"]>>[0]) => pool.get(role).resumeGoal(options),
     steerTurn: async ({
       role,
       threadId,

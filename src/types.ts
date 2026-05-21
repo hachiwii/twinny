@@ -34,7 +34,8 @@ export interface CodexImageGeneration {
 
 export type LarkMessageRouteKind =
   | "message"
-  | "side"
+  | "side_message"
+  | "goal_message"
   | "steered_message"
   | "queued_message"
   | "control_message"

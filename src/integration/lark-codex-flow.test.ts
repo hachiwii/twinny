@@ -1556,6 +1556,13 @@ function adaptCodexPool(pool: RoleCodexAppServerPool): CodexBridge {
       }),
     compactThread: async ({ role, threadId, cwd, onTurnStarted, onTokenUsage }) =>
       pool.get(role).compactThread({ threadId, cwd, onTurnStarted, onTokenUsage }),
+    setThreadGoal: async ({ role, threadId, objective }) => pool.get(role).setThreadGoal(threadId, objective),
+    getThreadGoal: async ({ role, threadId }) => pool.get(role).getThreadGoal(threadId),
+    clearThreadGoal: async ({ role, threadId }) => {
+      await pool.get(role).clearThreadGoal(threadId);
+    },
+    runGoal: async ({ role, ...options }) => pool.get(role).runGoal(options),
+    resumeGoal: async ({ role, ...options }) => pool.get(role).resumeGoal(options),
     steerTurn: async ({ role, threadId, turnId, input }) => {
       await pool.get(role).steerTurn({
         threadId,
@@ -1637,6 +1644,7 @@ const script = fs.readFileSync(scriptFile, "utf8")
   .map((line) => JSON.parse(line));
 const role = process.env.CODEX_HOME && process.env.CODEX_HOME.includes("/owner/") ? "owner" : "guest";
 const counts = new Map();
+const goals = new Map();
 const rl = readline.createInterface({ input: process.stdin });
 
 function append(entry) {
@@ -1684,6 +1692,27 @@ function defaultResult(message, method, nth) {
   }
   if (method === "thread/resume") {
     return { thread: { id: message.params.threadId } };
+  }
+  if (method === "thread/goal/set") {
+    const goal = {
+      threadId: message.params.threadId,
+      objective: message.params.objective ?? "goal",
+      status: message.params.status ?? "active",
+      tokenBudget: message.params.tokenBudget ?? null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 1
+    };
+    goals.set(message.params.threadId, goal);
+    return { goal };
+  }
+  if (method === "thread/goal/get") {
+    return { goal: goals.get(message.params.threadId) ?? null };
+  }
+  if (method === "thread/goal/clear") {
+    const cleared = goals.delete(message.params.threadId);
+    return { cleared };
   }
   if (method === "thread/fork") {
     return { thread: { id: role + "_thread_fork_" + nth, forkedFromId: message.params.threadId } };
@@ -1737,6 +1766,37 @@ function emitAction(action, message) {
   }
 }
 
+function emitDefaultGoalCompletion(message) {
+  const threadId = message.params.threadId;
+  send({ method: "turn/started", params: { threadId, turn: { id: "goal_turn_1" } } });
+  send({
+    method: "item/completed",
+    params: {
+      threadId,
+      turnId: "goal_turn_1",
+      item: { type: "agentMessage", id: "goal_msg_1", text: "goal progress", phase: "commentary" },
+      completedAtMs: Date.now()
+    }
+  });
+  send({
+    method: "turn/completed",
+    params: {
+      threadId,
+      turn: {
+        id: "goal_turn_1",
+        status: "completed",
+        durationMs: 5,
+        items: [{ type: "agentMessage", id: "goal_msg_2", text: "goal complete", phase: "final_answer" }]
+      }
+    }
+  });
+  const current = goals.get(threadId);
+  if (!current) return;
+  const completed = { ...current, status: "complete", updatedAt: 2 };
+  goals.set(threadId, completed);
+  send({ method: "thread/goal/updated", params: { threadId, turnId: "goal_turn_1", goal: completed } });
+}
+
 function handleRequest(message) {
   const method = message.method;
   const nth = nextCount(method);
@@ -1745,6 +1805,12 @@ function handleRequest(message) {
     send({ id: message.id, error: custom.error });
   } else {
     send({ id: message.id, result: custom?.reply ?? defaultResult(message, method, nth) });
+  }
+  if (!custom && method === "thread/goal/set") {
+    emitDefaultGoalCompletion(message);
+  }
+  if (!custom && method === "thread/goal/clear") {
+    send({ method: "thread/goal/cleared", params: { threadId: message.params.threadId } });
   }
   for (const action of script) {
     if (matches(action.after, message, method, nth)) {

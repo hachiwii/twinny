@@ -15,7 +15,7 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 14;
+export const currentStoreSchemaVersion = 15;
 
 const initialMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const threadRolloutMigrationFile = fileURLToPath(new URL("../../migrations/0002_codex_thread_rollout.sql", import.meta.url));
@@ -31,6 +31,7 @@ const removeProjectConversationTypeMigrationFile = fileURLToPath(new URL("../../
 const threadPlanStatusMigrationFile = fileURLToPath(new URL("../../migrations/0012_thread_plan_status.sql", import.meta.url));
 const removeConversationChatModeMigrationFile = fileURLToPath(new URL("../../migrations/0013_remove_conversation_chat_mode.sql", import.meta.url));
 const sideMessagesMigrationFile = fileURLToPath(new URL("../../migrations/0014_side_messages.sql", import.meta.url));
+const routeKindGoalMessagesMigrationFile = fileURLToPath(new URL("../../migrations/0015_route_kind_goal_messages.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -103,6 +104,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 14,
       name: "0014_side_messages",
       sql: fs.readFileSync(sideMessagesMigrationFile, "utf8")
+    },
+    {
+      version: 15,
+      name: "0015_route_kind_goal_messages",
+      sql: fs.readFileSync(routeKindGoalMessagesMigrationFile, "utf8")
     }
   ];
 }

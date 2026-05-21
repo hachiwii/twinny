@@ -55,6 +55,7 @@ import type {
   LarkGroupMessageType
 } from "../types.js";
 import type { CodexRequestUserInputResponder, CodexTurnInput, CodexUserInput } from "../codex/turn.js";
+import type { ThreadGoal } from "../codex/goal.js";
 import type { LarkSendMessageResult } from "../lark/types.js";
 import { SerialQueue } from "./queue.js";
 import {
@@ -331,6 +332,47 @@ export interface CodexBridge {
     turnId: string;
   }): Promise<void>;
   readAccountRateLimits?(params: { role: RoleName }): Promise<unknown>;
+  setThreadGoal?(params: {
+    role: RoleName;
+    threadId: string;
+    objective: string;
+  }): Promise<ThreadGoal>;
+  getThreadGoal?(params: {
+    role: RoleName;
+    threadId: string;
+  }): Promise<ThreadGoal | null>;
+  clearThreadGoal?(params: {
+    role: RoleName;
+    threadId: string;
+  }): Promise<void>;
+  runGoal?(params: {
+    role: RoleName;
+    threadId: string;
+    objective: string;
+    onTurnStarted?: (turnId: string) => Promise<void> | void;
+    onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
+    onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
+    onGoalUpdated?: (goal: ThreadGoal, turnId: string | null) => Promise<void> | void;
+    onGoalCleared?: () => Promise<void> | void;
+    onRequestUserInput?: (
+      request: CodexRequestUserInputRequest,
+      responder: CodexRequestUserInputResponder
+    ) => Promise<void> | void;
+  }): Promise<CodexTurnResult>;
+  resumeGoal?(params: {
+    role: RoleName;
+    threadId: string;
+    cwd: string;
+    onTurnStarted?: (turnId: string) => Promise<void> | void;
+    onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
+    onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
+    onGoalUpdated?: (goal: ThreadGoal, turnId: string | null) => Promise<void> | void;
+    onGoalCleared?: () => Promise<void> | void;
+    onRequestUserInput?: (
+      request: CodexRequestUserInputRequest,
+      responder: CodexRequestUserInputResponder
+    ) => Promise<void> | void;
+  }): Promise<CodexTurnResult>;
 }
 
 export interface LarkResponder {
@@ -453,7 +495,7 @@ interface PendingMessage {
   text: string;
   original: IncomingLarkMessage;
   queueBoundary: boolean;
-  control?: "plan_on" | "plan_off" | "compact";
+  control?: "plan_on" | "plan_off" | "compact" | "goal_set";
   queuedReaction?: LarkReactionHandle | null;
 }
 
@@ -468,8 +510,15 @@ type ActiveTurnWaiting =
       plan: CodexPlanUpdate;
     };
 
+interface ActiveGoalState {
+  objective: string;
+  content: string;
+  title: string;
+  recovering?: boolean;
+}
+
 interface ActiveTurn {
-  kind: "normal" | "compact" | "side";
+  kind: "normal" | "compact" | "side" | "goal";
   runId: number;
   sideId?: number;
   agentMessageMode: AgentMessageMode;
@@ -496,6 +545,7 @@ interface ActiveTurn {
   generatedImagePaths: string[];
   finalAgentMessageText?: string;
   sawAgentMessagePhase?: boolean;
+  goal?: ActiveGoalState;
   card?: ActiveTurnCardState;
   waiting?: ActiveTurnWaiting;
   planUpdatePending?: boolean;
@@ -543,6 +593,7 @@ type ParsedCommand =
   | { kind: "message"; text: string }
   | { kind: "queue"; text: string }
   | { kind: "side"; text: string }
+  | { kind: "goal"; text: string }
   | { kind: "plan"; text: string }
   | { kind: "exit" }
   | { kind: "compact" }
@@ -701,7 +752,7 @@ export class ConversationManager {
 
     for (const record of records) {
       const context = contextForRecoveredRecord(record);
-      if (record.routeKind === "side") {
+      if (record.routeKind === "side_message") {
         if (record.larkMessageId) {
           await this.markMessagesFailedBestEffort([record.larkMessageId]);
           await this.patchRecoveredSideCardFailedBestEffort(record, context, SIDE_SHUTDOWN_ERROR);
@@ -729,7 +780,7 @@ export class ConversationManager {
       if (!message) {
         continue;
       }
-      if (message.control === "compact") {
+      if (message.control === "compact" || (message.control === "goal_set" && record.status === "queued")) {
         state.pendingBatch.push(message);
       } else if (record.status === "processing") {
         const group = processingGroups.get(context.stateKey) ?? { state, context, records: [], messages: [] };
@@ -783,15 +834,18 @@ export class ConversationManager {
           );
         }
 
-        const parsed = parseSlashCommand(normalized.text);
+        const parsed = parseQueuedAwareSlashCommand(normalized.text);
         const text = record.status === "queued" && (normalized.resources?.length ?? 0) > 0 ? normalized.text : record.text;
         const pending = toPendingMessage(normalized, text, {
           queueBoundary:
             parsed.kind === "compact" ||
+            parsed.kind === "goal" ||
             (record.status === "queued" &&
               (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit")),
           control:
-            parsed.kind === "plan"
+            parsed.kind === "goal"
+              ? "goal_set"
+              : parsed.kind === "plan"
               ? "plan_on"
               : parsed.kind === "exit"
                 ? "plan_off"
@@ -879,15 +933,18 @@ export class ConversationManager {
     if (record.status === "queued") {
       await this.prepareIncomingMessageForCodex(context, normalized);
     }
-    const parsed = parseSlashCommand(normalized.text);
+    const parsed = parseQueuedAwareSlashCommand(normalized.text);
     const text = (record.status === "queued" && (normalized.resources?.length ?? 0) > 0) ? normalized.text : record.text;
     return toPendingMessage(normalized, text, {
       queueBoundary:
         parsed.kind === "compact" ||
+        parsed.kind === "goal" ||
         (record.status === "queued" &&
           (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit")),
       control:
-        parsed.kind === "plan"
+        parsed.kind === "goal"
+          ? "goal_set"
+          : parsed.kind === "plan"
           ? "plan_on"
           : parsed.kind === "exit"
             ? "plan_off"
@@ -904,6 +961,10 @@ export class ConversationManager {
     messages: PendingMessage[]
   ): Promise<void> {
     if (state.active || messages.length === 0) {
+      return;
+    }
+    if (records.some((record) => record.routeKind === "goal_message")) {
+      await this.startRecoveredGoalMessages(state, context, records, messages);
       return;
     }
     const anchor = messages[messages.length - 1]!;
@@ -926,6 +987,36 @@ export class ConversationManager {
       threadId: activeThread.threadId,
       workspace,
       input: ConversationManager.recoveryPrompt
+    });
+  }
+
+  private async startRecoveredGoalMessages(
+    state: ConversationState,
+    context: MessageContext,
+    records: LarkMessageRecord[],
+    messages: PendingMessage[]
+  ): Promise<void> {
+    const goalMessage = messages.find((message) => message.control === "goal_set") ?? messages[0];
+    if (!goalMessage) {
+      return;
+    }
+    const conversation = await this.getOrCreateRecoveryConversation(context, records, goalMessage.original);
+    const role = conversation.role;
+    const workspace = conversation.workspace;
+    const threadId = lastDefined(records.map((record) => record.codexThreadId)) ?? conversation.codexThreadId;
+    await this.recordCodexThreadBestEffort({
+      conversationKey: context.conversationKey,
+      codexThreadId: threadId,
+      role,
+      larkThreadId: context.larkThreadId
+    });
+    await this.setThreadModeBestEffort(context.conversationKey, threadId, "default");
+    await this.beginGoalTurn(state, context, {
+      messages,
+      role,
+      threadId,
+      workspace,
+      recovering: true
     });
   }
 
@@ -1456,6 +1547,10 @@ export class ConversationManager {
     }
     if (parsed.kind === "side") {
       await this.handleSideCommand(state, context, message, parsed.text);
+      return;
+    }
+    if (parsed.kind === "goal") {
+      await this.handleGoalCommand(state, context, message, parsed.text);
       return;
     }
     if (parsed.kind === "plan") {
@@ -2245,7 +2340,15 @@ export class ConversationManager {
     }
 
     state.queueNextMessage = false;
-    const pending = toPendingMessage(message, text, { queueBoundary: true });
+    const nested = parseSlashCommand(text);
+    const pending = nested.kind === "goal"
+      ? toPendingMessage(message, nested.text, { queueBoundary: true, control: "goal_set" })
+      : toPendingMessage(message, text, { queueBoundary: true });
+    if (pending.control === "goal_set" && !goalContentForPendingMessage(pending)) {
+      await this.replyControlBestEffort(message.messageId, "用法：/goal <objective>");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
     if (state.waitingInterruptBatch) {
       await this.queuePendingMessage(state, context, pending);
       return;
@@ -2254,6 +2357,33 @@ export class ConversationManager {
       const active = state.active;
       await this.queuePendingMessage(state, context, pending);
       await this.tryConsumeWaitingQueue(state, active);
+      return;
+    }
+    if (state.active || state.pendingBatch.length > 0) {
+      await this.addQueuedReactionBestEffort(pending);
+    }
+    state.pendingBatch.push(pending);
+    if (state.active?.waiting) {
+      await this.tryConsumeWaitingQueue(state, state.active);
+    } else if (!state.active) {
+      await this.startPendingBatch(state, context);
+    }
+  }
+
+  private async handleGoalCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    state.queueNextMessage = false;
+    const pending = toPendingMessage(message, text, {
+      queueBoundary: true,
+      control: "goal_set"
+    });
+    if (!goalContentForPendingMessage(pending)) {
+      await this.replyControlBestEffort(message.messageId, "用法：/goal <objective>");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
     if (state.active || state.pendingBatch.length > 0) {
@@ -2276,6 +2406,11 @@ export class ConversationManager {
     const sideText = text.trim();
     if (!sideText) {
       await this.replyControlBestEffort(message.messageId, "用法：/side <message>");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (parseSlashCommand(sideText).kind === "goal") {
+      await this.replyControlBestEffort(message.messageId, "goal 不能在 side 中使用。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
@@ -2461,6 +2596,11 @@ export class ConversationManager {
     message: IncomingLarkMessage,
     text: string
   ): Promise<void> {
+    if (parseSlashCommand(text).kind === "goal") {
+      await this.replyControlBestEffort(message.messageId, "goal 不能在 plan 中使用。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
     state.queueNextMessage = false;
     const pending = toPendingMessage(message, text, {
       queueBoundary: true,
@@ -2920,6 +3060,12 @@ export class ConversationManager {
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
+    if (active.kind === "goal" && state.pendingBatch[0]?.control) {
+      await this.executeNextAction(state, active.context);
+      await this.replyControlBestEffort(message.messageId, "队首是控制消息，已打断当前目标并开始执行队列。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
 
     const batch = state.pendingBatch.slice(0, nextBatchSize);
     const input = formatPendingMessagesForCodexInput(batch);
@@ -3190,6 +3336,20 @@ export class ConversationManager {
       });
       return;
     }
+    if (pending.control === "goal_set") {
+      if (resolved.replacedMissingThread) {
+        await this.notifyThreadReplacementBestEffort(pending.messageId, resolved.previousThreadId, resolved.threadId);
+      }
+      await this.setThreadModeBestEffort(resolved.conversationKey, resolved.threadId, "default");
+      await this.beginGoalTurn(state, context, {
+        messages: [pending],
+        role: resolved.role,
+        threadId: resolved.threadId,
+        workspace: resolved.workspace,
+        recovering: false
+      });
+      return;
+    }
     if (pending.control === "plan_on") {
       await this.setThreadModeBestEffort(resolved.conversationKey, resolved.threadId, "plan");
       if (pending.text.trim().length > 0) {
@@ -3370,7 +3530,8 @@ export class ConversationManager {
         roleForSender(this.options.config, normalized.senderOpenId)
       );
       const parsed = parseSlashCommand(normalized.text);
-      const text = parsed.kind === "queue" ? parsed.text : normalized.text;
+      const nested = parsed.kind === "queue" ? parseSlashCommand(parsed.text) : undefined;
+      const text = nested?.kind === "goal" ? nested.text : parsed.kind === "queue" ? parsed.text : normalized.text;
       await this.prepareIncomingMessageForCodex(context, normalized);
       pending.original = normalized;
       pending.text = (normalized.downloadedFiles?.length ?? 0) > 0 ? normalized.text : text;
@@ -3407,6 +3568,155 @@ export class ConversationManager {
       input: inputOverride ?? formatPendingMessagesForCodexInput(messages),
       initialCardMessages
     });
+  }
+
+  private async beginGoalTurn(
+    state: ConversationState,
+    context: MessageContext,
+    params: {
+      messages: PendingMessage[];
+      role: RoleName;
+      threadId: string;
+      workspace: string;
+      recovering: boolean;
+    }
+  ): Promise<void> {
+    if (params.messages.length === 0) {
+      return;
+    }
+    if (!this.options.codex.runGoal || !this.options.codex.resumeGoal) {
+      await this.markMessagesFailedBestEffort(params.messages.map((message) => message.messageId));
+      await this.replyControlBestEffort(params.messages[0]!.messageId, "当前 Codex app-server 不支持 goal。");
+      return;
+    }
+    const goalMessage = params.messages.find((message) => message.control === "goal_set") ?? params.messages[0]!;
+    const content = goalContentForPendingMessage(goalMessage);
+    if (!content) {
+      await this.markMessagesFailedBestEffort(params.messages.map((message) => message.messageId));
+      await this.replyControlBestEffort(goalMessage.messageId, "用法：/goal <objective>");
+      return;
+    }
+    const anchor = goalMessage;
+    await this.markPendingMessagesProcessingBestEffort(params.messages, {
+      conversationKey: context.conversationKey,
+      codexThreadId: params.threadId
+    });
+    const [modelSettings, threadTokenUsage] = await Promise.all([
+      this.readCodexTurnModelSettingsBestEffort(params.role, params.workspace),
+      this.readThreadTokenUsageBestEffort(params.threadId)
+    ]);
+    const startedAt = Date.now();
+    const agentMessageMode = this.options.config.lark.agentMessageMode;
+    const active: ActiveTurn = {
+      kind: "goal",
+      runId: ++state.nextRunId,
+      agentMessageMode,
+      role: params.role,
+      triggerOpenId: goalMessage.original.senderOpenId,
+      threadId: params.threadId,
+      workspace: params.workspace,
+      conversationKey: context.conversationKey,
+      context,
+      replyMessageId: anchor.messageId,
+      startedAt,
+      model: modelSettings.model,
+      modelReasoningEffort: modelSettings.effort,
+      mode: "default",
+      threadTokenUsage,
+      turnStartThreadTokenUsage: threadTokenUsage,
+      turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      reaction: await this.addReactionBestEffort(anchor.messageId),
+      goal: {
+        objective: content,
+        content,
+        title: goalWorkingTitle(content),
+        recovering: params.recovering
+      },
+      card:
+        agentMessageMode === "card"
+          ? {
+              anchorMessageId: anchor.messageId,
+              startedAt,
+              messages: [{ id: `goal:${anchor.messageId}:set`, text: `[设置目标] ${content}` }],
+              fallbackPlain: false
+            }
+          : undefined,
+      pendingSteers: [],
+      messagesById: new Map(params.messages.map((message) => [message.messageId, message])),
+      messageIds: new Set(params.messages.map((message) => message.messageId)),
+      processingMessageIds: new Set(params.messages.map((message) => message.messageId)),
+      steeredMessageIds: new Set(),
+      cancelRequested: false
+    };
+    state.active = active;
+    await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
+
+    const runGoal = async (): Promise<void> => {
+      try {
+        const callbacks = {
+          onTurnStarted: (turnId: string) => this.handleTurnStarted(state, active, turnId),
+          onAgentMessage: (agentMessage: CodexAgentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
+          onTokenUsage: (usage: CodexThreadTokenUsageUpdate) => this.recordThreadTokenUsageBestEffort(state, active, usage),
+          onRequestUserInput: (
+            request: CodexRequestUserInputRequest,
+            responder: CodexRequestUserInputResponder
+          ) => this.handleRequestUserInput(state, active, request, responder)
+        };
+        const result = params.recovering
+          ? await this.options.codex.resumeGoal!({
+              role: params.role,
+              threadId: active.threadId,
+              cwd: params.workspace,
+              ...callbacks
+            })
+          : await this.options.codex.runGoal!({
+              role: params.role,
+              threadId: active.threadId,
+              objective: content,
+              ...callbacks
+            });
+        active.completedStatus = result.status;
+        active.resultText = result.text;
+        active.resultError = result.error;
+        this.log.info(
+          {
+            messageId: anchor.messageId,
+            conversationKey: context.conversationKey,
+            role: params.role,
+            codexThreadId: active.threadId,
+            turnId: result.turnId,
+            status: result.status,
+            durationMs: Date.now() - startedAt
+          },
+          "conversation goal completed"
+        );
+      } catch (error) {
+        if (state.active === active && !active.cancelRequested) {
+          if (isCodexProtocolClosedError(error)) {
+            await this.suspendActiveTurnForCodexAppServerExit(state, active);
+            this.log.warn(
+              { error, messageId: active.replyMessageId, conversationKey: context.conversationKey, role: active.role },
+              "codex protocol closed; leaving goal recoverable"
+            );
+            return;
+          }
+          await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
+          this.log.error({ error, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation goal failed");
+          await this.failAgentCardBestEffort(state, active, toErrorMessage(error));
+          if (active.agentMessageMode !== "card" || active.card?.fallbackPlain || !active.card?.messageId) {
+            await this.replyErrorBestEffort(active.replyMessageId, error);
+          }
+        } else {
+          this.log.debug({ error, conversationKey: context.conversationKey, threadId: active.threadId }, "ignored stale codex goal failure");
+        }
+      }
+    };
+
+    void runGoal()
+      .finally(() => {
+        void state.controlQueue.enqueue(() => this.finishActiveTurn(state, context.conversationKey, active));
+      });
+    await this.createAgentCardBestEffort(state, active);
   }
 
   private async resolveThreadForMessage(
@@ -3636,7 +3946,7 @@ export class ConversationManager {
 
   private async handleTurnStarted(state: ConversationState, active: ActiveTurn, turnId: string): Promise<void> {
     await state.controlQueue.enqueue(async () => {
-      if (active.turnId && active.turnId !== turnId) {
+      if (active.turnId && active.turnId !== turnId && active.kind !== "goal") {
         return;
       }
       active.turnId = turnId;
@@ -3912,6 +4222,9 @@ export class ConversationManager {
     if (!options.waitForCompletion || noCompletionExpected) {
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
     }
+    if (active.kind === "goal") {
+      await this.clearActiveGoalBestEffort(active);
+    }
     let interruptResult: ActiveTurnInterruptResult = "missing";
     if (active.turnId) {
       interruptResult = await this.interruptActiveTurnBestEffort(active);
@@ -4045,6 +4358,20 @@ export class ConversationManager {
     } catch (error) {
       this.log.warn({ error, threadId: active.threadId, turnId: active.turnId }, "failed to interrupt codex turn");
       return isNoActiveTurnToInterruptError(error) ? "missing" : "failed";
+    }
+  }
+
+  private async clearActiveGoalBestEffort(active: ActiveTurn): Promise<void> {
+    if (active.kind !== "goal" || !this.options.codex.clearThreadGoal) {
+      return;
+    }
+    try {
+      await this.options.codex.clearThreadGoal({
+        role: active.role,
+        threadId: active.threadId
+      });
+    } catch (error) {
+      this.log.warn({ error, threadId: active.threadId }, "failed to clear active codex goal");
     }
   }
 
@@ -4799,9 +5126,12 @@ export class ConversationManager {
       await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
       return;
     }
-    if (agentMessage.phase === "final_answer") {
+    if (agentMessage.phase === "final_answer" && active.kind !== "goal") {
       active.finalAgentMessageText = text;
       return;
+    }
+    if (agentMessage.phase === "final_answer") {
+      active.finalAgentMessageText = text;
     }
     card.messages.push({ id: agentMessage.id, text });
 
@@ -4949,6 +5279,8 @@ export class ConversationManager {
     try {
       const final = active.kind === "compact"
         ? { text: COMPACT_COMPLETED_TEXT, processMessages: [] }
+        : active.kind === "goal"
+          ? splitGoalAgentCardMessages(card.messages, active.resultText ?? "")
         : splitFinalAgentCardMessages(
             card.messages,
             active.resultText ?? "",
@@ -5194,6 +5526,11 @@ export class ConversationManager {
       runId: active.runId,
       iconImageKey: this.options.config.lark.iconImageKey,
       mode: active.mode,
+      title: active.kind === "goal" && status === "working"
+        ? active.goal?.title
+        : active.kind === "goal" && status === "finished"
+          ? "已实现目标"
+          : undefined,
       subtitle: active.kind === "side" ? sideCardSubtitle(active) : undefined,
       hideQueueControls: active.kind === "side",
       waiting:
@@ -5685,6 +6022,9 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "side" || command === "btw") {
     return { kind: "side", text: rest };
   }
+  if (command === "goal") {
+    return { kind: "goal", text: rest };
+  }
   if (command === "plan") {
     return { kind: "plan", text: rest };
   }
@@ -5695,6 +6035,15 @@ function parseSlashCommand(text: string): ParsedCommand {
     return { kind: "compact" };
   }
   return { kind: "message", text };
+}
+
+function parseQueuedAwareSlashCommand(text: string): ParsedCommand {
+  const parsed = parseSlashCommand(text);
+  if (parsed.kind !== "queue") {
+    return parsed;
+  }
+  const nested = parseSlashCommand(parsed.text);
+  return nested.kind === "goal" ? nested : parsed;
 }
 
 function parseTwinnyCardAction(value: Record<string, unknown>): ParsedCardActionCommand | undefined {
@@ -5943,6 +6292,60 @@ function stringArrayValue(value: unknown): string[] {
 
 function compactInlineText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function goalContentForPendingMessage(message: PendingMessage): string {
+  let text = message.text;
+  for (const resource of message.original.resources ?? []) {
+    const placeholder = nonEmptyString(resource.textPlaceholder);
+    if (!placeholder) {
+      continue;
+    }
+    text = text.split(placeholder).join(goalResourceLabel(resource.codexTag, resource.resourceType, message.original.messageType));
+  }
+  text = text
+    .replace(/<img\b[^>]*>[\s\S]*?<\/img>/gi, " [图片] ")
+    .replace(/<video\b[^>]*>[\s\S]*?<\/video>/gi, " [视频] ")
+    .replace(/<file\b[^>]*>[\s\S]*?<\/file>/gi, " [文件] ");
+
+  const compact = compactInlineText(text);
+  if (compact) {
+    return compact;
+  }
+  const standalone = standaloneGoalResourceLabel(message.original.messageType, message.original.resources);
+  return standalone ? compactInlineText(standalone) : "";
+}
+
+function goalWorkingTitle(content: string): string {
+  return `实现目标中：${truncateGoalTitle(content)}`;
+}
+
+function truncateGoalTitle(content: string): string {
+  const chars = Array.from(content);
+  return chars.length <= 30 ? content : `${chars.slice(0, 30).join("")}...`;
+}
+
+function standaloneGoalResourceLabel(
+  messageType: string,
+  resources: IncomingLarkMessage["resources"]
+): string | undefined {
+  const labels = (resources ?? []).map((resource) => goalResourceLabel(resource.codexTag, resource.resourceType, messageType));
+  return labels.length > 0 ? labels.join(" ") : undefined;
+}
+
+function goalResourceLabel(
+  codexTag: "img" | "video" | "file" | undefined,
+  resourceType: "image" | "file",
+  messageType: string
+): string {
+  const normalizedMessageType = messageType.trim().toLowerCase();
+  if (codexTag === "video" || normalizedMessageType === "video" || normalizedMessageType === "media") {
+    return "[视频]";
+  }
+  if (codexTag === "img" || resourceType === "image" || normalizedMessageType === "image") {
+    return "[图片]";
+  }
+  return "[文件]";
 }
 
 function parseActivateCommand(
@@ -6373,6 +6776,7 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/next - 打断当前任务，并执行队列中的下一条消息",
     "/steer - 将队列中的下一批消息注入当前任务",
     "/queue <message> - 将消息加入下一轮队列，不注入当前任务",
+    "/goal <objective> - 设置并自动实现 Codex goal",
     "/side <message> 或 /btw <message> - 基于当前 Codex thread 发起临时会话",
     "/compact - 压缩当前 Codex thread 上下文；默认加入下一轮队列",
     "/thread [message] - 创建新话题",
@@ -6416,10 +6820,17 @@ function classifyInitialRoute(
       : { routeKind: "queued_message", status: "queued", text: parsed.text };
   }
   if (parsed.kind === "queue" && parsed.text.length > 0) {
+    const nested = parseSlashCommand(parsed.text);
+    if (nested.kind === "goal") {
+      return { routeKind: "goal_message", status: "queued", text: nested.text };
+    }
     return { routeKind: "queued_message", status: "queued", text: parsed.text };
   }
   if (parsed.kind === "side") {
-    return { routeKind: "side", status: "processing", text: parsed.text };
+    return { routeKind: "side_message", status: "processing", text: parsed.text };
+  }
+  if (parsed.kind === "goal") {
+    return { routeKind: "goal_message", status: "queued", text: parsed.text };
   }
   if (parsed.kind === "plan") {
     return { routeKind: "queued_message", status: "queued", text: parsed.text };
@@ -6520,6 +6931,27 @@ function splitFinalAgentCardMessages(
   const finalMessage = messages[finalMessageIndex]!;
   return {
     text: finalMessage.text,
+    processMessages: messages.filter((_, index) => index !== finalMessageIndex)
+  };
+}
+
+function splitGoalAgentCardMessages(
+  messages: TwinnyAgentCardMessage[],
+  fallbackFinalText: string
+): { text: string; processMessages: TwinnyAgentCardMessage[] } {
+  let finalMessageIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message && message.processOnly !== true && !message.id.startsWith("goal:")) {
+      finalMessageIndex = index;
+      break;
+    }
+  }
+  if (finalMessageIndex < 0) {
+    return { text: fallbackFinalText, processMessages: messages };
+  }
+  return {
+    text: messages[finalMessageIndex]!.text,
     processMessages: messages.filter((_, index) => index !== finalMessageIndex)
   };
 }

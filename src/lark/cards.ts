@@ -59,6 +59,7 @@ export interface RenderTwinnyAgentCardOptions {
   runId: number;
   iconImageKey?: string;
   mode?: CodexThreadMode;
+  title?: string;
   subtitle?: string;
   hideQueueControls?: boolean;
   waiting?: TwinnyAgentCardWaiting;
@@ -939,6 +940,9 @@ function cardHeaderTitle(
 ): string {
   if (isPlanCardStatus(options.status) && options.waiting?.kind === "plan") {
     return parsedPlan?.title ?? fallback;
+  }
+  if (options.title) {
+    return options.title;
   }
   return fallback;
 }
