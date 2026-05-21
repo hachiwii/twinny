@@ -2684,6 +2684,55 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("replaces downloaded interactive card resources with file path XML without local image inputs", async () => {
+    const codex = createCodex();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(async ({ outputDir, resourceType, fileKey }) => ({
+        path: `${outputDir}/${fileKey}${resourceType === "image" ? ".jpg" : ".mp4"}`,
+        resourceType,
+        fileKey,
+        fileName: `${fileKey}${resourceType === "image" ? ".jpg" : ".mp4"}`,
+        size: resourceType === "image" ? 111 : 222,
+        contentType: resourceType === "image" ? "image/jpeg" : "video/mp4"
+      }))
+    };
+    const manager = createManager({ codex, larkFiles });
+
+    manager.submitIncoming(
+      message("m1", "<card title=\"Card\">\nAlpha\n{{TWINNY_LARK_RESOURCE_0}}\n{{TWINNY_LARK_RESOURCE_1}}\n</card>", {
+        messageType: "interactive",
+        resources: [
+          {
+            resourceType: "image",
+            fileKey: "img_card",
+            codexTag: "file",
+            textPlaceholder: "{{TWINNY_LARK_RESOURCE_0}}"
+          },
+          {
+            resourceType: "file",
+            fileKey: "file_card",
+            codexTag: "file",
+            textPlaceholder: "{{TWINNY_LARK_RESOURCE_1}}"
+          }
+        ]
+      })
+    );
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input:
+          '<lark_message lark_message_id="m1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+          '<card title="Card">\n' +
+          "Alpha\n" +
+          '<file path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m1/img_card.jpg" lark_file_key="img_card" size="111">Saved locally</file>\n' +
+          '<file path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/m1/file_card.mp4" lark_file_key="file_card" size="222">Saved locally</file>\n' +
+          "</card>\n" +
+          "</lark_message>"
+      })
+    );
+  });
+
   it("forwards unsupported Lark message types to Codex with raw metadata", async () => {
     const codex = createCodex();
     const manager = createManager({ codex });
@@ -2778,6 +2827,75 @@ describe("ConversationManager", () => {
           "</lark_message>\n" +
           '<lark_message lark_message_id="child_image" timestamp="112" message_type="image" sender_id="cli_app" sender_id_type="app_id" sender_type="app">\n' +
           '<file path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/img_1.jpg" lark_file_key="img_1" size="123">Saved locally</file>\n' +
+          "</lark_message>\n" +
+          "</merge_forward>\n" +
+          "</lark_message>"
+      })
+    );
+  });
+
+  it("expands interactive card children inside merge-forward messages", async () => {
+    const codex = createCodex();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(async ({ outputDir, fileKey }) => ({
+        path: `${outputDir}/${fileKey}.jpg`,
+        resourceType: "image" as const,
+        fileKey,
+        size: 123,
+        contentType: "image/jpeg"
+      }))
+    };
+    const larkMessages: LarkMessageReader = {
+      getMessage: vi.fn(),
+      getMessageItems: vi.fn(async () => [
+        { message_id: "mf1", msg_type: "merge_forward", deleted: false, body: { content: "Merged and Forwarded Message" } },
+        {
+          message_id: "child_card",
+          upper_message_id: "mf1",
+          msg_type: "interactive",
+          chat_id: "oc_source",
+          create_time: "111",
+          sender: { id: "cli_app", id_type: "app_id", sender_type: "app" },
+          body: {
+            content: JSON.stringify({
+              schema: "2.0",
+              header: { title: { tag: "plain_text", content: "Child Card" } },
+              body: {
+                elements: [
+                  { tag: "markdown", content: "Card child" },
+                  { tag: "img", img_key: "img_child" }
+                ]
+              }
+            })
+          }
+        }
+      ])
+    };
+    const manager = createManager({ codex, larkFiles, larkMessages });
+
+    manager.submitIncoming(message("mf1", "Merged and Forwarded Message", {
+      messageType: "merge_forward",
+      rawForCodex: true
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(larkFiles.downloadMessageResource).toHaveBeenCalledWith({
+      messageId: "mf1",
+      resourceType: "image",
+      fileKey: "img_child",
+      fileName: undefined,
+      outputDir: "/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files"
+    });
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input:
+          '<lark_message lark_message_id="mf1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+          '<merge_forward source_chat_id="oc_source">\n' +
+          '<lark_message lark_message_id="child_card" timestamp="111" message_type="interactive" sender_id="cli_app" sender_id_type="app_id" sender_type="app">\n' +
+          '<card title="Child Card">\n' +
+          "Card child\n" +
+          '<file path="/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/img_child.jpg" lark_file_key="img_child" size="123">Saved locally</file>\n' +
+          "</card>\n" +
           "</lark_message>\n" +
           "</merge_forward>\n" +
           "</lark_message>"

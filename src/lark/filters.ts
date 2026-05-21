@@ -241,6 +241,16 @@ export function normalizeLarkMessageContent(messageType: string, content: unknow
     }
   }
 
+  if (messageType === "interactive") {
+    const card = normalizeInteractiveCardContent(content);
+    if (card) {
+      return {
+        ...card,
+        rawForCodex: false
+      };
+    }
+  }
+
   const resources = extractMessageResources(messageType, content);
   return {
     text: resources.length === 0 ? null : fallbackResourceText(resources),
@@ -323,6 +333,167 @@ function getPostContent(content: Record<string, unknown>): Record<string, unknow
     }
   }
   return null;
+}
+
+function normalizeInteractiveCardContent(content: unknown): NormalizedPostContent | null {
+  const card = parseContentObject(content);
+  if (!card || stringValue(card.schema) !== "2.0") {
+    return null;
+  }
+
+  const resources: IncomingLarkMessageResource[] = [];
+  const attributes: Array<[string, string]> = [];
+  const header = isRecord(card.header) ? card.header : {};
+  const title = cardTextContent(header.title);
+  const subtitle = cardTextContent(header.subtitle);
+  if (title) {
+    attributes.push(["title", title]);
+  }
+  if (subtitle) {
+    attributes.push(["subtitle", subtitle]);
+  }
+
+  const bodyParts: string[] = [];
+  const body = isRecord(card.body) ? card.body : {};
+  renderCardElements(body.elements, resources, bodyParts);
+
+  const openTag = attributes.length > 0
+    ? `<card ${attributes.map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`).join(" ")}>`
+    : "<card>";
+  return {
+    text: [openTag, ...bodyParts, "</card>"].join("\n"),
+    resources
+  };
+}
+
+function renderCardElements(
+  elements: unknown,
+  resources: IncomingLarkMessageResource[],
+  parts: string[]
+): void {
+  if (!Array.isArray(elements)) {
+    return;
+  }
+  for (const element of elements) {
+    renderCardElement(element, resources, parts);
+  }
+}
+
+function renderCardElement(
+  element: unknown,
+  resources: IncomingLarkMessageResource[],
+  parts: string[]
+): void {
+  if (!isRecord(element)) {
+    return;
+  }
+
+  const tag = stringValue(element.tag);
+  if (tag === "markdown") {
+    pushNonEmpty(parts, stringValue(element.content));
+    return;
+  }
+  if (tag === "div") {
+    pushNonEmpty(parts, cardTextContent(element.text));
+    return;
+  }
+  if (tag === "plain_text") {
+    pushNonEmpty(parts, stringValue(element.content));
+    return;
+  }
+  if (tag === "img") {
+    const imageKey = stringValue(element.img_key) ?? stringValue(element.image_key);
+    if (imageKey) {
+      const placeholder = resourcePlaceholder(resources.length);
+      resources.push({
+        resourceType: "image",
+        fileKey: imageKey,
+        codexTag: "file",
+        textPlaceholder: placeholder
+      });
+      parts.push(placeholder);
+    }
+    return;
+  }
+  if (tag === "media") {
+    const fileKey = stringValue(element.file_key);
+    if (fileKey) {
+      const placeholder = resourcePlaceholder(resources.length);
+      resources.push({
+        resourceType: "file",
+        fileKey,
+        codexTag: "file",
+        textPlaceholder: placeholder
+      });
+      parts.push(placeholder);
+    }
+    return;
+  }
+  if (isDiscardedCardElementTag(tag)) {
+    return;
+  }
+  if (tag === "collapsible_panel") {
+    if (isRecord(element.header)) {
+      pushNonEmpty(parts, cardTextContent(element.header.title));
+    }
+    renderCardElements(element.elements, resources, parts);
+    return;
+  }
+  if (tag === "column_set") {
+    renderCardColumns(element.columns, resources, parts);
+    return;
+  }
+  if (isCardContainerTag(tag)) {
+    renderCardElements(element.elements, resources, parts);
+  }
+}
+
+function renderCardColumns(
+  columns: unknown,
+  resources: IncomingLarkMessageResource[],
+  parts: string[]
+): void {
+  if (!Array.isArray(columns)) {
+    return;
+  }
+  for (const column of columns) {
+    if (isRecord(column)) {
+      renderCardElements(column.elements, resources, parts);
+    }
+  }
+}
+
+function cardTextContent(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return stringValue(value.content);
+}
+
+function pushNonEmpty(parts: string[], value: string | undefined): void {
+  if (value !== undefined && value.trim() !== "") {
+    parts.push(value);
+  }
+}
+
+function isCardContainerTag(tag: string | undefined): boolean {
+  return tag === "column" || tag === "form" || tag === "interactive_container";
+}
+
+function isDiscardedCardElementTag(tag: string | undefined): boolean {
+  return tag === "button" ||
+    tag === "select_static" ||
+    tag === "multi_select_static" ||
+    tag === "select_person" ||
+    tag === "multi_select_person" ||
+    tag === "input" ||
+    tag === "chart" ||
+    tag === "date_picker" ||
+    tag === "picker_time" ||
+    tag === "picker_datetime" ||
+    tag === "checker" ||
+    tag === "overflow" ||
+    tag === "table";
 }
 
 function renderPostParagraph(paragraph: unknown[], resources: IncomingLarkMessageResource[]): string {
@@ -431,6 +602,14 @@ function escapeMarkdownText(value: string): string {
 
 function escapeMarkdownUrl(value: string): string {
   return value.replace(/\)/g, "%29");
+}
+
+function escapeXmlAttribute(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function extractMessageResources(messageType: string | undefined, content: unknown): IncomingLarkMessageResource[] {

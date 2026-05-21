@@ -109,6 +109,72 @@ describe("normalizeIncomingLarkMessage", () => {
     });
   });
 
+  it("converts JSON 2.0 interactive cards into flattened card text with downloadable resources", () => {
+    const normalized = normalizeIncomingLarkMessage(
+      receiveEvent({
+        message: {
+          message_type: "interactive",
+          content: JSON.stringify({
+            schema: "2.0",
+            header: {
+              title: { tag: "plain_text", content: 'Status & "Plan" <v2>' },
+              subtitle: { tag: "plain_text", content: "Sub > Ready" }
+            },
+            body: {
+              elements: [
+                { tag: "markdown", content: "**Keep <raw>& body**" },
+                { tag: "div", text: { tag: "plain_text", content: "Div <raw> & body" } },
+                { tag: "plain_text", content: "Plain text body" },
+                {
+                  tag: "column_set",
+                  columns: [
+                    {
+                      tag: "column",
+                      elements: [{ tag: "markdown", content: "Nested column text" }]
+                    }
+                  ]
+                },
+                {
+                  tag: "collapsible_panel",
+                  header: { title: { tag: "plain_text", content: "Panel title" } },
+                  elements: [{ tag: "div", text: { tag: "plain_text", content: "Panel body" } }]
+                },
+                { tag: "button", text: { tag: "plain_text", content: "Ignored button" } },
+                { tag: "select_static", placeholder: { tag: "plain_text", content: "Ignored select" } },
+                { tag: "input", placeholder: { tag: "plain_text", content: "Ignored input" } },
+                { tag: "chart", chart_spec: { title: "Ignored chart" } },
+                { tag: "img", img_key: "img_card" },
+                { tag: "media", file_key: "file_card" }
+              ]
+            }
+          })
+        }
+      })
+    );
+
+    expect(normalized).toMatchObject({
+      messageId: "om_1",
+      messageType: "interactive",
+      text:
+        '<card title="Status &amp; &quot;Plan&quot; &lt;v2&gt;" subtitle="Sub &gt; Ready">\n' +
+        "**Keep <raw>& body**\n" +
+        "Div <raw> & body\n" +
+        "Plain text body\n" +
+        "Nested column text\n" +
+        "Panel title\n" +
+        "Panel body\n" +
+        "{{TWINNY_LARK_RESOURCE_0}}\n" +
+        "{{TWINNY_LARK_RESOURCE_1}}\n" +
+        "</card>",
+      resources: [
+        { resourceType: "image", fileKey: "img_card", codexTag: "file", textPlaceholder: "{{TWINNY_LARK_RESOURCE_0}}" },
+        { resourceType: "file", fileKey: "file_card", codexTag: "file", textPlaceholder: "{{TWINNY_LARK_RESOURCE_1}}" }
+      ]
+    });
+    expect(normalized?.rawForCodex).toBeUndefined();
+    expect(normalized?.text).not.toContain("Ignored");
+  });
+
   it("normalizes unsupported p2p message types as raw messages for Codex", () => {
     const event = receiveEvent({
       message: {
@@ -126,6 +192,33 @@ describe("normalizeIncomingLarkMessage", () => {
       text: JSON.stringify({
         message_type: "merge_forward",
         content: JSON.stringify({ message_id_list: ["om_child"] })
+      })
+    });
+  });
+
+  it("forwards non-2.0 interactive cards as raw message JSON", () => {
+    const event = receiveEvent({
+      message: {
+        message_type: "interactive",
+        content: JSON.stringify({
+          header: { title: { tag: "plain_text", content: "old card" } },
+          elements: [{ tag: "markdown", content: "legacy body" }]
+        })
+      }
+    });
+
+    const normalized = normalizeIncomingLarkMessage(event);
+
+    expect(normalized).toMatchObject({
+      messageId: "om_1",
+      messageType: "interactive",
+      rawForCodex: true,
+      text: JSON.stringify({
+        message_type: "interactive",
+        content: JSON.stringify({
+          header: { title: { tag: "plain_text", content: "old card" } },
+          elements: [{ tag: "markdown", content: "legacy body" }]
+        })
       })
     });
   });
