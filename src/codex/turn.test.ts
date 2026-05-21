@@ -252,6 +252,68 @@ describe("TurnOutputAccumulator", () => {
     expect(turnStarted).toHaveBeenCalledWith("turn_1");
   });
 
+  it("keeps waiting when Codex reports a retryable turn error", async () => {
+    const accumulator = new TurnOutputAccumulator("thread_123");
+
+    accumulator.record({
+      method: "turn/started",
+      params: {
+        threadId: "thread_123",
+        turn: { id: "turn_1" }
+      }
+    });
+    accumulator.record({
+      method: "error",
+      params: {
+        message: "Reconnecting... 2/5",
+        willRetry: true,
+        error: {
+          codexErrorInfo: {
+            responseStreamDisconnected: {
+              httpStatusCode: null
+            }
+          }
+        },
+        additionalDetails: "stream disconnected before completion"
+      }
+    });
+    accumulator.record({
+      method: "turn/completed",
+      params: {
+        threadId: "thread_123",
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          items: [{ type: "agentMessage", id: "msg_1", text: "done after reconnect" }]
+        }
+      }
+    });
+
+    await expect(accumulator.wait()).resolves.toMatchObject({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      text: "done after reconnect",
+      status: "completed"
+    });
+  });
+
+  it("fails when Codex reports a non-retryable turn error", async () => {
+    const accumulator = new TurnOutputAccumulator("thread_123");
+
+    accumulator.record({
+      method: "error",
+      params: {
+        message: "stream disconnected before completion",
+        willRetry: false
+      }
+    });
+
+    await expect(accumulator.wait()).rejects.toMatchObject({
+      code: "CODEX_TURN_FAILED",
+      message: "stream disconnected before completion"
+    });
+  });
+
   it("emits thread token usage updates", async () => {
     const tokenUsage = vi.fn();
     const accumulator = new TurnOutputAccumulator("thread_123", undefined, {

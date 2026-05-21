@@ -455,6 +455,9 @@ export class TurnOutputAccumulator {
   }
 
   private recordError(params: unknown): void {
+    if (isRetryableTurnError(params)) {
+      return;
+    }
     const message =
       isRecord(params) && typeof params.message === "string"
         ? params.message
@@ -758,6 +761,10 @@ function isTurnCompletedParams(value: unknown): value is TurnCompletedParams {
 
 function isItemCompletedParams(value: unknown): value is ItemCompletedParams {
   return isRecord(value) && typeof value.threadId === "string";
+}
+
+function isRetryableTurnError(value: unknown): boolean {
+  return isRecord(value) && value.willRetry === true;
 }
 
 function stringValue(value: unknown): string | undefined {
