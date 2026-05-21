@@ -1146,7 +1146,7 @@ export class ConversationManager {
           continue;
         }
 
-        const rendered = await this.renderMergeForwardChildMessage(context, child);
+        const rendered = await this.renderMergeForwardChildMessage(context, message.messageId, child);
         const childContentBytes = byteLength(rendered.content);
         if (childContentBytes > MERGE_FORWARD_CHILD_CONTENT_MAX_BYTES) {
           renderedChildren.push(formatMergeForwardChildMessage(rendered.attributes, "", {
@@ -1204,6 +1204,7 @@ export class ConversationManager {
 
   private async renderMergeForwardChildMessage(
     context: MessageContext,
+    mergeForwardMessageId: string,
     item: Record<string, unknown>
   ): Promise<{ attributes: Array<[string, string]>; content: string }> {
     const messageId = nonEmptyString(stringRecordValue(item, "message_id")) ?? "unknown";
@@ -1251,7 +1252,7 @@ export class ConversationManager {
     let text = normalized.text ?? "";
     const resources = mergeForwardResourcesForCodex(normalized.resources);
     if (resources.length > 0) {
-      const downloadedFiles = await this.downloadMergeForwardChildResources(context, messageId, resources);
+      const downloadedFiles = await this.downloadMergeForwardChildResources(context, mergeForwardMessageId, messageId, resources);
       text = formatMessageTextWithDownloadedFiles(text, downloadedFiles, messageType);
     }
     return { attributes, content: text };
@@ -1283,7 +1284,8 @@ export class ConversationManager {
 
   private async downloadMergeForwardChildResources(
     context: MessageContext,
-    messageId: string,
+    mergeForwardMessageId: string,
+    childMessageId: string,
     resources: Array<{
       resourceType: "image" | "file";
       fileKey: string;
@@ -1291,36 +1293,40 @@ export class ConversationManager {
       codexTag?: "img" | "video" | "file";
       textPlaceholder?: string;
     }>
-  ): Promise<Array<{
-    path: string;
-    resourceType: "image" | "file";
-    fileKey: string;
-    fileName?: string;
-    size: number;
-    contentType?: string;
-    codexTag?: "img" | "video" | "file";
-    textPlaceholder?: string;
-  }>> {
-    if (!this.options.larkFiles) {
-      throw new TwinnyError("Lark file downloader is not configured", "LARK_FILE_DOWNLOADER_MISSING");
-    }
-
+  ): Promise<CodexRenderableFile[]> {
     const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
     const outputDir = path.join(workspace, ".twinny", "lark_files");
-    const downloadedFiles = [];
+    const downloadedFiles: CodexRenderableFile[] = [];
     for (const resource of resources) {
-      const downloaded = await this.options.larkFiles.downloadMessageResource({
-        messageId,
-        resourceType: resource.resourceType,
-        fileKey: resource.fileKey,
-        fileName: resource.fileName,
-        outputDir
-      });
-      downloadedFiles.push({
-        ...downloaded,
-        codexTag: resource.codexTag ?? (resource.resourceType === "image" ? "file" : undefined),
-        textPlaceholder: resource.textPlaceholder
-      });
+      if (!this.options.larkFiles) {
+        this.log.warn(
+          { mergeForwardMessageId, childMessageId, fileKey: resource.fileKey },
+          "Lark file downloader is not configured; preserving merge-forward resource download failure placeholder"
+        );
+        downloadedFiles.push({ ...resource, downloadFailed: true as const });
+        continue;
+      }
+
+      try {
+        const downloaded = await this.options.larkFiles.downloadMessageResource({
+          messageId: mergeForwardMessageId,
+          resourceType: resource.resourceType,
+          fileKey: resource.fileKey,
+          fileName: resource.fileName,
+          outputDir
+        });
+        downloadedFiles.push({
+          ...downloaded,
+          codexTag: resource.codexTag ?? (resource.resourceType === "image" ? "file" : undefined),
+          textPlaceholder: resource.textPlaceholder
+        });
+      } catch (error) {
+        this.log.warn(
+          { error, mergeForwardMessageId, childMessageId, fileKey: resource.fileKey },
+          "failed to download merge-forward child resource; preserving failure placeholder"
+        );
+        downloadedFiles.push({ ...resource, downloadFailed: true as const });
+      }
     }
     return downloadedFiles;
   }
@@ -6643,16 +6649,49 @@ function finiteNumber(...values: unknown[]): number | undefined {
   return undefined;
 }
 
+type CodexDownloadedFile = {
+  path: string;
+  resourceType: "image" | "file";
+  fileKey: string;
+  size: number;
+  codexTag?: "img" | "video" | "file";
+  textPlaceholder?: string;
+  downloadFailed?: false;
+};
+
+type CodexFailedDownloadFile = {
+  resourceType: "image" | "file";
+  fileKey: string;
+  fileName?: string;
+  codexTag?: "img" | "video" | "file";
+  textPlaceholder?: string;
+  downloadFailed: true;
+};
+
+type CodexRenderableFile = CodexDownloadedFile | CodexFailedDownloadFile;
+
+function formatRenderableFileForCodex(file: CodexRenderableFile, messageType: string): string {
+  if (file.downloadFailed) {
+    return formatFailedDownloadForCodex(file, messageType);
+  }
+  return formatDownloadedFileForCodex(file, messageType);
+}
+
 function formatDownloadedFileForCodex(
-  file: { path: string; resourceType: "image" | "file"; fileKey: string; size: number; codexTag?: "img" | "video" | "file" },
+  file: CodexDownloadedFile,
   messageType: string
 ): string {
   const { openTag, closeTag } = formatDownloadedFileTagParts(file, messageType);
   return `${openTag}Saved locally${closeTag}`;
 }
 
+function formatFailedDownloadForCodex(file: CodexFailedDownloadFile, messageType: string): string {
+  const tag = file.resourceType === "image" ? "img" : codexFileTagForMessageResource(file, messageType);
+  return `<${tag} filekey="${escapeXmlAttribute(file.fileKey)}">Download failed</${tag}>`;
+}
+
 function formatDownloadedFileTagParts(
-  file: { path: string; resourceType: "image" | "file"; fileKey: string; size: number; codexTag?: "img" | "video" | "file" },
+  file: CodexDownloadedFile,
   messageType: string
 ): { tag: "img" | "video" | "file"; openTag: string; closeTag: string } {
   const tag = codexFileTagForMessageResource(file, messageType);
@@ -6681,14 +6720,7 @@ function codexFileTagForMessage(resourceType: "image" | "file", messageType: str
 
 function formatMessageTextWithDownloadedFiles(
   text: string,
-  files: Array<{
-    path: string;
-    resourceType: "image" | "file";
-    fileKey: string;
-    size: number;
-    codexTag?: "img" | "video" | "file";
-    textPlaceholder?: string;
-  }>,
+  files: CodexRenderableFile[],
   messageType: string
 ): string {
   if (files.length === 0) {
@@ -6696,13 +6728,13 @@ function formatMessageTextWithDownloadedFiles(
   }
 
   if (!files.some((file) => file.textPlaceholder)) {
-    return files.map((file) => formatDownloadedFileForCodex(file, messageType)).join("\n");
+    return files.map((file) => formatRenderableFileForCodex(file, messageType)).join("\n");
   }
 
   let rendered = text;
   const unmatched: string[] = [];
   for (const file of files) {
-    const xml = formatDownloadedFileForCodex(file, messageType);
+    const xml = formatRenderableFileForCodex(file, messageType);
     if (file.textPlaceholder && rendered.includes(file.textPlaceholder)) {
       rendered = rendered.split(file.textPlaceholder).join(xml);
     } else {

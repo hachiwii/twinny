@@ -2762,7 +2762,7 @@ describe("ConversationManager", () => {
     expect(larkMessages.getMessageItems).toHaveBeenCalledWith("mf1");
     expect(larkChats.getChatInfo).toHaveBeenCalledWith("oc_source");
     expect(larkFiles.downloadMessageResource).toHaveBeenCalledWith({
-      messageId: "child_image",
+      messageId: "mf1",
       resourceType: "image",
       fileKey: "img_1",
       fileName: undefined,
@@ -2783,6 +2783,58 @@ describe("ConversationManager", () => {
           "</lark_message>"
       })
     );
+  });
+
+  it("keeps merge-forward content when child resource download fails", async () => {
+    const codex = createCodex();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(async () => {
+        throw new Error("download failed");
+      })
+    };
+    const larkMessages: LarkMessageReader = {
+      getMessage: vi.fn(),
+      getMessageItems: vi.fn(async () => [
+        { message_id: "mf1", msg_type: "merge_forward", deleted: false, body: { content: "Merged and Forwarded Message" } },
+        {
+          message_id: "child_post",
+          upper_message_id: "mf1",
+          msg_type: "post",
+          chat_id: "oc_source",
+          create_time: "111",
+          sender: { id: "ou_child", id_type: "open_id", sender_type: "user" },
+          body: {
+            content: JSON.stringify({
+              content: [[
+                { tag: "text", text: "before " },
+                { tag: "img", image_key: "img_fail" },
+                { tag: "text", text: " after" }
+              ]]
+            })
+          }
+        }
+      ])
+    };
+    const manager = createManager({ codex, larkFiles, larkMessages });
+
+    manager.submitIncoming(message("mf1", "Merged and Forwarded Message", {
+      messageType: "merge_forward",
+      rawForCodex: true
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(larkFiles.downloadMessageResource).toHaveBeenCalledWith({
+      messageId: "mf1",
+      resourceType: "image",
+      fileKey: "img_fail",
+      fileName: undefined,
+      outputDir: "/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files"
+    });
+    const input = (codex.startTurn as Mock).mock.calls[0]?.[0].input as string;
+    expect(input).toContain("<merge_forward");
+    expect(input).toContain('before <img filekey="img_fail">Download failed</img> after');
+    expect(input).toContain("</merge_forward>");
+    expect(input).not.toContain('{"message_type":"merge_forward"');
   });
 
   it("omits merge-forward name attributes when user or chat lookup fails", async () => {
