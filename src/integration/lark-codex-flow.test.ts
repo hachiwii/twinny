@@ -100,6 +100,98 @@ describe("Lark to Codex integration flow", () => {
     ]);
   });
 
+  it("waits through retryable Codex turn errors before failing on a terminal error", async () => {
+    const harness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        delayMs: 20,
+        notify: {
+          method: "error",
+          params: {
+            message: "Reconnecting... 1/5",
+            willRetry: true,
+            error: { codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } } },
+            additionalDetails: "stream disconnected before completion"
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        delayMs: 50,
+        notify: {
+          method: "error",
+          params: {
+            message: "Reconnecting... 2/5",
+            willRetry: true,
+            error: { codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } } },
+            additionalDetails: "stream disconnected before completion"
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        delayMs: 250,
+        notify: {
+          method: "error",
+          params: {
+            message: "terminal stream failure",
+            willRetry: false
+          }
+        }
+      }
+    ));
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_retry_error", messageId: "m_retry_error", text: "trigger retryable errors" })
+    }));
+    await harness.waitForTrace(
+      (trace) => codexErrorNotifications(trace).filter((entry) => codexErrorWillRetry(entry) === true).length === 2,
+      "two retryable Codex errors"
+    );
+
+    expect(harness.repository.getLarkMessageById("m_retry_error")).toMatchObject({ status: "processing" });
+    expect(
+      larkOut(harness.readTrace()).some((entry) => entry.method === "PATCH" && traceText(entry).includes("[ERROR]"))
+    ).toBe(false);
+
+    await harness.waitForTrace(
+      (trace) => codexErrorNotifications(trace).some((entry) => codexErrorWillRetry(entry) === false),
+      "terminal Codex error"
+    );
+    await harness.waitForExpect(() => {
+      expect(harness.repository.getLarkMessageById("m_retry_error")).toMatchObject({ status: "failed" });
+      expect(
+        larkOut(harness.readTrace()).some(
+          (entry) => entry.method === "PATCH" && traceText(entry).includes("- [ERROR] terminal stream failure")
+        )
+      ).toBe(true);
+    });
+
+    const trace = harness.readTrace();
+    expectOrder(trace, [
+      ["first retryable error", (entry) => isCodexRetryableError(entry)],
+      [
+        "second retryable error",
+        (entry, index, all) =>
+          isCodexRetryableError(entry) && all.slice(0, index).filter((item) => isCodexRetryableError(item)).length === 1
+      ],
+      ["terminal error", (entry) => isCodexTerminalError(entry)],
+      [
+        "failed card patch",
+        (entry) => entry.kind === "lark.out" && entry.method === "PATCH" && traceText(entry).includes("- [ERROR] terminal stream failure")
+      ]
+    ]);
+  });
+
   it("keeps queued Lark messages out of Codex when they are recalled before the current turn finishes", async () => {
     const harness = await IntegrationHarness.create(`
 {"role":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1"}}}}
@@ -1895,12 +1987,28 @@ function codexResponses(trace: TraceEntry[], id: string): CodexTraceEntry[] {
   return trace.filter((entry): entry is CodexTraceEntry => isCodexResponse(entry, id));
 }
 
+function codexErrorNotifications(trace: TraceEntry[]): CodexIncomingTraceEntry[] {
+  return trace.filter((entry): entry is CodexIncomingTraceEntry => entry.kind === "codex.in" && entry.message.method === "error");
+}
+
+function codexErrorWillRetry(entry: CodexIncomingTraceEntry): unknown {
+  return asRecord(entry.message.params)?.willRetry;
+}
+
 function larkOut(trace: TraceEntry[]): LarkTraceEntry[] {
   return trace.filter((entry): entry is LarkTraceEntry => entry.kind === "lark.out");
 }
 
 function isCodexMethod(entry: TraceEntry, method: string): entry is CodexTraceEntry {
   return entry.kind === "codex.out" && entry.method === method;
+}
+
+function isCodexRetryableError(entry: TraceEntry): boolean {
+  return entry.kind === "codex.in" && entry.message.method === "error" && asRecord(entry.message.params)?.willRetry === true;
+}
+
+function isCodexTerminalError(entry: TraceEntry): boolean {
+  return entry.kind === "codex.in" && entry.message.method === "error" && asRecord(entry.message.params)?.willRetry === false;
 }
 
 function isCodexResponse(entry: TraceEntry, id: string): entry is CodexTraceEntry {
