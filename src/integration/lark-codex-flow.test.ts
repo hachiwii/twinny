@@ -913,6 +913,63 @@ describe("Lark to Codex integration flow", () => {
     ]);
   });
 
+  it("exits plan waiting without briefly creating a queued reaction", async () => {
+    const harness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: {
+          method: "item/completed",
+          params: { threadId: "guest_thread_1", turnId: "turn_1", item: { type: "plan", text: "Plan ready for direct exit" } }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "turn_1",
+              status: "completed",
+              durationMs: 8,
+              items: [{ type: "plan", text: "Plan ready for direct exit" }]
+            }
+          }
+        }
+      }
+    ));
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_plan_exit_start", messageId: "m_plan_exit_start", text: "/plan prepare direct exit" })
+    }));
+    await harness.waitForTrace(
+      (trace) => larkOut(trace).some((entry) => entry.method === "PATCH" && traceText(entry).includes("Plan ready for direct exit")),
+      "plan waiting card"
+    );
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_plan_exit", messageId: "m_plan_exit", text: "/exit" })
+    }));
+    await harness.waitForTrace(
+      (trace) => larkOut(trace).some((entry) => entry.path === "/im/v1/messages/m_plan_exit/reply" && traceText(entry).includes("已退出 plan mode")),
+      "exit plan reply"
+    );
+
+    const trace = harness.readTrace();
+    expect(codexOut(trace, "turn/interrupt")).toHaveLength(1);
+    expect(larkOut(trace).filter((entry) => entry.method === "POST" && entry.path === "/im/v1/messages/m_plan_exit/reactions")).toHaveLength(0);
+    await harness.dispose();
+  });
+
   it("activates group routing and only forwards mentioned group messages to Codex", async () => {
     const harness = await IntegrationHarness.create(`
 {"role":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1"}}}}
