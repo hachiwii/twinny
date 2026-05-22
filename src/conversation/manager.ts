@@ -679,6 +679,7 @@ interface ConversationState {
   waitingInterruptBatch?: {
     context: MessageContext;
     messages: PendingMessage[];
+    allowAnySameUserMessage?: boolean;
   };
   pendingBatch: PendingMessage[];
   queueNextMessage: boolean;
@@ -2446,66 +2447,7 @@ export class ConversationManager {
       state.queueNextMessage = false;
     }
     const pending = toPendingMessage(message, text, { queueBoundary: queueByMenu });
-    const active = state.active;
-    if (!active && state.suspendedActiveTurns.length > 0) {
-      await this.queuePendingMessage(state, context, pending);
-      return;
-    }
-    if (state.waitingInterruptBatch) {
-      const batchOwnerOpenId = state.waitingInterruptBatch.messages[0]?.original.senderOpenId;
-      if (batchOwnerOpenId && message.senderOpenId === batchOwnerOpenId) {
-        state.waitingInterruptBatch.messages.push(pending);
-        if (!active) {
-          await this.startWaitingInterruptBatch(state);
-        }
-      } else {
-        await this.queuePendingMessage(state, context, pending);
-      }
-      return;
-    }
-    if (active?.waiting) {
-      if (state.pendingBatch.length === 0 && this.canSteerActiveTurn(active, message.senderOpenId)) {
-        await this.interruptWaitingTurnWithMessage(state, context, active, pending);
-      } else {
-        await this.queuePendingMessage(state, context, pending);
-        await this.tryConsumeWaitingQueue(state, active);
-      }
-      return;
-    }
-    if (active?.kind === "compact") {
-      await this.addQueuedReactionBestEffort(pending);
-      state.pendingBatch.push(pending);
-      return;
-    }
-    if (queueByMenu) {
-      if (active || state.pendingBatch.length > 0) {
-        await this.addQueuedReactionBestEffort(pending);
-      }
-      state.pendingBatch.push(pending);
-      if (!active && state.suspendedActiveTurns.length === 0) {
-        await this.startPendingBatch(state, context);
-      }
-      return;
-    }
-    if (state.pendingBatch.length > 0 || active?.cancelRequested) {
-      await this.addQueuedReactionBestEffort(pending);
-      state.pendingBatch.push(pending);
-      if (!active && state.suspendedActiveTurns.length === 0) {
-        await this.startPendingBatch(state, context);
-      }
-      return;
-    }
-
-    if (active) {
-      if (this.canSteerActiveTurn(active, message.senderOpenId)) {
-        await this.steerOrDefer(state, active, pending);
-      } else {
-        await this.queuePendingMessage(state, context, pending);
-      }
-      return;
-    }
-
-    await this.startTurnForMessages(state, context, [pending]);
+    await this.schedulePendingMessage(state, context, pending);
   }
 
   private async handleQueueCommand(
@@ -2530,25 +2472,7 @@ export class ConversationManager {
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
-    if (state.waitingInterruptBatch) {
-      await this.queuePendingMessage(state, context, pending);
-      return;
-    }
-    if (state.active?.waiting) {
-      const active = state.active;
-      await this.queuePendingMessage(state, context, pending);
-      await this.tryConsumeWaitingQueue(state, active);
-      return;
-    }
-    if (state.active || state.suspendedActiveTurns.length > 0 || state.pendingBatch.length > 0) {
-      await this.addQueuedReactionBestEffort(pending);
-    }
-    state.pendingBatch.push(pending);
-    if (state.active?.waiting) {
-      await this.tryConsumeWaitingQueue(state, state.active);
-    } else if (!state.active && state.suspendedActiveTurns.length === 0) {
-      await this.startPendingBatch(state, context);
-    }
+    await this.schedulePendingMessage(state, context, pending);
   }
 
   private async handleGoalCommand(
@@ -2573,15 +2497,7 @@ export class ConversationManager {
       await this.updateActiveGoalCommand(state, message, active, content);
       return;
     }
-    if (state.active || state.suspendedActiveTurns.length > 0 || state.pendingBatch.length > 0) {
-      await this.addQueuedReactionBestEffort(pending);
-    }
-    state.pendingBatch.push(pending);
-    if (state.active?.waiting) {
-      await this.tryConsumeWaitingQueue(state, state.active);
-    } else if (!state.active && state.suspendedActiveTurns.length === 0) {
-      await this.startPendingBatch(state, context);
-    }
+    await this.schedulePendingMessage(state, context, pending);
   }
 
   private async updateActiveGoalCommand(
@@ -2868,15 +2784,7 @@ export class ConversationManager {
       queueBoundary: true,
       control: "plan_on"
     });
-    if (state.active || state.suspendedActiveTurns.length > 0 || state.pendingBatch.length > 0) {
-      await this.addQueuedReactionBestEffort(pending);
-    }
-    state.pendingBatch.push(pending);
-    if (state.active?.waiting) {
-      await this.tryConsumeWaitingQueue(state, state.active);
-    } else if (!state.active && state.suspendedActiveTurns.length === 0) {
-      await this.startPendingBatch(state, context);
-    }
+    await this.schedulePendingMessage(state, context, pending);
   }
 
   private async handleExitCommand(
@@ -2889,15 +2797,7 @@ export class ConversationManager {
       queueBoundary: true,
       control: "plan_off"
     });
-    if (state.active || state.suspendedActiveTurns.length > 0 || state.pendingBatch.length > 0) {
-      await this.addQueuedReactionBestEffort(pending);
-    }
-    state.pendingBatch.push(pending);
-    if (state.active?.waiting) {
-      await this.tryConsumeWaitingQueue(state, state.active);
-    } else if (!state.active && state.suspendedActiveTurns.length === 0) {
-      await this.startPendingBatch(state, context);
-    }
+    await this.schedulePendingMessage(state, context, pending);
   }
 
   private async handleCompactCommand(
@@ -2910,15 +2810,7 @@ export class ConversationManager {
       queueBoundary: true,
       control: "compact"
     });
-    if (state.active || state.suspendedActiveTurns.length > 0 || state.pendingBatch.length > 0) {
-      await this.addQueuedReactionBestEffort(pending);
-    }
-    state.pendingBatch.push(pending);
-    if (state.active?.waiting) {
-      await this.tryConsumeWaitingQueue(state, state.active);
-    } else if (!state.active && state.suspendedActiveTurns.length === 0) {
-      await this.startPendingBatch(state, context);
-    }
+    await this.schedulePendingMessage(state, context, pending);
   }
 
   private async handleLogoCommand(message: IncomingLarkMessage): Promise<void> {
@@ -3648,13 +3540,84 @@ export class ConversationManager {
     }
   }
 
-  private async queuePendingMessage(state: ConversationState, context: MessageContext, message: PendingMessage): Promise<void> {
+  private async schedulePendingMessage(
+    state: ConversationState,
+    context: MessageContext,
+    message: PendingMessage
+  ): Promise<void> {
+    if (await this.tryRunPendingMessageDirectly(state, context, message)) {
+      return;
+    }
+    await this.enqueuePendingMessage(state, context, message);
+  }
+
+  private async tryRunPendingMessageDirectly(
+    state: ConversationState,
+    context: MessageContext,
+    message: PendingMessage
+  ): Promise<boolean> {
+    const active = state.active;
+    if (!active && state.suspendedActiveTurns.length > 0) {
+      return false;
+    }
+
+    if (state.waitingInterruptBatch) {
+      const batchOwnerOpenId = state.waitingInterruptBatch.messages[0]?.original.senderOpenId;
+      const canAppend =
+        batchOwnerOpenId === message.original.senderOpenId &&
+        (state.waitingInterruptBatch.allowAnySameUserMessage || (!message.control && !message.queueBoundary));
+      if (!canAppend) {
+        return false;
+      }
+      state.waitingInterruptBatch.messages.push(message);
+      if (!active) {
+        await this.startWaitingInterruptBatch(state);
+      }
+      return true;
+    }
+
+    if (active?.waiting) {
+      const canInterruptWaitingTurn =
+        state.pendingBatch.length === 0 && this.canSteerActiveTurn(active, message.original.senderOpenId);
+      const isPlainWaitingFollowUp = !message.control && !message.queueBoundary;
+      if (canInterruptWaitingTurn && (active.waiting.kind === "plan" || isPlainWaitingFollowUp)) {
+        await this.interruptWaitingTurnWithMessage(state, context, active, message);
+        return true;
+      }
+      return false;
+    }
+
+    if (active?.kind === "compact" || active?.cancelRequested || state.pendingBatch.length > 0) {
+      return false;
+    }
+
+    if (active) {
+      if (!message.control && !message.queueBoundary && this.canSteerActiveTurn(active, message.original.senderOpenId)) {
+        await this.steerOrDefer(state, active, message);
+        return true;
+      }
+      return false;
+    }
+
+    await this.startImmediatePendingMessages(state, context, [message]);
+    return true;
+  }
+
+  private async enqueuePendingMessage(state: ConversationState, context: MessageContext, message: PendingMessage): Promise<void> {
     await this.addQueuedReactionBestEffort(message);
     state.pendingBatch.push(message);
-    await this.markPendingMessagesQueuedBestEffort([message]);
+    await this.tryStartRunnableQueueHead(state, context);
+  }
+
+  private async tryStartRunnableQueueHead(state: ConversationState, context: MessageContext): Promise<boolean> {
+    if (state.active?.waiting) {
+      return await this.tryConsumeWaitingQueue(state, state.active);
+    }
     if (!state.active && state.suspendedActiveTurns.length === 0) {
       await this.startPendingBatch(state, context);
+      return true;
     }
+    return false;
   }
 
   private async tryConsumeWaitingQueue(state: ConversationState, active: ActiveTurn): Promise<boolean> {
@@ -3680,7 +3643,8 @@ export class ConversationManager {
   ): Promise<void> {
     state.waitingInterruptBatch = {
       context,
-      messages: [...(state.waitingInterruptBatch?.messages ?? []), message]
+      messages: [...(state.waitingInterruptBatch?.messages ?? []), message],
+      allowAnySameUserMessage: active.waiting?.kind === "plan"
     };
     if (!active.cancelRequested) {
       await this.cancelActiveTurn(state, { waitForCompletion: true });
@@ -3696,7 +3660,33 @@ export class ConversationManager {
     }
     const batch = state.waitingInterruptBatch;
     state.waitingInterruptBatch = undefined;
-    await this.startTurnForMessages(state, batch.context, batch.messages);
+    await this.startImmediatePendingMessages(state, batch.context, batch.messages);
+  }
+
+  private async startImmediatePendingMessages(
+    state: ConversationState,
+    context: MessageContext,
+    messages: PendingMessage[]
+  ): Promise<void> {
+    const remaining = [...messages];
+    while (!state.active && state.suspendedActiveTurns.length === 0 && remaining.length > 0) {
+      const first = remaining[0]!;
+      if (first.control) {
+        remaining.shift();
+        await this.processPendingControlMessage(state, context, first);
+        continue;
+      }
+      const count = countNextPendingMessages(remaining);
+      const batch = remaining.splice(0, count);
+      await this.startTurnForMessages(state, context, batch);
+      break;
+    }
+
+    if (remaining.length > 0) {
+      state.pendingBatch.unshift(...remaining);
+      await this.addQueuedReactionsBestEffort(remaining);
+      await this.markPendingMessagesQueuedBestEffort(remaining);
+    }
   }
 
   private async processPendingControlMessage(
@@ -7744,14 +7734,30 @@ function classifyInitialRoute(
 ): { routeKind: LarkMessageRouteKind; status: "queued" | "processing"; text: string } {
   const originalText = message.text;
   const active = state.active;
-  if (state.waitingInterruptBatch && (parsed.kind === "message" || (parsed.kind === "queue" && parsed.text.length > 0))) {
+  if (state.waitingInterruptBatch && isSchedulableParsedCommand(parsed)) {
     const batchOwnerOpenId = state.waitingInterruptBatch.messages[0]?.original.senderOpenId;
-    return batchOwnerOpenId && message.senderOpenId === batchOwnerOpenId
-      ? { routeKind: "message", status: "processing", text: parsed.text }
-      : { routeKind: "queued_message", status: "queued", text: parsed.text };
+    if (batchOwnerOpenId && message.senderOpenId === batchOwnerOpenId) {
+      return directRouteForParsedCommand(parsed, message);
+    }
+    return queuedRouteForParsedCommand(parsed, message);
+  }
+  const canRunDirectlyFromPlanWaiting =
+    active?.waiting?.kind === "plan" &&
+    state.pendingBatch.length === 0 &&
+    message.senderOpenId === active.triggerOpenId &&
+    isSchedulableParsedCommand(parsed);
+  if (canRunDirectlyFromPlanWaiting) {
+    return directRouteForParsedCommand(parsed, message);
   }
   if (active?.waiting && (parsed.kind === "message" || (parsed.kind === "queue" && parsed.text.length > 0))) {
-    return state.pendingBatch.length === 0 && message.senderOpenId === active.triggerOpenId
+    const canRunDirectly = state.pendingBatch.length === 0 && message.senderOpenId === active.triggerOpenId;
+    if (parsed.kind === "queue") {
+      const nested = parseSlashCommand(parsed.text);
+      if (nested.kind === "goal") {
+        return { routeKind: "goal_message", status: canRunDirectly ? "processing" : "queued", text: nested.text };
+      }
+    }
+    return canRunDirectly
       ? { routeKind: "message", status: "processing", text: parsed.text }
       : { routeKind: "queued_message", status: "queued", text: parsed.text };
   }
@@ -7845,17 +7851,77 @@ function toPendingMessage(
 }
 
 function countNextPendingBatch(state: ConversationState): number {
-  if (state.pendingBatch.length === 0) {
+  return countNextPendingMessages(state.pendingBatch);
+}
+
+function countNextPendingMessages(messages: PendingMessage[]): number {
+  if (messages.length === 0) {
     return 0;
   }
-  const firstSenderOpenId = state.pendingBatch[0]!.original.senderOpenId;
-  for (let index = 1; index < state.pendingBatch.length; index += 1) {
-    const message = state.pendingBatch[index]!;
+  const firstSenderOpenId = messages[0]!.original.senderOpenId;
+  for (let index = 1; index < messages.length; index += 1) {
+    const message = messages[index]!;
     if (message.queueBoundary || message.original.senderOpenId !== firstSenderOpenId) {
       return index;
     }
   }
-  return state.pendingBatch.length;
+  return messages.length;
+}
+
+function directRouteForParsedCommand(
+  parsed: ParsedCommand,
+  message: IncomingLarkMessage
+): { routeKind: LarkMessageRouteKind; status: "processing"; text: string } {
+  if (parsed.kind === "queue" && parsed.text.length > 0) {
+    const nested = parseSlashCommand(parsed.text);
+    if (nested.kind === "goal") {
+      return { routeKind: "goal_message", status: "processing", text: nested.text };
+    }
+    return { routeKind: "message", status: "processing", text: parsed.text };
+  }
+  if (parsed.kind === "goal") {
+    return { routeKind: "goal_message", status: "processing", text: parsed.text };
+  }
+  if (parsed.kind === "plan") {
+    return parsed.text.trim().length > 0
+      ? { routeKind: "message", status: "processing", text: parsed.text }
+      : { routeKind: "control_message", status: "processing", text: message.text };
+  }
+  if (parsed.kind === "exit" || parsed.kind === "compact") {
+    return { routeKind: "control_message", status: "processing", text: message.text };
+  }
+  if (parsed.kind === "side") {
+    return { routeKind: "side_message", status: "processing", text: parsed.text };
+  }
+  return { routeKind: "message", status: "processing", text: parsed.kind === "message" ? parsed.text : message.text };
+}
+
+function isSchedulableParsedCommand(parsed: ParsedCommand): boolean {
+  return (
+    parsed.kind === "message" ||
+    (parsed.kind === "queue" && parsed.text.length > 0) ||
+    parsed.kind === "goal" ||
+    parsed.kind === "plan" ||
+    parsed.kind === "exit" ||
+    parsed.kind === "compact"
+  );
+}
+
+function queuedRouteForParsedCommand(
+  parsed: ParsedCommand,
+  message: IncomingLarkMessage
+): { routeKind: LarkMessageRouteKind; status: "queued"; text: string } {
+  if (parsed.kind === "queue" && parsed.text.length > 0) {
+    const nested = parseSlashCommand(parsed.text);
+    if (nested.kind === "goal") {
+      return { routeKind: "goal_message", status: "queued", text: nested.text };
+    }
+    return { routeKind: "queued_message", status: "queued", text: parsed.text };
+  }
+  if (parsed.kind === "goal") {
+    return { routeKind: "goal_message", status: "queued", text: parsed.text };
+  }
+  return { routeKind: "queued_message", status: "queued", text: parsed.kind === "message" ? parsed.text : message.text };
 }
 
 function suspendedActiveTurnMessagesForRecovery(active: ActiveTurn): PendingMessage[] {

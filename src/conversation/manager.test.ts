@@ -940,7 +940,7 @@ describe("ConversationManager", () => {
     expect(codex.steerTurn).not.toHaveBeenCalled();
   });
 
-  it("consumes a same-user /compact queued while plan waiting", async () => {
+  it("runs a same-user /compact directly while plan waiting without queued reactions", async () => {
     const turns: Array<Deferred<CodexTurnResult> & { params: Parameters<CodexBridge["startTurn"]>[0] }> = [];
     const compacts: Array<Deferred<CodexTurnResult> & { params: Parameters<CodexBridge["compactThread"]>[0] }> = [];
     const codex = createCodex({
@@ -957,7 +957,8 @@ describe("ConversationManager", () => {
         return compact.promise;
       })
     });
-    const manager = createManager({ codex });
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark });
 
     manager.submitIncoming(message("m1", "draft a plan"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
@@ -975,6 +976,8 @@ describe("ConversationManager", () => {
         expect.objectContaining({ role: "guest", threadId: "thread_1", turnId: "turn_1" })
       )
     );
+    expect(lark.addQueuedReaction).not.toHaveBeenCalled();
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(0);
     turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
     await waitForExpect(() => expect(codex.compactThread).toHaveBeenCalledTimes(1));
     expect(compacts[0]!.params.threadId).toBe("thread_1");
@@ -5661,7 +5664,7 @@ describe("ConversationManager", () => {
     turns[2]!.resolve(completed("thread_group", "turn_3"));
   });
 
-  it("consumes a same-user /exit queued while plan waiting", async () => {
+  it("runs a same-user /exit directly while plan waiting without queued reactions", async () => {
     const { repository } = createRepository(groupConversationRecord());
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();
@@ -5683,6 +5686,16 @@ describe("ConversationManager", () => {
         expect.objectContaining({ role: "guest", threadId: "thread_group", turnId: "turn_1" })
       )
     );
+    await waitForExpect(() => {
+      const inserted = vi.mocked(repository.insertLarkMessage).mock.calls.map(([input]) => input);
+      expect(inserted.find((input) => input.larkMessageId === "g2")).toMatchObject({
+        routeKind: "control_message",
+        status: "processing",
+        text: "/exit"
+      });
+    });
+    expect(lark.addQueuedReaction).not.toHaveBeenCalled();
+    expect(manager.queueDepth("group_oc_group")).toBe(0);
 
     turns[0]!.resolve(completed("thread_group", "turn_1", "interrupted"));
     await waitForExpect(() =>
