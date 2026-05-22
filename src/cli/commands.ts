@@ -1,11 +1,12 @@
 import { Command } from "commander";
+import { TWINNY_VERSION } from "../version.js";
 
 export async function runCli(argv: string[]): Promise<void> {
   const program = new Command();
   program
     .name("twinny")
     .description("Bridge Lark p2p messages to Codex app-server threads.")
-    .version("0.1.0");
+    .version(TWINNY_VERSION);
 
   program.command("wizard").description("Initialize Twinny configuration.").action(async () => {
     const { runWizardCommand } = await import("../wizard/first-run.js");

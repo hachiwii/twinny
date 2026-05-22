@@ -1,6 +1,7 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { CodexProtocolClient } from "./protocol.js";
+import { TWINNY_VERSION } from "../version.js";
+import { CodexProtocolClient, createInitializeParams } from "./protocol.js";
 
 describe("CodexProtocolClient", () => {
   it("emits an error for unknown responses while open", async () => {
@@ -36,5 +37,9 @@ describe("CodexProtocolClient", () => {
     await expect(request).resolves.toMatchObject({ code: "CODEX_PROTOCOL_CLOSED" });
     await expect(protocol.waitForClose()).resolves.toBeUndefined();
     expect(errors).not.toHaveBeenCalled();
+  });
+
+  it("uses the injected Twinny version in initialize params by default", () => {
+    expect(createInitializeParams().clientInfo.version).toBe(TWINNY_VERSION);
   });
 });

@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { Readable, Writable } from "node:stream";
 import { TwinnyError, toErrorMessage } from "../errors.js";
+import { TWINNY_VERSION } from "../version.js";
 
 export type CodexRequestId = string | number;
 
@@ -309,7 +310,7 @@ export class CodexProtocolClient extends EventEmitter {
   }
 }
 
-export function createInitializeParams(version = "0.1.0"): InitializeParams {
+export function createInitializeParams(version = TWINNY_VERSION): InitializeParams {
   return {
     clientInfo: {
       name: "twinny",

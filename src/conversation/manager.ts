@@ -67,6 +67,7 @@ import {
 } from "../codex/turn.js";
 import type { ThreadGoal } from "../codex/goal.js";
 import type { LarkSendMessageResult } from "../lark/types.js";
+import { TWINNY_VERSION } from "../version.js";
 import { SerialQueue } from "./queue.js";
 import {
   conversationKeyForChat,
@@ -81,7 +82,6 @@ const COMPACT_PROGRESS_TEXT = "正在压缩上下文";
 const COMPACT_COMPLETED_TEXT = "完成上下文压缩";
 const SIDE_SHUTDOWN_ERROR = "Twinny 服务退出";
 const STATUS_MODEL_TEXT = "GPT-5.5 (xhigh)";
-const TWINNY_VERSION = "0.1.0";
 const MAIN_THREAD_NAME = "主会话";
 const SIDE_BOUNDARY_PROMPT = `Side conversation boundary.
 
@@ -2918,7 +2918,7 @@ export class ConversationManager {
       : 0;
     const system = role === "owner"
       ? {
-          twinnyVersion: `v${TWINNY_VERSION}`,
+          twinnyVersion: TWINNY_VERSION,
           codexVersion: await this.readCodexVersionBestEffort(role),
           larkAppId: this.options.config.lark.appId,
           ...(await this.formatOwnerRateLimitCardStatus(role))
