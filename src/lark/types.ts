@@ -61,6 +61,14 @@ export interface LarkLogger {
   error?: (metadata: Record<string, unknown>, message?: string) => void;
 }
 
+export interface LarkSdkLogger {
+  trace: (...args: unknown[]) => void;
+  debug: (...args: unknown[]) => void;
+  info: (...args: unknown[]) => void;
+  warn: (...args: unknown[]) => void;
+  error: (...args: unknown[]) => void;
+}
+
 export interface LarkSendMessageResult {
   messageId?: string;
   raw: unknown;

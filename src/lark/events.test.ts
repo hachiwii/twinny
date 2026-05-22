@@ -238,6 +238,39 @@ describe("LarkEventConsumer", () => {
     await expect(registered["im.message.receive_v1"](receiveEvent())).rejects.toThrow("submit rejected");
   });
 
+  it("passes the SDK logger to the websocket factory", async () => {
+    const dispatcher: EventDispatcherLike = {
+      register() {
+        return this;
+      }
+    };
+    const wsClient: WsClientLike = {
+      start: vi.fn(),
+      close: vi.fn()
+    };
+    const sdkLogger = {
+      trace: vi.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn()
+    };
+    const wsClientFactory = vi.fn(() => wsClient);
+    const consumer = new LarkEventConsumer({
+      appId: "cli_1234567890abcdef",
+      appSecret: "secret",
+      warmTenantToken: false,
+      sdkLogger,
+      onMessage: vi.fn(),
+      eventDispatcherFactory: () => dispatcher,
+      wsClientFactory
+    });
+
+    await consumer.start();
+
+    expect(wsClientFactory).toHaveBeenCalledWith(expect.objectContaining({ sdkLogger }));
+  });
+
   it("drops messages older than the configured age and logs them", async () => {
     const registered: Record<string, (data: unknown) => unknown> = {};
     const dispatcher: EventDispatcherLike = {

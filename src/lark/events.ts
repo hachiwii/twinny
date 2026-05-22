@@ -15,7 +15,8 @@ import {
   type IncomingLarkCardAction,
   type IncomingLarkMessage,
   type IncomingLarkMessageRecall,
-  type LarkLogger
+  type LarkLogger,
+  type LarkSdkLogger
 } from "./types.js";
 
 export interface EventDispatcherLike {
@@ -34,6 +35,7 @@ export interface LarkEventConsumerOptions {
   botOpenId?: string;
   tokenManager?: TenantAccessTokenManager;
   logger?: LarkLogger;
+  sdkLogger?: LarkSdkLogger;
   domain?: string | Lark.Domain;
   autoReconnect?: boolean;
   warmTenantToken?: boolean;
@@ -53,6 +55,7 @@ export interface LarkEventConsumerWsFactoryOptions {
   appSecret: string;
   domain?: string | Lark.Domain;
   autoReconnect?: boolean;
+  sdkLogger?: LarkSdkLogger;
   onReady: () => void;
   onError: (error: Error) => void;
   onReconnecting: () => void;
@@ -156,6 +159,7 @@ export class LarkEventConsumer {
       appSecret: this.options.appSecret,
       domain: this.options.domain,
       autoReconnect: this.options.autoReconnect,
+      sdkLogger: this.options.sdkLogger,
       onReady: () => {
         this.ready = true;
         this.options.logger?.info?.({}, "Lark event long connection is ready");
@@ -285,6 +289,7 @@ function createDefaultWsClient(options: LarkEventConsumerWsFactoryOptions): WsCl
     domain: options.domain,
     autoReconnect: options.autoReconnect,
     source: "twinny",
+    ...(options.sdkLogger ? { logger: options.sdkLogger, loggerLevel: Lark.LoggerLevel.trace } : {}),
     onReady: options.onReady,
     onError: options.onError,
     onReconnecting: options.onReconnecting,

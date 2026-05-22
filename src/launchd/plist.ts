@@ -7,7 +7,6 @@ export function createLaunchAgentPlist(): string {
   const entrypoint = process.argv[1] ? path.resolve(process.argv[1]) : process.execPath;
   const logsDir = path.join(os.homedir(), "Library", "Logs", "twinny");
   const stdout = path.join(logsDir, "daemon.log");
-  const stderr = path.join(logsDir, "daemon.error.log");
   const twinnyHome = process.env.TWINNY_HOME ?? path.join(os.homedir(), ".twinny");
   const args = entrypoint === process.execPath ? [process.execPath, "run"] : [process.execPath, entrypoint, "run"];
 
@@ -33,7 +32,7 @@ ${args.map((arg) => `    <string>${escapeXml(arg)}</string>`).join("\n")}
   <key>StandardOutPath</key>
   <string>${escapeXml(stdout)}</string>
   <key>StandardErrorPath</key>
-  <string>${escapeXml(stderr)}</string>
+  <string>${escapeXml(stdout)}</string>
 </dict>
 </plist>
 `;

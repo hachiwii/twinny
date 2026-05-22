@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { acquireTwinnyLock } from "../lock/index.js";
 import { waitForRuntimeLockRelease } from "./install.js";
+import { createLaunchAgentPlist } from "./plist.js";
 
 describe("launchd install helpers", () => {
   let tempDir: string;
@@ -38,5 +39,12 @@ describe("launchd install helpers", () => {
     } finally {
       await lock.release();
     }
+  });
+
+  it("routes daemon stdout and stderr to daemon.log", () => {
+    const plist = createLaunchAgentPlist();
+
+    expect(plist.match(/daemon\.log/g)).toHaveLength(2);
+    expect(plist).not.toContain("daemon.error.log");
   });
 });

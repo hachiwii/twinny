@@ -1,4 +1,5 @@
 import type { Logger } from "pino";
+import path from "node:path";
 import {
   createRuntimePaths,
   resolveBundledBannerPath,
@@ -17,10 +18,11 @@ import {
   LarkChatDirectory,
   LarkUserDirectory,
   LarkOpenApiClient,
+  type LarkSdkLogger,
   TenantAccessTokenManager
 } from "../lark/index.js";
 import { acquireTwinnyLock, type TwinnyRuntimeLock } from "../lock/index.js";
-import { logger as defaultLogger } from "../observability/logs.js";
+import { createLarkSdkLogger, createLogger, logger as defaultLogger } from "../observability/logs.js";
 import { TwinnySystemNotifier } from "../observability/system-notifications.js";
 import { getRoleCodexHome } from "../roles/index.js";
 import { createConversationRepository, openRuntimeDatabase, type ConversationRepository, type TwinnyDatabase } from "../store/index.js";
@@ -50,6 +52,7 @@ import {
 
 export interface TwinnyRuntimeOptions {
   logger?: Logger;
+  larkSdkLogger?: LarkSdkLogger;
   requestTimeoutMs?: number;
   logoFilePath?: string;
   bannerFilePath?: string;
@@ -58,6 +61,7 @@ export interface TwinnyRuntimeOptions {
 
 export class TwinnyRuntime {
   private readonly log: Logger;
+  private readonly larkSdkLogger: LarkSdkLogger;
   private readonly paths;
   private readonly secretStore = new SecurityCliSecretStore();
   private lock?: TwinnyRuntimeLock;
@@ -78,6 +82,9 @@ export class TwinnyRuntime {
   ) {
     this.log = options.logger ?? defaultLogger;
     this.paths = createRuntimePaths(config.home);
+    this.larkSdkLogger =
+      options.larkSdkLogger ??
+      createLarkSdkLogger(createLogger({ logFile: path.join(this.paths.logsDir, "lark-sdk.log") }));
     this.stopPromise = new Promise((resolve) => {
       this.resolveStopped = resolve;
     });
@@ -171,6 +178,7 @@ export class TwinnyRuntime {
         appSecret,
         botOpenId,
         logger: this.log,
+        sdkLogger: this.larkSdkLogger,
         maxMessageAgeMs: this.config.lark.maxMessageAgeSeconds * 1000,
         onMessage: (message) => {
           conversation.submitIncoming(message);
