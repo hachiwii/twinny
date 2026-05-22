@@ -187,7 +187,7 @@ export class TwinnyRuntime {
         onIgnored: (reason) => this.log.debug({ reason }, "lark event ignored")
       });
       await this.larkConsumer.start();
-      await this.systemNotifier.notifyInitialized({ home: this.config.home, appId: this.config.lark.appId });
+      await this.systemNotifier.notifyInitialized({ bannerImageKey: assetImageKeys.bannerImageKey });
       this.log.info({ home: this.config.home }, "twinny daemon started");
     } catch (error) {
       await this.cleanupAfterStartFailure(error);
@@ -221,7 +221,6 @@ export class TwinnyRuntime {
     this.log.info({ signal }, "stopping twinny daemon");
     try {
       await this.shutdownConversation();
-      await this.systemNotifier?.notifyGracefulExit({ signal });
       await this.stopLarkConsumer();
       await this.stopCodexPool(signal);
       this.closeDatabase();

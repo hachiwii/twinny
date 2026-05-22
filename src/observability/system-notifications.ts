@@ -1,10 +1,11 @@
 import { toErrorMessage } from "../errors.js";
+import { renderTwinnyBannerCard, type LarkCardJson } from "../lark/cards.js";
 import type { LarkLogger } from "../lark/index.js";
 
 const DEFAULT_NOTIFICATION_TIMEOUT_MS = 5_000;
 
 export interface SystemNotificationSender {
-  sendTextToOpenId(openId: string, text: string, options?: { signal?: AbortSignal; uuid?: string }): Promise<unknown>;
+  sendInteractiveCardToOpenId(openId: string, card: LarkCardJson, options?: { signal?: AbortSignal; uuid?: string }): Promise<unknown>;
 }
 
 export interface TwinnySystemNotifierOptions {
@@ -27,32 +28,18 @@ export class TwinnySystemNotifier {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_NOTIFICATION_TIMEOUT_MS;
   }
 
-  async notifyInitialized(options: { home: string; appId: string }): Promise<void> {
-    await this.send(
+  async notifyInitialized(options: { bannerImageKey?: string } = {}): Promise<void> {
+    await this.sendCard(
       "initialized",
-      [
-        "Twinny 初始化完成",
-        `home: ${options.home}`,
-        `app_id: ${options.appId}`
-      ].join("\n")
+      renderTwinnyBannerCard({ bannerImageKey: options.bannerImageKey })
     );
   }
 
-  async notifyGracefulExit(options: { signal: NodeJS.Signals }): Promise<void> {
-    await this.send(
-      "graceful_exit",
-      [
-        "Twinny 优雅退出",
-        `signal: ${options.signal}`
-      ].join("\n")
-    );
-  }
-
-  private async send(kind: string, text: string): Promise<void> {
+  private async sendCard(kind: string, card: LarkCardJson): Promise<void> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      await this.sender.sendTextToOpenId(this.ownerOpenId, text, { signal: controller.signal });
+      await this.sender.sendInteractiveCardToOpenId(this.ownerOpenId, card, { signal: controller.signal });
     } catch (error) {
       this.logger?.warn?.({ kind, error: toErrorMessage(error) }, "failed to send Twinny system notification");
     } finally {

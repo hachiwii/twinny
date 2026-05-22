@@ -252,6 +252,30 @@ export class LarkMessageSender {
     };
   }
 
+  async sendInteractiveCardToOpenId(
+    openId: string,
+    card: LarkInteractiveCard,
+    options: TextMessageOptions = {}
+  ): Promise<LarkSendMessageResult> {
+    const raw = await this.openApiClient.request("/im/v1/messages", {
+      method: "POST",
+      query: {
+        receive_id_type: "open_id"
+      },
+      signal: options.signal,
+      body: {
+        receive_id: openId,
+        content: this.stringifyMessageContent(card),
+        msg_type: "interactive",
+        ...(options.uuid ? { uuid: options.uuid } : {})
+      }
+    });
+    return {
+      messageId: extractMessageId(raw),
+      raw
+    };
+  }
+
   async sendTextToChatId(chatId: string, text: string, options: TextMessageOptions = {}): Promise<LarkSendMessageResult> {
     const raw = await this.openApiClient.request("/im/v1/messages", {
       method: "POST",

@@ -2,35 +2,29 @@ import { describe, expect, it, vi } from "vitest";
 import { TwinnySystemNotifier, type SystemNotificationSender } from "./system-notifications.js";
 
 describe("TwinnySystemNotifier", () => {
-  it("sends initialization and graceful exit notifications to the owner", async () => {
+  it("sends the startup banner card to the owner", async () => {
     const sender = createSender();
     const notifier = new TwinnySystemNotifier({
       ownerOpenId: "ou_owner",
       sender
     });
 
-    await notifier.notifyInitialized({ home: "/tmp/twinny", appId: "cli_app" });
-    await notifier.notifyGracefulExit({ signal: "SIGTERM" });
+    await notifier.notifyInitialized({ bannerImageKey: "img_banner" });
 
-    expect(sender.sendTextToOpenId).toHaveBeenNthCalledWith(
-      1,
+    expect(sender.sendInteractiveCardToOpenId).toHaveBeenCalledWith(
       "ou_owner",
-      ["Twinny 初始化完成", "home: /tmp/twinny", "app_id: cli_app"].join("\n"),
+      expect.objectContaining({ schema: "2.0" }),
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
-    expect(sender.sendTextToOpenId).toHaveBeenNthCalledWith(
-      2,
-      "ou_owner",
-      ["Twinny 优雅退出", "signal: SIGTERM"].join("\n"),
-      expect.objectContaining({ signal: expect.any(AbortSignal) })
-    );
-    expect(sender.sendTextToOpenId).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(sender.sendInteractiveCardToOpenId.mock.calls[0]![1])).toContain("img_banner");
+    expect(JSON.stringify(sender.sendInteractiveCardToOpenId.mock.calls[0]![1])).toContain("Twinny v0.4.0");
+    expect(sender.sendInteractiveCardToOpenId).toHaveBeenCalledTimes(1);
   });
 
   it("logs notification failures without throwing", async () => {
     const logger = { warn: vi.fn() };
     const sender = {
-      sendTextToOpenId: vi.fn(async () => {
+      sendInteractiveCardToOpenId: vi.fn(async () => {
         throw new Error("send failed");
       })
     } satisfies SystemNotificationSender;
@@ -40,7 +34,7 @@ describe("TwinnySystemNotifier", () => {
       logger
     });
 
-    await expect(notifier.notifyInitialized({ home: "/tmp/twinny", appId: "cli_app" })).resolves.toBeUndefined();
+    await expect(notifier.notifyInitialized()).resolves.toBeUndefined();
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "initialized", error: "send failed" }),
       "failed to send Twinny system notification"
@@ -48,8 +42,8 @@ describe("TwinnySystemNotifier", () => {
   });
 });
 
-function createSender(): SystemNotificationSender & { sendTextToOpenId: ReturnType<typeof vi.fn> } {
+function createSender(): SystemNotificationSender & { sendInteractiveCardToOpenId: ReturnType<typeof vi.fn> } {
   return {
-    sendTextToOpenId: vi.fn(async () => ({ messageId: "om_1" }))
+    sendInteractiveCardToOpenId: vi.fn(async () => ({ messageId: "om_1" }))
   };
 }
