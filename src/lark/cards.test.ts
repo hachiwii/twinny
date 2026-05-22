@@ -495,6 +495,7 @@ describe("renderTwinnyThreadSummaryCard", () => {
   it("renders the compact thread summary layout", () => {
     const card = renderTwinnyThreadSummaryCard({
       name: "整理部署方案",
+      status: "idle",
       creatorOpenId: "ou_guest",
       createdAt: 1,
       codexThreadId: "019e4af0-176c-7301-8d5c-2e642472826c",
@@ -548,5 +549,27 @@ describe("renderTwinnyThreadSummaryCard", () => {
         }
       ]
     });
+  });
+
+  it("uses agent status colors for active thread summary cards", () => {
+    const base = {
+      name: "整理部署方案",
+      creatorOpenId: "ou_guest",
+      createdAt: 1,
+      codexThreadId: "019e4af0-176c-7301-8d5c-2e642472826c",
+      turnCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      totalWorkDurationMs: 0,
+      contextTokens: 0,
+      contextWindow: 0
+    };
+
+    expect(renderTwinnyThreadSummaryCard({ ...base, status: "idle" }).header).toMatchObject({ template: "blue" });
+    expect(renderTwinnyThreadSummaryCard({ ...base, status: "working" }).header).toMatchObject({ template: "purple" });
+    expect(renderTwinnyThreadSummaryCard({ ...base, status: "waiting" }).header).toMatchObject({ template: "yellow" });
   });
 });

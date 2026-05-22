@@ -4534,7 +4534,17 @@ export class ConversationManager {
     status: CodexThreadStatus
   ): Promise<void> {
     try {
-      await this.options.repository.updateCodexThreadStatus(conversationKey, codexThreadId, status);
+      const thread = await this.options.repository.updateCodexThreadStatus(conversationKey, codexThreadId, status);
+      if (thread.cardMessageId) {
+        await this.options.lark.patchCard(
+          thread.cardMessageId,
+          await this.renderThreadSummaryCard(thread, {
+            additionalWorkDurationMs: status === "idle"
+              ? 0
+              : activeTurnWorkDurationMs(codexThreadId, this.findActiveTurn(codexThreadId))
+          })
+        );
+      }
     } catch (error) {
       this.log.warn({ error, codexThreadId, status }, "failed to update codex thread status");
     }
@@ -4573,6 +4583,7 @@ export class ConversationManager {
     const stats = await this.options.repository.getCodexThreadWorkStats(thread.codexThreadId);
     return renderTwinnyThreadSummaryCard({
       name: thread.name,
+      status: thread.status,
       creatorOpenId: thread.creatorOpenId,
       createdAt: thread.createdAt,
       codexThreadId: thread.codexThreadId,

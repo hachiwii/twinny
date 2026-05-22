@@ -215,7 +215,11 @@ describe("ConversationManager", () => {
         }
       });
 
-      const summaryCard = vi.mocked(lark.patchCard).mock.calls.find(([messageId]) => messageId === "card_thread_1")?.[1];
+      const summaryCard = vi
+        .mocked(lark.patchCard)
+        .mock.calls.filter(([messageId]) => messageId === "card_thread_1")
+        .map(([, card]) => card)
+        .find((card) => JSON.stringify(card).includes("**时长**\\n7s"));
       expect(summaryCard).toBeDefined();
       const serialized = JSON.stringify(summaryCard);
       expect(serialized).toContain("**输入**\\n0");
@@ -338,6 +342,87 @@ describe("ConversationManager", () => {
     await expect(Promise.resolve(repository.getCodexThreadById("thread_inflight_name"))).resolves.toMatchObject({
       name: "Codex 补发标题"
     });
+  });
+
+  it("patches a bound thread card when thread status colors change", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_status_color" });
+    const { repository } = createRepository(row, {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_status_color",
+          conversationKey: "p2p_ou_guest",
+          cardMessageId: "card_thread_status_color"
+        })
+      ]
+    });
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    vi.mocked(lark.getMessageReadOpenIds).mockResolvedValue([]);
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+    const responder = {
+      respond: vi.fn(),
+      reject: vi.fn()
+    };
+    const expectThreadTemplate = async (template: string) => {
+      await waitForExpect(() => {
+        const card = vi
+          .mocked(lark.patchCard)
+          .mock.calls.filter(([messageId]) => messageId === "card_thread_status_color")
+          .at(-1)?.[1] as Record<string, unknown> | undefined;
+        expect(card?.header).toMatchObject({ template });
+      });
+    };
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await expectThreadTemplate("purple");
+
+    await turns[0]!.params.onRequestUserInput?.(
+      {
+        requestId: "request_1",
+        params: {
+          threadId: "thread_status_color",
+          turnId: "turn_1",
+          itemId: "item_1",
+          questions: [
+            {
+              id: "choice",
+              header: "Choose mode",
+              question: "Choose mode",
+              isOther: false,
+              isSecret: false,
+              options: null
+            }
+          ]
+        }
+      },
+      responder
+    );
+    await expectThreadTemplate("yellow");
+
+    manager.submitCardAction({
+      eventId: "event_request_submit",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m1_1",
+      openChatId: "oc_ignored",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "request_input_submit",
+        stateKey: "p2p_ou_guest",
+        runId: 1
+      },
+      formValue: {},
+      raw: { event_id: "event_request_submit" }
+    });
+    await waitForExpect(() => expect(responder.respond).toHaveBeenCalled());
+    await expectThreadTemplate("purple");
+
+    turns[0]!.resolve(completed("thread_status_color", "turn_1"));
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadStatus).toHaveBeenCalledWith("p2p_ou_guest", "thread_status_color", "idle")
+    );
+    await expectThreadTemplate("blue");
   });
 
   it("records steered messages against the active Codex turn", async () => {

@@ -1,4 +1,4 @@
-import type { CodexThreadMode } from "../types.js";
+import type { CodexThreadMode, CodexThreadStatus } from "../types.js";
 
 export type LarkCardJson = Record<string, unknown>;
 export type LarkCardElement = Record<string, unknown>;
@@ -94,6 +94,7 @@ interface ParsedPlanPart {
 
 export interface RenderTwinnyThreadSummaryCardOptions {
   name: string;
+  status: CodexThreadStatus;
   creatorOpenId?: string;
   createdAt: number;
   codexThreadId: string;
@@ -237,7 +238,7 @@ export function renderTwinnyThreadSummaryCard(options: RenderTwinnyThreadSummary
         tag: "plain_text",
         content: ""
       },
-      template: "blue",
+      template: threadSummaryHeaderTemplate(options.status),
       icon: threadSummaryHeaderIcon(options.iconImageKey),
       padding: "12px 12px 12px 12px"
     }
@@ -246,6 +247,16 @@ export function renderTwinnyThreadSummaryCard(options: RenderTwinnyThreadSummary
 
 function compactCardTitle(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function threadSummaryHeaderTemplate(status: CodexThreadStatus): string {
+  if (status === "working") {
+    return STATUS_HEADER.working.template;
+  }
+  if (status === "waiting") {
+    return STATUS_HEADER.waiting_input.template;
+  }
+  return "blue";
 }
 
 function threadMetricColumn(label: string, value: string): LarkCardElement {
