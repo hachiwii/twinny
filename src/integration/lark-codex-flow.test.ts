@@ -1795,6 +1795,7 @@ function adaptConversationRepository(repository: StoreConversationRepository): M
     replaceCodexThreadForLarkThread: repository.replaceCodexThreadForLarkThread.bind(repository),
     updateCodexThreadTokenUsage: repository.updateCodexThreadTokenUsage.bind(repository),
     updateCodexThreadCard: repository.updateCodexThreadCard.bind(repository),
+    updateCodexThreadName: repository.updateCodexThreadName.bind(repository),
     updateCodexThreadMode: repository.updateCodexThreadMode.bind(repository),
     updateCodexThreadStatus: repository.updateCodexThreadStatus.bind(repository),
     getCodexThreadWorkStats: repository.getCodexThreadWorkStats.bind(repository),

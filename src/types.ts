@@ -32,6 +32,11 @@ export interface CodexImageGeneration {
   result?: string;
 }
 
+export interface CodexThreadNameUpdate {
+  threadId: string;
+  name: string;
+}
+
 export type LarkMessageRouteKind =
   | "message"
   | "side_message"
@@ -148,6 +153,7 @@ export interface CodexThreadRecord {
   id: number;
   codexThreadId: string;
   conversationKey: string;
+  name: string;
   larkThreadId?: string;
   role: RoleName;
   mode: CodexThreadMode;

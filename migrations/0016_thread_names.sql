@@ -1,0 +1,2 @@
+ALTER TABLE threads
+ADD COLUMN name TEXT NOT NULL DEFAULT '新会话';

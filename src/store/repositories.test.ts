@@ -181,6 +181,7 @@ describe("ConversationRepository", () => {
       id: 1,
       codexThreadId: "thread-1",
       conversationKey: "p2p_ou_456",
+      name: "新会话",
       role: "guest",
       codexThreadHasRollout: false,
       totalTokens: 0,
@@ -396,6 +397,14 @@ describe("ConversationRepository", () => {
       cardMessageId: "om_card",
       updatedAt: 1750
     });
+
+    now = 1800;
+    expect(repo.updateCodexThreadName("thread-1", "排查消息队列")).toMatchObject({
+      codexThreadId: "thread-1",
+      name: "排查消息队列",
+      updatedAt: 1800
+    });
+    expect(repo.updateCodexThreadName("thread-missing", "不会创建")).toBeUndefined();
   });
 
   it("records non-message actions without Lark message ids and dedupes by event id", () => {

@@ -93,6 +93,9 @@ export class TwinnyRuntime {
         this.codexPool.get(role).on("stderr", (chunk) => {
           this.log.debug({ role, stream: "stderr", chunk }, "codex app-server stderr");
         });
+        this.codexPool.get(role).on("threadNameUpdated", (update) => {
+          this.conversation?.submitCodexThreadNameUpdated(update);
+        });
         this.codexPool.get(role).on("exit", (code, signal) => {
           this.log.error({ role, code, signal }, "codex app-server exited");
           void this.handleCodexAppServerExit(role).catch((error) => {
@@ -378,6 +381,7 @@ export function adaptConversationRepository(repository: ConversationRepository) 
     replaceCodexThreadForLarkThread: repository.replaceCodexThreadForLarkThread.bind(repository),
     updateCodexThreadTokenUsage: repository.updateCodexThreadTokenUsage.bind(repository),
     updateCodexThreadCard: repository.updateCodexThreadCard.bind(repository),
+    updateCodexThreadName: repository.updateCodexThreadName.bind(repository),
     updateCodexThreadMode: repository.updateCodexThreadMode.bind(repository),
     updateCodexThreadStatus: repository.updateCodexThreadStatus.bind(repository),
     getCodexThreadWorkStats: repository.getCodexThreadWorkStats.bind(repository),

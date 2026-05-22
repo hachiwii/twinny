@@ -494,6 +494,7 @@ describe("renderTwinnyAgentCard", () => {
 describe("renderTwinnyThreadSummaryCard", () => {
   it("renders the compact thread summary layout", () => {
     const card = renderTwinnyThreadSummaryCard({
+      name: "整理部署方案",
       creatorOpenId: "ou_guest",
       createdAt: 1,
       codexThreadId: "019e4af0-176c-7301-8d5c-2e642472826c",
@@ -521,7 +522,7 @@ describe("renderTwinnyThreadSummaryCard", () => {
       }
     });
     expect(card.header).toMatchObject({
-      title: { tag: "plain_text", content: "新会话" },
+      title: { tag: "plain_text", content: "整理部署方案" },
       template: "blue",
       icon: { tag: "standard_icon", token: "table-group_outlined" }
     });

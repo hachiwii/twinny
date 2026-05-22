@@ -56,6 +56,7 @@ describe("CodexAppServer", () => {
         TWINNY_LARK_APP_SECRET: "must-not-leak"
       }
     });
+    const threadNameUpdated = onceThreadNameUpdated(server);
 
     try {
       const initialized = await server.start();
@@ -69,6 +70,10 @@ describe("CodexAppServer", () => {
 
       await expect(server.startThread(workspace)).resolves.toMatchObject({
         thread: { id: "thread-start" }
+      });
+      await expect(threadNameUpdated).resolves.toEqual({
+        threadId: "thread-start",
+        name: "Started thread title"
       });
       const guestCodexConfig = parse(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")) as TomlTable;
       expect((guestCodexConfig.projects as TomlTable)[workspace]).toEqual({ trust_level: "trusted" });
@@ -355,6 +360,7 @@ rl.on("line", (line) => {
   }
   if (message.method === "thread/start") {
     send({ id: message.id, result: { thread: { id: "thread-start" } } });
+    send({ method: "thread/name/updated", params: { thread_id: "thread-start", thread_name: "Started thread title" } });
     return;
   }
   if (message.method === "thread/resume") {
@@ -549,6 +555,12 @@ rl.on("line", (line) => {
 function onceExit(server: CodexAppServer): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   return new Promise((resolve) => {
     server.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+}
+
+function onceThreadNameUpdated(server: CodexAppServer): Promise<unknown> {
+  return new Promise((resolve) => {
+    server.once("threadNameUpdated", (update) => resolve(update));
   });
 }
 

@@ -34,6 +34,7 @@ import type {
   CodexRequestUserInputRequest,
   CodexRequestUserInputResponse,
   CodexThreadMode,
+  CodexThreadNameUpdate,
   CodexThreadStatus,
   AgentMessageMode,
   ConversationResponseMode,
@@ -131,6 +132,7 @@ export interface ConversationRepository {
     codexThreadHasRollout?: boolean;
     forkedFromCodexThreadId?: string;
     forkedAt?: number;
+    name?: string;
   }): Promise<unknown> | unknown;
   replaceCodexThreadForLarkThread?(
     conversationKey: string,
@@ -157,7 +159,12 @@ export interface ConversationRepository {
     larkThreadId?: string;
     creatorOpenId?: string;
     cardMessageId?: string;
+    name?: string;
   }): Promise<CodexThreadRecord> | CodexThreadRecord;
+  updateCodexThreadName(
+    codexThreadId: string,
+    name: string
+  ): Promise<CodexThreadRecord | undefined> | CodexThreadRecord | undefined;
   updateCodexThreadMode(
     conversationKey: string,
     codexThreadId: string,
@@ -450,6 +457,7 @@ interface NewSessionTopicRequest {
   eventId: string;
   anchorMessage?: IncomingLarkMessage;
   codexThread?: NewSessionTopicCodexThread;
+  name?: string;
 }
 
 interface NewSessionTopicCodexThread {
@@ -621,6 +629,7 @@ export class ConversationManager {
 
   private readonly states = new Map<string, ConversationState>();
   private readonly nameLookupFailureCache = new Map<string, number>();
+  private readonly pendingThreadNames = new Map<string, string>();
   private readonly log: Logger;
   private shuttingDown = false;
 
@@ -699,6 +708,15 @@ export class ConversationManager {
 
     void state.controlQueue.enqueue(() => this.processCardAction(state, action, command)).catch((error) => {
       this.log.error({ error, eventId: action.eventId }, "conversation card action failed");
+    });
+  }
+
+  submitCodexThreadNameUpdated(update: CodexThreadNameUpdate): void {
+    if (this.shuttingDown) {
+      return;
+    }
+    void this.handleCodexThreadNameUpdated(update).catch((error) => {
+      this.log.warn({ error, threadId: update.threadId }, "failed to apply codex thread name update");
     });
   }
 
@@ -1902,7 +1920,8 @@ export class ConversationManager {
       chatId,
       operatorOpenId: message.senderOpenId,
       eventId: message.eventId,
-      anchorMessage: message
+      anchorMessage: message,
+      name: initialThreadNameForCommand(text, message, "新会话")
     });
     if (!topic) {
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -2000,6 +2019,7 @@ export class ConversationManager {
       operatorOpenId: message.senderOpenId,
       eventId: message.eventId,
       anchorMessage: message,
+      name: initialThreadNameForCommand(text, message, "新分支会话"),
       codexThread: {
         threadId: forkedThreadId,
         codexThreadHasRollout: true,
@@ -2202,10 +2222,12 @@ export class ConversationManager {
           cwd: workspace,
           approvalPolicy: "never"
         });
+    const threadName = this.consumePendingThreadName(thread.threadId) ?? request.name;
     await this.options.repository.upsertCodexThread({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
       role,
+      ...(threadName ? { name: threadName } : {}),
       codexThreadHasRollout: request.codexThread?.codexThreadHasRollout ?? false,
       forkedFromCodexThreadId: request.codexThread?.forkedFromCodexThreadId,
       forkedAt: request.codexThread?.forkedAt
@@ -2214,6 +2236,7 @@ export class ConversationManager {
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
       role,
+      ...(threadName ? { name: threadName } : {}),
       creatorOpenId: request.operatorOpenId
     });
     const card = await this.renderThreadSummaryCard(initialRecord);
@@ -2233,14 +2256,19 @@ export class ConversationManager {
       throw new TwinnyError("Lark new-session card response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
     }
     const cardThreadId = extractLarkMessageThreadId(result?.raw) ?? cardMessageId;
-    await this.options.repository.updateCodexThreadCard({
+    const finalThreadName = this.consumePendingThreadName(thread.threadId) ?? threadName;
+    const finalRecord = await this.options.repository.updateCodexThreadCard({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
       role,
+      ...(finalThreadName ? { name: finalThreadName } : {}),
       larkThreadId: cardThreadId,
       creatorOpenId: request.operatorOpenId,
       cardMessageId
     });
+    if (finalThreadName && finalThreadName !== threadName) {
+      await this.options.lark.patchCard(cardMessageId, await this.renderThreadSummaryCard(finalRecord));
+    }
     return {
       codexThreadId: thread.threadId,
       role,
@@ -4544,6 +4572,7 @@ export class ConversationManager {
   ): Promise<LarkCardJson> {
     const stats = await this.options.repository.getCodexThreadWorkStats(thread.codexThreadId);
     return renderTwinnyThreadSummaryCard({
+      name: thread.name,
       creatorOpenId: thread.creatorOpenId,
       createdAt: thread.createdAt,
       codexThreadId: thread.codexThreadId,
@@ -4558,6 +4587,56 @@ export class ConversationManager {
       contextWindow: thread.contextWindow,
       iconImageKey: this.options.config.lark.iconImageKey
     });
+  }
+
+  private async handleCodexThreadNameUpdated(update: CodexThreadNameUpdate): Promise<void> {
+    const name = normalizeThreadName(update.name);
+    if (!name) {
+      return;
+    }
+    const thread = await this.options.repository.updateCodexThreadName(update.threadId, name);
+    if (!thread) {
+      this.rememberPendingThreadName(update.threadId, name);
+      return;
+    }
+    if (!thread.cardMessageId) {
+      this.rememberPendingThreadName(update.threadId, name);
+      return;
+    }
+    await this.options.lark.patchCard(
+      thread.cardMessageId,
+      await this.renderThreadSummaryCard(thread, {
+        additionalWorkDurationMs: activeTurnWorkDurationMs(update.threadId, this.findActiveTurn(update.threadId))
+      })
+    );
+  }
+
+  private findActiveTurn(codexThreadId: string): ActiveTurn | undefined {
+    for (const state of this.states.values()) {
+      if (state.active?.threadId === codexThreadId) {
+        return state.active;
+      }
+    }
+    return undefined;
+  }
+
+  private rememberPendingThreadName(codexThreadId: string, name: string): void {
+    this.pendingThreadNames.set(codexThreadId, name);
+    while (this.pendingThreadNames.size > 100) {
+      const oldest = this.pendingThreadNames.keys().next().value;
+      if (!oldest) {
+        return;
+      }
+      this.pendingThreadNames.delete(oldest);
+    }
+  }
+
+  private consumePendingThreadName(codexThreadId: string): string | undefined {
+    const name = this.pendingThreadNames.get(codexThreadId);
+    if (name !== undefined) {
+      this.pendingThreadNames.delete(codexThreadId);
+    }
+    return name;
   }
 
   private async updateThreadSummaryCardBestEffort(
@@ -6411,6 +6490,35 @@ function goalContentForPendingMessage(message: PendingMessage): string {
 
 function goalWorkingTitle(content: string): string {
   return `实现目标中：${truncateGoalTitle(content)}`;
+}
+
+function initialThreadNameForCommand(text: string, message: IncomingLarkMessage, fallback: string): string {
+  const nested = parseSlashCommand(text);
+  const titleText = parsedCommandTitleText(nested) ?? text;
+  const content = goalContentForPendingMessage(toPendingMessage(message, titleText));
+  return content ? truncateGoalTitle(content) : fallback;
+}
+
+function parsedCommandTitleText(command: ParsedCommand): string | undefined {
+  if (
+    command.kind === "message" ||
+    command.kind === "queue" ||
+    command.kind === "side" ||
+    command.kind === "goal" ||
+    command.kind === "plan" ||
+    command.kind === "stop" ||
+    command.kind === "activate" ||
+    command.kind === "thread" ||
+    command.kind === "fork"
+  ) {
+    return command.text;
+  }
+  return undefined;
+}
+
+function normalizeThreadName(value: string): string | undefined {
+  const compact = compactInlineText(value);
+  return compact || undefined;
 }
 
 function truncateGoalTitle(content: string): string {

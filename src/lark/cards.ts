@@ -93,6 +93,7 @@ interface ParsedPlanPart {
 }
 
 export interface RenderTwinnyThreadSummaryCardOptions {
+  name: string;
   creatorOpenId?: string;
   createdAt: number;
   codexThreadId: string;
@@ -230,7 +231,7 @@ export function renderTwinnyThreadSummaryCard(options: RenderTwinnyThreadSummary
     header: {
       title: {
         tag: "plain_text",
-        content: "新会话"
+        content: compactCardTitle(options.name) || "新会话"
       },
       subtitle: {
         tag: "plain_text",
@@ -241,6 +242,10 @@ export function renderTwinnyThreadSummaryCard(options: RenderTwinnyThreadSummary
       padding: "12px 12px 12px 12px"
     }
   };
+}
+
+function compactCardTitle(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function threadMetricColumn(label: string, value: string): LarkCardElement {

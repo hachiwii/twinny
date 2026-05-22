@@ -233,6 +233,113 @@ describe("ConversationManager", () => {
     }
   });
 
+  it("updates a bound thread card when Codex publishes a thread name update", async () => {
+    const { repository } = createRepository(undefined, {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_named",
+          conversationKey: "p2p_ou_guest",
+          name: "旧标题",
+          cardMessageId: "card_thread_named"
+        })
+      ]
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, lark });
+
+    manager.submitCodexThreadNameUpdated({ threadId: "thread_named", name: "  新标题\n来自 Codex  " });
+
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadName).toHaveBeenCalledWith("thread_named", "新标题 来自 Codex")
+    );
+    await waitForExpect(() => expect(lark.patchCard).toHaveBeenCalledWith("card_thread_named", expect.any(Object)));
+    const card = vi.mocked(lark.patchCard).mock.calls.find(([messageId]) => messageId === "card_thread_named")?.[1];
+    expect(JSON.stringify(card)).toContain("新标题 来自 Codex");
+  });
+
+  it("applies a Codex thread name update that arrives before the thread card is stored", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_pending_name" })) });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_pending_name_1",
+      raw: { data: { thread_id: "topic_pending_name" } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitCodexThreadNameUpdated({ threadId: "thread_pending_name", name: "  Codex 生成标题  " });
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadName).toHaveBeenCalledWith("thread_pending_name", "Codex 生成标题")
+    );
+
+    manager.submitIncoming(groupMessage("g_thread_pending_name", "/thread", { senderOpenId: "ou_guest" }));
+
+    await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
+    expect(lark.sendCardToChatId).toHaveBeenCalledWith(
+      "oc_group",
+      expect.objectContaining({
+        header: expect.objectContaining({
+          title: { tag: "plain_text", content: "Codex 生成标题" }
+        })
+      }),
+      { uuid: expect.stringMatching(UUID_PATTERN) }
+    );
+    expect(repository.updateCodexThreadCard).toHaveBeenCalledWith({
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread_pending_name",
+      role: "owner",
+      name: "Codex 生成标题",
+      creatorOpenId: "ou_guest"
+    });
+    await expect(Promise.resolve(repository.getCodexThreadById("thread_pending_name"))).resolves.toMatchObject({
+      name: "Codex 生成标题"
+    });
+    expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread_pending_name",
+      role: "owner",
+      larkThreadId: "topic_pending_name",
+      creatorOpenId: "ou_guest",
+      cardMessageId: "card_oc_group_1"
+    });
+  });
+
+  it("patches a thread card when Codex renames it before the card message id is stored", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_inflight_name" })) });
+    const lark = createLarkResponder();
+    const sentCard = deferred<{ messageId: string; raw: Record<string, unknown> }>();
+    vi.mocked(lark.sendCardToChatId).mockImplementationOnce(async () => sentCard.promise);
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_inflight_name_1",
+      raw: { data: { thread_id: "topic_inflight_name" } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_thread_inflight_name", "/thread", { senderOpenId: "ou_guest" }));
+    await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
+
+    manager.submitCodexThreadNameUpdated({ threadId: "thread_inflight_name", name: "Codex 补发标题" });
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadName).toHaveBeenCalledWith("thread_inflight_name", "Codex 补发标题")
+    );
+
+    sentCard.resolve({ messageId: "card_inflight_name", raw: { data: { thread_id: "topic_inflight_name" } } });
+
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith("card_inflight_name", expect.any(Object))
+    );
+    const patchedCard = vi
+      .mocked(lark.patchCard)
+      .mock.calls.find(([messageId]) => messageId === "card_inflight_name")?.[1];
+    expect(JSON.stringify(patchedCard)).toContain("Codex 补发标题");
+    await expect(Promise.resolve(repository.getCodexThreadById("thread_inflight_name"))).resolves.toMatchObject({
+      name: "Codex 补发标题"
+    });
+  });
+
   it("records steered messages against the active Codex turn", async () => {
     const { repository } = createRepository();
     const { codex, turns } = createDeferredCodex();
@@ -1627,7 +1734,7 @@ describe("ConversationManager", () => {
         cardMessageId,
         expect.objectContaining({
           header: expect.objectContaining({
-            title: { tag: "plain_text", content: "新会话" }
+            title: { tag: "plain_text", content: "topic first" }
           })
         })
       )
@@ -1778,6 +1885,7 @@ describe("ConversationManager", () => {
     expect(repository.getCodexThreadById("thread_forked")).toMatchObject({
       codexThreadId: "thread_forked",
       conversationKey: "group_oc_group",
+      name: "try alternate path",
       larkThreadId: "topic_fork_1",
       role: "owner",
       forkedFromCodexThreadId: "thread_group",
@@ -1800,6 +1908,47 @@ describe("ConversationManager", () => {
       })
     );
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_fork"]);
+  });
+
+  it("uses the default branch title for an empty /fork topic", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      forkThread: vi.fn(async () => ({ threadId: "thread_forked_empty" }))
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: "card_oc_group_1",
+      raw: { data: { thread_id: "topic_fork_empty" } }
+    });
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_fork_empty_intro_1",
+      raw: { data: { thread_id: "topic_fork_empty" } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_fork_empty", "/fork", {
+      senderOpenId: "ou_guest"
+    }));
+
+    await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
+    expect(lark.sendCardToChatId).toHaveBeenCalledWith(
+      "oc_group",
+      expect.objectContaining({
+        header: expect.objectContaining({
+          title: { tag: "plain_text", content: "新分支会话" }
+        })
+      }),
+      { uuid: expect.stringMatching(UUID_PATTERN) }
+    );
+    await waitForExpect(() =>
+      expect(repository.getCodexThreadById("thread_forked_empty")).toMatchObject({
+        name: "新分支会话",
+        forkedFromCodexThreadId: "thread_group"
+      })
+    );
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_fork_empty"]);
   });
 
   it("allows /fork inside a Lark thread and forks that topic's Codex thread", async () => {
@@ -2377,6 +2526,7 @@ describe("ConversationManager", () => {
       conversationKey: "p2p_ou_guest",
       codexThreadId: "thread_dm_topic",
       role: "guest",
+      name: "hello",
       larkThreadId: "dm_thread_1",
       creatorOpenId: "ou_guest",
       cardMessageId: "card_dm_thread_1"
@@ -5784,6 +5934,7 @@ function createRepository(initial?: ConversationRecord, options: {
     codexThreadHasRollout?: boolean;
     forkedFromCodexThreadId?: string;
     forkedAt?: number;
+    name?: string;
   }): CodexThreadRecord => {
     const existing = codexThreads.get(input.codexThreadId);
     const record = codexThreadRecord({
@@ -5791,6 +5942,7 @@ function createRepository(initial?: ConversationRecord, options: {
       id: existing?.id ?? nextCodexThreadId++,
       codexThreadId: input.codexThreadId,
       conversationKey: input.conversationKey,
+      name: input.name ?? existing?.name ?? "新会话",
       larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
       role: input.role,
       forkedFromCodexThreadId: input.forkedFromCodexThreadId ?? existing?.forkedFromCodexThreadId,
@@ -5815,6 +5967,7 @@ function createRepository(initial?: ConversationRecord, options: {
       id: existing?.id ?? nextCodexThreadId++,
       codexThreadId: update.codexThreadId,
       conversationKey,
+      name: existing?.name ?? "新会话",
       larkThreadId,
       role: update.role,
       codexThreadHasRollout: update.codexThreadHasRollout ?? false,
@@ -5915,6 +6068,7 @@ function createRepository(initial?: ConversationRecord, options: {
           ...existing,
           codexThreadId: input.codexThreadId,
           conversationKey: input.conversationKey,
+          name: input.name ?? existing?.name ?? "新会话",
           larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
           role: input.role,
           creatorOpenId: input.creatorOpenId ?? existing?.creatorOpenId,
@@ -5924,6 +6078,15 @@ function createRepository(initial?: ConversationRecord, options: {
         });
         codexThreads.set(record.codexThreadId, record);
         return record;
+      }),
+      updateCodexThreadName: vi.fn((codexThreadId, name) => {
+        const existing = codexThreads.get(codexThreadId);
+        if (!existing) {
+          return undefined;
+        }
+        existing.name = name;
+        existing.updatedAt = Date.now();
+        return existing;
       }),
       updateCodexThreadMode: vi.fn((conversationKey, codexThreadId, mode) => {
         const existing = codexThreads.get(codexThreadId);
@@ -6123,6 +6286,7 @@ function codexThreadRecord(overrides: Partial<CodexThreadRecord> = {}): CodexThr
     id: 1,
     codexThreadId: "thread_1",
     conversationKey: "p2p_ou_guest",
+    name: "新会话",
     role: "guest",
     mode: "default",
     status: "idle",

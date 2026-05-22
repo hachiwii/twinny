@@ -15,7 +15,7 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 15;
+export const currentStoreSchemaVersion = 16;
 
 const initialMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const threadRolloutMigrationFile = fileURLToPath(new URL("../../migrations/0002_codex_thread_rollout.sql", import.meta.url));
@@ -32,6 +32,7 @@ const threadPlanStatusMigrationFile = fileURLToPath(new URL("../../migrations/00
 const removeConversationChatModeMigrationFile = fileURLToPath(new URL("../../migrations/0013_remove_conversation_chat_mode.sql", import.meta.url));
 const sideMessagesMigrationFile = fileURLToPath(new URL("../../migrations/0014_side_messages.sql", import.meta.url));
 const routeKindGoalMessagesMigrationFile = fileURLToPath(new URL("../../migrations/0015_route_kind_goal_messages.sql", import.meta.url));
+const threadNamesMigrationFile = fileURLToPath(new URL("../../migrations/0016_thread_names.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -109,6 +110,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 15,
       name: "0015_route_kind_goal_messages",
       sql: fs.readFileSync(routeKindGoalMessagesMigrationFile, "utf8")
+    },
+    {
+      version: 16,
+      name: "0016_thread_names",
+      sql: fs.readFileSync(threadNamesMigrationFile, "utf8")
     }
   ];
 }
@@ -254,6 +260,9 @@ function ensureThreadsSummarySchemaConsistency(db: Database.Database): void {
 
   ensureTableColumn(db, threadsTable, "creator_open_id", "creator_open_id TEXT");
   ensureTableColumn(db, threadsTable, "card_message_id", "card_message_id TEXT");
+  if (getStoreSchemaVersion(db) >= 16) {
+    ensureTableColumn(db, threadsTable, "name", "name TEXT NOT NULL DEFAULT '新会话'");
+  }
   ensureTableColumn(db, threadsTable, "input_tokens", "input_tokens INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(db, threadsTable, "output_tokens", "output_tokens INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(db, threadsTable, "cached_input_tokens", "cached_input_tokens INTEGER NOT NULL DEFAULT 0");

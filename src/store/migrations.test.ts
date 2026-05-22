@@ -91,7 +91,8 @@ describe("store migrations", () => {
         { name: "context_window", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "thread_has_rollout", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "mode", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "status", type: "TEXT", notnull: 1, pk: 0 }
+        { name: "status", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "name", type: "TEXT", notnull: 1, pk: 0 }
       ]);
       const threadIndexes = db
         .prepare<[], SqliteNameRow>(
@@ -563,6 +564,7 @@ describe("store migrations", () => {
       expect(conversations).toContain("thread_id");
       expect(conversations).not.toContain("codex_thread_id");
       expect(threads).toContain("thread_id");
+      expect(threads).toContain("name");
       expect(threads).not.toContain("codex_thread_id");
       expect(threads).toContain("forked_from_thread_id");
       expect(threads).not.toContain("forked_from_codex_thread_id");

@@ -51,6 +51,7 @@ interface CodexThreadRow {
   id: number;
   thread_id: string;
   conversation_key: string;
+  name: string;
   lark_thread_id: string | null;
   role: RoleName;
   mode: CodexThreadMode;
@@ -106,6 +107,7 @@ export interface UpsertCodexThreadInput {
   codexThreadId: string;
   conversationKey: string;
   role: RoleName;
+  name?: string;
   larkThreadId?: string;
   codexThreadHasRollout?: boolean;
   forkedFromCodexThreadId?: string;
@@ -148,6 +150,7 @@ export interface UpdateCodexThreadCardInput {
   codexThreadId: string;
   conversationKey: string;
   role: RoleName;
+  name?: string;
   larkThreadId?: string;
   creatorOpenId?: string;
   cardMessageId?: string;
@@ -208,6 +211,7 @@ export class ConversationRepository {
   private readonly replaceCodexThreadForLarkThreadStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly updateCodexThreadUsageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly updateCodexThreadCardStatement: Database.Statement<[Record<string, unknown>]>;
+  private readonly updateCodexThreadNameStatement: Database.Statement<[string, number, string]>;
   private readonly updateCodexThreadModeStatement: Database.Statement<[CodexThreadMode, number, string, string]>;
   private readonly updateCodexThreadStatusStatement: Database.Statement<[CodexThreadStatus, number, string, string]>;
   private readonly selectCodexThreadWorkStats: Database.Statement<[string], CodexThreadWorkStatsRow>;
@@ -314,6 +318,7 @@ export class ConversationRepository {
       INSERT INTO threads (
         thread_id,
         conversation_key,
+        name,
         lark_thread_id,
         role,
         forked_from_thread_id,
@@ -326,6 +331,7 @@ export class ConversationRepository {
       ) VALUES (
         @codexThreadId,
         @conversationKey,
+        COALESCE(@name, '新会话'),
         @larkThreadId,
         @role,
         @forkedFromCodexThreadId,
@@ -338,6 +344,7 @@ export class ConversationRepository {
       )
       ON CONFLICT(thread_id) DO UPDATE SET
         conversation_key = excluded.conversation_key,
+        name = COALESCE(@name, threads.name),
         lark_thread_id = COALESCE(excluded.lark_thread_id, threads.lark_thread_id),
         role = excluded.role,
         forked_from_thread_id = COALESCE(excluded.forked_from_thread_id, threads.forked_from_thread_id),
@@ -377,6 +384,7 @@ export class ConversationRepository {
       INSERT INTO threads (
         thread_id,
         conversation_key,
+        name,
         lark_thread_id,
         role,
         input_tokens,
@@ -393,6 +401,7 @@ export class ConversationRepository {
       ) VALUES (
         @codexThreadId,
         @conversationKey,
+        COALESCE(@name, '新会话'),
         NULL,
         @role,
         @inputTokens,
@@ -409,6 +418,7 @@ export class ConversationRepository {
       )
       ON CONFLICT(thread_id) DO UPDATE SET
         conversation_key = excluded.conversation_key,
+        name = COALESCE(@name, threads.name),
         role = excluded.role,
         input_tokens = excluded.input_tokens,
         output_tokens = excluded.output_tokens,
@@ -425,6 +435,7 @@ export class ConversationRepository {
       INSERT INTO threads (
         thread_id,
         conversation_key,
+        name,
         lark_thread_id,
         role,
         creator_open_id,
@@ -435,6 +446,7 @@ export class ConversationRepository {
       ) VALUES (
         @codexThreadId,
         @conversationKey,
+        COALESCE(@name, '新会话'),
         @larkThreadId,
         @role,
         @creatorOpenId,
@@ -445,11 +457,18 @@ export class ConversationRepository {
       )
       ON CONFLICT(thread_id) DO UPDATE SET
         conversation_key = excluded.conversation_key,
+        name = COALESCE(@name, threads.name),
         lark_thread_id = COALESCE(excluded.lark_thread_id, threads.lark_thread_id),
         role = excluded.role,
         creator_open_id = COALESCE(excluded.creator_open_id, threads.creator_open_id),
         card_message_id = COALESCE(excluded.card_message_id, threads.card_message_id),
         updated_at = excluded.updated_at
+    `);
+    this.updateCodexThreadNameStatement = this.db.prepare(`
+      UPDATE threads
+      SET name = ?,
+          updated_at = ?
+      WHERE thread_id = ?
     `);
     this.updateCodexThreadModeStatement = this.db.prepare(`
       UPDATE threads
@@ -738,6 +757,7 @@ export class ConversationRepository {
     this.upsertCodexThreadStatement.run({
       codexThreadId: input.codexThreadId,
       conversationKey: input.conversationKey,
+      name: input.name ?? null,
       larkThreadId: input.larkThreadId ?? null,
       role: input.role,
       forkedFromCodexThreadId: input.forkedFromCodexThreadId ?? null,
@@ -790,6 +810,7 @@ export class ConversationRepository {
         this.upsertCodexThreadStatement.run({
           codexThreadId: input.codexThreadId,
           conversationKey: input.conversationKey,
+          name: null,
           larkThreadId: input.larkThreadId,
           role: input.role,
           forkedFromCodexThreadId: null,
@@ -824,6 +845,7 @@ export class ConversationRepository {
     this.updateCodexThreadUsageStatement.run({
       codexThreadId: input.codexThreadId,
       conversationKey: input.conversationKey,
+      name: null,
       role: input.role,
       inputTokens: Math.trunc(input.inputTokens),
       outputTokens: Math.trunc(input.outputTokens),
@@ -846,6 +868,9 @@ export class ConversationRepository {
     if (input.larkThreadId !== undefined) {
       assertNonEmpty(input.larkThreadId, "larkThreadId");
     }
+    if (input.name !== undefined) {
+      assertNonEmpty(input.name, "name");
+    }
     if (input.creatorOpenId !== undefined) {
       assertNonEmpty(input.creatorOpenId, "creatorOpenId");
     }
@@ -856,6 +881,7 @@ export class ConversationRepository {
     this.updateCodexThreadCardStatement.run({
       codexThreadId: input.codexThreadId,
       conversationKey: input.conversationKey,
+      name: input.name ?? null,
       role: input.role,
       larkThreadId: input.larkThreadId ?? null,
       creatorOpenId: input.creatorOpenId ?? null,
@@ -864,6 +890,16 @@ export class ConversationRepository {
       updatedAt: now
     });
     return this.requireCodexThreadById(input.codexThreadId);
+  }
+
+  updateCodexThreadName(codexThreadId: string, name: string): CodexThreadRecord | undefined {
+    assertNonEmpty(codexThreadId, "codexThreadId");
+    assertNonEmpty(name, "name");
+    const result = this.updateCodexThreadNameStatement.run(name, this.now(), codexThreadId);
+    if (result.changes === 0) {
+      return undefined;
+    }
+    return this.requireCodexThreadById(codexThreadId);
   }
 
   updateCodexThreadMode(
@@ -1138,6 +1174,7 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     id: row.id,
     codexThreadId: row.thread_id,
     conversationKey: row.conversation_key,
+    name: row.name,
     larkThreadId: row.lark_thread_id ?? undefined,
     role: row.role,
     mode: validCodexThreadMode(row.mode) ? row.mode : "default",
@@ -1210,6 +1247,9 @@ function validateCodexThreadInput(input: UpsertCodexThreadInput): void {
   assertNonEmpty(input.codexThreadId, "codexThreadId");
   assertValidConversationKey(input.conversationKey);
   assertValidRole(input.role);
+  if (input.name !== undefined) {
+    assertNonEmpty(input.name, "name");
+  }
   if (input.larkThreadId !== undefined) {
     assertNonEmpty(input.larkThreadId, "larkThreadId");
   }

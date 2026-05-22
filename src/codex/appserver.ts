@@ -2,8 +2,9 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { ensureGuestWorkspaceProjectTrusted } from "../roles/index.js";
-import type { RoleName } from "../types.js";
-import { CodexProtocolClient, createInitializeParams, type InitializeResponse } from "./protocol.js";
+import type { CodexThreadNameUpdate, RoleName } from "../types.js";
+import { CodexProtocolClient, createInitializeParams, type CodexNotificationMessage, type InitializeResponse } from "./protocol.js";
+import { parseCodexThreadNameUpdatedNotification } from "./thread-name.js";
 import {
   clearCodexThreadGoal,
   getCodexThreadGoal,
@@ -60,6 +61,8 @@ export interface RoleCodexAppServerPoolOptions {
 
 export interface CodexAppServerEvents {
   stderr: [chunk: string];
+  notification: [message: CodexNotificationMessage];
+  threadNameUpdated: [update: CodexThreadNameUpdate];
   exit: [code: number | null, signal: NodeJS.Signals | null];
 }
 
@@ -135,6 +138,7 @@ export class CodexAppServer extends EventEmitter {
       requestTimeoutMs: this.options.requestTimeoutMs,
       requestIdPrefix: `twinny-${this.options.role}`
     });
+    this.attachProtocolNotifications(protocol);
     this.child = child;
     this.protocolClient = protocol;
     this.initializeResponse = undefined;
@@ -152,6 +156,16 @@ export class CodexAppServer extends EventEmitter {
 
     this.initializeResponse = await protocol.initialize(createInitializeParams(this.options.clientVersion));
     return this.initializeResponse;
+  }
+
+  private attachProtocolNotifications(protocol: CodexProtocolClient): void {
+    protocol.on("notification", (message) => {
+      this.emit("notification", message);
+      const update = parseCodexThreadNameUpdatedNotification(message);
+      if (update) {
+        this.emit("threadNameUpdated", update);
+      }
+    });
   }
 
   async startThread(cwd: string): Promise<ThreadStartResponse> {
