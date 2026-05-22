@@ -103,6 +103,7 @@ describe("store migrations", () => {
         .all()
         .map((row) => row.name);
       expect(threadIndexes).toEqual([
+        "idx_threads_conversation_key",
         "idx_threads_conversation_lark_thread",
         "sqlite_autoindex_threads_1"
       ]);
@@ -150,6 +151,8 @@ describe("store migrations", () => {
         .map((row) => row.name);
       expect(messageIndexes).toEqual([
         "idx_lark_messages_card_action_event_id",
+        "idx_lark_messages_conversation_route",
+        "idx_lark_messages_conversation_turn",
         "idx_lark_messages_event_id",
         "idx_lark_messages_lark_message_id",
         "idx_lark_messages_thread_turn"
