@@ -6,13 +6,23 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const cliVersion = parseVersionArg(process.argv.slice(2));
-const buildVersion = cliVersion ?? process.env.TWINNY_BUILD_VERSION ?? buildDevelopmentVersion(repoRoot, new Date());
+try {
+  main();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
 
-validateBuildVersion(buildVersion);
-run("tsc", ["-p", "tsconfig.json"]);
-writeDistVersion(buildVersion);
-console.log(`Injected Twinny version ${buildVersion} into dist/version.js`);
+function main() {
+  const cliVersion = parseVersionArg(process.argv.slice(2));
+  const buildVersion = cliVersion ?? process.env.TWINNY_BUILD_VERSION ?? buildDevelopmentVersion(repoRoot, new Date());
+
+  assertCleanWorktree(repoRoot);
+  validateBuildVersion(buildVersion);
+  run("tsc", ["-p", "tsconfig.json"]);
+  writeDistVersion(buildVersion);
+  console.log(`Injected Twinny version ${buildVersion} into dist/version.js`);
+}
 
 function parseVersionArg(args) {
   for (let index = 0; index < args.length; index += 1) {
@@ -53,6 +63,17 @@ function formatBuildDate(date) {
 function validateBuildVersion(version) {
   if (!/^[A-Za-z0-9._+-]+$/.test(version)) {
     throw new Error(`Invalid Twinny version "${version}". Use letters, numbers, dots, underscores, plus signs, or hyphens.`);
+  }
+}
+
+function assertCleanWorktree(cwd) {
+  execFileSync("git", ["update-index", "-q", "--refresh"], { cwd, stdio: "ignore" });
+  const status = execFileSync("git", ["status", "--porcelain"], {
+    cwd,
+    encoding: "utf8"
+  }).trim();
+  if (status) {
+    throw new Error(`Refusing to build with a dirty git worktree:\n${status}`);
   }
 }
 
