@@ -4043,6 +4043,43 @@ describe("ConversationManager", () => {
     expect(completedSerialized).not.toContain("aggregate text");
   });
 
+  it("renders goal failure errors above the status line", async () => {
+    const { codex, goals } = createDeferredGoalCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "/goal finish the target"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    goals[0]!.resolve({
+      ...completed("thread_1", "goal_1", "failed"),
+      error: "Goal ended with status blocked"
+    });
+
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith(
+        "card_m1_1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "red",
+            title: { tag: "plain_text", content: "发生错误" }
+          })
+        })
+      )
+    );
+
+    const failedCard = vi.mocked(lark.patchCard).mock.calls.find(([, card]) =>
+      JSON.stringify(card).includes("Goal ended with status blocked")
+    )?.[1] as Record<string, unknown>;
+    const bodyElements = (failedCard.body as { elements: Array<Record<string, unknown>> }).elements;
+    const errorIndex = bodyElements.findIndex((element) =>
+      JSON.stringify(element).includes("[ERROR] Goal ended with status blocked")
+    );
+    const elapsedIndex = bodyElements.findIndex((element) => JSON.stringify(element).includes("已工作"));
+    expect(errorIndex).toBeGreaterThanOrEqual(0);
+    expect(elapsedIndex).toBeGreaterThan(errorIndex);
+  });
+
   it("switches an ordinary turn to a goal card when Codex reports a passive goal", async () => {
     const { repository } = createRepository();
     const { codex, turns } = createDeferredCodex();

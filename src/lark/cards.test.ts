@@ -413,6 +413,16 @@ describe("renderTwinnyAgentCard", () => {
       })
     );
     expect(markdownElements.some((element) => Object.hasOwn(element, "text_color"))).toBe(false);
+    const bodyElements = (card.body as { elements: Array<Record<string, unknown>> }).elements;
+    const errorIndex = bodyElements.findIndex(
+      (element) => element.tag === "markdown" && element.content === "- [ERROR] Codex app-server reported an error"
+    );
+    const elapsedIndex = bodyElements.findIndex(
+      (element) => JSON.stringify(element).includes("已工作 0s")
+    );
+    expect(errorIndex).toBeGreaterThanOrEqual(0);
+    expect(elapsedIndex).toBeGreaterThan(errorIndex);
+    expect(JSON.stringify(card)).not.toContain("暂无进度");
   });
 
   it("adds model, context, and compact token usage to the plain-text elapsed footer", () => {

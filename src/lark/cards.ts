@@ -420,11 +420,8 @@ function bodyElements(options: RenderTwinnyAgentCardOptions, parsedPlan?: Parsed
     return elements;
   }
 
-  const elements = workingProcessElements(options.messages);
+  const elements = workingProcessElements(workingMessagesWithError(options));
   elements.push(elapsedElement(options.elapsedMs, options.runtimeStats, options.mode));
-  if (options.status === "failed" && options.error) {
-    elements.push(markdownElement(`- [ERROR] ${sanitizeProcessText(options.error)}`));
-  }
   if (options.status === "working") {
     elements.push(buttonsElement(options));
     if (!options.hideQueueControls) {
@@ -432,6 +429,20 @@ function bodyElements(options: RenderTwinnyAgentCardOptions, parsedPlan?: Parsed
     }
   }
   return elements;
+}
+
+function workingMessagesWithError(options: RenderTwinnyAgentCardOptions): TwinnyAgentCardMessage[] {
+  if (options.status !== "failed" || !options.error) {
+    return options.messages;
+  }
+  return [
+    ...options.messages,
+    {
+      id: "error",
+      text: `[ERROR] ${options.error}`,
+      processOnly: true
+    }
+  ];
 }
 
 function finishedMentionElements(openIds: string[] | undefined): LarkCardElement[] {
