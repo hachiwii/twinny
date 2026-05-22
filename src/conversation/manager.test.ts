@@ -2181,7 +2181,10 @@ describe("ConversationManager", () => {
       '话题由 <at user_id="ou_guest">Guest User</at> 创建，分叉自 thread_topic_source',
       { replyInThread: true }
     );
-    expect(lark.recallMessage).toHaveBeenCalledWith("g_fork_nested");
+    expect(lark.forwardThreadToThread).toHaveBeenCalledWith("topic_fork_nested", "topic_source", {
+      uuid: expect.stringMatching(UUID_PATTERN)
+    });
+    expect(lark.recallMessage).not.toHaveBeenCalledWith("g_fork_nested");
     expect(repository.getCodexThreadById("thread_topic_fork")).toMatchObject({
       larkThreadId: "topic_fork_nested",
       forkedFromCodexThreadId: "thread_topic_source",
@@ -2690,23 +2693,58 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_thread_image"]);
   });
 
-  it("rejects /thread inside Lark thread contexts", async () => {
+  it("allows /thread inside Lark thread contexts and forwards the new topic back", async () => {
     const row = groupConversationRecord({ responseMode: "all" });
     const { repository } = createRepository(row);
-    const codex = createCodex();
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_nested" })),
+      startTurn: vi.fn(async ({ threadId }) => completed(threadId, "turn_1"))
+    });
     const lark = createLarkResponder();
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: "card_oc_group_1",
+      raw: { data: { thread_id: "topic_nested_new" } }
+    });
+    vi.mocked(lark.replyText)
+      .mockResolvedValueOnce({
+        messageId: "reply_nested_intro_1",
+        raw: { data: { thread_id: "topic_nested_new" } }
+      })
+      .mockResolvedValueOnce({
+        messageId: "reply_nested_1",
+        raw: { data: { thread_id: "topic_nested_new" } }
+      });
     const manager = createManager({ repository, codex, lark });
 
     manager.submitIncoming(groupMessage("g_thread_nested", "/thread nested", {
       chatType: "topic_group",
-      larkThreadId: "topic_thread_1"
+      larkThreadId: "topic_source"
     }));
 
-    await waitForExpect(() =>
-      expect(lark.replyText).toHaveBeenCalledWith("g_thread_nested", "不能在话题中使用此功能")
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(lark.sendCardToChatId).toHaveBeenCalledWith("oc_group", expect.any(Object), {
+      uuid: expect.stringMatching(UUID_PATTERN)
+    });
+    expect(lark.replyText).toHaveBeenNthCalledWith(
+      1,
+      "card_oc_group_1",
+      '话题由 <at user_id="ou_guest">Guest User</at> 创建',
+      { replyInThread: true }
     );
-    expect(lark.sendCardToChatId).not.toHaveBeenCalled();
-    expect(codex.startThread).not.toHaveBeenCalled();
+    expect(lark.replyText).toHaveBeenNthCalledWith(2, "card_oc_group_1", "nested", { replyInThread: true });
+    expect(lark.forwardThreadToThread).toHaveBeenCalledWith("topic_nested_new", "topic_source", {
+      uuid: expect.stringMatching(UUID_PATTERN)
+    });
+    expect(lark.recallMessage).not.toHaveBeenCalledWith("g_thread_nested");
+    expect(repository.getCodexThreadById("thread_nested")).toMatchObject({
+      larkThreadId: "topic_nested_new"
+    });
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_nested",
+        input: wrappedMessage("nested", "reply_nested_1", "ou_guest")
+      })
+    );
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_thread_nested"]);
   });
 

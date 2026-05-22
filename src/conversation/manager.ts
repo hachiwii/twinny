@@ -1915,11 +1915,6 @@ export class ConversationManager {
     message: IncomingLarkMessage,
     text: string
   ): Promise<void> {
-    if (context.larkThreadId) {
-      await this.replyControlBestEffort(message.messageId, "不能在话题中使用此功能");
-      await this.markMessagesCompletedBestEffort([message.messageId]);
-      return;
-    }
     if (!isThreadCommandMessageType(message.messageType)) {
       await this.replyControlBestEffort(message.messageId, "thread 只支持 text/post 消息。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -1955,12 +1950,15 @@ export class ConversationManager {
 
     const threadText = text.trim();
     if (!threadText) {
+      await this.forwardSessionTopicToSourceThreadBestEffort(context, message, topic);
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
 
     const proxy = await this.replyThreadCommandMessage(topic.cardMessageId, message, threadText);
-    if (isGroupConversationType(context.type)) {
+    if (context.larkThreadId) {
+      await this.forwardSessionTopicToSourceThreadBestEffort(context, message, topic);
+    } else if (isGroupConversationType(context.type)) {
       await this.recallMessageBestEffort(message.messageId, "failed to recall original /thread command after proxy reply");
     }
     const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
@@ -2062,12 +2060,15 @@ export class ConversationManager {
 
     const threadText = text.trim();
     if (!threadText) {
+      await this.forwardSessionTopicToSourceThreadBestEffort(context, message, topic);
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
 
     const proxy = await this.replyThreadCommandMessage(topic.cardMessageId, message, threadText);
-    if (isGroupConversationType(context.type)) {
+    if (context.larkThreadId) {
+      await this.forwardSessionTopicToSourceThreadBestEffort(context, message, topic);
+    } else if (isGroupConversationType(context.type)) {
       await this.recallMessageBestEffort(message.messageId, "failed to recall original /fork command after proxy reply");
     }
     const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
@@ -2190,6 +2191,27 @@ export class ConversationManager {
       cardMessageId: topic.cardMessageId
     });
     return { ...topic, larkThreadId: resolvedThreadId };
+  }
+
+  private async forwardSessionTopicToSourceThreadBestEffort(
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    topic: CreatedSessionTopic
+  ): Promise<void> {
+    const sourceThreadId = context.larkThreadId;
+    if (!sourceThreadId || sourceThreadId === topic.larkThreadId) {
+      return;
+    }
+    try {
+      await this.options.lark.forwardThreadToThread(topic.larkThreadId, sourceThreadId, {
+        uuid: createLarkUuid("twinny-topic-forward", message.eventId, topic.larkThreadId)
+      });
+    } catch (error) {
+      this.log.warn(
+        { error, sourceThreadId, topicThreadId: topic.larkThreadId, messageId: message.messageId },
+        "failed to forward newly created topic to source thread"
+      );
+    }
   }
 
   private async createNewSessionTopic(
