@@ -27,7 +27,7 @@ describe("ConversationRepository", () => {
   it("creates and queries the P2P conversation mapping", () => {
     const repo = createConversationRepository(db, { now: () => now });
     const workspace = path.join(tempDir, "workspaces", "p2p_ou_123");
-    const roleCodexHome = path.join(tempDir, "roles", "guest", "codex");
+    const profileCodexHome = path.join(tempDir, "profiles", "guest", "codex");
 
     const created = repo.create({
       conversationKey: "p2p_ou_123",
@@ -35,10 +35,10 @@ describe("ConversationRepository", () => {
       chatId: "ou_123",
       name: "Guest User",
       responseMode: "all",
-      role: "guest",
+      profile: "guest",
       codexThreadId: "thread-1",
       workspace,
-      roleCodexHome
+      profileCodexHome
     });
 
     expect(created).toMatchObject({
@@ -47,10 +47,10 @@ describe("ConversationRepository", () => {
       type: "p2p",
       chatId: "ou_123",
       name: "Guest User",
-      role: "guest",
+      profile: "guest",
       codexThreadId: "thread-1",
       workspace,
-      roleCodexHome,
+      profileCodexHome,
       createdAt: 1000,
       updatedAt: 1000
     });
@@ -63,7 +63,7 @@ describe("ConversationRepository", () => {
   it("creates group conversations with response modes and updates group settings", () => {
     const repo = createConversationRepository(db, { now: () => now });
     const workspace = path.join(tempDir, "workspaces", "group_oc_group");
-    const roleCodexHome = path.join(tempDir, "roles", "owner", "codex");
+    const profileCodexHome = path.join(tempDir, "profiles", "owner", "codex");
 
     const created = repo.create({
       conversationKey: "group_oc_group",
@@ -71,10 +71,10 @@ describe("ConversationRepository", () => {
       chatId: "oc_group",
       name: "Topic Group",
       responseMode: "all_at",
-      role: "owner",
+      profile: "owner",
       codexThreadId: "thread-group",
       workspace,
-      roleCodexHome
+      profileCodexHome
     });
 
     expect(created).toMatchObject({
@@ -83,7 +83,7 @@ describe("ConversationRepository", () => {
       chatId: "oc_group",
       name: "Topic Group",
       responseMode: "all_at",
-      role: "owner"
+      profile: "owner"
     });
     expect(repo.getByTypeAndChatId("topic_group", "oc_group")).toEqual(created);
 
@@ -97,7 +97,7 @@ describe("ConversationRepository", () => {
       type: "group",
       name: "Renamed Group",
       responseMode: "none",
-      role: "owner",
+      profile: "owner",
       updatedAt: 2000
     });
   });
@@ -105,17 +105,17 @@ describe("ConversationRepository", () => {
   it("updates thread bindings transactionally", () => {
     const repo = createConversationRepository(db, { now: () => now });
     const workspace = path.join(tempDir, "workspaces", "p2p_ou_456");
-    const roleCodexHome = path.join(tempDir, "roles", "owner", "codex");
+    const profileCodexHome = path.join(tempDir, "profiles", "owner", "codex");
 
     repo.create({
       conversationKey: "p2p_ou_456",
       type: "p2p",
       chatId: "ou_456",
       name: "Owner User",
-      role: "owner",
+      profile: "owner",
       codexThreadId: "thread-old",
       workspace,
-      roleCodexHome
+      profileCodexHome
     });
 
     now = 2000;
@@ -126,12 +126,12 @@ describe("ConversationRepository", () => {
     expect(updated.codexThreadId).toBe("thread-new");
     expect(updated.updatedAt).toBe(2000);
     expect(updated.workspace).toBe(workspace);
-    expect(updated.roleCodexHome).toBe(roleCodexHome);
+    expect(updated.profileCodexHome).toBe(profileCodexHome);
 
     repo.upsertCodexThread({
       codexThreadId: "thread-new",
       conversationKey: "p2p_ou_456",
-      role: "owner",
+      profile: "owner",
       codexThreadHasRollout: false
     });
 
@@ -158,31 +158,31 @@ describe("ConversationRepository", () => {
   it("records runtime codex threads, messages, and token usage by business ids", () => {
     const repo = createConversationRepository(db, { now: () => now });
     const workspace = path.join(tempDir, "workspaces", "p2p_ou_456");
-    const roleCodexHome = path.join(tempDir, "roles", "guest", "codex");
+    const profileCodexHome = path.join(tempDir, "profiles", "guest", "codex");
 
     repo.create({
       conversationKey: "p2p_ou_456",
       type: "p2p",
       chatId: "ou_456",
       name: "Guest User",
-      role: "guest",
+      profile: "guest",
       codexThreadId: "thread-1",
       workspace,
-      roleCodexHome
+      profileCodexHome
     });
 
     now = 1200;
     const thread = repo.upsertCodexThread({
       codexThreadId: "thread-1",
       conversationKey: "p2p_ou_456",
-      role: "guest"
+      profile: "guest"
     });
     expect(thread).toMatchObject({
       id: 1,
       codexThreadId: "thread-1",
       conversationKey: "p2p_ou_456",
       name: "新会话",
-      role: "guest",
+      profile: "guest",
       codexThreadHasRollout: false,
       totalTokens: 0,
       tokenUsageJson: "{}"
@@ -340,7 +340,7 @@ describe("ConversationRepository", () => {
     repo.updateCodexThreadTokenUsage({
       codexThreadId: "thread-1",
       conversationKey: "p2p_ou_456",
-      role: "guest",
+      profile: "guest",
       inputTokens: 80,
       outputTokens: 40,
       cachedInputTokens: 20,
@@ -487,7 +487,7 @@ describe("ConversationRepository", () => {
       repo.updateCodexThreadCard({
         codexThreadId: "thread-1",
         conversationKey: "p2p_ou_456",
-        role: "guest",
+        profile: "guest",
         creatorOpenId: "ou_456",
         cardMessageId: "om_card"
       })
@@ -594,14 +594,14 @@ describe("ConversationRepository", () => {
       codexThreadId: "thread-topic-1",
       conversationKey: "group_oc_group",
       larkThreadId: "om_root",
-      role: "guest",
+      profile: "guest",
       codexThreadHasRollout: false
     });
     expect(first).toMatchObject({
       codexThreadId: "thread-topic-1",
       conversationKey: "group_oc_group",
       larkThreadId: "om_root",
-      role: "guest"
+      profile: "guest"
     });
     expect(repo.getCodexThreadByConversationAndLarkThread("group_oc_group", "om_root")).toEqual(first);
 
@@ -609,7 +609,7 @@ describe("ConversationRepository", () => {
     repo.updateCodexThreadTokenUsage({
       codexThreadId: "thread-topic-1",
       conversationKey: "group_oc_group",
-      role: "guest",
+      profile: "guest",
       inputTokens: 200,
       outputTokens: 100,
       cachedInputTokens: 50,
@@ -627,7 +627,7 @@ describe("ConversationRepository", () => {
     now = 3000;
     const replacement = repo.replaceCodexThreadForLarkThread("group_oc_group", "om_root", {
       codexThreadId: "thread-topic-2",
-      role: "guest"
+      profile: "guest"
     });
     expect(repo.getCodexThreadById("thread-topic-1")).toBeUndefined();
     expect(replacement).toMatchObject({
@@ -646,7 +646,7 @@ describe("ConversationRepository", () => {
   it("rejects mismatched or unsafe conversation keys", () => {
     const repo = createConversationRepository(db);
     const workspace = path.join(tempDir, "workspaces", "p2p_ou_789");
-    const roleCodexHome = path.join(tempDir, "roles", "guest", "codex");
+    const profileCodexHome = path.join(tempDir, "profiles", "guest", "codex");
 
     expect(() =>
       repo.create({
@@ -654,10 +654,10 @@ describe("ConversationRepository", () => {
         type: "p2p",
         chatId: "ou_789",
         name: "Guest User",
-        role: "guest",
+        profile: "guest",
         codexThreadId: "thread-1",
         workspace,
-        roleCodexHome
+        profileCodexHome
       })
     ).toThrow(/must be p2p_ou_789/);
 
@@ -667,10 +667,10 @@ describe("ConversationRepository", () => {
         type: "p2p",
         chatId: "../secret",
         name: "Guest User",
-        role: "guest",
+        profile: "guest",
         codexThreadId: "thread-1",
         workspace,
-        roleCodexHome
+        profileCodexHome
       })
     ).toThrow();
   });

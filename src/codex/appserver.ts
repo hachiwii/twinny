@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { execa } from "execa";
-import { ensureWorkspaceTrust } from "../roles/index.js";
+import { ensureWorkspaceTrust } from "../profiles/index.js";
 import type { CodexThreadNameUpdate, ProfileName } from "../types.js";
 import { CodexProtocolClient, createInitializeParams, type CodexNotificationMessage, type InitializeResponse } from "./protocol.js";
 import { parseCodexThreadNameUpdatedNotification } from "./thread-name.js";
@@ -38,8 +38,7 @@ import {
 } from "./turn.js";
 
 export interface CodexAppServerOptions {
-  profile?: ProfileName;
-  role?: ProfileName;
+  profile: ProfileName;
   binary: string;
   codexHome: string;
   cwd?: string;
@@ -56,8 +55,7 @@ export interface ProfileCodexAppServerConfig {
 
 export interface ProfileCodexAppServerPoolOptions {
   binary: string;
-  profiles?: Record<ProfileName, { codexHome: string }>;
-  roles?: Record<ProfileName, { codexHome: string }>;
+  profiles: Record<ProfileName, { codexHome: string }>;
   requestTimeoutMs?: number;
   clientVersion?: string;
   env?: NodeJS.ProcessEnv;
@@ -288,11 +286,7 @@ export class CodexAppServer extends EventEmitter {
   }
 
   private profileName(): ProfileName {
-    const profile = this.options.profile ?? this.options.role;
-    if (!profile) {
-      throw new Error("Codex app-server profile is required");
-    }
-    return profile;
+    return this.options.profile;
   }
 
   private async readCodexBinaryVersionBestEffort(): Promise<string> {
@@ -314,7 +308,7 @@ export class ProfileCodexAppServerPool {
   private readonly servers = new Map<ProfileName, CodexAppServer>();
 
   constructor(private readonly options: ProfileCodexAppServerPoolOptions) {
-    const profiles = options.profiles ?? options.roles ?? {};
+    const profiles = options.profiles;
     for (const profile of Object.keys(profiles)) {
       this.servers.set(
         profile,
@@ -381,10 +375,6 @@ export class ProfileCodexAppServerPool {
     await Promise.all(Array.from(this.servers.values(), (server) => server.stop(signal)));
   }
 }
-
-export class RoleCodexAppServerPool extends ProfileCodexAppServerPool {}
-export type RoleCodexAppServerConfig = ProfileCodexAppServerConfig;
-export type RoleCodexAppServerPoolOptions = ProfileCodexAppServerPoolOptions;
 
 function hasExited(child: ChildProcessWithoutNullStreams): boolean {
   return child.exitCode !== null || child.signalCode !== null;

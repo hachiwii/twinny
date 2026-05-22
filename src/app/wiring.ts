@@ -8,7 +8,7 @@ import {
   resolveLarkAppSecret,
   SecurityCliSecretStore
 } from "../config/index.js";
-import { RoleCodexAppServerPool, type CodexAppServer } from "../codex/index.js";
+import { ProfileCodexAppServerPool, type CodexAppServer } from "../codex/index.js";
 import { ConversationManager, type CodexBridge } from "../conversation/manager.js";
 import {
   LarkEventConsumer,
@@ -25,7 +25,7 @@ import {
 import { acquireTwinnyLock, type TwinnyRuntimeLock } from "../lock/index.js";
 import { createLarkSdkLogger, createLogger, logger as defaultLogger } from "../observability/logs.js";
 import { TwinnySystemNotifier } from "../observability/system-notifications.js";
-import { getProfileCodexHome } from "../roles/index.js";
+import { getProfileCodexHome } from "../profiles/index.js";
 import { createConversationRepository, openRuntimeDatabase, type ConversationRepository, type TwinnyDatabase } from "../store/index.js";
 import type {
   CodexAgentMessage,
@@ -35,7 +35,7 @@ import type {
   CodexThreadMode,
   CodexThreadTokenUsageUpdate,
   LarkReactionHandle,
-  RoleName,
+  ProfileName,
   TwinnyConfig
 } from "../types.js";
 import type {
@@ -67,13 +67,13 @@ export class TwinnyRuntime {
   private readonly secretStore = new SecurityCliSecretStore();
   private lock?: TwinnyRuntimeLock;
   private db?: TwinnyDatabase;
-  private codexPool?: RoleCodexAppServerPool;
+  private codexPool?: ProfileCodexAppServerPool;
   private idleSleepPreventer?: IdleSleepPreventer;
   private larkConsumer?: LarkEventConsumer;
   private conversation?: ConversationManager;
   private systemNotifier?: TwinnySystemNotifier;
-  private readonly codexRecoveryByRole = new Map<RoleName, Promise<void>>();
-  private readonly codexIntentionalStopByRole = new Set<RoleName>();
+  private readonly codexRecoveryByProfile = new Map<ProfileName, Promise<void>>();
+  private readonly codexIntentionalStopByProfile = new Set<ProfileName>();
   private stopped = false;
   private stopPromise: Promise<void>;
   private resolveStopped!: () => void;
@@ -104,13 +104,13 @@ export class TwinnyRuntime {
       if (!appSecret) {
         throw new Error(`Lark app secret is missing: keychain:${appSecretAccount}`);
       }
-      this.codexPool = new RoleCodexAppServerPool({
+      this.codexPool = new ProfileCodexAppServerPool({
         binary: this.config.codex.binary,
         profiles: this.config.profiles,
         requestTimeoutMs: this.options.requestTimeoutMs ?? 10 * 60 * 1000
       });
-      for (const role of Object.keys(this.config.profiles) as RoleName[]) {
-        this.attachCodexAppServerListeners(role, this.codexPool.get(role));
+      for (const profile of Object.keys(this.config.profiles) as ProfileName[]) {
+        this.attachCodexAppServerListeners(profile, this.codexPool.get(profile));
       }
       await this.codexPool.startAll();
 
@@ -159,8 +159,8 @@ export class TwinnyRuntime {
         larkMessages,
         botOpenId,
         assetImageKeys,
-        roles: { codexHomeFor: (role) => getProfileCodexHome(this.config, role) },
-        runtime: { reloadProfile: (role) => this.reloadProfile(role) },
+        profiles: { codexHomeFor: (profile) => getProfileCodexHome(this.config, profile) },
+        runtime: { reloadProfile: (profile) => this.reloadProfile(profile) },
         logger: this.log
       });
       this.conversation = conversation;
@@ -236,58 +236,58 @@ export class TwinnyRuntime {
     await this.stopPromise;
   }
 
-  private async handleCodexAppServerExit(role: RoleName): Promise<void> {
+  private async handleCodexAppServerExit(profile: ProfileName): Promise<void> {
     if (this.stopped) {
       return;
     }
-    const existing = this.codexRecoveryByRole.get(role);
+    const existing = this.codexRecoveryByProfile.get(profile);
     if (existing) {
       return existing;
     }
-    const recovery = this.recoverCodexAppServer(role).finally(() => {
-      if (this.codexRecoveryByRole.get(role) === recovery) {
-        this.codexRecoveryByRole.delete(role);
+    const recovery = this.recoverCodexAppServer(profile).finally(() => {
+      if (this.codexRecoveryByProfile.get(profile) === recovery) {
+        this.codexRecoveryByProfile.delete(profile);
       }
     });
-    this.codexRecoveryByRole.set(role, recovery);
+    this.codexRecoveryByProfile.set(profile, recovery);
     await recovery;
   }
 
-  private async recoverCodexAppServer(role: RoleName): Promise<void> {
+  private async recoverCodexAppServer(profile: ProfileName): Promise<void> {
     const pool = this.codexPool;
     if (!pool || this.stopped) {
       return;
     }
-    const suspended = (await this.conversation?.suspendActiveTurnsForCodexAppServerExit(role)) ?? 0;
-    this.log.warn({ role, suspended }, "recovering codex app-server after exit");
-    await pool.restart(role);
+    const suspended = (await this.conversation?.suspendActiveTurnsForCodexAppServerExit(profile)) ?? 0;
+    this.log.warn({ profile, suspended }, "recovering codex app-server after exit");
+    await pool.restart(profile);
     if (this.stopped) {
       return;
     }
-    const recovered = (await this.conversation?.recoverSuspendedActiveTurnsForCodexAppServerExit(role)) ?? 0;
-    this.log.info({ role, suspended, recovered }, "codex app-server recovered after exit");
+    const recovered = (await this.conversation?.recoverSuspendedActiveTurnsForCodexAppServerExit(profile)) ?? 0;
+    this.log.info({ profile, suspended, recovered }, "codex app-server recovered after exit");
   }
 
-  private attachCodexAppServerListeners(role: RoleName, server: CodexAppServer): void {
+  private attachCodexAppServerListeners(profile: ProfileName, server: CodexAppServer): void {
     server.on("stderr", (chunk) => {
-      this.log.debug({ role, stream: "stderr", chunk }, "codex app-server stderr");
+      this.log.debug({ profile, stream: "stderr", chunk }, "codex app-server stderr");
     });
     server.on("threadNameUpdated", (update) => {
       this.conversation?.submitCodexThreadNameUpdated(update);
     });
     server.on("exit", (code, signal) => {
-      if (this.codexIntentionalStopByRole.delete(role)) {
-        this.log.info({ role, code, signal }, "codex app-server stopped intentionally");
+      if (this.codexIntentionalStopByProfile.delete(profile)) {
+        this.log.info({ profile, code, signal }, "codex app-server stopped intentionally");
         return;
       }
-      this.log.error({ role, code, signal }, "codex app-server exited");
-      void this.handleCodexAppServerExit(role).catch((error) => {
-        this.log.error({ error, role }, "failed to recover codex app-server after exit");
+      this.log.error({ profile, code, signal }, "codex app-server exited");
+      void this.handleCodexAppServerExit(profile).catch((error) => {
+        this.log.error({ error, profile }, "failed to recover codex app-server after exit");
       });
     });
   }
 
-  async reloadProfile(profile?: RoleName): Promise<void> {
+  async reloadProfile(profile?: ProfileName): Promise<void> {
     const pool = this.codexPool;
     if (!pool) {
       throw new Error("Codex app-server pool is not started");
@@ -302,10 +302,10 @@ export class TwinnyRuntime {
     }
 
     const currentProfiles = new Set(pool.listProfiles());
-    const nextProfiles = new Set(Object.keys(nextConfig.profiles) as RoleName[]);
+    const nextProfiles = new Set(Object.keys(nextConfig.profiles) as ProfileName[]);
     const profilesToReload = profile
       ? [profile]
-      : Array.from(new Set<RoleName>([...currentProfiles, ...nextProfiles]));
+      : Array.from(new Set<ProfileName>([...currentProfiles, ...nextProfiles]));
 
     this.log.info({ profiles: profilesToReload }, "reloading twinny profiles");
     for (const profileName of profilesToReload) {
@@ -338,12 +338,12 @@ export class TwinnyRuntime {
     replaceTwinnyConfigContents(this.config, nextConfig);
   }
 
-  private async stopCodexAppServerForReload(pool: RoleCodexAppServerPool, profile: RoleName): Promise<void> {
-    this.codexIntentionalStopByRole.add(profile);
+  private async stopCodexAppServerForReload(pool: ProfileCodexAppServerPool, profile: ProfileName): Promise<void> {
+    this.codexIntentionalStopByProfile.add(profile);
     try {
       await pool.remove(profile);
     } finally {
-      this.codexIntentionalStopByRole.delete(profile);
+      this.codexIntentionalStopByProfile.delete(profile);
     }
   }
 
@@ -485,26 +485,26 @@ export function adaptConversationRepository(repository: ConversationRepository) 
   };
 }
 
-function adaptCodexPool(pool: RoleCodexAppServerPool) {
+function adaptCodexPool(pool: ProfileCodexAppServerPool) {
   return {
     startThread: async ({
-      role,
+      profile,
       cwd,
       developerInstructions
     }: {
-      role: RoleName;
+      profile: ProfileName;
       cwd: string;
       developerInstructions?: string;
     }) => {
-      const response = await pool.get(role).startThread(cwd, { developerInstructions });
+      const response = await pool.get(profile).startThread(cwd, { developerInstructions });
       return { threadId: response.thread.id };
     },
-    resumeThread: async ({ role, threadId, cwd }: { role: RoleName; threadId: string; cwd: string }) => {
-      const response = await pool.get(role).resumeThread(threadId, cwd);
+    resumeThread: async ({ profile, threadId, cwd }: { profile: ProfileName; threadId: string; cwd: string }) => {
+      const response = await pool.get(profile).resumeThread(threadId, cwd);
       return { threadId: response.thread.id };
     },
     forkThread: async ({
-      role,
+      profile,
       threadId,
       cwd,
       ephemeral,
@@ -512,7 +512,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       model,
       effort
     }: {
-      role: RoleName;
+      profile: ProfileName;
       threadId: string;
       cwd: string;
       ephemeral?: boolean;
@@ -520,7 +520,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       model?: string;
       effort?: string;
     }) => {
-      const response = await pool.get(role).forkThread(threadId, cwd, {
+      const response = await pool.get(profile).forkThread(threadId, cwd, {
         ephemeral,
         developerInstructions,
         model,
@@ -528,14 +528,14 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       });
       return { threadId: response.thread.id };
     },
-    injectThreadItems: async ({ role, threadId, items }: { role: RoleName; threadId: string; items: unknown[] }) => {
-      await pool.get(role).injectThreadItems(threadId, items);
+    injectThreadItems: async ({ profile, threadId, items }: { profile: ProfileName; threadId: string; items: unknown[] }) => {
+      await pool.get(profile).injectThreadItems(threadId, items);
     },
-    unsubscribeThread: async ({ role, threadId }: { role: RoleName; threadId: string }) => {
-      await pool.get(role).unsubscribeThread(threadId);
+    unsubscribeThread: async ({ profile, threadId }: { profile: ProfileName; threadId: string }) => {
+      await pool.get(profile).unsubscribeThread(threadId);
     },
     startTurn: async ({
-      role,
+      profile,
       threadId,
       input,
       currentThreadName,
@@ -551,7 +551,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       onRequestUserInput,
       onSetThreadName
     }: {
-      role: RoleName;
+      profile: ProfileName;
       threadId: string;
       input: CodexTurnInput;
       currentThreadName?: string;
@@ -570,7 +570,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       ) => Promise<void> | void;
       onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
     }) =>
-      pool.get(role).startTurn({
+      pool.get(profile).startTurn({
         threadId,
         ...(typeof input === "string" ? { text: input } : { input }),
         currentThreadName,
@@ -587,101 +587,101 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
         onSetThreadName
       }),
     compactThread: async ({
-      role,
+      profile,
       threadId,
       cwd,
       onTurnStarted,
       onTokenUsage
     }: {
-      role: RoleName;
+      profile: ProfileName;
       threadId: string;
       cwd: string;
       onTurnStarted?: (turnId: string) => Promise<void> | void;
       onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
     }) =>
-      pool.get(role).compactThread({
+      pool.get(profile).compactThread({
         threadId,
         cwd,
         onTurnStarted,
         onTokenUsage
       }),
     setThreadGoal: async ({
-      role,
+      profile,
       threadId,
       objective
     }: {
-      role: RoleName;
+      profile: ProfileName;
       threadId: string;
       objective: string;
-    }) => pool.get(role).setThreadGoal(threadId, objective),
+    }) => pool.get(profile).setThreadGoal(threadId, objective),
     getThreadGoal: async ({
-      role,
+      profile,
       threadId
     }: {
-      role: RoleName;
+      profile: ProfileName;
       threadId: string;
-    }) => pool.get(role).getThreadGoal(threadId),
+    }) => pool.get(profile).getThreadGoal(threadId),
     clearThreadGoal: async ({
-      role,
+      profile,
       threadId
     }: {
-      role: RoleName;
+      profile: ProfileName;
       threadId: string;
     }): Promise<void> => {
-      await pool.get(role).clearThreadGoal(threadId);
+      await pool.get(profile).clearThreadGoal(threadId);
     },
     setThreadName: async ({
-      role,
+      profile,
       threadId,
       name
     }: {
-      role: RoleName;
+      profile: ProfileName;
       threadId: string;
       name: string;
     }): Promise<void> => {
-      await pool.get(role).setThreadName(threadId, name);
+      await pool.get(profile).setThreadName(threadId, name);
     },
     runGoal: async ({
-      role,
+      profile,
       ...options
-    }: Parameters<NonNullable<CodexBridge["runGoal"]>>[0]) => pool.get(role).runGoal(options),
+    }: Parameters<NonNullable<CodexBridge["runGoal"]>>[0]) => pool.get(profile).runGoal(options),
     resumeGoal: async ({
-      role,
+      profile,
       ...options
-    }: Parameters<NonNullable<CodexBridge["resumeGoal"]>>[0]) => pool.get(role).resumeGoal(options),
+    }: Parameters<NonNullable<CodexBridge["resumeGoal"]>>[0]) => pool.get(profile).resumeGoal(options),
     steerTurn: async ({
-      role,
+      profile,
       threadId,
       turnId,
       input
     }: {
-      role: RoleName;
+      profile: ProfileName;
       threadId: string;
       turnId: string;
       input: CodexTurnInput;
     }): Promise<void> => {
-      await pool.get(role).steerTurn({
+      await pool.get(profile).steerTurn({
         threadId,
         turnId,
         ...(typeof input === "string" ? { text: input } : { input })
       });
     },
     interruptTurn: async ({
-      role,
+      profile,
       threadId,
       turnId
     }: {
-      role: RoleName;
+      profile: ProfileName;
       threadId: string;
       turnId: string;
     }): Promise<void> => {
-      await pool.get(role).interruptTurn({ threadId, turnId });
+      await pool.get(profile).interruptTurn({ threadId, turnId });
     },
-    readCodexVersion: ({ role }: { role: RoleName }): string => {
-      return pool.get(role).readCodexVersion();
+    readCodexVersion: ({ profile }: { profile: ProfileName }): string => {
+      return pool.get(profile).readCodexVersion();
     },
-    readAccountRateLimits: async ({ role }: { role: RoleName }): Promise<unknown> => {
-      return pool.get(role).readAccountRateLimits();
+    readAccountRateLimits: async ({ profile }: { profile: ProfileName }): Promise<unknown> => {
+      return pool.get(profile).readAccountRateLimits();
     }
   };
 }

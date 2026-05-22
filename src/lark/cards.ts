@@ -3,7 +3,7 @@ import type {
   CodexThreadStatus,
   ConversationResponseMode,
   ConversationType,
-  RoleName
+  ProfileName
 } from "../types.js";
 import { isPositionInTextRanges, markdownCodeRanges, markdownLines } from "../markdown.js";
 
@@ -142,7 +142,7 @@ export interface RenderTwinnyStatusCardOptions {
     id: string;
     type: ConversationType;
     responseMode: ConversationResponseMode;
-    role?: RoleName;
+    profile?: ProfileName;
     path?: string;
     topicCount: number;
     userMessageCount: number;
@@ -154,7 +154,7 @@ export interface RenderTwinnyStatusCardOptions {
   };
   user: {
     openId: string;
-    role: RoleName;
+    profile: ProfileName;
   };
   system?: {
     twinnyVersion: string;
@@ -260,7 +260,7 @@ export function renderTwinnyStatusCard(options: RenderTwinnyStatusCardOptions): 
       ["ID", options.workspace.id],
       ["类型", formatConversationType(options.workspace.type)],
       ["响应模式", formatResponseMode(options.workspace.responseMode)],
-      ["配置", options.workspace.role ?? "未创建"],
+      ["配置", options.workspace.profile ?? "未创建"],
       ["路径", options.workspace.path ?? "未创建"],
       ["话题数", formatInteger(options.workspace.topicCount)],
       ["用户消息数", formatInteger(options.workspace.userMessageCount)],
@@ -270,7 +270,7 @@ export function renderTwinnyStatusCard(options: RenderTwinnyStatusCardOptions): 
     ]),
     ...statusSection("用户", "member_outlined", [
       ["ID", options.user.openId],
-      ["身份", options.user.role]
+      ["身份", options.user.profile]
     ])
   ];
 

@@ -129,8 +129,7 @@ interface LarkMessageRow {
 export interface UpsertCodexThreadInput {
   codexThreadId: string;
   conversationKey: string;
-  profile?: ProfileName;
-  role?: ProfileName;
+  profile: ProfileName;
   name?: string;
   larkThreadId?: string;
   codexThreadHasRollout?: boolean;
@@ -159,8 +158,7 @@ export interface InsertLarkMessageInput {
 export interface UpdateCodexThreadTokenUsageInput {
   codexThreadId: string;
   conversationKey: string;
-  profile?: ProfileName;
-  role?: ProfileName;
+  profile: ProfileName;
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
@@ -189,8 +187,7 @@ export interface UpdateCodexThreadGoalStatusInput {
 export interface UpdateCodexThreadCardInput {
   codexThreadId: string;
   conversationKey: string;
-  profile?: ProfileName;
-  role?: ProfileName;
+  profile: ProfileName;
   name?: string;
   larkThreadId?: string;
   creatorOpenId?: string;
@@ -221,17 +218,14 @@ export interface ReplaceCodexThreadForLarkThreadInput {
   conversationKey: string;
   larkThreadId: string;
   codexThreadId: string;
-  profile?: ProfileName;
-  role?: ProfileName;
+  profile: ProfileName;
   codexThreadHasRollout?: boolean;
 }
 
 export interface UpdateConversationThreadBinding {
   codexThreadId: string;
   profile?: ProfileName;
-  role?: ProfileName;
   profileCodexHome?: string;
-  roleCodexHome?: string;
   workspace?: string;
 }
 
@@ -875,7 +869,7 @@ export class ConversationRepository {
     if (updateProfile !== undefined) {
       assertValidProfile(updateProfile);
     }
-    const updateProfileCodexHome = update.profileCodexHome ?? update.roleCodexHome;
+    const updateProfileCodexHome = update.profileCodexHome;
     if (updateProfileCodexHome !== undefined) {
       assertNonEmpty(updateProfileCodexHome, "profileCodexHome");
     }
@@ -978,14 +972,13 @@ export class ConversationRepository {
   replaceCodexThreadForLarkThread(
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; profile?: ProfileName; role?: ProfileName; codexThreadHasRollout?: boolean }
+    update: { codexThreadId: string; profile: ProfileName; codexThreadHasRollout?: boolean }
   ): CodexThreadRecord {
     const input = {
       conversationKey,
       larkThreadId,
       codexThreadId: update.codexThreadId,
       profile: update.profile,
-      role: update.role,
       codexThreadHasRollout: update.codexThreadHasRollout
     };
     validateReplaceCodexThreadForLarkThread(input);
@@ -1354,7 +1347,7 @@ export class ConversationRepository {
     validateNewConversation(input);
     const now = this.now();
     const profile = resolveRequiredInputProfile(input);
-    const profileCodexHome = input.profileCodexHome ?? input.roleCodexHome;
+    const profileCodexHome = input.profileCodexHome;
     return {
       conversationKey: input.conversationKey,
       type: input.type,
@@ -1435,11 +1428,9 @@ function mapRequiredConversationRow(row: ConversationRow): ConversationRecord {
     name: row.name,
     responseMode: row.response_mode,
     profile: row.profile,
-    role: row.profile,
     codexThreadId: row.thread_id,
     workspace: row.workspace,
     profileCodexHome: row.profile_codex_home,
-    roleCodexHome: row.profile_codex_home,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -1456,7 +1447,6 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     name: row.name,
     larkThreadId: row.lark_thread_id ?? undefined,
     profile: row.profile,
-    role: row.profile,
     mode: validCodexThreadMode(row.mode) ? row.mode : "default",
     status: validCodexThreadStatus(row.status) ? row.status : "idle",
     goalStatus: validCodexThreadGoalStatus(row.goal_status) ? row.goal_status : "none",
@@ -1527,7 +1517,7 @@ function validateNewConversation(input: NewConversationRecord): void {
   assertValidProfile(resolveRequiredInputProfile(input));
   assertNonEmpty(input.codexThreadId, "codexThreadId");
   assertAbsolutePath(input.workspace, "workspace");
-  assertNonEmpty(input.profileCodexHome ?? input.roleCodexHome ?? "", "profileCodexHome");
+  assertNonEmpty(input.profileCodexHome, "profileCodexHome");
 }
 
 function validateCodexThreadInput(input: UpsertCodexThreadInput): void {
@@ -1614,7 +1604,7 @@ function assertValidResponseMode(responseMode: ConversationResponseMode): void {
   }
 }
 
-function resolveRequiredInputProfile(input: { profile?: ProfileName; role?: ProfileName }): ProfileName {
+function resolveRequiredInputProfile(input: { profile?: ProfileName }): ProfileName {
   const profile = resolveOptionalInputProfile(input);
   if (!profile) {
     throw new TwinnyError("profile must not be empty", "CONVERSATION_FIELD_EMPTY");
@@ -1622,8 +1612,8 @@ function resolveRequiredInputProfile(input: { profile?: ProfileName; role?: Prof
   return profile;
 }
 
-function resolveOptionalInputProfile(input: { profile?: ProfileName; role?: ProfileName }): ProfileName | undefined {
-  return input.profile ?? input.role;
+function resolveOptionalInputProfile(input: { profile?: ProfileName }): ProfileName | undefined {
+  return input.profile;
 }
 
 function assertValidProfile(profile: ProfileName): void {

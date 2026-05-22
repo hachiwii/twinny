@@ -627,7 +627,7 @@ describe("renderTwinnyStatusCard", () => {
         id: "group_oc_group",
         type: "group",
         responseMode: "all_at",
-        role: "owner",
+        profile: "owner",
         path: "/tmp/twinny/workspaces/group_oc_group",
         topicCount: 39,
         userMessageCount: 239,
@@ -639,7 +639,7 @@ describe("renderTwinnyStatusCard", () => {
       },
       user: {
         openId: "ou_owner",
-        role: "owner"
+        profile: "owner"
       }
     });
 
@@ -687,7 +687,7 @@ describe("renderTwinnyStatusCard", () => {
         id: "p2p_ou_owner",
         type: "p2p",
         responseMode: "all",
-        role: "owner",
+        profile: "owner",
         topicCount: 1,
         userMessageCount: 0,
         inputTokens: 0,
@@ -698,7 +698,7 @@ describe("renderTwinnyStatusCard", () => {
       },
       user: {
         openId: "ou_owner",
-        role: "owner"
+        profile: "owner"
       },
       system: {
         twinnyVersion: "v0.1.0",
@@ -747,7 +747,7 @@ describe("renderTwinnyStatusCard", () => {
       },
       user: {
         openId: "ou_guest",
-        role: "guest"
+        profile: "guest"
       },
       hideAction: {
         twinny: true,

@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { RoleCodexAppServerPool } from "../codex/appserver.js";
+import { ProfileCodexAppServerPool } from "../codex/appserver.js";
 import type { CodexRequestUserInputResponder, CodexTurnInput } from "../codex/turn.js";
 import { createTwinnyConfig } from "../config/loader.js";
 import {
@@ -38,7 +38,7 @@ import type {
   CodexThreadMode,
   CodexThreadTokenUsageUpdate,
   LarkReactionHandle,
-  RoleName,
+  ProfileName,
   TwinnyConfig
 } from "../types.js";
 import { WorkspaceManager } from "../workspace/manager.js";
@@ -52,10 +52,10 @@ afterEach(async () => {
 describe("Lark to Codex integration flow", () => {
   it("starts a P2P Codex turn, steers a later Lark message, and replies through Lark APIs in order", async () => {
     const harness = await IntegrationHarness.create(`
-{"role":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1"}}}}
-{"role":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"item/completed","params":{"threadId":"guest_thread_1","turnId":"turn_1","item":{"type":"agentMessage","id":"agent_1","text":"working on first","phase":"commentary"}}}}
-{"role":"guest","after":{"method":"turn/steer","nth":1},"notify":{"method":"item/completed","params":{"threadId":"guest_thread_1","turnId":"turn_1","item":{"type":"agentMessage","id":"agent_2","text":"final answer after steer","phase":"final_answer"}}}}
-{"role":"guest","after":{"method":"turn/steer","nth":1},"notify":{"method":"turn/completed","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1","status":"completed","durationMs":10,"items":[{"type":"agentMessage","id":"agent_2","text":"final answer after steer","phase":"final_answer"}]}}}}
+{"profile":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1"}}}}
+{"profile":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"item/completed","params":{"threadId":"guest_thread_1","turnId":"turn_1","item":{"type":"agentMessage","id":"agent_1","text":"working on first","phase":"commentary"}}}}
+{"profile":"guest","after":{"method":"turn/steer","nth":1},"notify":{"method":"item/completed","params":{"threadId":"guest_thread_1","turnId":"turn_1","item":{"type":"agentMessage","id":"agent_2","text":"final answer after steer","phase":"final_answer"}}}}
+{"profile":"guest","after":{"method":"turn/steer","nth":1},"notify":{"method":"turn/completed","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1","status":"completed","durationMs":10,"items":[{"type":"agentMessage","id":"agent_2","text":"final answer after steer","phase":"final_answer"}]}}}}
 `);
 
     await harness.dispatchLarkJsonl(`
@@ -104,12 +104,12 @@ describe("Lark to Codex integration flow", () => {
   it("waits through retryable Codex turn errors before failing on a terminal error", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         delayMs: 20,
         notify: {
@@ -123,7 +123,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         delayMs: 50,
         notify: {
@@ -137,7 +137,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         delayMs: 250,
         notify: {
@@ -195,8 +195,8 @@ describe("Lark to Codex integration flow", () => {
 
   it("keeps queued Lark messages out of Codex when they are recalled before the current turn finishes", async () => {
     const harness = await IntegrationHarness.create(`
-{"role":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1"}}}}
-{"role":"guest","after":{"method":"turn/start","nth":1},"delayMs":120,"notify":{"method":"turn/completed","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1","status":"completed","durationMs":10,"items":[{"type":"agentMessage","id":"agent_done","text":"done","phase":"final_answer"}]}}}}
+{"profile":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1"}}}}
+{"profile":"guest","after":{"method":"turn/start","nth":1},"delayMs":120,"notify":{"method":"turn/completed","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1","status":"completed","durationMs":10,"items":[{"type":"agentMessage","id":"agent_done","text":"done","phase":"final_answer"}]}}}}
 `);
 
     await harness.dispatchLarkJsonl(`
@@ -230,12 +230,12 @@ describe("Lark to Codex integration flow", () => {
   it("runs a queued /goal command only after the active turn completes", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         delayMs: 160,
         notify: {
@@ -252,7 +252,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         on: { method: "thread/goal/set", nth: 1 },
         reply: {
           goal: {
@@ -268,12 +268,12 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/set", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "goal_turn_queued" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/set", nth: 1 },
         notify: {
           method: "item/completed",
@@ -285,7 +285,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/set", nth: 1 },
         delayMs: 500,
         notify: {
@@ -302,7 +302,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/set", nth: 1 },
         delayMs: 520,
         notify: {
@@ -386,7 +386,7 @@ describe("Lark to Codex integration flow", () => {
   it("updates a goal card status line when Codex reports turn token usage", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         on: { method: "thread/goal/set", nth: 1 },
         reply: {
           goal: {
@@ -402,12 +402,12 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/set", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "goal_turn_token_usage" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/set", nth: 1 },
         delayMs: 80,
         notify: {
@@ -431,7 +431,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/set", nth: 1 },
         delayMs: 180,
         notify: {
@@ -448,7 +448,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/set", nth: 1 },
         delayMs: 200,
         notify: {
@@ -491,12 +491,12 @@ describe("Lark to Codex integration flow", () => {
   it("switches an ordinary turn card to a goal card after a passive Codex goal update", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_passive_goal" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         delayMs: 60,
         notify: {
@@ -518,7 +518,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         delayMs: 160,
         notify: {
@@ -559,7 +559,7 @@ describe("Lark to Codex integration flow", () => {
   it("updates a queued turn card after it starts behind a completed goal", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         on: { method: "thread/goal/set", nth: 1 },
         reply: {
           goal: {
@@ -575,12 +575,12 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/set", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "goal_turn_before_queue" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/set", nth: 1 },
         delayMs: 180,
         notify: {
@@ -597,7 +597,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/set", nth: 1 },
         delayMs: 200,
         notify: {
@@ -619,12 +619,12 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "queued_turn_after_goal" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         delayMs: 50,
         notify: {
@@ -637,7 +637,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         delayMs: 120,
         notify: {
@@ -687,7 +687,7 @@ describe("Lark to Codex integration flow", () => {
   it("does not duplicate queued messages when recovering an active goal after app-server restart", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         on: { method: "thread/goal/set", nth: 1 },
         reply: {
           goal: {
@@ -703,12 +703,12 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/set", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "goal_turn_before_restart" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         on: { method: "thread/goal/get", nth: 1 },
         reply: {
           goal: {
@@ -724,12 +724,12 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/get", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "goal_turn_after_restart" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/get", nth: 1 },
         delayMs: 60,
         notify: {
@@ -746,7 +746,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/goal/get", nth: 1 },
         delayMs: 70,
         notify: {
@@ -768,7 +768,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         delayMs: 20,
         notify: {
@@ -785,7 +785,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 2 },
         delayMs: 20,
         notify: {
@@ -836,12 +836,12 @@ describe("Lark to Codex integration flow", () => {
 
   it("covers plan mode questions before accepting and implementing the plan", async () => {
     const harness = await IntegrationHarness.create(`
-{"role":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1"}}}}
-{"role":"guest","after":{"method":"turn/start","nth":1},"request":{"id":"question_1","method":"item/tool/requestUserInput","params":{"threadId":"guest_thread_1","turnId":"turn_1","itemId":"item_question","questions":[{"id":"scope","header":"Scope","question":"Need scope?","isOther":false,"isSecret":false,"options":[{"label":"Full coverage","description":"Exercise the complete flow."},{"label":"Minimal","description":"Only the smallest path."}]}]}}}
-{"role":"guest","afterResponse":{"id":"question_1"},"notify":{"method":"item/completed","params":{"threadId":"guest_thread_1","turnId":"turn_1","item":{"type":"plan","text":"Plan ready after question"}}}}
-{"role":"guest","afterResponse":{"id":"question_1"},"notify":{"method":"turn/completed","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1","status":"completed","durationMs":12,"items":[{"type":"plan","text":"Plan ready after question"}]}}}}
-{"role":"guest","after":{"method":"turn/start","nth":2},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_2"}}}}
-{"role":"guest","after":{"method":"turn/start","nth":2},"notify":{"method":"turn/completed","params":{"threadId":"guest_thread_1","turn":{"id":"turn_2","status":"completed","durationMs":8,"items":[{"type":"agentMessage","id":"implement_done","text":"implemented","phase":"final_answer"}]}}}}
+{"profile":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1"}}}}
+{"profile":"guest","after":{"method":"turn/start","nth":1},"request":{"id":"question_1","method":"item/tool/requestUserInput","params":{"threadId":"guest_thread_1","turnId":"turn_1","itemId":"item_question","questions":[{"id":"scope","header":"Scope","question":"Need scope?","isOther":false,"isSecret":false,"options":[{"label":"Full coverage","description":"Exercise the complete flow."},{"label":"Minimal","description":"Only the smallest path."}]}]}}}
+{"profile":"guest","afterResponse":{"id":"question_1"},"notify":{"method":"item/completed","params":{"threadId":"guest_thread_1","turnId":"turn_1","item":{"type":"plan","text":"Plan ready after question"}}}}
+{"profile":"guest","afterResponse":{"id":"question_1"},"notify":{"method":"turn/completed","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1","status":"completed","durationMs":12,"items":[{"type":"plan","text":"Plan ready after question"}]}}}}
+{"profile":"guest","after":{"method":"turn/start","nth":2},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_2"}}}}
+{"profile":"guest","after":{"method":"turn/start","nth":2},"notify":{"method":"turn/completed","params":{"threadId":"guest_thread_1","turn":{"id":"turn_2","status":"completed","durationMs":8,"items":[{"type":"agentMessage","id":"implement_done","text":"implemented","phase":"final_answer"}]}}}}
 `);
 
     await harness.dispatchLarkJsonl(`
@@ -916,12 +916,12 @@ describe("Lark to Codex integration flow", () => {
   it("exits plan waiting without briefly creating a queued reaction", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: {
           method: "item/completed",
@@ -929,7 +929,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: {
           method: "turn/completed",
@@ -972,8 +972,8 @@ describe("Lark to Codex integration flow", () => {
 
   it("activates group routing and only forwards mentioned group messages to Codex", async () => {
     const harness = await IntegrationHarness.create(`
-{"role":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1"}}}}
-{"role":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/completed","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1","status":"completed","durationMs":6,"items":[{"type":"agentMessage","id":"group_done","text":"group done","phase":"final_answer"}]}}}}
+{"profile":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1"}}}}
+{"profile":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/completed","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1","status":"completed","durationMs":6,"items":[{"type":"agentMessage","id":"group_done","text":"group done","phase":"final_answer"}]}}}}
 `);
 
     await harness.dispatchLarkJsonl(`
@@ -1013,12 +1013,12 @@ describe("Lark to Codex integration flow", () => {
   it("downloads rich Lark post image and media resources before sending the turn to Codex", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: {
           method: "turn/completed",
@@ -1082,7 +1082,7 @@ describe("Lark to Codex integration flow", () => {
   it("uploads SEND_TO_LARK image, video, and file outputs and replies with the expected Lark payloads", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         files: [
           { path: "{{cwd}}/result.png", content: "png" },
@@ -1092,7 +1092,7 @@ describe("Lark to Codex integration flow", () => {
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: {
           method: "turn/completed",
@@ -1169,12 +1169,12 @@ describe("Lark to Codex integration flow", () => {
   it("keeps compact traffic ordered: ordinary messages queue, steer is rejected, and stop interrupts compact", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: {
           method: "turn/completed",
@@ -1190,13 +1190,13 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/compact/start", nth: 1 },
         delayMs: 80,
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "compact_1" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "thread/compact/start", nth: 1 },
         delayMs: 260,
         notify: {
@@ -1208,7 +1208,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/interrupt", nth: 1 },
         notify: {
           method: "turn/completed",
@@ -1283,12 +1283,12 @@ describe("Lark to Codex integration flow", () => {
   it("creates a Lark thread with /thread and routes later topic messages through the new Codex thread", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_2", turn: { id: "turn_1" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: {
           method: "turn/completed",
@@ -1304,12 +1304,12 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 2 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_2", turn: { id: "turn_2" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 2 },
         notify: {
           method: "turn/completed",
@@ -1403,12 +1403,12 @@ describe("Lark to Codex integration flow", () => {
   it("handles card controls for queue/next, skipped question input, and rejected plan mode", async () => {
     const queueHarness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/interrupt", nth: 1 },
         notify: {
           method: "turn/completed",
@@ -1419,12 +1419,12 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 2 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_2" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 2 },
         notify: {
           method: "turn/completed",
@@ -1483,12 +1483,12 @@ describe("Lark to Codex integration flow", () => {
 
     const inputHarness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         request: {
           id: "skip_question_1",
@@ -1511,7 +1511,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         afterResponse: { id: "skip_question_1" },
         notify: {
           method: "turn/completed",
@@ -1550,12 +1550,12 @@ describe("Lark to Codex integration flow", () => {
 
     const planHarness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: {
           method: "item/completed",
@@ -1563,7 +1563,7 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: {
           method: "turn/completed",
@@ -1599,12 +1599,12 @@ describe("Lark to Codex integration flow", () => {
   it("queues different-user group messages during an active turn while preserving authorized owner stop", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         delayMs: 180,
         notify: {
@@ -1621,12 +1621,12 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 2 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_2" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 2 },
         notify: {
           method: "turn/completed",
@@ -1642,12 +1642,12 @@ describe("Lark to Codex integration flow", () => {
         }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/start", nth: 3 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_3" } } }
       },
       {
-        role: "guest",
+        profile: "guest",
         after: { method: "turn/interrupt", nth: 1 },
         notify: {
           method: "turn/completed",
@@ -1778,7 +1778,7 @@ class IntegrationHarness {
   readonly repository: StoreConversationRepository;
 
   private readonly db: TwinnyDatabase;
-  private readonly pool: RoleCodexAppServerPool;
+  private readonly pool: ProfileCodexAppServerPool;
   private readonly manager: ConversationManager;
   private readonly consumer: LarkEventConsumer;
   private readonly registered: Record<string, (data: unknown) => unknown> = {};
@@ -1789,7 +1789,7 @@ class IntegrationHarness {
     traceFile: string;
     db: TwinnyDatabase;
     repository: StoreConversationRepository;
-    pool: RoleCodexAppServerPool;
+    pool: ProfileCodexAppServerPool;
     manager: ConversationManager;
     consumer: LarkEventConsumer;
     registered: Record<string, (data: unknown) => unknown>;
@@ -1815,7 +1815,7 @@ class IntegrationHarness {
     const config = createIntegrationConfig(tempDir, fakeCodexBinary);
     const db = openTwinnyDatabase(path.join(tempDir, "sqlite", "twinny.db"));
     const repository = createConversationRepository(db);
-    const pool = new RoleCodexAppServerPool({
+    const pool = new ProfileCodexAppServerPool({
       binary: fakeCodexBinary,
       profiles: config.profiles,
       requestTimeoutMs: 2_000,
@@ -1844,8 +1844,8 @@ class IntegrationHarness {
       config,
       repository: adaptConversationRepository(repository),
       workspaces: WorkspaceManager.fromTwinnyHome(tempDir),
-      roles: {
-        codexHomeFor: (role) => config.profiles[role].codexHome
+      profiles: {
+        codexHomeFor: (profile) => config.profiles[profile].codexHome
       },
       codex: adaptCodexPool(pool),
       lark: adaptLarkSender(larkSender, config),
@@ -1943,11 +1943,11 @@ class IntegrationHarness {
     throw lastError;
   }
 
-  async recoverCodexAppServer(role: RoleName): Promise<void> {
-    await this.manager.suspendActiveTurnsForCodexAppServerExit(role);
-    await this.pool.get(role).stop();
-    await this.pool.restart(role);
-    await this.manager.recoverSuspendedActiveTurnsForCodexAppServerExit(role);
+  async recoverCodexAppServer(profile: ProfileName): Promise<void> {
+    await this.manager.suspendActiveTurnsForCodexAppServerExit(profile);
+    await this.pool.get(profile).stop();
+    await this.pool.restart(profile);
+    await this.manager.recoverSuspendedActiveTurnsForCodexAppServerExit(profile);
   }
 
   readTrace(): TraceEntry[] {
@@ -2173,30 +2173,30 @@ function adaptConversationRepository(repository: StoreConversationRepository): M
   };
 }
 
-function adaptCodexPool(pool: RoleCodexAppServerPool): CodexBridge {
+function adaptCodexPool(pool: ProfileCodexAppServerPool): CodexBridge {
   return {
     startThread: async ({
-      role,
+      profile,
       cwd,
       developerInstructions
     }: {
-      role: RoleName;
+      profile: ProfileName;
       cwd: string;
       developerInstructions?: string;
     }) => {
-      const response = await pool.get(role).startThread(cwd, { developerInstructions });
+      const response = await pool.get(profile).startThread(cwd, { developerInstructions });
       return { threadId: response.thread.id };
     },
-    resumeThread: async ({ role, threadId, cwd }: { role: RoleName; threadId: string; cwd: string }) => {
-      const response = await pool.get(role).resumeThread(threadId, cwd);
+    resumeThread: async ({ profile, threadId, cwd }: { profile: ProfileName; threadId: string; cwd: string }) => {
+      const response = await pool.get(profile).resumeThread(threadId, cwd);
       return { threadId: response.thread.id };
     },
-    forkThread: async ({ role, threadId, cwd, developerInstructions }) => {
-      const response = await pool.get(role).forkThread(threadId, cwd, { developerInstructions });
+    forkThread: async ({ profile, threadId, cwd, developerInstructions }) => {
+      const response = await pool.get(profile).forkThread(threadId, cwd, { developerInstructions });
       return { threadId: response.thread.id };
     },
     startTurn: async ({
-      role,
+      profile,
       threadId,
       input,
       cwd,
@@ -2212,7 +2212,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool): CodexBridge {
       onPlanUpdated,
       onRequestUserInput
     }: {
-      role: RoleName;
+      profile: ProfileName;
       threadId: string;
       input: CodexTurnInput;
       cwd: string;
@@ -2231,7 +2231,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool): CodexBridge {
         responder: CodexRequestUserInputResponder
       ) => Promise<void> | void;
     }) =>
-      pool.get(role).startTurn({
+      pool.get(profile).startTurn({
         threadId,
         ...(typeof input === "string" ? { text: input } : { input }),
         cwd,
@@ -2247,27 +2247,27 @@ function adaptCodexPool(pool: RoleCodexAppServerPool): CodexBridge {
         onPlanUpdated,
         onRequestUserInput
       }),
-    compactThread: async ({ role, threadId, cwd, onTurnStarted, onTokenUsage }) =>
-      pool.get(role).compactThread({ threadId, cwd, onTurnStarted, onTokenUsage }),
-    setThreadGoal: async ({ role, threadId, objective }) => pool.get(role).setThreadGoal(threadId, objective),
-    getThreadGoal: async ({ role, threadId }) => pool.get(role).getThreadGoal(threadId),
-    clearThreadGoal: async ({ role, threadId }) => {
-      await pool.get(role).clearThreadGoal(threadId);
+    compactThread: async ({ profile, threadId, cwd, onTurnStarted, onTokenUsage }) =>
+      pool.get(profile).compactThread({ threadId, cwd, onTurnStarted, onTokenUsage }),
+    setThreadGoal: async ({ profile, threadId, objective }) => pool.get(profile).setThreadGoal(threadId, objective),
+    getThreadGoal: async ({ profile, threadId }) => pool.get(profile).getThreadGoal(threadId),
+    clearThreadGoal: async ({ profile, threadId }) => {
+      await pool.get(profile).clearThreadGoal(threadId);
     },
-    runGoal: async ({ role, ...options }) => pool.get(role).runGoal(options),
-    resumeGoal: async ({ role, ...options }) => pool.get(role).resumeGoal(options),
-    steerTurn: async ({ role, threadId, turnId, input }) => {
-      await pool.get(role).steerTurn({
+    runGoal: async ({ profile, ...options }) => pool.get(profile).runGoal(options),
+    resumeGoal: async ({ profile, ...options }) => pool.get(profile).resumeGoal(options),
+    steerTurn: async ({ profile, threadId, turnId, input }) => {
+      await pool.get(profile).steerTurn({
         threadId,
         turnId,
         ...(typeof input === "string" ? { text: input } : { input })
       });
     },
-    interruptTurn: async ({ role, threadId, turnId }) => {
-      await pool.get(role).interruptTurn({ threadId, turnId });
+    interruptTurn: async ({ profile, threadId, turnId }) => {
+      await pool.get(profile).interruptTurn({ threadId, turnId });
     },
-    readCodexVersion: ({ role }) => pool.get(role).readCodexVersion(),
-    readAccountRateLimits: async ({ role }) => pool.get(role).readAccountRateLimits()
+    readCodexVersion: ({ profile }) => pool.get(profile).readCodexVersion(),
+    readAccountRateLimits: async ({ profile }) => pool.get(profile).readAccountRateLimits()
   };
 }
 
@@ -2344,7 +2344,7 @@ const script = fs.readFileSync(scriptFile, "utf8")
   .split(/\\r?\\n/)
   .filter(Boolean)
   .map((line) => JSON.parse(line));
-const role = process.env.CODEX_HOME && process.env.CODEX_HOME.includes("/host/") ? "host" : "guest";
+const profile = process.env.CODEX_HOME && process.env.CODEX_HOME.includes("/host/") ? "host" : "guest";
 const counts = new Map();
 const goals = new Map();
 const rl = readline.createInterface({ input: process.stdin });
@@ -2355,7 +2355,7 @@ function append(entry) {
 
 function send(message, delayMs = 0) {
   const write = () => {
-    append({ kind: "codex.in", role, message });
+    append({ kind: "codex.in", profile, message });
     process.stdout.write(JSON.stringify(message) + "\\n");
   };
   if (delayMs > 0) {
@@ -2373,7 +2373,7 @@ function nextCount(method) {
 
 function matches(trigger, message, method, nth) {
   if (!trigger) return false;
-  if (trigger.role && trigger.role !== role) return false;
+  if (trigger.profile && trigger.profile !== profile) return false;
   if (trigger.method && trigger.method !== method) return false;
   if (trigger.nth && trigger.nth !== nth) return false;
   if (trigger.id && trigger.id !== message.id) return false;
@@ -2390,7 +2390,7 @@ function defaultResult(message, method, nth) {
     };
   }
   if (method === "thread/start") {
-    return { thread: { id: role + "_thread_" + nth } };
+    return { thread: { id: profile + "_thread_" + nth } };
   }
   if (method === "thread/resume") {
     return { thread: { id: message.params.threadId } };
@@ -2417,7 +2417,7 @@ function defaultResult(message, method, nth) {
     return { cleared };
   }
   if (method === "thread/fork") {
-    return { thread: { id: role + "_thread_fork_" + nth, forkedFromId: message.params.threadId } };
+    return { thread: { id: profile + "_thread_fork_" + nth, forkedFromId: message.params.threadId } };
   }
   if (method === "turn/start") {
     return { turn: { id: "turn_" + nth } };
@@ -2533,7 +2533,7 @@ function handleResponse(message) {
 
 rl.on("line", (line) => {
   const message = JSON.parse(line);
-  append({ kind: "codex.out", role, id: message.id, method: message.method ?? null, message });
+  append({ kind: "codex.out", profile, id: message.id, method: message.method ?? null, message });
   if (message.method && message.id !== undefined) {
     handleRequest(message);
     return;
@@ -2838,7 +2838,7 @@ type TraceEntry = CodexTraceEntry | CodexIncomingTraceEntry | LarkTraceEntry;
 interface CodexTraceEntry {
   kind: "codex.out";
   at: number;
-  role: RoleName;
+  profile: ProfileName;
   id: string | number;
   method: string | null;
   message: {
@@ -2853,7 +2853,7 @@ interface CodexTraceEntry {
 interface CodexIncomingTraceEntry {
   kind: "codex.in";
   at: number;
-  role: RoleName;
+  profile: ProfileName;
   message: {
     id?: string | number;
     method?: string;

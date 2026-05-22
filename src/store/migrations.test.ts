@@ -207,7 +207,7 @@ describe("store migrations", () => {
           'guest',
           'thread_goal',
           '/tmp/twinny/workspaces/p2p_ou_user',
-          '/tmp/twinny/roles/guest/codex',
+          '/tmp/twinny/profiles/guest/codex',
           100,
           100,
           'all'
@@ -353,7 +353,7 @@ describe("store migrations", () => {
           'host',
           'thread_project',
           '/tmp/twinny/workspaces/group_oc_project',
-          '/tmp/twinny/roles/host/codex',
+          '/tmp/twinny/profiles/host/codex',
           100,
           100,
           'all',
@@ -402,7 +402,7 @@ describe("store migrations", () => {
         "thread_main_started",
         1,
         "/tmp/workspaces/group_oc_main_started",
-        "/tmp/roles/host/codex"
+        "/tmp/profiles/host/codex"
       );
       db.prepare(`
         INSERT INTO conversations (
@@ -426,7 +426,7 @@ describe("store migrations", () => {
         "thread_main_empty",
         0,
         "/tmp/workspaces/group_oc_main_empty",
-        "/tmp/roles/host/codex"
+        "/tmp/profiles/host/codex"
       );
       db.prepare(`
         INSERT INTO threads (
@@ -540,7 +540,7 @@ describe("store migrations", () => {
         "Main Name",
         "thread_main_name",
         "/tmp/workspaces/group_oc_main_name",
-        "/tmp/roles/host/codex"
+        "/tmp/profiles/host/codex"
       );
       db.prepare(`
         INSERT INTO threads (

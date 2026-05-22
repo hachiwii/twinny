@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
-import { parse as parseToml } from "smol-toml";
 import { TwinnyError, toErrorMessage } from "../errors.js";
 import {
   isPositionInTextRanges,
@@ -57,7 +56,7 @@ import type {
   LarkMessageStatus,
   LarkReactionHandle,
   NewConversationRecord,
-  RoleName,
+  ProfileName,
   CodexThreadRecord,
   TwinnyConfig,
   LarkChatMode,
@@ -81,7 +80,7 @@ import {
   conversationKeyForP2p,
   conversationTypeForChat,
   isGroupConversationType,
-  roleForSender
+  profileForSender
 } from "./routing.js";
 
 const COMPACT_PROGRESS_TEXT = "正在压缩上下文";
@@ -159,8 +158,8 @@ export interface ConversationRepository {
     conversationKey: string,
     update: {
       codexThreadId: string;
-      role?: RoleName;
-      roleCodexHome?: string;
+      profile?: ProfileName;
+      profileCodexHome?: string;
       workspace?: string;
     }
   ): Promise<ConversationRecord> | ConversationRecord;
@@ -188,7 +187,7 @@ export interface ConversationRepository {
   upsertCodexThread(input: {
     codexThreadId: string;
     conversationKey: string;
-    role: RoleName;
+    profile: ProfileName;
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
     forkedFromCodexThreadId?: string;
@@ -198,12 +197,12 @@ export interface ConversationRepository {
   replaceCodexThreadForLarkThread?(
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; role: RoleName; codexThreadHasRollout?: boolean }
+    update: { codexThreadId: string; profile: ProfileName; codexThreadHasRollout?: boolean }
   ): Promise<CodexThreadRecord> | CodexThreadRecord;
   updateCodexThreadTokenUsage(input: {
     codexThreadId: string;
     conversationKey: string;
-    role: RoleName;
+    profile: ProfileName;
     totalTokens: number;
     inputTokens: number;
     outputTokens: number;
@@ -216,7 +215,7 @@ export interface ConversationRepository {
   updateCodexThreadCard(input: {
     codexThreadId: string;
     conversationKey: string;
-    role: RoleName;
+    profile: ProfileName;
     larkThreadId?: string;
     creatorOpenId?: string;
     cardMessageId?: string;
@@ -372,19 +371,19 @@ export interface WorkspaceManagerLike {
 
 export interface CodexBridge {
   startThread(params: {
-    role: RoleName;
+    profile: ProfileName;
     cwd: string;
     approvalPolicy: "never";
     developerInstructions?: string;
   }): Promise<{ threadId: string }>;
   resumeThread(params: {
-    role: RoleName;
+    profile: ProfileName;
     threadId: string;
     cwd: string;
     approvalPolicy: "never";
   }): Promise<{ threadId: string }>;
   forkThread(params: {
-    role: RoleName;
+    profile: ProfileName;
     threadId: string;
     cwd: string;
     approvalPolicy: "never";
@@ -394,16 +393,16 @@ export interface CodexBridge {
     effort?: string;
   }): Promise<{ threadId: string }>;
   injectThreadItems?(params: {
-    role: RoleName;
+    profile: ProfileName;
     threadId: string;
     items: unknown[];
   }): Promise<void>;
   unsubscribeThread?(params: {
-    role: RoleName;
+    profile: ProfileName;
     threadId: string;
   }): Promise<void>;
   startTurn(params: {
-    role: RoleName;
+    profile: ProfileName;
     threadId: string;
     input: CodexTurnInput;
     currentThreadName?: string;
@@ -426,7 +425,7 @@ export interface CodexBridge {
     onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
   }): Promise<CodexTurnResult>;
   compactThread(params: {
-    role: RoleName;
+    profile: ProfileName;
     threadId: string;
     cwd: string;
     approvalPolicy: "never";
@@ -434,7 +433,7 @@ export interface CodexBridge {
     onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
   }): Promise<CodexTurnResult>;
   steerTurn(params: {
-    role: RoleName;
+    profile: ProfileName;
     threadId: string;
     turnId: string;
     input: CodexTurnInput;
@@ -442,32 +441,32 @@ export interface CodexBridge {
     approvalPolicy: "never";
   }): Promise<void>;
   interruptTurn(params: {
-    role: RoleName;
+    profile: ProfileName;
     threadId: string;
     turnId: string;
   }): Promise<void>;
-  readCodexVersion?(params: { role: RoleName }): Promise<string> | string;
-  readAccountRateLimits?(params: { role: RoleName }): Promise<unknown>;
+  readCodexVersion?(params: { profile: ProfileName }): Promise<string> | string;
+  readAccountRateLimits?(params: { profile: ProfileName }): Promise<unknown>;
   setThreadGoal?(params: {
-    role: RoleName;
+    profile: ProfileName;
     threadId: string;
     objective: string;
   }): Promise<ThreadGoal>;
   getThreadGoal?(params: {
-    role: RoleName;
+    profile: ProfileName;
     threadId: string;
   }): Promise<ThreadGoal | null>;
   clearThreadGoal?(params: {
-    role: RoleName;
+    profile: ProfileName;
     threadId: string;
   }): Promise<void>;
   setThreadName?(params: {
-    role: RoleName;
+    profile: ProfileName;
     threadId: string;
     name: string;
   }): Promise<void>;
   runGoal?(params: {
-    role: RoleName;
+    profile: ProfileName;
     threadId: string;
     objective: string;
     onTurnStarted?: (turnId: string) => Promise<void> | void;
@@ -482,7 +481,7 @@ export interface CodexBridge {
     onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
   }): Promise<CodexTurnResult>;
   resumeGoal?(params: {
-    role: RoleName;
+    profile: ProfileName;
     threadId: string;
     cwd: string;
     onTurnStarted?: (turnId: string) => Promise<void> | void;
@@ -532,12 +531,12 @@ export interface LarkResponder {
   getMessageReadOpenIds(messageId: string): Promise<string[]>;
 }
 
-export interface RoleHomeResolver {
-  codexHomeFor(role: RoleName): string;
+export interface ProfileHomeResolver {
+  codexHomeFor(profile: ProfileName): string;
 }
 
 export interface RuntimeControlBridge {
-  reloadProfile(profile?: RoleName): Promise<void>;
+  reloadProfile(profile?: ProfileName): Promise<void>;
 }
 
 export interface ConversationManagerOptions {
@@ -555,7 +554,7 @@ export interface ConversationManagerOptions {
     logoImageKey?: string;
     bannerImageKey?: string;
   };
-  roles: RoleHomeResolver;
+  profiles: ProfileHomeResolver;
   runtime?: RuntimeControlBridge;
   logger?: Logger;
   nameLookupFailureTtlMs?: number;
@@ -577,7 +576,7 @@ export interface ConversationRecoveryProbeSnapshot {
   stateCount: number;
   pendingMessages: number;
   compactMessages: number;
-  roles: Record<RoleName, number>;
+  profiles: Record<ProfileName, number>;
   failures: ConversationRecoveryProbeFailure[];
 }
 
@@ -606,7 +605,7 @@ interface NewSessionTopicCodexThread {
 
 interface CreatedSessionTopic {
   codexThreadId: string;
-  role: RoleName;
+  profile: ProfileName;
   larkThreadId: string;
   cardMessageId: string;
   creatorOpenId: string;
@@ -668,7 +667,7 @@ interface ActiveTurn {
   kind: "normal" | "compact" | "side" | "goal";
   runId: number;
   sideId?: number;
-  role: RoleName;
+  profile: ProfileName;
   triggerOpenId: string;
   threadId: string;
   workspace: string;
@@ -909,17 +908,17 @@ export class ConversationManager {
     await Promise.all(cancelPromises);
   }
 
-  async suspendActiveTurnsForCodexAppServerExit(role: RoleName): Promise<number> {
+  async suspendActiveTurnsForCodexAppServerExit(profile: ProfileName): Promise<number> {
     const suspendPromises: Promise<number>[] = [];
     for (const state of this.states.values()) {
       suspendPromises.push(
         state.controlQueue.enqueue(async () => {
           const active = state.active;
-          if (!active || active.role !== role) {
-            return this.failSideTurnsForRole(state, role, "Codex app-server exited");
+          if (!active || active.profile !== profile) {
+            return this.failSideTurnsForProfile(state, profile, "Codex app-server exited");
           }
           await this.suspendActiveTurnForCodexAppServerExit(state, active);
-          return 1 + await this.failSideTurnsForRole(state, role, "Codex app-server exited");
+          return 1 + await this.failSideTurnsForProfile(state, profile, "Codex app-server exited");
         })
       );
     }
@@ -927,7 +926,7 @@ export class ConversationManager {
     return counts.reduce((sum, count) => sum + count, 0);
   }
 
-  async recoverSuspendedActiveTurnsForCodexAppServerExit(role: RoleName): Promise<number> {
+  async recoverSuspendedActiveTurnsForCodexAppServerExit(profile: ProfileName): Promise<number> {
     const recoverPromises: Promise<number>[] = [];
     for (const state of this.states.values()) {
       recoverPromises.push(
@@ -935,7 +934,7 @@ export class ConversationManager {
           if (state.active) {
             return 0;
           }
-          const index = state.suspendedActiveTurns.findIndex((active) => active.role === role);
+          const index = state.suspendedActiveTurns.findIndex((active) => active.profile === profile);
           if (index < 0) {
             return 0;
           }
@@ -951,7 +950,7 @@ export class ConversationManager {
     return counts.reduce((sum, count) => sum + count, 0);
   }
 
-  async recoverUnfinishedMessages(options: { role?: RoleName } = {}): Promise<void> {
+  async recoverUnfinishedMessages(options: { profile?: ProfileName } = {}): Promise<void> {
     const records = await this.options.repository.listUnfinishedLarkMessages();
     if (records.length === 0) {
       return;
@@ -972,9 +971,9 @@ export class ConversationManager {
         }
         continue;
       }
-      if (options.role) {
-        const role = await this.roleForRecoverableRecord(record, context);
-        if (role !== options.role) {
+      if (options.profile) {
+        const profile = await this.profileForRecoverableRecord(record, context);
+        if (profile !== options.profile) {
           continue;
         }
       }
@@ -1017,7 +1016,7 @@ export class ConversationManager {
 
   async probeUnfinishedMessages(): Promise<ConversationRecoveryProbeSnapshot> {
     const records = await this.options.repository.listUnfinishedLarkMessages();
-    const roles: Record<RoleName, number> = {};
+    const profiles: Record<ProfileName, number> = {};
     const failures: ConversationRecoveryProbeFailure[] = [];
     let queuedMessages = 0;
     let processingMessages = 0;
@@ -1036,8 +1035,8 @@ export class ConversationManager {
       const state = this.getState(context.stateKey);
 
       try {
-        const role = await this.roleForRecoverableRecord(record, context);
-        roles[role] = (roles[role] ?? 0) + 1;
+        const profile = await this.profileForRecoverableRecord(record, context);
+        profiles[profile] = (profiles[profile] ?? 0) + 1;
         const raw = parseStoredRawEvent(record.rawEventJson);
         const normalized = normalizeIncomingLarkMessage(raw) ?? recoverLarkMessageFromRecord(record, context);
         if (!normalized) {
@@ -1098,17 +1097,17 @@ export class ConversationManager {
       stateCount: this.states.size,
       pendingMessages,
       compactMessages,
-      roles,
+      profiles,
       failures
     };
   }
 
-  private async roleForRecoverableRecord(record: LarkMessageRecord, context: MessageContext): Promise<RoleName> {
+  private async profileForRecoverableRecord(record: LarkMessageRecord, context: MessageContext): Promise<ProfileName> {
     try {
       if (record.codexThreadId) {
         const thread = await this.options.repository.getCodexThreadById(record.codexThreadId);
         if (thread) {
-          return thread.role;
+          return thread.profile;
         }
       }
       if (context.larkThreadId) {
@@ -1117,20 +1116,20 @@ export class ConversationManager {
           context.larkThreadId
         );
         if (thread) {
-          return thread.role;
+          return thread.profile;
         }
       }
       const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
       if (conversation) {
-        return conversation.role;
+        return conversation.profile;
       }
     } catch (error) {
       this.log.warn(
         { error, messageId: record.larkMessageId, conversationKey: context.conversationKey },
-        "failed to resolve recoverable message role; falling back to sender role"
+        "failed to resolve recoverable message profile; falling back to sender profile"
       );
     }
-    return roleForSender(this.options.config, record.larkUserId);
+    return profileForSender(this.options.config, record.larkUserId);
   }
 
   private async toRecoveredPendingMessage(record: LarkMessageRecord, context: MessageContext): Promise<PendingMessage> {
@@ -1142,7 +1141,7 @@ export class ConversationManager {
         "LARK_MESSAGE_RECOVERY_FAILED"
       );
     }
-    normalized.senderName = await this.resolveSenderName(context, normalized, roleForSender(this.options.config, normalized.senderOpenId));
+    normalized.senderName = await this.resolveSenderName(context, normalized, profileForSender(this.options.config, normalized.senderOpenId));
     if (record.status === "queued") {
       await this.prepareIncomingMessageForCodex(context, normalized);
     }
@@ -1178,19 +1177,19 @@ export class ConversationManager {
     }
     const anchor = messages[messages.length - 1]!;
     const conversation = await this.getOrCreateRecoveryConversation(context, records, anchor.original);
-    const role = conversation.role;
+    const profile = conversation.profile;
     const workspace = conversation.workspace;
     const recoveredThreadId = lastDefined(records.map((record) => record.codexThreadId)) ?? conversation.codexThreadId;
     const recoveredThread = await this.options.repository.getCodexThreadById(recoveredThreadId);
     if (recoveredThread && isRecoverableGoalStatus(recoveredThread.goalStatus) && this.options.codex.getThreadGoal) {
       try {
-        const goal = await this.options.codex.getThreadGoal({ role, threadId: recoveredThread.codexThreadId });
+        const goal = await this.options.codex.getThreadGoal({ profile, threadId: recoveredThread.codexThreadId });
         if (goal && isRecoverableGoalStatus(goal.status)) {
           await this.refreshThreadGoalStatusBestEffort(goal);
           await this.recordCodexThreadBestEffort({
             conversationKey: context.conversationKey,
             codexThreadId: recoveredThread.codexThreadId,
-            role,
+            profile,
             name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
             larkThreadId: context.larkThreadId
           });
@@ -1198,7 +1197,7 @@ export class ConversationManager {
           const usageTarget = await this.resolveRecoveredUsageTarget(recoveredThread.codexThreadId, records);
           await this.beginGoalTurn(state, context, {
             messages,
-            role,
+            profile,
             threadId: recoveredThread.codexThreadId,
             workspace,
             recovering: true,
@@ -1213,14 +1212,14 @@ export class ConversationManager {
         this.log.warn({ error, threadId: recoveredThread.codexThreadId }, "failed to recover active thread goal; falling back to normal recovery");
       }
     }
-    const activeThread = await this.resolveActiveThread({ conversation, created: false }, { role, workspace, context });
+    const activeThread = await this.resolveActiveThread({ conversation, created: false }, { profile, workspace, context });
     if (activeThread.replacedMissingThread) {
       await this.notifyThreadReplacementBestEffort(anchor.messageId, activeThread.previousThreadId, activeThread.threadId);
     }
     await this.recordCodexThreadBestEffort({
       conversationKey: context.conversationKey,
       codexThreadId: activeThread.threadId,
-      role,
+      profile,
       name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
       larkThreadId: context.larkThreadId
     });
@@ -1229,7 +1228,7 @@ export class ConversationManager {
       : await this.resolveRecoveredUsageTarget(activeThread.threadId, records);
     await this.beginActiveTurn(state, context, {
       messages,
-      role,
+      profile,
       threadId: activeThread.threadId,
       workspace,
       input: ConversationManager.recoveryPrompt,
@@ -1247,14 +1246,14 @@ export class ConversationManager {
     if (existing) {
       return existing;
     }
-    const role = roleForSender(this.options.config, message.senderOpenId);
+    const profile = profileForSender(this.options.config, message.senderOpenId);
     const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
     const recoveredThreadId = lastDefined(records.map((record) => record.codexThreadId));
     const threadId =
       recoveredThreadId ??
       (
         await this.options.codex.startThread({
-          role,
+          profile,
           cwd: workspace,
           approvalPolicy: "never",
           developerInstructions: developerInstructionsForContext(this.options.config, context)
@@ -1264,17 +1263,17 @@ export class ConversationManager {
       conversationKey: context.conversationKey,
       type: context.type,
       chatId: context.type === "p2p" ? message.senderOpenId : message.chatId,
-      name: conversationNameForMessage(this.options.config, role, message),
+      name: conversationNameForMessage(this.options.config, profile, message),
       responseMode: context.type === "p2p" ? "all" : "all_at",
-      role,
+      profile,
       codexThreadId: threadId,
       workspace,
-      roleCodexHome: this.options.roles.codexHomeFor(role)
+      profileCodexHome: this.options.profiles.codexHomeFor(profile)
     });
     await this.recordCodexThreadBestEffort({
       conversationKey: context.conversationKey,
       codexThreadId: threadId,
-      role,
+      profile,
       name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
       codexThreadHasRollout: recoveredThreadId !== undefined
     });
@@ -1811,9 +1810,9 @@ export class ConversationManager {
     message: IncomingLarkMessage,
     parsed: ParsedCommand
   ): Promise<void> {
-    const role = roleForSender(this.options.config, message.senderOpenId);
+    const profile = profileForSender(this.options.config, message.senderOpenId);
     const route = classifyInitialRoute(state, parsed, message);
-    const senderName = await this.resolveSenderName(context, message, role);
+    const senderName = await this.resolveSenderName(context, message, profile);
     message.senderName = senderName;
     await this.options.repository.insertLarkMessage({
       larkMessageId: message.messageId,
@@ -1876,12 +1875,12 @@ export class ConversationManager {
       return { kind: "allow", text, parsed };
     }
 
-    const senderRole = this.profileForNewConversation(context, message);
+    const senderProfile = this.profileForNewConversation(context, message);
     const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
     const isInactiveGroupCommandAllowed =
       parsed.kind === "thread" ||
       parsed.kind === "fork" ||
-      ((parsed.kind === "activate" || parsed.kind === "pair" || parsed.kind === "reload") && senderRole === "host");
+      ((parsed.kind === "activate" || parsed.kind === "pair" || parsed.kind === "reload") && senderProfile === "host");
     if (!conversation || conversation.responseMode === "none") {
       if (isInactiveGroupCommandAllowed) {
         return { kind: "allow", text, parsed, conversation };
@@ -1889,7 +1888,7 @@ export class ConversationManager {
       return hasBotMention ? { kind: "unauthorized" } : { kind: "ignored" };
     }
 
-    if (groupResponseModeRequiresOwner(conversation.responseMode) && senderRole !== "host") {
+    if (groupResponseModeRequiresOwner(conversation.responseMode) && senderProfile !== "host") {
       return { kind: "ignored" };
     }
 
@@ -1933,7 +1932,7 @@ export class ConversationManager {
   private async resolveSenderName(
     context: MessageContext,
     message: IncomingLarkMessage,
-    role: RoleName
+    profile: ProfileName
   ): Promise<string | undefined> {
     if (context.type === "p2p") {
       const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
@@ -1989,9 +1988,9 @@ export class ConversationManager {
       return;
     }
 
-    const senderRole = roleForSender(this.options.config, message.senderOpenId);
+    const senderProfile = profileForSender(this.options.config, message.senderOpenId);
     const existing = await this.options.repository.findByConversationKey(context.conversationKey);
-    if (senderRole !== "host") {
+    if (senderProfile !== "host") {
       if (existing && existing.responseMode !== "none") {
         await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
         await this.replyControlBestEffort(message.messageId, "只有 owner 可以激活群聊。");
@@ -2010,24 +2009,24 @@ export class ConversationManager {
       return;
     }
 
-    if (parsed.role && !this.options.config.profiles[parsed.role]) {
+    if (parsed.profile && !this.options.config.profiles[parsed.profile]) {
       await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
-      await this.replyControlBestEffort(message.messageId, `未知 profile：${parsed.role}`);
+      await this.replyControlBestEffort(message.messageId, `未知 profile：${parsed.profile}`);
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
 
-    if (existing && parsed.role && existing.role !== parsed.role) {
+    if (existing && parsed.profile && existing.profile !== parsed.profile) {
       await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
       await this.replyControlBestEffort(
         message.messageId,
-        `该群已绑定 profile=${existing.role}，本期不支持修改为 ${parsed.role}。`
+        `该群已绑定 profile=${existing.profile}，本期不支持修改为 ${parsed.profile}。`
       );
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
 
-    const role = parsed.role ?? existing?.role ?? "guest";
+    const profile = parsed.profile ?? existing?.profile ?? "guest";
     const groupInfo = await this.resolveGroupInfo(message, existing);
     if (existing) {
       await this.options.repository.updateConversationSettings(context.conversationKey, {
@@ -2037,7 +2036,7 @@ export class ConversationManager {
     } else {
       const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
       const thread = await this.options.codex.startThread({
-        role,
+        profile,
         cwd: workspace,
         approvalPolicy: "never",
         developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context, { mainThread: true })
@@ -2048,15 +2047,15 @@ export class ConversationManager {
         chatId: message.chatId,
         name: groupInfo.name,
         responseMode: parsed.responseMode,
-        role,
+        profile,
         codexThreadId: thread.threadId,
         workspace,
-        roleCodexHome: this.options.roles.codexHomeFor(role)
+        profileCodexHome: this.options.profiles.codexHomeFor(profile)
       });
       await this.recordCodexThreadBestEffort({
         conversationKey: context.conversationKey,
         codexThreadId: thread.threadId,
-        role,
+        profile,
         name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
         codexThreadHasRollout: false
       });
@@ -2068,7 +2067,7 @@ export class ConversationManager {
       [
         `已激活群聊：${groupInfo.name}`,
         `响应模式：${parsed.responseMode}`,
-        `Profile：${role}`
+        `Profile：${profile}`
       ].filter(Boolean).join("\n")
     );
     await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -2081,7 +2080,7 @@ export class ConversationManager {
     text: string
   ): Promise<void> {
     await this.recordIncomingMessage(state, context, message, { kind: "pair", text });
-    if (roleForSender(this.options.config, message.senderOpenId) !== "host") {
+    if (profileForSender(this.options.config, message.senderOpenId) !== "host") {
       await this.replyControlBestEffort(message.messageId, "只有 owner 可以授权 /pair。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
@@ -2109,7 +2108,7 @@ export class ConversationManager {
 
     const workspace = await this.options.workspaces.ensureWorkspace(conversationKey);
     const thread = await this.options.codex.startThread({
-      role: parsed.profile,
+      profile: parsed.profile,
       cwd: workspace,
       approvalPolicy: "never",
       developerInstructions: twinnyThreadDeveloperInstructions(
@@ -2124,15 +2123,15 @@ export class ConversationManager {
       chatId: parsed.guestOpenId,
       name: parsed.guestOpenId,
       responseMode: "all",
-      role: parsed.profile,
+      profile: parsed.profile,
       codexThreadId: thread.threadId,
       workspace,
-      roleCodexHome: this.options.roles.codexHomeFor(parsed.profile)
+      profileCodexHome: this.options.profiles.codexHomeFor(parsed.profile)
     });
     await this.recordCodexThreadBestEffort({
       conversationKey,
       codexThreadId: thread.threadId,
-      role: parsed.profile,
+      profile: parsed.profile,
       name: MAIN_THREAD_NAME,
       codexThreadHasRollout: false
     });
@@ -2147,7 +2146,7 @@ export class ConversationManager {
     text: string
   ): Promise<void> {
     await this.recordIncomingMessage(state, context, message, { kind: "reload", text });
-    if (roleForSender(this.options.config, message.senderOpenId) !== "host") {
+    if (profileForSender(this.options.config, message.senderOpenId) !== "host") {
       await this.replyControlBestEffort(message.messageId, "只有 owner 可以执行 /reload。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
@@ -2334,7 +2333,7 @@ export class ConversationManager {
     let forkedThreadId: string;
     try {
       const forked = await this.options.codex.forkThread({
-        role: conversation.role,
+        profile: conversation.profile,
         threadId: sourceThread.threadId,
         cwd: conversation.workspace,
         approvalPolicy: "never",
@@ -2502,7 +2501,7 @@ export class ConversationManager {
     await this.options.repository.updateCodexThreadCard({
       conversationKey: context.conversationKey,
       codexThreadId: topic.codexThreadId,
-      role: topic.role,
+      profile: topic.profile,
       larkThreadId: resolvedThreadId,
       creatorOpenId: topic.creatorOpenId,
       cardMessageId: topic.cardMessageId
@@ -2547,10 +2546,10 @@ export class ConversationManager {
         await this.sendDirectControlBestEffort(request.operatorOpenId, "thread 需要从消息中发起。");
         return;
       }
-      const role = roleForSender(this.options.config, request.operatorOpenId);
+      const profile = profileForSender(this.options.config, request.operatorOpenId);
       const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
       const thread = await this.options.codex.startThread({
-        role,
+        profile,
         cwd: workspace,
         approvalPolicy: "never",
         developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context, { mainThread: true })
@@ -2560,12 +2559,12 @@ export class ConversationManager {
         conversationKey: context.conversationKey,
         type: context.type,
         chatId: anchorMessage.senderOpenId,
-        name: conversationNameForMessage(this.options.config, role, anchorMessage),
+        name: conversationNameForMessage(this.options.config, profile, anchorMessage),
         responseMode: "all",
-        role,
+        profile,
         codexThreadId: thread.threadId,
         workspace,
-        roleCodexHome: this.options.roles.codexHomeFor(role)
+        profileCodexHome: this.options.profiles.codexHomeFor(profile)
       });
     }
     if (conversation.responseMode === "none" && isGroupConversationType(context.type)) {
@@ -2573,14 +2572,14 @@ export class ConversationManager {
       return;
     }
 
-    const role = conversation.role;
+    const profile = conversation.profile;
     const workspace = conversation.workspace;
     const thread = request.codexThread
       ? { threadId: request.codexThread.threadId }
       : createdThreadId
       ? { threadId: createdThreadId }
       : await this.options.codex.startThread({
-          role,
+          profile,
           cwd: workspace,
           approvalPolicy: "never",
           developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context)
@@ -2589,7 +2588,7 @@ export class ConversationManager {
     await this.options.repository.upsertCodexThread({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
-      role,
+      profile,
       ...(threadName ? { name: threadName } : {}),
       codexThreadHasRollout: request.codexThread?.codexThreadHasRollout ?? false,
       forkedFromCodexThreadId: request.codexThread?.forkedFromCodexThreadId,
@@ -2598,7 +2597,7 @@ export class ConversationManager {
     const initialRecord = await this.options.repository.updateCodexThreadCard({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
-      role,
+      profile,
       ...(threadName ? { name: threadName } : {}),
       creatorOpenId: request.operatorOpenId
     });
@@ -2623,7 +2622,7 @@ export class ConversationManager {
     const finalRecord = await this.options.repository.updateCodexThreadCard({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
-      role,
+      profile,
       ...(finalThreadName ? { name: finalThreadName } : {}),
       larkThreadId: cardThreadId,
       creatorOpenId: request.operatorOpenId,
@@ -2634,7 +2633,7 @@ export class ConversationManager {
     }
     return {
       codexThreadId: thread.threadId,
-      role,
+      profile,
       larkThreadId: cardThreadId,
       cardMessageId,
       creatorOpenId: request.operatorOpenId
@@ -2647,7 +2646,7 @@ export class ConversationManager {
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
-    if (roleForSender(this.options.config, message.senderOpenId) !== "host") {
+    if (profileForSender(this.options.config, message.senderOpenId) !== "host") {
       await this.replyControlBestEffort(message.messageId, "只有 owner 可以停用群聊。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
@@ -2763,7 +2762,7 @@ export class ConversationManager {
     let goal: ThreadGoal;
     try {
       goal = await this.options.codex.setThreadGoal({
-        role: active.role,
+        profile: active.profile,
         threadId: active.threadId,
         objective: content
       });
@@ -2860,7 +2859,7 @@ export class ConversationManager {
     await this.beginSideTurn(state, context, {
       message: pending,
       sideId,
-      role: conversation.role,
+      profile: conversation.profile,
       sourceThreadId: sourceThread.threadId,
       workspace: conversation.workspace
     });
@@ -2872,18 +2871,18 @@ export class ConversationManager {
     params: {
       message: PendingMessage;
       sideId: number;
-      role: RoleName;
+      profile: ProfileName;
       sourceThreadId: string;
       workspace: string;
     }
   ): Promise<void> {
     const message = params.message;
     const startedAt = Date.now();
-    const modelSettings = await this.readCodexTurnModelSettingsBestEffort(params.role, params.workspace);
+    const modelSettings = await this.readCodexTurnModelSettingsBestEffort(params.profile, params.workspace);
     let forkedThreadId: string;
     try {
       const forked = await this.options.codex.forkThread({
-        role: params.role,
+        profile: params.profile,
         threadId: params.sourceThreadId,
         cwd: params.workspace,
         approvalPolicy: "never",
@@ -2894,7 +2893,7 @@ export class ConversationManager {
       });
       forkedThreadId = forked.threadId;
       await this.options.codex.injectThreadItems?.({
-        role: params.role,
+        profile: params.profile,
         threadId: forkedThreadId,
         items: [sideBoundaryResponseItem()]
       });
@@ -2910,7 +2909,7 @@ export class ConversationManager {
     await this.recordCodexThreadBestEffort({
       conversationKey: context.conversationKey,
       codexThreadId: forkedThreadId,
-      role: params.role
+      profile: params.profile
     });
     await this.markPendingMessagesProcessingBestEffort([message], {
       conversationKey: context.conversationKey,
@@ -2920,7 +2919,7 @@ export class ConversationManager {
       kind: "side",
       sideId: params.sideId,
       runId: ++state.nextRunId,
-      role: params.role,
+      profile: params.profile,
       triggerOpenId: message.original.senderOpenId,
       threadId: forkedThreadId,
       workspace: params.workspace,
@@ -2957,7 +2956,7 @@ export class ConversationManager {
     const runTurn = async (): Promise<void> => {
       try {
         const result = await this.options.codex.startTurn({
-          role: params.role,
+          profile: params.profile,
           threadId: active.threadId,
           input: formatPendingMessageForCodexInput(message),
           cwd: params.workspace,
@@ -2980,7 +2979,7 @@ export class ConversationManager {
           {
             messageId: message.messageId,
             conversationKey: context.conversationKey,
-            role: params.role,
+            profile: params.profile,
             codexThreadId: active.threadId,
             turnId: result.turnId,
             sideId: params.sideId,
@@ -3112,7 +3111,7 @@ export class ConversationManager {
     context: MessageContext,
     actor: ConversationActor
   ): Promise<LarkCardJson> {
-    const role = roleForSender(this.options.config, actor.senderOpenId);
+    const profile = profileForSender(this.options.config, actor.senderOpenId);
     const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
     const topicThread = context.larkThreadId
       ? await this.options.repository.getCodexThreadByConversationAndLarkThread(context.conversationKey, context.larkThreadId)
@@ -3130,12 +3129,12 @@ export class ConversationManager {
     const activeConversationDurationMs = state.active && state.active.conversationKey === context.conversationKey && state.active.completedStatus === undefined
       ? Date.now() - state.active.startedAt
       : 0;
-    const system = role === "host"
+    const system = profile === "host"
       ? {
           twinnyVersion: TWINNY_VERSION,
-          codexVersion: await this.readCodexVersionBestEffort(role),
+          codexVersion: await this.readCodexVersionBestEffort(profile),
           larkAppId: this.options.config.auth.larkAppId,
-          ...(await this.formatOwnerRateLimitCardStatus(role))
+          ...(await this.formatOwnerRateLimitCardStatus(profile))
         }
       : undefined;
 
@@ -3158,7 +3157,7 @@ export class ConversationManager {
         id: context.conversationKey,
         type: conversation?.type ?? context.type,
         responseMode: conversation?.responseMode ?? "none",
-        role: conversation?.role,
+        profile: conversation?.profile,
         path: conversation?.workspace,
         topicCount: conversationStats.topicCount,
         userMessageCount: conversationStats.userMessageCount,
@@ -3170,7 +3169,7 @@ export class ConversationManager {
       },
       user: {
         openId: actor.senderOpenId,
-        role
+        profile
       },
       hideAction: context.type === "group"
         ? {
@@ -3188,7 +3187,7 @@ export class ConversationManager {
     context: MessageContext,
     actor: ConversationActor
   ): Promise<string> {
-    const role = roleForSender(this.options.config, actor.senderOpenId);
+    const profile = profileForSender(this.options.config, actor.senderOpenId);
     const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
     const topicThread = context.larkThreadId
       ? await this.options.repository.getCodexThreadByConversationAndLarkThread(context.conversationKey, context.larkThreadId)
@@ -3204,7 +3203,7 @@ export class ConversationManager {
       lines.push(
         `Chat Name: ${conversation?.name ?? actor.chatName ?? actor.chatId ?? context.conversationKey}`,
         `Response Mode: ${conversation?.responseMode ?? "none"}`,
-        `Profile: ${conversation?.role ?? "未创建"}`,
+        `Profile: ${conversation?.profile ?? "未创建"}`,
         `Workspace: ${conversation?.workspace ?? "未创建"}`
       );
       if (context.larkThreadId) {
@@ -3219,27 +3218,27 @@ export class ConversationManager {
       ...formatThreadTokenStatus(thread)
     );
 
-    if (role === "host") {
-      lines.push(...(await this.formatOwnerRateLimitStatus(role)));
+    if (profile === "host") {
+      lines.push(...(await this.formatOwnerRateLimitStatus(profile)));
     }
 
     return lines.join("\n");
   }
 
-  private async formatOwnerRateLimitStatus(role: RoleName): Promise<string[]> {
+  private async formatOwnerRateLimitStatus(profile: ProfileName): Promise<string[]> {
     if (!this.options.codex.readAccountRateLimits) {
       return ["Codex Account Usage: unavailable"];
     }
     try {
-      const usage = await this.options.codex.readAccountRateLimits({ role });
+      const usage = await this.options.codex.readAccountRateLimits({ profile });
       return formatAccountRateLimitStatus(usage);
     } catch (error) {
-      this.log.warn({ error, role }, "failed to read codex account rate limits");
+      this.log.warn({ error, profile }, "failed to read codex account rate limits");
       return ["Codex Account Usage: unavailable"];
     }
   }
 
-  private async formatOwnerRateLimitCardStatus(role: RoleName): Promise<{
+  private async formatOwnerRateLimitCardStatus(profile: ProfileName): Promise<{
     fiveHourRemainingLimit: string;
     sevenDayRemainingLimit: string;
   }> {
@@ -3250,14 +3249,14 @@ export class ConversationManager {
       };
     }
     try {
-      const usage = await this.options.codex.readAccountRateLimits({ role });
+      const usage = await this.options.codex.readAccountRateLimits({ profile });
       const windows = collectRateLimitWindows(usage);
       return {
         fiveHourRemainingLimit: formatStatusRateLimitWindow(findRateLimitWindow(windows, 5 * 60)),
         sevenDayRemainingLimit: formatStatusRateLimitWindow(findRateLimitWindow(windows, 7 * 24 * 60))
       };
     } catch (error) {
-      this.log.warn({ error, role }, "failed to read codex account rate limits");
+      this.log.warn({ error, profile }, "failed to read codex account rate limits");
       return {
         fiveHourRemainingLimit: "不可用",
         sevenDayRemainingLimit: "不可用"
@@ -3615,7 +3614,7 @@ export class ConversationManager {
     const input = formatPendingMessagesForCodexInput(batch);
     try {
       await this.options.codex.steerTurn({
-        role: active.role,
+        profile: active.profile,
         threadId: active.threadId,
         turnId: active.turnId,
         input,
@@ -3688,10 +3687,10 @@ export class ConversationManager {
     await this.markPendingMessagesClearedBestEffort(await this.clearPendingMessagesBestEffort(state));
     await this.cancelActiveTurn(state);
     const existing = await this.options.repository.findByConversationKey(context.conversationKey);
-    const role = existing?.role ?? roleForSender(this.options.config, message.senderOpenId);
+    const profile = existing?.profile ?? profileForSender(this.options.config, message.senderOpenId);
     const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
     const thread = await this.options.codex.startThread({
-      role,
+      profile,
       cwd: workspace,
       approvalPolicy: "never",
       developerInstructions: developerInstructionsForContext(this.options.config, context)
@@ -3701,7 +3700,7 @@ export class ConversationManager {
       await this.recordOrReplaceCodexThreadBestEffort({
         conversationKey: context.conversationKey,
         codexThreadId: thread.threadId,
-        role,
+        profile,
         larkThreadId: context.larkThreadId,
         codexThreadHasRollout: false,
         replaceExistingLarkThread: true
@@ -3709,8 +3708,8 @@ export class ConversationManager {
     } else if (existing) {
       await this.options.repository.updateThreadBinding(context.conversationKey, {
         codexThreadId: thread.threadId,
-        role,
-        roleCodexHome: this.options.roles.codexHomeFor(role),
+        profile,
+        profileCodexHome: this.options.profiles.codexHomeFor(profile),
         workspace
       });
     } else {
@@ -3718,19 +3717,19 @@ export class ConversationManager {
         conversationKey: context.conversationKey,
         type: context.type,
         chatId: context.type === "p2p" ? message.senderOpenId : message.chatId,
-        name: conversationNameForMessage(this.options.config, role, message),
+        name: conversationNameForMessage(this.options.config, profile, message),
         responseMode: context.type === "p2p" ? "all" : "all_at",
-        role,
+        profile,
         codexThreadId: thread.threadId,
         workspace,
-        roleCodexHome: this.options.roles.codexHomeFor(role)
+        profileCodexHome: this.options.profiles.codexHomeFor(profile)
       });
     }
     if (!context.larkThreadId) {
       await this.recordCodexThreadBestEffort({
         conversationKey: context.conversationKey,
         codexThreadId: thread.threadId,
-        role,
+        profile,
         name: MAIN_THREAD_NAME,
         codexThreadHasRollout: false
       });
@@ -3761,7 +3760,7 @@ export class ConversationManager {
 
     try {
       await this.options.codex.steerTurn({
-        role: active.role,
+        profile: active.profile,
         threadId: active.threadId,
         turnId: active.turnId,
         input: formatPendingMessageForCodexInput(message),
@@ -3974,7 +3973,7 @@ export class ConversationManager {
       }
       await this.beginCompactTurn(state, context, {
         message: pending,
-        role: resolved.role,
+        profile: resolved.profile,
         threadId: resolved.threadId,
         workspace: resolved.workspace
       });
@@ -3987,7 +3986,7 @@ export class ConversationManager {
       await this.setThreadModeBestEffort(resolved.conversationKey, resolved.threadId, "default");
       await this.beginGoalTurn(state, context, {
         messages: [pending],
-        role: resolved.role,
+        profile: resolved.profile,
         threadId: resolved.threadId,
         workspace: resolved.workspace,
         recovering: false
@@ -4015,7 +4014,7 @@ export class ConversationManager {
     context: MessageContext,
     params: {
       message: PendingMessage;
-      role: RoleName;
+      profile: ProfileName;
       threadId: string;
       workspace: string;
       card?: ActiveTurnCardState;
@@ -4029,7 +4028,7 @@ export class ConversationManager {
       codexThreadId: params.threadId
     });
     const [modelSettings, threadTokenUsage] = await Promise.all([
-      this.readCodexTurnModelSettingsBestEffort(params.role, params.workspace),
+      this.readCodexTurnModelSettingsBestEffort(params.profile, params.workspace),
       this.readThreadTokenUsageBestEffort(params.threadId)
     ]);
     const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
@@ -4038,7 +4037,7 @@ export class ConversationManager {
     const active: ActiveTurn = {
       kind: "compact",
       runId: ++state.nextRunId,
-      role: params.role,
+      profile: params.profile,
       triggerOpenId: message.original.senderOpenId,
       threadId: params.threadId,
       workspace: params.workspace,
@@ -4074,7 +4073,7 @@ export class ConversationManager {
     await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
 
     const compactPromise = this.options.codex.compactThread({
-      role: params.role,
+      profile: params.profile,
       threadId: active.threadId,
       cwd: params.workspace,
       approvalPolicy: "never",
@@ -4090,7 +4089,7 @@ export class ConversationManager {
           {
             messageId: message.messageId,
             conversationKey: context.conversationKey,
-            role: params.role,
+            profile: params.profile,
             codexThreadId: active.threadId,
             turnId: result.turnId,
             status: result.status,
@@ -4172,7 +4171,7 @@ export class ConversationManager {
       normalized.senderName = await this.resolveSenderName(
         context,
         normalized,
-        roleForSender(this.options.config, normalized.senderOpenId)
+        profileForSender(this.options.config, normalized.senderOpenId)
       );
       const parsed = parseSlashCommand(normalized.text);
       const nested = parsed.kind === "queue" ? parseSlashCommand(parsed.text) : undefined;
@@ -4207,7 +4206,7 @@ export class ConversationManager {
     }
     await this.beginActiveTurn(state, context, {
       messages,
-      role: resolved.role,
+      profile: resolved.profile,
       threadId: resolved.threadId,
       workspace: resolved.workspace,
       input: inputOverride ?? formatPendingMessagesForCodexInput(messages),
@@ -4220,7 +4219,7 @@ export class ConversationManager {
     context: MessageContext,
     params: {
       messages: PendingMessage[];
-      role: RoleName;
+      profile: ProfileName;
       threadId: string;
       workspace: string;
       recovering: boolean;
@@ -4251,14 +4250,14 @@ export class ConversationManager {
       codexThreadId: params.threadId
     });
     const [modelSettings, threadTokenUsage] = await Promise.all([
-      this.readCodexTurnModelSettingsBestEffort(params.role, params.workspace),
+      this.readCodexTurnModelSettingsBestEffort(params.profile, params.workspace),
       this.readThreadTokenUsageBestEffort(params.threadId)
     ]);
     const startedAt = Date.now();
     const active: ActiveTurn = {
       kind: "goal",
       runId: ++state.nextRunId,
-      role: params.role,
+      profile: params.profile,
       triggerOpenId: goalMessage.original.senderOpenId,
       threadId: params.threadId,
       workspace: params.workspace,
@@ -4315,13 +4314,13 @@ export class ConversationManager {
         };
         const result = params.recovering
           ? await this.options.codex.resumeGoal!({
-              role: params.role,
+              profile: params.profile,
               threadId: active.threadId,
               cwd: params.workspace,
               ...callbacks
             })
           : await this.options.codex.runGoal!({
-              role: params.role,
+              profile: params.profile,
               threadId: active.threadId,
               objective: content,
               ...callbacks
@@ -4333,7 +4332,7 @@ export class ConversationManager {
           {
             messageId: anchor.messageId,
             conversationKey: context.conversationKey,
-            role: params.role,
+            profile: params.profile,
             codexThreadId: active.threadId,
             turnId: result.turnId,
             status: result.status,
@@ -4346,7 +4345,7 @@ export class ConversationManager {
           if (isCodexProtocolClosedError(error)) {
             await this.suspendActiveTurnForCodexAppServerExit(state, active);
             this.log.warn(
-              { error, messageId: active.replyMessageId, conversationKey: context.conversationKey, role: active.role },
+              { error, messageId: active.replyMessageId, conversationKey: context.conversationKey, profile: active.profile },
               "codex protocol closed; leaving goal recoverable"
             );
             return;
@@ -4375,38 +4374,38 @@ export class ConversationManager {
     message: IncomingLarkMessage
   ): Promise<{
     conversationKey: string;
-    role: RoleName;
+    profile: ProfileName;
     workspace: string;
     threadId: string;
     replacedMissingThread: boolean;
     previousThreadId?: string;
   }> {
-    const senderRole = roleForSender(this.options.config, message.senderOpenId);
+    const senderProfile = profileForSender(this.options.config, message.senderOpenId);
     const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
     const binding = await this.getOrCreateConversation({
       context,
       conversationKey: context.conversationKey,
       type: context.type,
-      role: senderRole,
+      profile: senderProfile,
       workspace,
       message
     });
-    const role = binding.conversation.role;
+    const profile = binding.conversation.profile;
     const activeThread = await this.resolveActiveThread(binding, {
-      role,
+      profile,
       workspace,
       context
     });
     await this.recordCodexThreadBestEffort({
       conversationKey: context.conversationKey,
       codexThreadId: activeThread.threadId,
-      role,
+      profile,
       name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
       larkThreadId: context.larkThreadId
     });
     return {
       conversationKey: context.conversationKey,
-      role,
+      profile,
       workspace,
       threadId: activeThread.threadId,
       replacedMissingThread: activeThread.replacedMissingThread,
@@ -4414,7 +4413,7 @@ export class ConversationManager {
     };
   }
 
-  private profileForNewConversation(context: MessageContext, message: IncomingLarkMessage): RoleName {
+  private profileForNewConversation(context: MessageContext, message: IncomingLarkMessage): ProfileName {
     if (message.senderOpenId === this.options.config.owner.openId) {
       return "host";
     }
@@ -4429,7 +4428,7 @@ export class ConversationManager {
     context: MessageContext,
     params: {
       messages: PendingMessage[];
-      role: RoleName;
+      profile: ProfileName;
       threadId: string;
       workspace: string;
       input: CodexTurnInput;
@@ -4448,7 +4447,7 @@ export class ConversationManager {
       codexThreadId: params.threadId
     });
     const [modelSettings, threadTokenUsage] = await Promise.all([
-      this.readCodexTurnModelSettingsBestEffort(params.role, params.workspace),
+      this.readCodexTurnModelSettingsBestEffort(params.profile, params.workspace),
       this.readThreadTokenUsageBestEffort(params.threadId)
     ]);
     const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
@@ -4458,7 +4457,7 @@ export class ConversationManager {
     const active: ActiveTurn = {
       kind: "normal",
       runId: ++state.nextRunId,
-      role: params.role,
+      profile: params.profile,
       triggerOpenId: params.messages[0]!.original.senderOpenId,
       threadId: params.threadId,
       workspace: params.workspace,
@@ -4496,7 +4495,7 @@ export class ConversationManager {
     const runTurn = async (allowMissingThreadReplacement: boolean): Promise<void> => {
       try {
         const result = await this.options.codex.startTurn({
-          role: params.role,
+          profile: params.profile,
           threadId: active.threadId,
           input: params.input,
           currentThreadName,
@@ -4523,7 +4522,7 @@ export class ConversationManager {
           {
             messageId: anchor.messageId,
             conversationKey: context.conversationKey,
-            role: params.role,
+            profile: params.profile,
             codexThreadId: active.threadId,
             turnId: result.turnId,
             status: result.status,
@@ -4552,7 +4551,7 @@ export class ConversationManager {
           if (isCodexProtocolClosedError(failure)) {
             await this.suspendActiveTurnForCodexAppServerExit(state, active);
             this.log.warn(
-              { error: failure, messageId: active.replyMessageId, conversationKey: context.conversationKey, role: active.role },
+              { error: failure, messageId: active.replyMessageId, conversationKey: context.conversationKey, profile: active.profile },
               "codex protocol closed; leaving active turn recoverable"
             );
             return;
@@ -4588,7 +4587,7 @@ export class ConversationManager {
     );
     await this.setThreadStatusBestEffort(active.conversationKey, previousThreadId, "idle");
     const replacement = await this.options.codex.startThread({
-      role: active.role,
+      profile: active.profile,
       cwd: active.workspace,
       approvalPolicy: "never",
       developerInstructions: developerInstructionsForContext(this.options.config, active.context)
@@ -4596,7 +4595,7 @@ export class ConversationManager {
     await this.replaceThreadBindingBestEffort({
       conversationKey: active.conversationKey,
       codexThreadId: replacement.threadId,
-      role: active.role,
+      profile: active.profile,
       workspace: active.workspace,
       larkThreadId: active.context.larkThreadId,
       codexThreadHasRollout: false
@@ -4697,7 +4696,7 @@ export class ConversationManager {
       const message = pending[index]!;
       try {
         await this.options.codex.steerTurn({
-          role: active.role,
+          profile: active.profile,
           threadId: active.threadId,
           turnId: active.turnId,
           input: formatPendingMessageForCodexInput(message),
@@ -4782,7 +4781,7 @@ export class ConversationManager {
         return dynamicToolTextResponse(true, `Main session thread name is fixed to: ${MAIN_THREAD_NAME}`);
       }
       await this.applyThreadNameUpdate(active.threadId, name);
-      this.syncCodexThreadNameBestEffort(active.role, active.threadId, name);
+      this.syncCodexThreadNameBestEffort(active.profile, active.threadId, name);
       await this.updateAgentCardWithThreadNameBestEffort(state, active, request.callId, name);
       return dynamicToolTextResponse(true, `Thread name updated to: ${name}`);
     });
@@ -5013,10 +5012,10 @@ export class ConversationManager {
     return failed;
   }
 
-  private async failSideTurnsForRole(state: ConversationState, role: RoleName, error: string): Promise<number> {
+  private async failSideTurnsForProfile(state: ConversationState, profile: ProfileName, error: string): Promise<number> {
     let failed = 0;
     for (const active of [...state.sideTurns.values()]) {
-      if (active.role !== role) {
+      if (active.profile !== profile) {
         continue;
       }
       if (await this.failSideTurnForShutdown(state, active, error)) {
@@ -5058,7 +5057,7 @@ export class ConversationManager {
     if (active.kind === "compact") {
       await this.beginCompactTurn(state, active.context, {
         message: messages[messages.length - 1]!,
-        role: active.role,
+        profile: active.profile,
         threadId: active.threadId,
         workspace: active.workspace,
         card: cloneActiveTurnCardForRecovery(active.card),
@@ -5071,7 +5070,7 @@ export class ConversationManager {
       await this.setThreadModeBestEffort(active.conversationKey, active.threadId, "default");
       await this.beginGoalTurn(state, active.context, {
         messages,
-        role: active.role,
+        profile: active.profile,
         threadId: active.threadId,
         workspace: active.workspace,
         recovering: true,
@@ -5083,7 +5082,7 @@ export class ConversationManager {
     }
     await this.beginActiveTurn(state, active.context, {
       messages,
-      role: active.role,
+      profile: active.profile,
       threadId: active.threadId,
       workspace: active.workspace,
       input: ConversationManager.recoveryPrompt,
@@ -5117,7 +5116,7 @@ export class ConversationManager {
     }
     try {
       await this.options.codex.interruptTurn({
-        role: active.role,
+        profile: active.profile,
         threadId: active.threadId,
         turnId: active.turnId
       });
@@ -5135,7 +5134,7 @@ export class ConversationManager {
     if (this.options.codex.clearThreadGoal) {
       try {
         await this.options.codex.clearThreadGoal({
-          role: active.role,
+          profile: active.profile,
           threadId: active.threadId
         });
       } catch (error) {
@@ -5151,7 +5150,7 @@ export class ConversationManager {
     }
     try {
       await this.options.codex.unsubscribeThread({
-        role: active.role,
+        profile: active.profile,
         threadId: active.threadId
       });
     } catch (error) {
@@ -5162,7 +5161,7 @@ export class ConversationManager {
   private async recordCodexThreadBestEffort(params: {
     conversationKey: string;
     codexThreadId: string;
-    role: RoleName;
+    profile: ProfileName;
     name?: string;
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
@@ -5214,7 +5213,7 @@ export class ConversationManager {
   private async recordOrReplaceCodexThreadBestEffort(params: {
     conversationKey: string;
     codexThreadId: string;
-    role: RoleName;
+    profile: ProfileName;
     larkThreadId: string;
     codexThreadHasRollout?: boolean;
     replaceExistingLarkThread?: boolean;
@@ -5223,7 +5222,7 @@ export class ConversationManager {
       if (params.replaceExistingLarkThread && this.options.repository.replaceCodexThreadForLarkThread) {
         await this.options.repository.replaceCodexThreadForLarkThread(params.conversationKey, params.larkThreadId, {
           codexThreadId: params.codexThreadId,
-          role: params.role,
+          profile: params.profile,
           codexThreadHasRollout: params.codexThreadHasRollout
         });
         return;
@@ -5300,11 +5299,11 @@ export class ConversationManager {
     );
   }
 
-  private syncCodexThreadNameBestEffort(role: RoleName, threadId: string, name: string): void {
+  private syncCodexThreadNameBestEffort(profile: ProfileName, threadId: string, name: string): void {
     if (!this.options.codex.setThreadName) {
       return;
     }
-    void this.options.codex.setThreadName({ role, threadId, name }).catch((error) => {
+    void this.options.codex.setThreadName({ profile, threadId, name }).catch((error) => {
       this.log.warn({ error, threadId, name }, "failed to sync Codex thread name");
     });
   }
@@ -5365,17 +5364,12 @@ export class ConversationManager {
     }
   }
 
-  private async readCodexTurnModelSettingsBestEffort(role: RoleName, workspace: string): Promise<CodexTurnModelSettings> {
-    const configPath = path.join(this.options.roles.codexHomeFor(role), "config.toml");
-    try {
-      const content = await fs.readFile(configPath, "utf8");
-      return extractCodexTurnModelSettings(parseToml(content), workspace);
-    } catch (error) {
-      if (!isNodeErrorCode(error, "ENOENT")) {
-        this.log.warn({ error, role, configPath }, "failed to read codex model settings");
-      }
-      return {};
-    }
+  private async readCodexTurnModelSettingsBestEffort(profile: ProfileName, _workspace: string): Promise<CodexTurnModelSettings> {
+    const profileConfig = this.options.config.profiles[profile];
+    return {
+      model: nonEmptyString(profileConfig?.defaultModel),
+      effort: nonEmptyString(profileConfig?.defaultEffort)
+    };
   }
 
   private async readThreadTokenUsageBestEffort(codexThreadId: string): Promise<ThreadTokenUsageSnapshot> {
@@ -5448,7 +5442,7 @@ export class ConversationManager {
       await this.options.repository.updateCodexThreadTokenUsage({
         codexThreadId: usage.threadId,
         conversationKey: active.conversationKey,
-        role: active.role,
+        profile: active.profile,
         inputTokens: tokenUsage.inputTokens,
         outputTokens: tokenUsage.outputTokens,
         cachedInputTokens: tokenUsage.cachedInputTokens,
@@ -5676,7 +5670,7 @@ export class ConversationManager {
     context: MessageContext;
     conversationKey: string;
     type: ConversationType;
-    role: RoleName;
+    profile: ProfileName;
     workspace: string;
     message: IncomingLarkMessage;
   }): Promise<{ conversation: ConversationRecord; created: boolean }> {
@@ -5685,7 +5679,7 @@ export class ConversationManager {
       return { conversation: existing, created: false };
     }
     const thread = await this.options.codex.startThread({
-      role: params.role,
+      profile: params.profile,
       cwd: params.workspace,
       approvalPolicy: "never",
       developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, params.context, { mainThread: true })
@@ -5694,19 +5688,19 @@ export class ConversationManager {
       conversationKey: params.conversationKey,
       type: params.type,
       chatId: params.type === "p2p" ? params.message.senderOpenId : params.message.chatId,
-      name: conversationNameForMessage(this.options.config, params.role, params.message),
+      name: conversationNameForMessage(this.options.config, params.profile, params.message),
       responseMode: params.type === "p2p" ? "all" : "all_at",
-      role: params.role,
+      profile: params.profile,
       codexThreadId: thread.threadId,
       workspace: params.workspace,
-      roleCodexHome: this.options.roles.codexHomeFor(params.role)
+      profileCodexHome: this.options.profiles.codexHomeFor(params.profile)
     });
     return { conversation, created: true };
   }
 
   private async resolveActiveThread(
     binding: { conversation: ConversationRecord; created: boolean },
-    params: { role: RoleName; workspace: string; context: MessageContext }
+    params: { profile: ProfileName; workspace: string; context: MessageContext }
   ): Promise<ActiveThreadResolution> {
     const larkThreadId = params.context.larkThreadId;
     if (!larkThreadId && binding.created) {
@@ -5725,14 +5719,14 @@ export class ConversationManager {
         await this.recordCodexThreadBestEffort({
           conversationKey: params.context.conversationKey,
           codexThreadId: binding.conversation.codexThreadId,
-          role: params.role,
+          profile: params.profile,
           name: MAIN_THREAD_NAME,
           codexThreadHasRollout: false
         });
         return { threadId: binding.conversation.codexThreadId, replacedMissingThread: false };
       }
       const thread = await this.options.codex.startThread({
-        role: params.role,
+        profile: params.profile,
         cwd: params.workspace,
         approvalPolicy: "never",
         developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, params.context)
@@ -5740,7 +5734,7 @@ export class ConversationManager {
       await this.recordOrReplaceCodexThreadBestEffort({
         conversationKey: params.context.conversationKey,
         codexThreadId: thread.threadId,
-        role: params.role,
+        profile: params.profile,
         larkThreadId,
         codexThreadHasRollout: false
       });
@@ -5748,7 +5742,7 @@ export class ConversationManager {
     }
 
     return await this.resumeThreadRecord(existing, {
-      role: params.role,
+      profile: params.profile,
       workspace: params.workspace,
       conversationKey: params.context.conversationKey,
       context: params.context,
@@ -5758,7 +5752,7 @@ export class ConversationManager {
 
   private async resumeThreadRecord(
     thread: CodexThreadRecord,
-    params: { role: RoleName; workspace: string; conversationKey: string; context: MessageContext; larkThreadId?: string }
+    params: { profile: ProfileName; workspace: string; conversationKey: string; context: MessageContext; larkThreadId?: string }
   ): Promise<ActiveThreadResolution> {
     if (!thread.codexThreadHasRollout) {
       return { threadId: thread.codexThreadId, replacedMissingThread: false };
@@ -5766,7 +5760,7 @@ export class ConversationManager {
 
     try {
       const resumed = await this.options.codex.resumeThread({
-        role: params.role,
+        profile: params.profile,
         threadId: thread.codexThreadId,
         cwd: params.workspace,
         approvalPolicy: "never"
@@ -5775,7 +5769,7 @@ export class ConversationManager {
         await this.replaceThreadBindingBestEffort({
           conversationKey: params.conversationKey,
           codexThreadId: resumed.threadId,
-          role: params.role,
+          profile: params.profile,
           workspace: params.workspace,
           larkThreadId: params.larkThreadId,
           codexThreadHasRollout: true
@@ -5795,7 +5789,7 @@ export class ConversationManager {
         "codex thread rollout missing; starting replacement thread"
       );
       const replacement = await this.options.codex.startThread({
-        role: params.role,
+        profile: params.profile,
         cwd: params.workspace,
         approvalPolicy: "never",
         developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, params.context, {
@@ -5805,7 +5799,7 @@ export class ConversationManager {
       await this.replaceThreadBindingBestEffort({
         conversationKey: params.conversationKey,
         codexThreadId: replacement.threadId,
-        role: params.role,
+        profile: params.profile,
         workspace: params.workspace,
         larkThreadId: params.larkThreadId,
         codexThreadHasRollout: false
@@ -5821,7 +5815,7 @@ export class ConversationManager {
   private async replaceThreadBindingBestEffort(params: {
     conversationKey: string;
     codexThreadId: string;
-    role: RoleName;
+    profile: ProfileName;
     workspace: string;
     larkThreadId?: string;
     codexThreadHasRollout: boolean;
@@ -5830,7 +5824,7 @@ export class ConversationManager {
       await this.recordOrReplaceCodexThreadBestEffort({
         conversationKey: params.conversationKey,
         codexThreadId: params.codexThreadId,
-        role: params.role,
+        profile: params.profile,
         larkThreadId: params.larkThreadId,
         codexThreadHasRollout: params.codexThreadHasRollout,
         replaceExistingLarkThread: true
@@ -5839,14 +5833,14 @@ export class ConversationManager {
     }
     await this.options.repository.updateThreadBinding(params.conversationKey, {
       codexThreadId: params.codexThreadId,
-      role: params.role,
-      roleCodexHome: this.options.roles.codexHomeFor(params.role),
+      profile: params.profile,
+      profileCodexHome: this.options.profiles.codexHomeFor(params.profile),
       workspace: params.workspace
     });
     await this.recordCodexThreadBestEffort({
       conversationKey: params.conversationKey,
       codexThreadId: params.codexThreadId,
-      role: params.role,
+      profile: params.profile,
       name: MAIN_THREAD_NAME,
       codexThreadHasRollout: params.codexThreadHasRollout
     });
@@ -5999,8 +5993,8 @@ export class ConversationManager {
     }
   }
 
-  private async readCodexVersionBestEffort(role: RoleName): Promise<string> {
-    const version = await this.options.codex.readCodexVersion?.({ role });
+  private async readCodexVersionBestEffort(profile: ProfileName): Promise<string> {
+    const version = await this.options.codex.readCodexVersion?.({ profile });
     return version || "不可用";
   }
 
@@ -6239,7 +6233,7 @@ export class ConversationManager {
     const runGoal = async (): Promise<void> => {
       try {
         const result = await this.options.codex.resumeGoal!({
-          role: active.role,
+          profile: active.profile,
           threadId: active.threadId,
           cwd: active.workspace,
           onTurnStarted: (turnId) => active.kind === "side"
@@ -7401,7 +7395,7 @@ function sideCardSubtitle(status: TwinnyAgentCardStatus, sideId: number | undefi
 function sideBoundaryResponseItem(): Record<string, unknown> {
   return {
     type: "message",
-    role: "user",
+    profile: "user",
     content: [
       {
         type: "input_text",
@@ -7636,7 +7630,7 @@ function goalResourceLabel(
 
 function parseActivateCommand(
   text: string
-): { kind: "valid"; responseMode: Exclude<ConversationResponseMode, "none">; role?: RoleName } | { kind: "invalid"; message: string } {
+): { kind: "valid"; responseMode: Exclude<ConversationResponseMode, "none">; profile?: ProfileName } | { kind: "invalid"; message: string } {
   const tokens = text.split(/\s+/).map((token) => token.trim()).filter(Boolean);
   const mode = tokens[0]?.toLowerCase();
   if (mode !== "owner_at" && mode !== "owner" && mode !== "all_at" && mode !== "all") {
@@ -7649,10 +7643,10 @@ function parseActivateCommand(
   if (profile === "none") {
     return { kind: "invalid", message: "profile none 为保留名，不能用于 /activate。" };
   }
-  return { kind: "valid", responseMode: mode, role: profile };
+  return { kind: "valid", responseMode: mode, profile: profile };
 }
 
-function parsePairCommand(text: string): { kind: "valid"; guestOpenId: string; profile: RoleName } | { kind: "invalid"; message: string } {
+function parsePairCommand(text: string): { kind: "valid"; guestOpenId: string; profile: ProfileName } | { kind: "invalid"; message: string } {
   const tokens = text.split(/\s+/).map((token) => token.trim()).filter(Boolean);
   if (tokens.length !== 2) {
     return { kind: "invalid", message: "用法：/pair {guest_ou_id} <profile>" };
@@ -7667,7 +7661,7 @@ function parsePairCommand(text: string): { kind: "valid"; guestOpenId: string; p
   return { kind: "valid", guestOpenId, profile };
 }
 
-function normalizeCommandProfileName(text: string): RoleName | undefined {
+function normalizeCommandProfileName(text: string): ProfileName | undefined {
   const trimmed = text.trim();
   return trimmed || undefined;
 }
@@ -8173,7 +8167,7 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/thread [message] - 创建新话题",
     "/fork [message] - 从当前 Codex thread fork 出新话题"
   ];
-  if (isGroupConversationType(context.type) && roleForSender(config, message.senderOpenId) === "host") {
+  if (isGroupConversationType(context.type) && profileForSender(config, message.senderOpenId) === "host") {
     lines.push(
       "/activate <owner_at|owner|all_at|all> [profile] - 激活群聊、设置响应模式并刷新群名",
       "/deactivate - 停用当前群聊"
@@ -8996,36 +8990,6 @@ function emptyLarkMessageTokenUsageSnapshot(): LarkMessageTokenUsageSnapshot {
   };
 }
 
-function extractCodexTurnModelSettings(raw: unknown, workspace: string): CodexTurnModelSettings {
-  const root = isRecord(raw) ? raw : undefined;
-  const project = root ? codexProjectSettings(root, workspace) : undefined;
-  return {
-    model: firstNonEmptyString(project?.model, root?.model),
-    effort: firstNonEmptyString(
-      project?.model_reasoning_effort,
-      project?.modelReasoningEffort,
-      project?.reasoning_effort,
-      project?.reasoningEffort,
-      root?.model_reasoning_effort,
-      root?.modelReasoningEffort,
-      root?.reasoning_effort,
-      root?.reasoningEffort
-    )
-  };
-}
-
-function codexProjectSettings(root: Record<string, unknown>, workspace: string): Record<string, unknown> | undefined {
-  if (!isRecord(root.projects)) {
-    return undefined;
-  }
-  return firstRecord(recordValue(root.projects, path.resolve(workspace)), recordValue(root.projects, workspace));
-}
-
-function recordValue(record: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
-  const value = record[key];
-  return isRecord(value) ? value : undefined;
-}
-
 function formatAccountRateLimitStatus(value: unknown): string[] {
   const windows = collectRateLimitWindows(value);
   const fiveHour = findRateLimitWindow(windows, 5 * 60);
@@ -9148,19 +9112,6 @@ function formatPercent(value: number): string {
 
 function formatTrimmedPercent(value: number): string {
   return `${Number((value * 100).toFixed(2))}%`;
-}
-
-function firstNonEmptyString(...values: unknown[]): string | undefined {
-  for (const value of values) {
-    if (typeof value !== "string") {
-      continue;
-    }
-    const trimmed = nonEmptyString(value);
-    if (trimmed) {
-      return trimmed;
-    }
-  }
-  return undefined;
 }
 
 function nonEmptyString(value: string | undefined): string | undefined {
@@ -9539,11 +9490,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function conversationNameForMessage(config: TwinnyConfig, role: RoleName, message: IncomingLarkMessage): string {
+function conversationNameForMessage(config: TwinnyConfig, profile: ProfileName, message: IncomingLarkMessage): string {
   if (message.chatType === "group" || message.chatType === "topic_group") {
     return message.chatName?.trim() || message.chatId;
   }
-  if (role === "host") {
+  if (profile === "host") {
     return config.owner.displayName.trim() || message.senderName?.trim() || message.senderOpenId;
   }
   return message.senderName?.trim() || message.senderOpenId;

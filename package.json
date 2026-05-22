@@ -1,7 +1,7 @@
 {
   "name": "twinny",
   "version": "0.1.0",
-  "description": "Bridge Lark p2p messages to per-role Codex app-server threads.",
+  "description": "Bridge Lark p2p messages to per-profile Codex app-server threads.",
   "type": "module",
   "bin": {
     "twinny": "dist/main.js"

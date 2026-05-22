@@ -12,9 +12,6 @@ export function getProfileCodexHome(config: TwinnyConfig, profile: ProfileName):
   return resolved.codexHome;
 }
 
-export const resolveRoleForSender = defaultProfileForSender;
-export const getRoleCodexHome = getProfileCodexHome;
-
 export { defaultOwnerCodexTarget } from "./owner.js";
 export {
   createGuestCodexConfigDocument,

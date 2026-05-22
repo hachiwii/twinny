@@ -35,8 +35,6 @@ export function profileForSender(config: TwinnyConfig, senderOpenId: string): Pr
   return senderOpenId === config.owner.openId ? HOST_PROFILE_NAME : GUEST_PROFILE_NAME;
 }
 
-export const roleForSender = profileForSender;
-
 export function conversationTypeForChat(chatType: string): ConversationType | null {
   switch (chatType.toLowerCase()) {
     case "p2p":

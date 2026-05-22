@@ -63,7 +63,7 @@ describe("startup initialization probe", () => {
       failedMessages: 0,
       stateCount: 1,
       pendingMessages: 1,
-      roles: { guest: 1 }
+      profiles: { guest: 1 }
     });
     expect(formatStartupInitializationProbeDetail(result)).toContain("unfinished=1");
 

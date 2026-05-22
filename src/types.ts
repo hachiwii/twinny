@@ -1,5 +1,4 @@
 export type ProfileName = string;
-export type RoleName = ProfileName;
 
 export const HOST_PROFILE_NAME = "host";
 export const GUEST_PROFILE_NAME = "guest";
@@ -155,11 +154,9 @@ export interface ConversationRecord {
   name: string;
   responseMode: ConversationResponseMode;
   profile: ProfileName;
-  role: ProfileName;
   codexThreadId: string;
   workspace: string;
   profileCodexHome: string;
-  roleCodexHome: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -170,12 +167,10 @@ export interface NewConversationRecord {
   chatId: string;
   name: string;
   responseMode?: ConversationResponseMode;
-  profile?: ProfileName;
-  role?: ProfileName;
+  profile: ProfileName;
   codexThreadId: string;
   workspace: string;
-  profileCodexHome?: string;
-  roleCodexHome?: string;
+  profileCodexHome: string;
 }
 
 export interface CodexThreadRecord {
@@ -185,7 +180,6 @@ export interface CodexThreadRecord {
   name: string;
   larkThreadId?: string;
   profile: ProfileName;
-  role: ProfileName;
   mode: CodexThreadMode;
   status: CodexThreadStatus;
   goalStatus: CodexThreadGoalStatus;

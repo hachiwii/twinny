@@ -1,6 +1,6 @@
 import type { Logger } from "pino";
 import { ConversationManager, type CodexBridge, type LarkResponder, type ConversationRecoveryProbeSnapshot } from "../conversation/manager.js";
-import { getProfileCodexHome } from "../roles/index.js";
+import { getProfileCodexHome } from "../profiles/index.js";
 import { createConversationRepository, openRuntimeDatabase, type TwinnyDatabase } from "../store/index.js";
 import type { RuntimePaths, TwinnyConfig } from "../types.js";
 import { createRuntimePaths } from "../config/index.js";
@@ -32,7 +32,7 @@ export async function runStartupInitializationProbe(
       workspaces: WorkspaceManager.fromRuntimePaths(paths),
       codex: createFailingCodexBridge(),
       lark: createFailingLarkResponder(),
-      roles: { codexHomeFor: (profile) => getProfileCodexHome(options.config, profile) },
+      profiles: { codexHomeFor: (profile) => getProfileCodexHome(options.config, profile) },
       logger: options.logger
     });
     return {

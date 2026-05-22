@@ -93,9 +93,9 @@ export async function ensureWorkspaceTrust(codexHome: string, cwd: string): Prom
 
 export function renderGuestAgents(owner: Pick<OwnerConfig, "openId" | "userId" | "displayName">): string {
   const ownerUserId = owner.userId ? `\n- Owner Feishu user_id: ${owner.userId}` : "";
-  return `# Twinny Guest Role
+  return `# Twinny Guest Profile
 
-You are running as Twinny's guest Codex role for a Feishu/Lark P2P conversation.
+You are running as Twinny's guest Codex profile for a Feishu/Lark P2P conversation.
 
 Owner identity:
 - Owner display name: ${owner.displayName}

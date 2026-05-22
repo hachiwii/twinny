@@ -5,9 +5,9 @@ import { parse, stringify, type TomlTable } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createGuestCodexConfigDocument,
+  defaultProfileForSender,
   ensureGuestWorkspaceProjectTrusted,
   renderGuestAgents,
-  resolveRoleForSender,
   validateGuestCodexConfigDocument
 } from "./index.js";
 
@@ -17,10 +17,10 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 
-describe("role helpers", () => {
+describe("profile helpers", () => {
   it("routes owner open_id to host and everyone else to guest", () => {
-    expect(resolveRoleForSender("ou_owner", "ou_owner")).toBe("host");
-    expect(resolveRoleForSender("ou_guest", "ou_owner")).toBe("guest");
+    expect(defaultProfileForSender("ou_owner", "ou_owner")).toBe("host");
+    expect(defaultProfileForSender("ou_guest", "ou_owner")).toBe("guest");
   });
 
   it("renders guest global instructions with owner identity and validates safe defaults", () => {
@@ -50,7 +50,7 @@ describe("role helpers", () => {
   });
 
   it("pre-seeds guest cwd projects as trusted without dropping existing config", async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "twinny-roles-"));
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "twinny-profiles-"));
     tempDirs.push(tempDir);
     const codexHome = path.join(tempDir, "codex");
     const configPath = path.join(codexHome, "config.toml");
@@ -87,7 +87,7 @@ describe("role helpers", () => {
   });
 
   it("backfills local binding permission into existing guest config", async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "twinny-roles-"));
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "twinny-profiles-"));
     tempDirs.push(tempDir);
     const codexHome = path.join(tempDir, "codex");
     const configPath = path.join(codexHome, "config.toml");
@@ -134,7 +134,7 @@ describe("role helpers", () => {
   });
 
   it("normalizes guest network domains to allow every domain", async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "twinny-roles-"));
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "twinny-profiles-"));
     tempDirs.push(tempDir);
     const codexHome = path.join(tempDir, "codex");
     const configPath = path.join(codexHome, "config.toml");

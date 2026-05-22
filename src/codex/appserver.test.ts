@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { parse, type TomlTable } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
-import { CodexAppServer, RoleCodexAppServerPool, buildCodexAppServerEnv } from "./appserver.js";
+import { CodexAppServer, ProfileCodexAppServerPool, buildCodexAppServerEnv } from "./appserver.js";
 
 const tempDirs: string[] = [];
 
@@ -14,8 +14,8 @@ afterEach(() => {
 });
 
 describe("buildCodexAppServerEnv", () => {
-  it("uses a small allowlist and always sets role-specific CODEX_HOME", () => {
-    const env = buildCodexAppServerEnv("/tmp/twinny/roles/guest/codex", {
+  it("uses a small allowlist and always sets profile-specific CODEX_HOME", () => {
+    const env = buildCodexAppServerEnv("/tmp/twinny/profiles/guest/codex", {
       PATH: "/usr/bin",
       HOME: "/Users/example",
       LANG: "en_US.UTF-8",
@@ -27,7 +27,7 @@ describe("buildCodexAppServerEnv", () => {
       PATH: "/usr/bin",
       HOME: "/Users/example",
       LANG: "en_US.UTF-8",
-      CODEX_HOME: "/tmp/twinny/roles/guest/codex",
+      CODEX_HOME: "/tmp/twinny/profiles/guest/codex",
       NO_COLOR: "1"
     });
     expect(env.TWINNY_LARK_APP_SECRET).toBeUndefined();
@@ -45,7 +45,7 @@ describe("CodexAppServer", () => {
     fs.mkdirSync(workspace, { recursive: true });
 
     const server = new CodexAppServer({
-      role: "guest",
+      profile: "guest",
       binary: fakeBinary,
       codexHome,
       requestTimeoutMs: 2_000,
@@ -262,7 +262,7 @@ describe("CodexAppServer", () => {
     fs.mkdirSync(workspace, { recursive: true });
 
     const server = new CodexAppServer({
-      role: "owner",
+      profile: "host",
       binary: fakeBinary,
       codexHome,
       requestTimeoutMs: 2_000,
@@ -298,18 +298,18 @@ describe("CodexAppServer", () => {
   });
 });
 
-describe("RoleCodexAppServerPool", () => {
-  it("restarts the selected role after its app-server exits", async () => {
+describe("ProfileCodexAppServerPool", () => {
+  it("restarts the selected profile after its app-server exits", async () => {
     const tempDir = makeTempDir();
     const captureFile = path.join(tempDir, "requests.ndjson");
     const fakeBinary = createOneShotExitCodexBinary(tempDir, captureFile);
     const workspace = path.join(tempDir, "workspaces", "p2p_ou_1");
     fs.mkdirSync(workspace, { recursive: true });
 
-    const pool = new RoleCodexAppServerPool({
+    const pool = new ProfileCodexAppServerPool({
       binary: fakeBinary,
-      roles: {
-        owner: { codexHome: path.join(tempDir, "owner-codex-home") },
+      profiles: {
+        host: { codexHome: path.join(tempDir, "host-codex-home") },
         guest: { codexHome: path.join(tempDir, "guest-codex-home") }
       },
       requestTimeoutMs: 2_000,
@@ -319,15 +319,15 @@ describe("RoleCodexAppServerPool", () => {
         HOME: tempDir
       }
     });
-    const owner = pool.get("owner");
+    const host = pool.get("host");
 
     try {
-      const exited = onceExit(owner);
-      await expect(owner.start()).resolves.toMatchObject({ userAgent: "fake-codex" });
+      const exited = onceExit(host);
+      await expect(host.start()).resolves.toMatchObject({ userAgent: "fake-codex" });
       await expect(exited).resolves.toMatchObject({ code: 42, signal: null });
 
-      await expect(pool.restart("owner")).resolves.toMatchObject({ userAgent: "fake-codex" });
-      await expect(owner.startThread(workspace)).resolves.toMatchObject({
+      await expect(pool.restart("host")).resolves.toMatchObject({ userAgent: "fake-codex" });
+      await expect(host.startThread(workspace)).resolves.toMatchObject({
         thread: { id: "thread-start" }
       });
     } finally {
