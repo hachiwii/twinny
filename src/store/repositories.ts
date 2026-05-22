@@ -119,6 +119,11 @@ interface LarkMessageRow {
   side_id: number | null;
   agent_card_message_id: string | null;
   raw_event_json: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  reasoning_output_tokens: number;
+  token_usage_json: string;
 }
 
 export interface UpsertCodexThreadInput {
@@ -161,6 +166,15 @@ export interface UpdateCodexThreadTokenUsageInput {
   totalTokens: number;
   contextTokens: number;
   contextWindow: number;
+  tokenUsageJson: string;
+}
+
+export interface UpdateLarkMessageTokenUsageInput {
+  larkMessageId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningOutputTokens: number;
   tokenUsageJson: string;
 }
 
@@ -260,7 +274,10 @@ export class ConversationRepository {
   private readonly insertLarkMessageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly selectLarkMessageById: Database.Statement<[string], LarkMessageRow>;
   private readonly selectLarkMessageByEventId: Database.Statement<[string], LarkMessageRow>;
+  private readonly selectLarkMessageUsageTargetForTurn: Database.Statement<[string, string], LarkMessageRow>;
+  private readonly selectLatestSteeredLarkMessageForTurn: Database.Statement<[string, string], LarkMessageRow>;
   private readonly selectUnfinishedLarkMessages: Database.Statement<[], LarkMessageRow>;
+  private readonly updateLarkMessageUsageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly updateLarkMessageProcessingStatement: Database.Statement<[
     string | null,
     string | null,
@@ -690,10 +707,38 @@ export class ConversationRepository {
       ORDER BY id ASC
       LIMIT 1
     `);
+    this.selectLarkMessageUsageTargetForTurn = this.db.prepare(`
+      SELECT * FROM lark_messages
+      WHERE thread_id = ?
+        AND codex_turn_id = ?
+        AND lark_message_id IS NOT NULL
+        AND route_kind <> 'steered_message'
+      ORDER BY received_at ASC, id ASC
+      LIMIT 1
+    `);
+    this.selectLatestSteeredLarkMessageForTurn = this.db.prepare(`
+      SELECT * FROM lark_messages
+      WHERE thread_id = ?
+        AND codex_turn_id = ?
+        AND lark_message_id IS NOT NULL
+        AND route_kind = 'steered_message'
+      ORDER BY received_at DESC, id DESC
+      LIMIT 1
+    `);
     this.selectUnfinishedLarkMessages = this.db.prepare(`
       SELECT * FROM lark_messages
       WHERE status IN ('processing', 'queued')
       ORDER BY received_at ASC, id ASC
+    `);
+    this.updateLarkMessageUsageStatement = this.db.prepare(`
+      UPDATE lark_messages
+      SET input_tokens = @inputTokens,
+          output_tokens = @outputTokens,
+          cached_input_tokens = @cachedInputTokens,
+          reasoning_output_tokens = @reasoningOutputTokens,
+          token_usage_json = @tokenUsageJson,
+          updated_at = @updatedAt
+      WHERE lark_message_id = @larkMessageId
     `);
     this.updateLarkMessageProcessingStatement = this.db.prepare(`
       UPDATE lark_messages
@@ -1153,8 +1198,39 @@ export class ConversationRepository {
     return mapLarkMessageRow(this.selectLarkMessageByEventId.get(eventId));
   }
 
+  getLarkMessageUsageTargetForTurn(codexThreadId: string, codexTurnId: string): LarkMessageRecord | undefined {
+    assertNonEmpty(codexThreadId, "codexThreadId");
+    assertNonEmpty(codexTurnId, "codexTurnId");
+    return mapLarkMessageRow(this.selectLarkMessageUsageTargetForTurn.get(codexThreadId, codexTurnId));
+  }
+
+  getLatestSteeredLarkMessageForTurn(codexThreadId: string, codexTurnId: string): LarkMessageRecord | undefined {
+    assertNonEmpty(codexThreadId, "codexThreadId");
+    assertNonEmpty(codexTurnId, "codexTurnId");
+    return mapLarkMessageRow(this.selectLatestSteeredLarkMessageForTurn.get(codexThreadId, codexTurnId));
+  }
+
   listUnfinishedLarkMessages(): LarkMessageRecord[] {
     return this.selectUnfinishedLarkMessages.all().map((row) => mapRequiredLarkMessageRow(row));
+  }
+
+  updateLarkMessageTokenUsage(input: UpdateLarkMessageTokenUsageInput): LarkMessageRecord | undefined {
+    assertNonEmpty(input.larkMessageId, "larkMessageId");
+    assertNonNegativeFinite(input.inputTokens, "inputTokens");
+    assertNonNegativeFinite(input.outputTokens, "outputTokens");
+    assertNonNegativeFinite(input.cachedInputTokens, "cachedInputTokens");
+    assertNonNegativeFinite(input.reasoningOutputTokens, "reasoningOutputTokens");
+    assertNonEmpty(input.tokenUsageJson, "tokenUsageJson");
+    const result = this.updateLarkMessageUsageStatement.run({
+      larkMessageId: input.larkMessageId,
+      inputTokens: Math.trunc(input.inputTokens),
+      outputTokens: Math.trunc(input.outputTokens),
+      cachedInputTokens: Math.trunc(input.cachedInputTokens),
+      reasoningOutputTokens: Math.trunc(input.reasoningOutputTokens),
+      tokenUsageJson: input.tokenUsageJson,
+      updatedAt: this.now()
+    });
+    return result.changes === 0 ? undefined : this.requireLarkMessageById(input.larkMessageId);
   }
 
   markLarkMessageQueued(larkMessageId: string): void {
@@ -1286,6 +1362,14 @@ export class ConversationRepository {
     return record;
   }
 
+  private requireLarkMessageById(larkMessageId: string): LarkMessageRecord {
+    const record = this.getLarkMessageById(larkMessageId);
+    if (!record) {
+      throw new TwinnyError(`Lark message ${larkMessageId} was not found`, "LARK_MESSAGE_NOT_FOUND");
+    }
+    return record;
+  }
+
   private requireLarkMessageByEventId(eventId: string): LarkMessageRecord {
     const record = this.getLarkMessageByEventId(eventId);
     if (!record) {
@@ -1406,7 +1490,12 @@ function mapRequiredLarkMessageRow(row: LarkMessageRow): LarkMessageRecord {
     clearedAt: row.cleared_at ?? undefined,
     sideId: row.side_id ?? undefined,
     agentCardMessageId: row.agent_card_message_id ?? undefined,
-    rawEventJson: row.raw_event_json ?? undefined
+    rawEventJson: row.raw_event_json ?? undefined,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cachedInputTokens: row.cached_input_tokens,
+    reasoningOutputTokens: row.reasoning_output_tokens,
+    tokenUsageJson: row.token_usage_json
   };
 }
 

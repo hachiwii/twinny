@@ -366,6 +366,34 @@ describe("ConversationRepository", () => {
       updatedAt: 1700
     });
 
+    now = 1710;
+    expect(
+      repo.updateLarkMessageTokenUsage({
+        larkMessageId: "om_1",
+        inputTokens: 30,
+        outputTokens: 12,
+        cachedInputTokens: 8,
+        reasoningOutputTokens: 3,
+        tokenUsageJson: '{"turn":"usage"}'
+      })
+    ).toMatchObject({
+      larkMessageId: "om_1",
+      inputTokens: 30,
+      outputTokens: 12,
+      cachedInputTokens: 8,
+      reasoningOutputTokens: 3,
+      tokenUsageJson: '{"turn":"usage"}',
+      updatedAt: 1710
+    });
+    expect(repo.updateLarkMessageTokenUsage({
+      larkMessageId: "om_missing",
+      inputTokens: 1,
+      outputTokens: 1,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      tokenUsageJson: "{}"
+    })).toBeUndefined();
+
     now = 1725;
     repo.clearCodexThreadGoalStatus("thread-1");
     expect(repo.getCodexThreadById("thread-1")).toMatchObject({
@@ -401,6 +429,9 @@ describe("ConversationRepository", () => {
       agentCardMessageId: "om_side_card",
       codexTurnId: "turn-side"
     });
+    expect(repo.getLarkMessageUsageTargetForTurn("thread-1", "turn-1")).toMatchObject({
+      larkMessageId: "om_1"
+    });
     expect(repo.getCodexThreadWorkStats("thread-1")).toEqual({
       turnCount: 1,
       totalWorkDurationMs: 200
@@ -419,6 +450,36 @@ describe("ConversationRepository", () => {
       reasoningOutputTokens: 10,
       totalTokens: 123,
       totalWorkDurationMs: 200
+    });
+
+    repo.insertLarkMessage({
+      larkMessageId: "om_steer_only_1",
+      eventId: "event_steer_only_1",
+      larkUserId: "ou_456",
+      conversationKey: "p2p_ou_456",
+      codexThreadId: "thread-1",
+      codexTurnId: "turn-steer-only",
+      routeKind: "steered_message",
+      status: "processing",
+      text: "first steer",
+      rawEventJson: "{}"
+    });
+    now = 2810;
+    repo.insertLarkMessage({
+      larkMessageId: "om_steer_only_2",
+      eventId: "event_steer_only_2",
+      larkUserId: "ou_456",
+      conversationKey: "p2p_ou_456",
+      codexThreadId: "thread-1",
+      codexTurnId: "turn-steer-only",
+      routeKind: "steered_message",
+      status: "processing",
+      text: "latest steer",
+      rawEventJson: "{}"
+    });
+    expect(repo.getLarkMessageUsageTargetForTurn("thread-1", "turn-steer-only")).toBeUndefined();
+    expect(repo.getLatestSteeredLarkMessageForTurn("thread-1", "turn-steer-only")).toMatchObject({
+      larkMessageId: "om_steer_only_2"
     });
 
     now = 1750;

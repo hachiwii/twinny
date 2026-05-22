@@ -206,6 +206,11 @@ export interface LarkMessageRecord {
   sideId?: number;
   agentCardMessageId?: string;
   rawEventJson?: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningOutputTokens: number;
+  tokenUsageJson: string;
 }
 
 export interface IncomingLarkMessage {

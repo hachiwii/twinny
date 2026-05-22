@@ -147,6 +147,18 @@ describe("ConversationManager", () => {
         usage: { total: { totalTokens: 42 } }
       })
     });
+    expect(repository.updateLarkMessageTokenUsage).toHaveBeenCalledWith({
+      larkMessageId: "m1",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      tokenUsageJson: JSON.stringify({
+        threadId: "thread_1",
+        turnId: "turn_1",
+        usage: { total: { totalTokens: 42 } }
+      })
+    });
   });
 
   it("adds the active turn duration when token usage refreshes a bound thread card", async () => {
@@ -539,6 +551,115 @@ describe("ConversationManager", () => {
         text: "second"
       })
     );
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+  });
+
+  it("keeps turn usage on the start message after steering", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "second"));
+    await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
+
+    const raw = {
+      threadId: "thread_1",
+      turnId: "turn_1",
+      tokenUsage: {
+        total: {
+          totalTokens: 84,
+          inputTokens: 60,
+          cachedInputTokens: 20,
+          outputTokens: 24,
+          reasoningOutputTokens: 6
+        }
+      }
+    };
+    await turns[0]!.params.onTokenUsage?.({
+      threadId: "thread_1",
+      turnId: "turn_1",
+      totalTokens: 84,
+      raw
+    });
+
+    expect(repository.updateLarkMessageTokenUsage).toHaveBeenCalledWith({
+      larkMessageId: "m1",
+      inputTokens: 60,
+      outputTokens: 24,
+      cachedInputTokens: 20,
+      reasoningOutputTokens: 6,
+      tokenUsageJson: JSON.stringify(raw)
+    });
+    expect(vi.mocked(repository.updateLarkMessageTokenUsage).mock.calls.some(([input]) => input.larkMessageId === "m2")).toBe(false);
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+  });
+
+  it("falls back to the latest steer message when the active usage target is missing", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const logger = createLogger();
+    const manager = createManager({ repository, codex, logger });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "second"));
+    await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
+
+    vi.mocked(repository.updateLarkMessageTokenUsage).mockImplementation((input) => {
+      if (input.larkMessageId === "m1") {
+        return undefined;
+      }
+      return larkMessageRecord({
+        larkMessageId: input.larkMessageId,
+        inputTokens: input.inputTokens,
+        outputTokens: input.outputTokens,
+        cachedInputTokens: input.cachedInputTokens,
+        reasoningOutputTokens: input.reasoningOutputTokens,
+        tokenUsageJson: input.tokenUsageJson
+      });
+    });
+
+    const raw = {
+      threadId: "thread_1",
+      turnId: "turn_1",
+      tokenUsage: {
+        total: {
+          totalTokens: 84,
+          inputTokens: 60,
+          cachedInputTokens: 20,
+          outputTokens: 24,
+          reasoningOutputTokens: 6
+        }
+      }
+    };
+    await turns[0]!.params.onTokenUsage?.({
+      threadId: "thread_1",
+      turnId: "turn_1",
+      totalTokens: 84,
+      raw
+    });
+
+    expect(repository.updateCodexThreadTokenUsage).toHaveBeenCalledWith(expect.objectContaining({
+      codexThreadId: "thread_1",
+      inputTokens: 60,
+      outputTokens: 24
+    }));
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "thread_1", turnId: "turn_1", messageId: "m1" }),
+      "failed to record lark message token usage because target message was not found; trying latest steer message"
+    );
+    expect(repository.updateLarkMessageTokenUsage).toHaveBeenCalledWith({
+      larkMessageId: "m2",
+      inputTokens: 60,
+      outputTokens: 24,
+      cachedInputTokens: 20,
+      reasoningOutputTokens: 6,
+      tokenUsageJson: JSON.stringify(raw)
+    });
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));
   });
@@ -2276,6 +2397,7 @@ describe("ConversationManager", () => {
 
   it("runs /side as an ephemeral default-mode turn with a numbered temporary card", async () => {
     const sideTurn = deferred<CodexTurnResult>();
+    let sideParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
     const { repository } = createRepository(conversationRecord(), {
       codexThreads: [
         codexThreadRecord({
@@ -2289,6 +2411,7 @@ describe("ConversationManager", () => {
     const codex = createCodex({
       forkThread: vi.fn(async () => ({ threadId: "thread_1_side_1" })),
       startTurn: vi.fn((params) => {
+        sideParams = params;
         void params.onTurnStarted?.("side_turn_1");
         return sideTurn.promise;
       })
@@ -2358,6 +2481,33 @@ describe("ConversationManager", () => {
       conversationKey: "p2p_ou_guest",
       codexThreadId: "thread_1_side_1",
       role: "guest"
+    });
+    const rawUsage = {
+      threadId: "thread_1_side_1",
+      turnId: "side_turn_1",
+      tokenUsage: {
+        total: {
+          totalTokens: 18,
+          inputTokens: 15,
+          cachedInputTokens: 5,
+          outputTokens: 3,
+          reasoningOutputTokens: 1
+        }
+      }
+    };
+    await sideParams?.onTokenUsage?.({
+      threadId: "thread_1_side_1",
+      turnId: "side_turn_1",
+      totalTokens: 18,
+      raw: rawUsage
+    });
+    expect(repository.updateLarkMessageTokenUsage).toHaveBeenCalledWith({
+      larkMessageId: "m_side",
+      inputTokens: 15,
+      outputTokens: 3,
+      cachedInputTokens: 5,
+      reasoningOutputTokens: 1,
+      tokenUsageJson: JSON.stringify(rawUsage)
     });
     expect(repository.updateCodexThreadMode).not.toHaveBeenCalled();
     expect(repository.updateCodexThreadTokenUsage).not.toHaveBeenCalled();
@@ -5851,6 +6001,175 @@ describe("ConversationManager", () => {
     });
   });
 
+  it("continues recovered turn usage on the original start message", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_recovered" });
+    const startRecord = larkMessageRecord({
+      larkMessageId: "m_start",
+      eventId: "e_m_start",
+      codexThreadId: "thread_recovered",
+      codexTurnId: "turn_1",
+      routeKind: "message",
+      status: "steered",
+      inputTokens: 10,
+      outputTokens: 3,
+      cachedInputTokens: 4,
+      reasoningOutputTokens: 1,
+      tokenUsageJson: '{"previous":true}',
+      rawEventJson: JSON.stringify(rawReceiveEvent("m_start", "start"))
+    });
+    const steerRecord = larkMessageRecord({
+      larkMessageId: "m_steer",
+      eventId: "e_m_steer",
+      codexThreadId: "thread_recovered",
+      codexTurnId: "turn_1",
+      routeKind: "steered_message",
+      status: "processing",
+      rawEventJson: JSON.stringify(rawReceiveEvent("m_steer", "steer"))
+    });
+    const { repository } = createRepository(row, {
+      larkMessages: [startRecord, steerRecord],
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_recovered",
+          inputTokens: 100,
+          outputTokens: 20,
+          cachedInputTokens: 40,
+          reasoningOutputTokens: 5,
+          totalTokens: 120,
+          tokenUsageJson: JSON.stringify({
+            tokenUsage: {
+              total: {
+                totalTokens: 120,
+                inputTokens: 100,
+                cachedInputTokens: 40,
+                outputTokens: 20,
+                reasoningOutputTokens: 5
+              }
+            }
+          })
+        })
+      ]
+    });
+    const raw = {
+      threadId: "thread_recovered",
+      turnId: "turn_1",
+      tokenUsage: {
+        total: {
+          totalTokens: 147,
+          inputTokens: 125,
+          cachedInputTokens: 50,
+          outputTokens: 22,
+          reasoningOutputTokens: 7
+        }
+      }
+    };
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onTokenUsage }) => {
+        await onTurnStarted?.("turn_1");
+        await onTokenUsage?.({ threadId, turnId: "turn_1", totalTokens: 147, raw });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const manager = createManager({ repository, codex });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m_steer"]));
+
+    expect(repository.updateLarkMessageTokenUsage).toHaveBeenCalledWith({
+      larkMessageId: "m_start",
+      inputTokens: 35,
+      outputTokens: 5,
+      cachedInputTokens: 14,
+      reasoningOutputTokens: 3,
+      tokenUsageJson: JSON.stringify(raw)
+    });
+    expect(vi.mocked(repository.updateLarkMessageTokenUsage).mock.calls.some(([input]) => input.larkMessageId === "m_steer")).toBe(false);
+  });
+
+  it("falls back to the latest steer message when a recovered usage target is missing", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_recovered" });
+    const steerRecord = larkMessageRecord({
+      larkMessageId: "m_steer",
+      eventId: "e_m_steer",
+      codexThreadId: "thread_recovered",
+      codexTurnId: "turn_1",
+      routeKind: "steered_message",
+      status: "processing",
+      inputTokens: 2,
+      outputTokens: 1,
+      cachedInputTokens: 1,
+      reasoningOutputTokens: 0,
+      rawEventJson: JSON.stringify(rawReceiveEvent("m_steer", "steer"))
+    });
+    const { repository } = createRepository(row, {
+      larkMessages: [steerRecord],
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_recovered",
+          inputTokens: 10,
+          outputTokens: 4,
+          cachedInputTokens: 2,
+          reasoningOutputTokens: 1,
+          totalTokens: 14,
+          tokenUsageJson: JSON.stringify({
+            tokenUsage: {
+              total: {
+                totalTokens: 14,
+                inputTokens: 10,
+                cachedInputTokens: 2,
+                outputTokens: 4,
+                reasoningOutputTokens: 1
+              }
+            }
+          })
+        })
+      ]
+    });
+    const raw = {
+      threadId: "thread_recovered",
+      turnId: "turn_1",
+      tokenUsage: {
+        total: {
+          totalTokens: 20,
+          inputTokens: 15,
+          cachedInputTokens: 4,
+          outputTokens: 5,
+          reasoningOutputTokens: 2
+        }
+      }
+    };
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onTokenUsage }) => {
+        await onTurnStarted?.("turn_1");
+        await onTokenUsage?.({ threadId, turnId: "turn_1", totalTokens: 20, raw });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const logger = createLogger();
+    const manager = createManager({ repository, codex, logger });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m_steer"]));
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ codexThreadId: "thread_recovered", codexTurnId: "turn_1" }),
+      "failed to find lark message usage target while recovering turn; trying latest steer message"
+    );
+    expect(repository.updateCodexThreadTokenUsage).toHaveBeenCalledWith(expect.objectContaining({
+      codexThreadId: "thread_recovered",
+      inputTokens: 15,
+      outputTokens: 5
+    }));
+    expect(repository.updateLarkMessageTokenUsage).toHaveBeenCalledWith({
+      larkMessageId: "m_steer",
+      inputTokens: 7,
+      outputTokens: 2,
+      cachedInputTokens: 3,
+      reasoningOutputTokens: 1,
+      tokenUsageJson: JSON.stringify(raw)
+    });
+  });
+
   it("recovers processing messages with active persisted goal state by resuming the goal", async () => {
     const row = conversationRecord({ codexThreadId: "thread_recovered" });
     const record = larkMessageRecord({
@@ -6658,6 +6977,26 @@ function createRepository(initial?: ConversationRecord, options: {
         larkMessages.get(larkMessageId) ?? (larkMessageIds.has(larkMessageId) ? { larkMessageId } : undefined)
       ),
       getLarkMessageByEventId: vi.fn((eventId) => larkMessagesByEventId.get(eventId)),
+      getLarkMessageUsageTargetForTurn: vi.fn((codexThreadId, codexTurnId) =>
+        [...larkMessages.values()]
+          .filter((message) =>
+            message.codexThreadId === codexThreadId &&
+            message.codexTurnId === codexTurnId &&
+            message.larkMessageId !== undefined &&
+            message.routeKind !== "steered_message"
+          )
+          .sort((left, right) => left.receivedAt - right.receivedAt || left.id - right.id)[0]
+      ),
+      getLatestSteeredLarkMessageForTurn: vi.fn((codexThreadId, codexTurnId) =>
+        [...larkMessages.values()]
+          .filter((message) =>
+            message.codexThreadId === codexThreadId &&
+            message.codexTurnId === codexTurnId &&
+            message.larkMessageId !== undefined &&
+            message.routeKind === "steered_message"
+          )
+          .sort((left, right) => right.receivedAt - left.receivedAt || right.id - left.id)[0]
+      ),
       listUnfinishedLarkMessages: vi.fn(() => [...larkMessages.values()].filter((message) =>
         message.status === "processing" || message.status === "queued"
       )),
@@ -6926,6 +7265,19 @@ function createRepository(initial?: ConversationRecord, options: {
         existing.updatedAt = Date.now();
         return true;
       }),
+      updateLarkMessageTokenUsage: vi.fn((input) => {
+        const existing = larkMessages.get(input.larkMessageId);
+        if (!existing) {
+          return undefined;
+        }
+        existing.inputTokens = input.inputTokens;
+        existing.outputTokens = input.outputTokens;
+        existing.cachedInputTokens = input.cachedInputTokens;
+        existing.reasoningOutputTokens = input.reasoningOutputTokens;
+        existing.tokenUsageJson = input.tokenUsageJson;
+        existing.updatedAt = Date.now();
+        return existing;
+      }),
       markLarkMessagesProcessing: vi.fn((messageIds, update = {}) => {
         const now = Date.now();
         for (const messageId of messageIds) {
@@ -6941,7 +7293,20 @@ function createRepository(initial?: ConversationRecord, options: {
           existing.updatedAt = now;
         }
       }),
-      markLarkMessagesSteered: vi.fn(),
+      markLarkMessagesSteered: vi.fn((messageIds, update = {}) => {
+        const now = Date.now();
+        for (const messageId of messageIds) {
+          const existing = larkMessages.get(messageId);
+          if (!existing) {
+            continue;
+          }
+          existing.status = "steered";
+          existing.conversationKey = update.conversationKey ?? existing.conversationKey;
+          existing.codexThreadId = update.codexThreadId ?? existing.codexThreadId;
+          existing.codexTurnId = update.codexTurnId ?? existing.codexTurnId;
+          existing.updatedAt = now;
+        }
+      }),
       markLarkMessagesCompleted: vi.fn((messageIds) => {
         const now = Date.now();
         for (const messageId of messageIds) {
@@ -7072,6 +7437,11 @@ function larkMessageRecord(overrides: Partial<LarkMessageRecord> = {}): LarkMess
     receivedAt: 100,
     updatedAt: 100,
     rawEventJson: JSON.stringify(rawReceiveEvent(rawMessageId, "hello")),
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    reasoningOutputTokens: 0,
+    tokenUsageJson: "{}",
     ...overrides
   };
   if (larkMessageId) {

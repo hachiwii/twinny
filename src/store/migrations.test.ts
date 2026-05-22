@@ -135,7 +135,12 @@ describe("store migrations", () => {
         { name: "cleared_at", type: "INTEGER", notnull: 0, pk: 0 },
         { name: "raw_event_json", type: "TEXT", notnull: 0, pk: 0 },
         { name: "side_id", type: "INTEGER", notnull: 0, pk: 0 },
-        { name: "agent_card_message_id", type: "TEXT", notnull: 0, pk: 0 }
+        { name: "agent_card_message_id", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "input_tokens", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "output_tokens", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "cached_input_tokens", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "reasoning_output_tokens", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "token_usage_json", type: "TEXT", notnull: 1, pk: 0 }
       ]);
       const messageIndexes = db
         .prepare<[], SqliteNameRow>(

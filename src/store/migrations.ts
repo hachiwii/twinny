@@ -15,7 +15,7 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 17;
+export const currentStoreSchemaVersion = 18;
 
 const initialMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const threadRolloutMigrationFile = fileURLToPath(new URL("../../migrations/0002_codex_thread_rollout.sql", import.meta.url));
@@ -34,6 +34,7 @@ const sideMessagesMigrationFile = fileURLToPath(new URL("../../migrations/0014_s
 const routeKindGoalMessagesMigrationFile = fileURLToPath(new URL("../../migrations/0015_route_kind_goal_messages.sql", import.meta.url));
 const threadNamesMigrationFile = fileURLToPath(new URL("../../migrations/0016_thread_names.sql", import.meta.url));
 const threadGoalStatusMigrationFile = fileURLToPath(new URL("../../migrations/0017_thread_goal_status.sql", import.meta.url));
+const larkMessageUsageMigrationFile = fileURLToPath(new URL("../../migrations/0018_lark_message_usage.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -121,6 +122,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 17,
       name: "0017_thread_goal_status",
       sql: fs.readFileSync(threadGoalStatusMigrationFile, "utf8")
+    },
+    {
+      version: 18,
+      name: "0018_lark_message_usage",
+      sql: fs.readFileSync(larkMessageUsageMigrationFile, "utf8")
     }
   ];
 }
@@ -262,6 +268,13 @@ function ensureThreadsSummarySchemaConsistency(db: Database.Database): void {
   if (tableExists(db, "lark_messages") && getStoreSchemaVersion(db) >= 14) {
     ensureTableColumn(db, "lark_messages", "side_id", "side_id INTEGER");
     ensureTableColumn(db, "lark_messages", "agent_card_message_id", "agent_card_message_id TEXT");
+  }
+  if (tableExists(db, "lark_messages") && getStoreSchemaVersion(db) >= 18) {
+    ensureTableColumn(db, "lark_messages", "input_tokens", "input_tokens INTEGER NOT NULL DEFAULT 0");
+    ensureTableColumn(db, "lark_messages", "output_tokens", "output_tokens INTEGER NOT NULL DEFAULT 0");
+    ensureTableColumn(db, "lark_messages", "cached_input_tokens", "cached_input_tokens INTEGER NOT NULL DEFAULT 0");
+    ensureTableColumn(db, "lark_messages", "reasoning_output_tokens", "reasoning_output_tokens INTEGER NOT NULL DEFAULT 0");
+    ensureTableColumn(db, "lark_messages", "token_usage_json", "token_usage_json TEXT NOT NULL DEFAULT '{}'");
   }
 
   ensureTableColumn(db, threadsTable, "creator_open_id", "creator_open_id TEXT");

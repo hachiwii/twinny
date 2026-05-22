@@ -135,6 +135,14 @@ export interface ConversationRepository {
   ): Promise<CodexThreadRecord | undefined> | CodexThreadRecord | undefined;
   getLarkMessageById(larkMessageId: string): Promise<unknown | undefined> | unknown | undefined;
   getLarkMessageByEventId(eventId: string): Promise<unknown | undefined> | unknown | undefined;
+  getLarkMessageUsageTargetForTurn(
+    codexThreadId: string,
+    codexTurnId: string
+  ): Promise<LarkMessageRecord | undefined> | LarkMessageRecord | undefined;
+  getLatestSteeredLarkMessageForTurn(
+    codexThreadId: string,
+    codexTurnId: string
+  ): Promise<LarkMessageRecord | undefined> | LarkMessageRecord | undefined;
   listUnfinishedLarkMessages(): Promise<LarkMessageRecord[]> | LarkMessageRecord[];
   upsertCodexThread(input: {
     codexThreadId: string;
@@ -252,6 +260,14 @@ export interface ConversationRepository {
     larkMessageId: string,
     update: { sideId?: number; agentCardMessageId?: string }
   ): Promise<boolean> | boolean;
+  updateLarkMessageTokenUsage(input: {
+    larkMessageId: string;
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+    reasoningOutputTokens: number;
+    tokenUsageJson: string;
+  }): Promise<LarkMessageRecord | undefined> | LarkMessageRecord | undefined;
   markLarkMessagesProcessing(
     larkMessageIds: string[],
     update?: { conversationKey?: string; codexThreadId?: string; codexTurnId?: string }
@@ -612,6 +628,9 @@ interface ActiveTurn {
   threadTokenUsage: ThreadTokenUsageSnapshot;
   turnStartThreadTokenUsage: ThreadTokenUsageSnapshot;
   turnTokenUsage: ThreadTokenUsageSnapshot;
+  usageTargetMessageId?: string;
+  usageCarryover: LarkMessageTokenUsageSnapshot;
+  messageTokenUsage: LarkMessageTokenUsageSnapshot;
   turnId?: string;
   reaction?: LarkReactionHandle | null;
   lastAgentReplyMessageId?: string;
@@ -1094,13 +1113,16 @@ export class ConversationManager {
             larkThreadId: context.larkThreadId
           });
           await this.setThreadModeBestEffort(context.conversationKey, recoveredThread.codexThreadId, "default");
+          const usageTarget = await this.resolveRecoveredUsageTarget(recoveredThread.codexThreadId, records);
           await this.beginGoalTurn(state, context, {
             messages,
             role,
             threadId: recoveredThread.codexThreadId,
             workspace,
             recovering: true,
-            objective: goal.objective
+            objective: goal.objective,
+            usageTargetMessageId: usageTarget.messageId,
+            usageCarryover: usageTarget.carryover
           });
           return;
         }
@@ -1119,12 +1141,17 @@ export class ConversationManager {
       role,
       larkThreadId: context.larkThreadId
     });
+    const usageTarget = activeThread.replacedMissingThread
+      ? undefined
+      : await this.resolveRecoveredUsageTarget(activeThread.threadId, records);
     await this.beginActiveTurn(state, context, {
       messages,
       role,
       threadId: activeThread.threadId,
       workspace,
-      input: ConversationManager.recoveryPrompt
+      input: ConversationManager.recoveryPrompt,
+      usageTargetMessageId: usageTarget?.messageId,
+      usageCarryover: usageTarget?.carryover
     });
   }
 
@@ -2749,6 +2776,9 @@ export class ConversationManager {
       threadTokenUsage: emptyThreadTokenUsageSnapshot(),
       turnStartThreadTokenUsage: emptyThreadTokenUsageSnapshot(),
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      usageTargetMessageId: message.messageId,
+      usageCarryover: emptyLarkMessageTokenUsageSnapshot(),
+      messageTokenUsage: emptyLarkMessageTokenUsageSnapshot(),
       generatedImagePaths: [],
       reaction: await this.addReactionBestEffort(message.messageId),
       card: {
@@ -3726,6 +3756,8 @@ export class ConversationManager {
       threadId: string;
       workspace: string;
       card?: ActiveTurnCardState;
+      usageTargetMessageId?: string;
+      usageCarryover?: LarkMessageTokenUsageSnapshot;
     }
   ): Promise<void> {
     const message = params.message;
@@ -3757,6 +3789,9 @@ export class ConversationManager {
       threadTokenUsage,
       turnStartThreadTokenUsage: threadTokenUsage,
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      usageTargetMessageId: params.usageTargetMessageId ?? message.messageId,
+      usageCarryover: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
+      messageTokenUsage: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       generatedImagePaths: [],
       reaction: await this.addReactionBestEffort(message.messageId),
       card: params.card ?? {
@@ -3928,6 +3963,8 @@ export class ConversationManager {
       recovering: boolean;
       objective?: string;
       card?: ActiveTurnCardState;
+      usageTargetMessageId?: string;
+      usageCarryover?: LarkMessageTokenUsageSnapshot;
     }
   ): Promise<void> {
     if (params.messages.length === 0) {
@@ -3972,6 +4009,9 @@ export class ConversationManager {
       threadTokenUsage,
       turnStartThreadTokenUsage: threadTokenUsage,
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      usageTargetMessageId: params.usageTargetMessageId ?? params.messages[0]?.messageId,
+      usageCarryover: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
+      messageTokenUsage: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       generatedImagePaths: [],
       reaction: await this.addReactionBestEffort(anchor.messageId),
       goal: {
@@ -4120,6 +4160,8 @@ export class ConversationManager {
       input: CodexTurnInput;
       initialCardMessages?: TwinnyAgentCardMessage[];
       card?: ActiveTurnCardState;
+      usageTargetMessageId?: string;
+      usageCarryover?: LarkMessageTokenUsageSnapshot;
     }
   ): Promise<void> {
     if (params.messages.length === 0) {
@@ -4154,6 +4196,9 @@ export class ConversationManager {
       threadTokenUsage,
       turnStartThreadTokenUsage: threadTokenUsage,
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      usageTargetMessageId: params.usageTargetMessageId ?? params.messages[0]?.messageId,
+      usageCarryover: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
+      messageTokenUsage: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       generatedImagePaths: [],
       reaction: await this.addReactionBestEffort(anchor.messageId),
       card: params.card ?? {
@@ -4345,6 +4390,7 @@ export class ConversationManager {
       const tokenUsage = extractThreadTokenUsage(usage);
       active.threadTokenUsage = tokenUsage;
       active.turnTokenUsage = subtractThreadTokenUsage(tokenUsage, active.turnStartThreadTokenUsage);
+      await this.recordLarkMessageTokenUsageBestEffort(active, usage);
       this.patchActiveAgentCardTokenUsageBestEffort(state, active);
     } catch (error) {
       this.log.warn({ error, threadId: usage.threadId, totalTokens: usage.totalTokens }, "failed to record side token usage");
@@ -4728,7 +4774,9 @@ export class ConversationManager {
         role: active.role,
         threadId: active.threadId,
         workspace: active.workspace,
-        card: cloneActiveTurnCardForRecovery(active.card)
+        card: cloneActiveTurnCardForRecovery(active.card),
+        usageTargetMessageId: active.usageTargetMessageId,
+        usageCarryover: active.messageTokenUsage
       });
       return true;
     }
@@ -4740,7 +4788,9 @@ export class ConversationManager {
         threadId: active.threadId,
         workspace: active.workspace,
         recovering: true,
-        card: cloneActiveTurnCardForRecovery(active.card)
+        card: cloneActiveTurnCardForRecovery(active.card),
+        usageTargetMessageId: active.usageTargetMessageId,
+        usageCarryover: active.messageTokenUsage
       });
       return true;
     }
@@ -4750,7 +4800,9 @@ export class ConversationManager {
       threadId: active.threadId,
       workspace: active.workspace,
       input: ConversationManager.recoveryPrompt,
-      card: cloneActiveTurnCardForRecovery(active.card)
+      card: cloneActiveTurnCardForRecovery(active.card),
+      usageTargetMessageId: active.usageTargetMessageId,
+      usageCarryover: active.messageTokenUsage
     });
     return true;
   }
@@ -5031,6 +5083,55 @@ export class ConversationManager {
     }
   }
 
+  private async resolveRecoveredUsageTarget(
+    codexThreadId: string,
+    records: LarkMessageRecord[]
+  ): Promise<{ messageId?: string; carryover: LarkMessageTokenUsageSnapshot }> {
+    const codexTurnId = lastDefined(records.map((record) => record.codexTurnId));
+    if (!codexTurnId) {
+      return { carryover: emptyLarkMessageTokenUsageSnapshot() };
+    }
+    try {
+      const target = await this.options.repository.getLarkMessageUsageTargetForTurn(codexThreadId, codexTurnId);
+      if (target?.larkMessageId) {
+        return {
+          messageId: target.larkMessageId,
+          carryover: extractLarkMessageTokenUsage(target)
+        };
+      }
+      this.log.warn(
+        { codexThreadId, codexTurnId },
+        "failed to find lark message usage target while recovering turn; trying latest steer message"
+      );
+      const latestSteer = await this.options.repository.getLatestSteeredLarkMessageForTurn(codexThreadId, codexTurnId);
+      if (latestSteer?.larkMessageId) {
+        return {
+          messageId: latestSteer.larkMessageId,
+          carryover: extractLarkMessageTokenUsage(latestSteer)
+        };
+      }
+    } catch (error) {
+      this.log.warn({ error, codexThreadId, codexTurnId }, "failed to resolve recovered lark message usage target");
+    }
+    return { carryover: emptyLarkMessageTokenUsageSnapshot() };
+  }
+
+  private async resolveFallbackUsageTargetMessageId(
+    active: ActiveTurn,
+    usage: CodexThreadTokenUsageUpdate
+  ): Promise<string | undefined> {
+    const turnId = usage.turnId ?? active.turnId;
+    if (!turnId) {
+      return undefined;
+    }
+    this.log.warn(
+      { threadId: usage.threadId, turnId },
+      "lark message usage target missing; trying latest steer message"
+    );
+    const latestSteer = await this.options.repository.getLatestSteeredLarkMessageForTurn(usage.threadId, turnId);
+    return latestSteer?.larkMessageId;
+  }
+
   private async recordThreadTokenUsageBestEffort(
     state: ConversationState,
     active: ActiveTurn,
@@ -5053,10 +5154,65 @@ export class ConversationManager {
         contextWindow: tokenUsage.contextWindow,
         tokenUsageJson: safeJsonStringify(usage.raw) ?? "{}"
       });
+      await this.recordLarkMessageTokenUsageBestEffort(active, usage);
       await this.updateThreadSummaryCardBestEffort(usage.threadId, { active });
       this.patchActiveAgentCardTokenUsageBestEffort(state, active);
     } catch (error) {
       this.log.warn({ error, threadId: usage.threadId, totalTokens: usage.totalTokens }, "failed to record token usage");
+    }
+  }
+
+  private async recordLarkMessageTokenUsageBestEffort(
+    active: ActiveTurn,
+    usage: CodexThreadTokenUsageUpdate
+  ): Promise<void> {
+    try {
+      const targetMessageId = active.usageTargetMessageId ?? await this.resolveFallbackUsageTargetMessageId(active, usage);
+      if (!targetMessageId) {
+        this.log.warn(
+          { threadId: usage.threadId, turnId: usage.turnId ?? active.turnId },
+          "failed to record lark message token usage because no usage target was found"
+        );
+        return;
+      }
+
+      active.usageTargetMessageId = targetMessageId;
+      const messageUsage = addLarkMessageTokenUsage(active.usageCarryover, larkMessageTokenUsageFromThreadUsage(active.turnTokenUsage));
+      active.messageTokenUsage = messageUsage;
+      const updateUsage = (larkMessageId: string) => this.options.repository.updateLarkMessageTokenUsage({
+        larkMessageId,
+        inputTokens: messageUsage.inputTokens,
+        outputTokens: messageUsage.outputTokens,
+        cachedInputTokens: messageUsage.cachedInputTokens,
+        reasoningOutputTokens: messageUsage.reasoningOutputTokens,
+        tokenUsageJson: safeJsonStringify(usage.raw) ?? "{}"
+      });
+      const updated = await updateUsage(targetMessageId);
+      if (!updated) {
+        this.log.warn(
+          { threadId: usage.threadId, turnId: usage.turnId ?? active.turnId, messageId: targetMessageId },
+          "failed to record lark message token usage because target message was not found; trying latest steer message"
+        );
+        active.usageTargetMessageId = undefined;
+        const fallbackMessageId = await this.resolveFallbackUsageTargetMessageId(active, usage);
+        if (!fallbackMessageId || fallbackMessageId === targetMessageId) {
+          return;
+        }
+        const fallbackUpdated = await updateUsage(fallbackMessageId);
+        if (fallbackUpdated) {
+          active.usageTargetMessageId = fallbackMessageId;
+          return;
+        }
+        this.log.warn(
+          { threadId: usage.threadId, turnId: usage.turnId ?? active.turnId, messageId: fallbackMessageId },
+          "failed to record lark message token usage because fallback steer message was not found"
+        );
+      }
+    } catch (error) {
+      this.log.warn(
+        { error, threadId: usage.threadId, turnId: usage.turnId ?? active.turnId, messageId: active.usageTargetMessageId },
+        "failed to record lark message token usage"
+      );
     }
   }
 
@@ -8078,6 +8234,13 @@ interface ThreadTokenUsageSnapshot extends TokenBreakdown {
   contextWindow: number;
 }
 
+interface LarkMessageTokenUsageSnapshot {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+}
+
 interface RateLimitWindowStatus {
   usedPercent: number;
   windowDurationMins?: number;
@@ -8258,6 +8421,45 @@ function emptyThreadTokenUsageSnapshot(): ThreadTokenUsageSnapshot {
     reasoningOutputTokens: 0,
     contextTokens: 0,
     contextWindow: 0
+  };
+}
+
+function extractLarkMessageTokenUsage(message: LarkMessageRecord | undefined): LarkMessageTokenUsageSnapshot {
+  return {
+    inputTokens: Math.max(0, Math.trunc(message?.inputTokens ?? 0)),
+    cachedInputTokens: Math.max(0, Math.trunc(message?.cachedInputTokens ?? 0)),
+    outputTokens: Math.max(0, Math.trunc(message?.outputTokens ?? 0)),
+    reasoningOutputTokens: Math.max(0, Math.trunc(message?.reasoningOutputTokens ?? 0))
+  };
+}
+
+function larkMessageTokenUsageFromThreadUsage(usage: ThreadTokenUsageSnapshot): LarkMessageTokenUsageSnapshot {
+  return {
+    inputTokens: usage.inputTokens,
+    cachedInputTokens: usage.cachedInputTokens,
+    outputTokens: usage.outputTokens,
+    reasoningOutputTokens: usage.reasoningOutputTokens
+  };
+}
+
+function addLarkMessageTokenUsage(
+  left: LarkMessageTokenUsageSnapshot,
+  right: LarkMessageTokenUsageSnapshot
+): LarkMessageTokenUsageSnapshot {
+  return {
+    inputTokens: Math.max(0, Math.trunc(left.inputTokens) + Math.trunc(right.inputTokens)),
+    cachedInputTokens: Math.max(0, Math.trunc(left.cachedInputTokens) + Math.trunc(right.cachedInputTokens)),
+    outputTokens: Math.max(0, Math.trunc(left.outputTokens) + Math.trunc(right.outputTokens)),
+    reasoningOutputTokens: Math.max(0, Math.trunc(left.reasoningOutputTokens) + Math.trunc(right.reasoningOutputTokens))
+  };
+}
+
+function emptyLarkMessageTokenUsageSnapshot(): LarkMessageTokenUsageSnapshot {
+  return {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0
   };
 }
 
