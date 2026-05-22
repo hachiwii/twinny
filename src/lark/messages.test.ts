@@ -227,6 +227,28 @@ describe("LarkMessageSender", () => {
     });
   });
 
+  it("deletes ephemeral message cards through OpenAPI", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: {} }
+    ]);
+    const sender = createSender(fetch);
+
+    await expect(sender.deleteEphemeralMessage("om_ephemeral")).resolves.toBeUndefined();
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/ephemeral/v1/delete", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        message_id: "om_ephemeral"
+      }),
+      signal: undefined
+    });
+  });
+
   it("lists message read users as open_ids through OpenAPI", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },

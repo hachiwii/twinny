@@ -481,6 +481,7 @@ export interface LarkResponder {
   replyCard(messageId: string, card: LarkCardJson, options?: LarkReplyOptions): Promise<LarkReplyResult | void>;
   patchCard(messageId: string, card: LarkCardJson): Promise<{ messageId?: string } | void>;
   recallMessage(messageId: string): Promise<void>;
+  deleteEphemeralMessage(messageId: string): Promise<void>;
   getMessageReadOpenIds(messageId: string): Promise<string[]>;
 }
 
@@ -2856,7 +2857,8 @@ export class ConversationManager {
 
   private async handleBannerCommand(message: IncomingLarkMessage): Promise<void> {
     const card = renderTwinnyBannerCard({
-      bannerImageKey: this.bannerImageKey()
+      bannerImageKey: this.bannerImageKey(),
+      twinnyVersion: TWINNY_VERSION
     });
     const threadAnchorMessageId = bannerThreadAnchorMessageId(message);
     if (threadAnchorMessageId) {
@@ -3026,27 +3028,27 @@ export class ConversationManager {
   }
 
   private async formatOwnerRateLimitCardStatus(role: RoleName): Promise<{
-    fiveHourLimit: string;
-    sevenDayLimit: string;
+    fiveHourRemainingLimit: string;
+    sevenDayRemainingLimit: string;
   }> {
     if (!this.options.codex.readAccountRateLimits) {
       return {
-        fiveHourLimit: "不可用",
-        sevenDayLimit: "不可用"
+        fiveHourRemainingLimit: "不可用",
+        sevenDayRemainingLimit: "不可用"
       };
     }
     try {
       const usage = await this.options.codex.readAccountRateLimits({ role });
       const windows = collectRateLimitWindows(usage);
       return {
-        fiveHourLimit: formatStatusRateLimitWindow(findRateLimitWindow(windows, 5 * 60)),
-        sevenDayLimit: formatStatusRateLimitWindow(findRateLimitWindow(windows, 7 * 24 * 60))
+        fiveHourRemainingLimit: formatStatusRateLimitWindow(findRateLimitWindow(windows, 5 * 60)),
+        sevenDayRemainingLimit: formatStatusRateLimitWindow(findRateLimitWindow(windows, 7 * 24 * 60))
       };
     } catch (error) {
       this.log.warn({ error, role }, "failed to read codex account rate limits");
       return {
-        fiveHourLimit: "不可用",
-        sevenDayLimit: "不可用"
+        fiveHourRemainingLimit: "不可用",
+        sevenDayRemainingLimit: "不可用"
       };
     }
   }
@@ -3120,7 +3122,7 @@ export class ConversationManager {
         this.log.warn({ eventId: action.eventId }, "status card hide action missing message id");
         return;
       }
-      await this.options.lark.recallMessage(action.openMessageId);
+      await this.options.lark.deleteEphemeralMessage(action.openMessageId);
     } catch (error) {
       status = "failed";
       throw error;
@@ -8742,11 +8744,15 @@ function formatStatusRateLimitWindow(window: RateLimitWindowStatus | undefined):
   if (!window) {
     return "不可用";
   }
-  const parts = [formatTrimmedPercent(window.usedPercent / 100)];
+  const parts = [formatTrimmedPercent(rateLimitRemainingPercent(window.usedPercent) / 100)];
   if (window.resetsAt !== undefined) {
     parts.push(`重置于 ${formatLocalResetTime(window.resetsAt)}`);
   }
   return parts.length > 1 ? `${parts[0]} (${parts.slice(1).join(", ")})` : parts[0]!;
+}
+
+function rateLimitRemainingPercent(usedPercent: number): number {
+  return Math.min(100, Math.max(0, 100 - usedPercent));
 }
 
 function formatRateLimitWindow(window: RateLimitWindowStatus): string {

@@ -159,14 +159,15 @@ export interface RenderTwinnyStatusCardOptions {
     twinnyVersion: string;
     codexVersion: string;
     larkAppId: string;
-    fiveHourLimit: string;
-    sevenDayLimit: string;
+    fiveHourRemainingLimit: string;
+    sevenDayRemainingLimit: string;
   };
   hideAction?: TwinnyStatusCardActionValue;
 }
 
 export interface RenderTwinnyBannerCardOptions {
   bannerImageKey?: string;
+  twinnyVersion?: string;
 }
 
 const STATUS_HEADER: Record<TwinnyAgentCardStatus, { title: string; subtitle?: string; template: string }> = {
@@ -277,8 +278,8 @@ export function renderTwinnyStatusCard(options: RenderTwinnyStatusCardOptions): 
       ["Twinny 版本", options.system.twinnyVersion],
       ["CodeX 版本", options.system.codexVersion],
       ["Lark App ID", options.system.larkAppId],
-      ["5h Limit", options.system.fiveHourLimit],
-      ["7d Limit", options.system.sevenDayLimit]
+      ["剩余 5h 限额", options.system.fiveHourRemainingLimit],
+      ["剩余 7d 限额", options.system.sevenDayRemainingLimit]
     ]));
   }
 
@@ -376,6 +377,7 @@ export function renderTwinnyThreadSummaryCard(options: RenderTwinnyThreadSummary
 }
 
 export function renderTwinnyBannerCard(options: RenderTwinnyBannerCardOptions = {}): LarkCardJson {
+  const version = options.twinnyVersion ?? "dev";
   return {
     schema: "2.0",
     config: {
@@ -412,7 +414,7 @@ export function renderTwinnyBannerCard(options: RenderTwinnyBannerCardOptions = 
           : []),
         {
           tag: "markdown",
-          content: "### 🐰 Twinny v0.4.0\n🌟 me on [Github](https://github.com/hachiwii/twinny)",
+          content: `### 🐰 Twinny ${version}\n🌟 me on [Github](https://github.com/hachiwii/twinny)`,
           text_align: "center",
           text_size: "normal_v2",
           margin: "0px 0px 0px 0px"

@@ -200,6 +200,16 @@ export class LarkMessageSender {
     });
   }
 
+  async deleteEphemeralMessage(messageId: string, options: ReactionOptions = {}): Promise<void> {
+    await this.openApiClient.request("/ephemeral/v1/delete", {
+      method: "POST",
+      signal: options.signal,
+      body: {
+        message_id: messageId
+      }
+    });
+  }
+
   async listMessageReadOpenIds(messageId: string, options: MessageReadUsersOptions = {}): Promise<string[]> {
     const readOpenIds = new Set<string>();
     const pageSize = options.pageSize ?? 100;

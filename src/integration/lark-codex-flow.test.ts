@@ -2292,6 +2292,7 @@ function adaptLarkSender(sender: LarkMessageSender, config: TwinnyConfig): LarkR
     replyCard: (messageId, card, options) => sender.replyInteractiveCard(messageId, card, options),
     patchCard: (messageId, card) => sender.patchInteractiveCard(messageId, card),
     recallMessage: (messageId) => sender.deleteMessage(messageId),
+    deleteEphemeralMessage: (messageId) => sender.deleteEphemeralMessage(messageId),
     getMessageReadOpenIds: (messageId) => sender.listMessageReadOpenIds(messageId)
   };
 }

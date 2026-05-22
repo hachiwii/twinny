@@ -670,6 +670,9 @@ function adaptLarkSender(
     recallMessage: async (messageId: string): Promise<void> => {
       await sender.deleteMessage(messageId);
     },
+    deleteEphemeralMessage: async (messageId: string): Promise<void> => {
+      await sender.deleteEphemeralMessage(messageId);
+    },
     getMessageReadOpenIds: async (messageId: string): Promise<string[]> => {
       return sender.listMessageReadOpenIds(messageId);
     }

@@ -1,5 +1,6 @@
 import { toErrorMessage } from "../errors.js";
 import { renderTwinnyBannerCard, type LarkCardJson } from "../lark/cards.js";
+import { TWINNY_VERSION } from "../version.js";
 import type { LarkLogger } from "../lark/index.js";
 
 const DEFAULT_NOTIFICATION_TIMEOUT_MS = 5_000;
@@ -31,7 +32,7 @@ export class TwinnySystemNotifier {
   async notifyInitialized(options: { bannerImageKey?: string } = {}): Promise<void> {
     await this.sendCard(
       "initialized",
-      renderTwinnyBannerCard({ bannerImageKey: options.bannerImageKey })
+      renderTwinnyBannerCard({ bannerImageKey: options.bannerImageKey, twinnyVersion: TWINNY_VERSION })
     );
   }
 

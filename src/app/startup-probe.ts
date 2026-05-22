@@ -102,6 +102,7 @@ function createFailingLarkResponder(): LarkResponder {
     replyCard: fail,
     patchCard: fail,
     recallMessage: fail,
+    deleteEphemeralMessage: fail,
     getMessageReadOpenIds: fail
   };
 }

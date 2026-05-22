@@ -1519,7 +1519,7 @@ describe("ConversationManager", () => {
     expect(lark.sendCardToChatId).toHaveBeenNthCalledWith(1, "oc_ignored", expect.any(Object), { uuid: expect.any(String) });
     expect(lark.sendCardToChatId).toHaveBeenNthCalledWith(2, "oc_ignored", expect.any(Object), { uuid: expect.any(String) });
     expect(JSON.stringify(vi.mocked(lark.sendCardToChatId).mock.calls[0]![1])).toContain("img_banner");
-    expect(JSON.stringify(vi.mocked(lark.sendCardToChatId).mock.calls[1]![1])).toContain("Twinny v0.4.0");
+    expect(JSON.stringify(vi.mocked(lark.sendCardToChatId).mock.calls[1]![1])).toContain("Twinny dev");
   });
 
   it("sends /banner to the source Lark thread without replying to the command message", async () => {
@@ -1640,7 +1640,8 @@ describe("ConversationManager", () => {
       raw: { event_id: "event_status_hide" }
     });
 
-    await waitForExpect(() => expect(lark.recallMessage).toHaveBeenCalledWith("ephemeral_oc_group_1"));
+    await waitForExpect(() => expect(lark.deleteEphemeralMessage).toHaveBeenCalledWith("ephemeral_oc_group_1"));
+    expect(lark.recallMessage).not.toHaveBeenCalledWith("ephemeral_oc_group_1");
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
       eventId: "event_status_hide",
       routeKind: "card_action",
@@ -1695,8 +1696,10 @@ describe("ConversationManager", () => {
     expect(serialized).toContain("fake-codex 1.2.3");
     expect(serialized).toContain("Lark App ID");
     expect(serialized).toContain("cli_xxx");
-    expect(serialized).toContain("12.5%");
-    expect(serialized).toContain("34%");
+    expect(serialized).toContain("剩余 5h 限额");
+    expect(serialized).toContain("剩余 7d 限额");
+    expect(serialized).toContain("87.5%");
+    expect(serialized).toContain("66%");
   });
 
   it("interrupts active turns and clears pending messages on /stop", async () => {
@@ -7075,6 +7078,7 @@ function createLarkResponder(): LarkResponder {
     replyCard: vi.fn(async (messageId) => ({ messageId: `card_${messageId}_${++markdownReplyCount}` })),
     patchCard: vi.fn(async (messageId) => ({ messageId })),
     recallMessage: vi.fn(async () => undefined),
+    deleteEphemeralMessage: vi.fn(async () => undefined),
     getMessageReadOpenIds: vi.fn(async () => ["ou_guest", "ou_owner", "ou_first", "ou_second"])
   };
 }

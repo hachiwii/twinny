@@ -684,8 +684,8 @@ describe("renderTwinnyStatusCard", () => {
         twinnyVersion: "v0.1.0",
         codexVersion: "codex-cli 0.132.0",
         larkAppId: "cli_xxx",
-        fiveHourLimit: "23% (重置于 23:59)",
-        sevenDayLimit: "45% (重置于 05/23 21:23)"
+        fiveHourRemainingLimit: "77% (重置于 23:59)",
+        sevenDayRemainingLimit: "55% (重置于 05/23 21:23)"
       }
     });
 
@@ -694,7 +694,9 @@ describe("renderTwinnyStatusCard", () => {
     expect(serialized).toContain("Twinny 版本");
     expect(serialized).toContain("CodeX 版本");
     expect(serialized).toContain("cli_xxx");
-    expect(serialized).toContain("23% (重置于 23:59)");
+    expect(serialized).toContain("剩余 5h 限额");
+    expect(serialized).toContain("剩余 7d 限额");
+    expect(serialized).toContain("77% (重置于 23:59)");
   });
 
   it("renders an optional bottom hide button", () => {
@@ -755,14 +757,14 @@ describe("renderTwinnyStatusCard", () => {
 
 describe("renderTwinnyBannerCard", () => {
   it("renders the Twinny banner image when an image key is available", () => {
-    const card = renderTwinnyBannerCard({ bannerImageKey: "img_banner" });
+    const card = renderTwinnyBannerCard({ bannerImageKey: "img_banner", twinnyVersion: "20260523-d786ff949" });
 
     expect((card.body as { elements: unknown[] }).elements[0]).toMatchObject({
       tag: "img",
       img_key: "img_banner",
       scale_type: "fit_horizontal"
     });
-    expect(JSON.stringify(card)).toContain("Twinny v0.4.0");
+    expect(JSON.stringify(card)).toContain("Twinny 20260523-d786ff949");
   });
 
   it("omits the banner image when no image key is available", () => {
