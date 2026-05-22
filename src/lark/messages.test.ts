@@ -355,6 +355,34 @@ describe("LarkMessageSender", () => {
     });
   });
 
+  it("sends an ephemeral interactive card to a group member", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { message_id: "om_ephemeral" } }
+    ]);
+    const sender = createSender(fetch);
+    const card = { schema: "2.0", body: { elements: [{ tag: "markdown", content: "status" }] } };
+
+    await expect(sender.sendEphemeralInteractiveCardToChatId("oc_group", "ou_user", card)).resolves.toMatchObject({
+      messageId: "om_ephemeral"
+    });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/ephemeral/v1/send", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        chat_id: "oc_group",
+        open_id: "ou_user",
+        msg_type: "interactive",
+        card
+      }),
+      signal: undefined
+    });
+  });
+
   it("redacts sensitive text content before sending text and cards", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },

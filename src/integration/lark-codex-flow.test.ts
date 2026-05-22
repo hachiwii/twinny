@@ -2223,6 +2223,8 @@ function adaptLarkSender(sender: LarkMessageSender, config: TwinnyConfig): LarkR
       await sender.sendTextToOpenId(openId, text);
     },
     sendCardToChatId: (chatId, card, options) => sender.sendInteractiveCardToChatId(chatId, card, options),
+    sendEphemeralCardToChatId: (chatId, openId, card) =>
+      sender.sendEphemeralInteractiveCardToChatId(chatId, openId, card),
     forwardThreadToThread: (threadId, receiveThreadId, options) =>
       sender.forwardThreadToThread(threadId, receiveThreadId, options),
     replyCard: (messageId, card, options) => sender.replyInteractiveCard(messageId, card, options),

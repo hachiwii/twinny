@@ -279,6 +279,28 @@ export class LarkMessageSender {
     };
   }
 
+  async sendEphemeralInteractiveCardToChatId(
+    chatId: string,
+    openId: string,
+    card: LarkInteractiveCard,
+    options: TextMessageOptions = {}
+  ): Promise<LarkSendMessageResult> {
+    const raw = await this.openApiClient.request("/ephemeral/v1/send", {
+      method: "POST",
+      signal: options.signal,
+      body: {
+        chat_id: chatId,
+        open_id: openId,
+        msg_type: "interactive",
+        card: this.redactMessageContent(card)
+      }
+    });
+    return {
+      messageId: extractMessageId(raw),
+      raw
+    };
+  }
+
   async forwardThreadToThread(
     threadId: string,
     receiveThreadId: string,
@@ -367,7 +389,11 @@ export class LarkMessageSender {
   }
 
   private stringifyMessageContent(content: unknown): string {
-    return JSON.stringify(redactLarkMessageContent(content, this.redaction));
+    return JSON.stringify(this.redactMessageContent(content));
+  }
+
+  private redactMessageContent(content: unknown): unknown {
+    return redactLarkMessageContent(content, this.redaction);
   }
 }
 

@@ -454,6 +454,11 @@ export interface LarkResponder {
     card: LarkCardJson,
     options?: { uuid?: string }
   ): Promise<LarkSendMessageResult | void>;
+  sendEphemeralCardToChatId(
+    chatId: string,
+    openId: string,
+    card: LarkCardJson
+  ): Promise<LarkSendMessageResult | void>;
   forwardThreadToThread(threadId: string, receiveThreadId: string, options?: { uuid?: string }): Promise<LarkSendMessageResult | void>;
   replyCard(messageId: string, card: LarkCardJson, options?: LarkReplyOptions): Promise<LarkReplyResult | void>;
   patchCard(messageId: string, card: LarkCardJson): Promise<{ messageId?: string } | void>;
@@ -2885,15 +2890,17 @@ export class ConversationManager {
     context: MessageContext,
     message: IncomingLarkMessage
   ): Promise<void> {
-    await this.replyStatusCardBestEffort(
-      message.messageId,
-      await this.formatStatusCard(state, context, {
-        senderOpenId: message.senderOpenId,
-        senderName: message.senderName,
-        chatId: message.chatId,
-        chatName: message.chatName
-      })
-    );
+    const card = await this.formatStatusCard(state, context, {
+      senderOpenId: message.senderOpenId,
+      senderName: message.senderName,
+      chatId: message.chatId,
+      chatName: message.chatName
+    });
+    if (context.type === "group") {
+      await this.sendEphemeralStatusCardBestEffort(message.chatId, message.senderOpenId, card);
+    } else {
+      await this.replyStatusCardBestEffort(message.messageId, card);
+    }
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
@@ -5500,6 +5507,14 @@ export class ConversationManager {
       await this.options.lark.replyCard(messageId, card);
     } catch (error) {
       this.log.warn({ error, messageId }, "failed to send lark status card");
+    }
+  }
+
+  private async sendEphemeralStatusCardBestEffort(chatId: string, openId: string, card: LarkCardJson): Promise<void> {
+    try {
+      await this.options.lark.sendEphemeralCardToChatId(chatId, openId, card);
+    } catch (error) {
+      this.log.warn({ error, chatId, openId }, "failed to send ephemeral lark status card");
     }
   }
 

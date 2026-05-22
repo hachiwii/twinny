@@ -1291,10 +1291,50 @@ describe("ConversationManager", () => {
     expect(serialized).toContain("用户");
     expect(serialized).toContain("ou_guest");
     expect(serialized).not.toContain("系统");
+    expect(lark.sendEphemeralCardToChatId).not.toHaveBeenCalled();
     expect(lark.replyText).not.toHaveBeenCalled();
     expect(codex.readAccountRateLimits).not.toHaveBeenCalled();
     expect(codex.startTurn).not.toHaveBeenCalled();
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m1"]);
+  });
+
+  it("sends /status as an ephemeral card in ordinary groups", async () => {
+    const row = groupConversationRecord({ responseMode: "all", codexThreadId: "thread_group" });
+    const { repository } = createRepository(row);
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("g_status", "/status"));
+
+    await waitForExpect(() => expect(lark.sendEphemeralCardToChatId).toHaveBeenCalledTimes(1));
+    expect(lark.sendEphemeralCardToChatId).toHaveBeenCalledWith(
+      "oc_group",
+      "ou_guest",
+      expect.objectContaining({ schema: "2.0" })
+    );
+    expect(JSON.stringify(vi.mocked(lark.sendEphemeralCardToChatId).mock.calls[0]![2])).toContain("group_oc_group");
+    expect(lark.replyCard).not.toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_status"]);
+  });
+
+  it("replies to /status with a default card in topic groups", async () => {
+    const row = groupConversationRecord({ responseMode: "all", codexThreadId: "thread_group" });
+    const { repository } = createRepository(row);
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("topic_status", "/status", {
+      chatType: "topic_group",
+      larkThreadId: "topic_thread"
+    }));
+
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    expect(lark.replyCard).toHaveBeenCalledWith("topic_status", expect.objectContaining({ schema: "2.0" }));
+    expect(lark.sendEphemeralCardToChatId).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["topic_status"]);
   });
 
   it("includes account usage windows in /status for the owner", async () => {
@@ -3013,8 +3053,11 @@ describe("ConversationManager", () => {
     expect(lark.replyText).not.toHaveBeenCalled();
 
     manager.submitIncoming(groupMessage("g2", "@_bot /status", { mentions: [botMention()] }));
-    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("g2", expect.any(Object)));
-    expect(JSON.stringify(vi.mocked(lark.replyCard).mock.calls[0]![1])).toContain("仅 at");
+    await waitForExpect(() =>
+      expect(lark.sendEphemeralCardToChatId).toHaveBeenCalledWith("oc_group", "ou_guest", expect.any(Object))
+    );
+    expect(JSON.stringify(vi.mocked(lark.sendEphemeralCardToChatId).mock.calls[0]![2])).toContain("仅 at");
+    expect(lark.replyCard).not.toHaveBeenCalled();
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         larkMessageId: "g2",
@@ -6407,6 +6450,7 @@ function createLarkResponder(): LarkResponder {
     replyFile: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     sendTextToOpenId: vi.fn(async () => undefined),
     sendCardToChatId: vi.fn(async (chatId) => ({ messageId: `card_${chatId}_${++markdownReplyCount}`, raw: {} })),
+    sendEphemeralCardToChatId: vi.fn(async (chatId) => ({ messageId: `ephemeral_${chatId}_${++markdownReplyCount}`, raw: {} })),
     forwardThreadToThread: vi.fn(async (threadId) => ({ messageId: `forward_${threadId}_${++markdownReplyCount}`, raw: {} })),
     replyCard: vi.fn(async (messageId) => ({ messageId: `card_${messageId}_${++markdownReplyCount}` })),
     patchCard: vi.fn(async (messageId) => ({ messageId })),

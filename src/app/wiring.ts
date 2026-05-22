@@ -644,6 +644,13 @@ function adaptLarkSender(
     ) => {
       return sender.sendInteractiveCardToChatId(chatId, card, options);
     },
+    sendEphemeralCardToChatId: async (
+      chatId: string,
+      openId: string,
+      card: Parameters<LarkMessageSender["sendEphemeralInteractiveCardToChatId"]>[2]
+    ) => {
+      return sender.sendEphemeralInteractiveCardToChatId(chatId, openId, card);
+    },
     forwardThreadToThread: async (
       threadId: string,
       receiveThreadId: string,
