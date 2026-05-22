@@ -4380,6 +4380,16 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m1", "/goal finish the target"));
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
 
+    await goals[0]!.params.onGoalUpdated?.({
+      threadId: "thread_1",
+      objective: "finish the target",
+      status: "blocked",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 2
+    }, "goal_1");
     goals[0]!.resolve({
       ...completed("thread_1", "goal_1", "failed"),
       error: "Goal ended with status blocked"
@@ -4407,6 +4417,7 @@ describe("ConversationManager", () => {
     const elapsedIndex = bodyElements.findIndex((element) => JSON.stringify(element).includes("已工作"));
     expect(errorIndex).toBeGreaterThanOrEqual(0);
     expect(elapsedIndex).toBeGreaterThan(errorIndex);
+    await waitForExpect(() => expect(codex.clearThreadGoal).toHaveBeenCalledWith({ role: "guest", threadId: "thread_1" }));
   });
 
   it("switches an ordinary turn to a goal card when Codex reports a passive goal", async () => {
@@ -4492,6 +4503,10 @@ describe("ConversationManager", () => {
     const completedSerialized = JSON.stringify(completedCard);
     expect(completedSerialized).toContain("terminal goal final");
     expect(completedSerialized).not.toContain("aggregate text");
+    await waitForExpect(() => expect(codex.clearThreadGoal).toHaveBeenCalledWith({ role: "guest", threadId: "thread_1" }));
+    expect(vi.mocked(codex.clearThreadGoal!).mock.invocationCallOrder[0]).toBeGreaterThan(
+      vi.mocked(lark.replyCard).mock.invocationCallOrder[1]!
+    );
   });
 
   it("updates an active goal objective with /goal and refreshes the working card", async () => {

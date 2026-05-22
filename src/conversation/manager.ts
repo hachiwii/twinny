@@ -4621,6 +4621,9 @@ export class ConversationManager {
       await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
       await this.failAgentCardBestEffort(state, active, active.resultError ?? "Codex turn failed");
     }
+    if (hasClearableTerminalGoal(active)) {
+      await this.clearActiveGoalBestEffort(active);
+    }
     await this.updateThreadSummaryCardBestEffort(active.threadId);
     await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
     this.stopAgentCardTimer(active);
@@ -4648,6 +4651,9 @@ export class ConversationManager {
     } else if (!active.cancelRequested) {
       await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
       await this.failAgentCardBestEffort(state, active, active.resultError ?? "Codex side turn failed");
+    }
+    if (!active.cancelRequested && hasClearableTerminalGoal(active)) {
+      await this.clearActiveGoalBestEffort(active);
     }
     this.stopAgentCardTimer(active);
     await this.unsubscribeSideThreadBestEffort(active);
@@ -7039,6 +7045,10 @@ function isRecoverableGoalStatus(status: ThreadGoal["status"] | CodexThreadGoalS
 
 function activeHasGoal(active: ActiveTurn): boolean {
   return active.kind === "goal" || active.goal !== undefined;
+}
+
+function hasClearableTerminalGoal(active: ActiveTurn): boolean {
+  return active.goal?.status === "complete" || active.goal?.status === "blocked";
 }
 
 function needsPlainFailureFallback(active: ActiveTurn): boolean {
