@@ -28,7 +28,6 @@ const rawConfigSchema = z.object({
     .object({
       identity: z.literal("bot").optional(),
       app_id: z.string().optional(),
-      event_key: z.literal("im.message.receive_v1").optional(),
       secret_ref: z.string().optional(),
       working_reaction: z.string().optional(),
       completed_reaction: z.string().optional(),
@@ -47,9 +46,7 @@ const rawConfigSchema = z.object({
     .object({
       open_id: z.string().optional(),
       user_id: z.string().optional(),
-      display_name: z.string().optional(),
-      token_ref: z.string().optional(),
-      refresh_token_ref: z.string().optional()
+      display_name: z.string().optional()
     })
     .optional(),
   roles: z
@@ -76,8 +73,6 @@ export interface CreateTwinnyConfigInput {
     openId: string;
     userId?: string;
     displayName: string;
-    tokenRef?: string;
-    refreshTokenRef?: string;
   };
   codex?: {
     binary?: string;
@@ -111,7 +106,6 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
     lark: {
       appId: input.lark.appId,
       appSecretRef: input.lark.appSecretRef ?? SECRET_REFS.larkAppSecret,
-      eventKey: "im.message.receive_v1",
       identity: "bot",
       workingReaction: normalizeOptionalString(input.lark.workingReaction) ?? DEFAULT_LARK_WORKING_REACTION,
       completedReaction: normalizeOptionalString(input.lark.completedReaction) ?? DEFAULT_LARK_COMPLETED_REACTION,
@@ -123,9 +117,7 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
     owner: {
       openId: input.owner.openId,
       userId: input.owner.userId,
-      displayName: input.owner.displayName,
-      tokenRef: input.owner.tokenRef ?? SECRET_REFS.ownerUserToken,
-      refreshTokenRef: input.owner.refreshTokenRef
+      displayName: input.owner.displayName
     },
     roles: {
       owner: { codexHome: input.roles?.owner?.codexHome ?? paths.ownerCodexHome },
@@ -191,7 +183,6 @@ export function parseTwinnyConfig(rawToml: string, options: LoadConfigOptions = 
     lark: {
       appId: parsed.lark?.app_id ?? "",
       appSecretRef: parsed.lark?.secret_ref ?? SECRET_REFS.larkAppSecret,
-      eventKey: parsed.lark?.event_key ?? "im.message.receive_v1",
       identity: parsed.lark?.identity ?? "bot",
       workingReaction: normalizeOptionalString(parsed.lark?.working_reaction) ?? DEFAULT_LARK_WORKING_REACTION,
       completedReaction: normalizeOptionalString(parsed.lark?.completed_reaction) ?? DEFAULT_LARK_COMPLETED_REACTION,
@@ -206,9 +197,7 @@ export function parseTwinnyConfig(rawToml: string, options: LoadConfigOptions = 
     owner: {
       openId: parsed.owner?.open_id ?? "",
       userId: parsed.owner?.user_id,
-      displayName: parsed.owner?.display_name ?? "",
-      tokenRef: parsed.owner?.token_ref ?? SECRET_REFS.ownerUserToken,
-      refreshTokenRef: parsed.owner?.refresh_token_ref
+      displayName: parsed.owner?.display_name ?? ""
     },
     roles: {
       owner: { codexHome: resolveConfigPath(parsed.roles?.owner?.codex_home ?? paths.ownerCodexHome, home) },
@@ -261,7 +250,6 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   if (!config.lark.appId) issues.push("lark.app_id is required");
   if (!config.lark.appSecretRef) issues.push("lark.secret_ref is required");
   if (config.lark.identity !== "bot") issues.push("lark.identity must be bot");
-  if (config.lark.eventKey !== "im.message.receive_v1") issues.push("lark.event_key must be im.message.receive_v1");
   if (!config.lark.workingReaction) issues.push("lark.working_reaction is required");
   if (!config.lark.completedReaction) issues.push("lark.completed_reaction is required");
   if (!config.lark.queuedReaction) issues.push("lark.queued_reaction is required");
@@ -275,7 +263,6 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   }
   if (!config.owner.openId) issues.push("owner.open_id is required");
   if (!config.owner.displayName) issues.push("owner.display_name is required");
-  if (!config.owner.tokenRef) issues.push("owner.token_ref is required");
   if (!config.roles.owner.codexHome) issues.push("roles.owner.codex_home is required");
   if (!config.roles.guest.codexHome) issues.push("roles.guest.codex_home is required");
   return issues;
@@ -292,14 +279,8 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
     open_id: config.owner.openId,
     display_name: config.owner.displayName
   };
-  if (config.owner.tokenRef) {
-    owner.token_ref = config.owner.tokenRef;
-  }
   if (config.owner.userId) {
     owner.user_id = config.owner.userId;
-  }
-  if (config.owner.refreshTokenRef) {
-    owner.refresh_token_ref = config.owner.refreshTokenRef;
   }
 
   return {
@@ -313,7 +294,6 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
     lark: {
       identity: config.lark.identity,
       app_id: config.lark.appId,
-      event_key: config.lark.eventKey,
       secret_ref: config.lark.appSecretRef,
       working_reaction: config.lark.workingReaction,
       completed_reaction: config.lark.completedReaction,

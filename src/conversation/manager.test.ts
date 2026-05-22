@@ -31,7 +31,6 @@ const config: TwinnyConfig = {
   lark: {
     appId: "cli_xxx",
     appSecretRef: "keychain:twinny/lark/app_secret",
-    eventKey: "im.message.receive_v1",
     identity: "bot",
     workingReaction: "Typing",
     completedReaction: "DONE",

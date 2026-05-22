@@ -112,9 +112,7 @@ export async function showExistingConfigStatus(
 ): Promise<void> {
   const appSecretExists =
     Boolean(env.TWINNY_LARK_APP_SECRET) || (await secretStore.has(secretAccountFromRef(config.lark.appSecretRef)));
-  const ownerTokenExists = config.owner.tokenRef
-    ? await secretStore.has(secretAccountFromRef(config.owner.tokenRef))
-    : false;
+  const ownerTokenExists = await secretStore.has(SECRET_ACCOUNTS.ownerUserToken);
 
   output.writeLine("Twinny is already configured.");
   output.writeLine(`TWINNY_HOME: ${config.home}`);
@@ -180,9 +178,7 @@ async function configureWithAuthorization(
     owner: {
       openId: owner.openId,
       userId: owner.userId,
-      displayName: owner.displayName,
-      tokenRef: SECRET_REFS.ownerUserToken,
-      refreshTokenRef: token.refreshToken ? SECRET_REFS.ownerRefreshToken : undefined
+      displayName: owner.displayName
     }
   });
 }

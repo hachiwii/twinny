@@ -11,14 +11,12 @@ export const SECRET_ACCOUNTS = {
 
 export const SECRET_REFS = {
   larkAppSecret: "keychain:twinny/lark/app_secret",
-  ownerUserToken: "keychain:twinny/lark/owner_user_token",
-  ownerRefreshToken: "keychain:twinny/lark/owner_refresh_token"
+  ownerUserToken: "keychain:twinny/lark/owner_user_token"
 } as const;
 
 const REF_TO_ACCOUNT = new Map<string, string>([
   [SECRET_REFS.larkAppSecret, SECRET_ACCOUNTS.larkAppSecret],
-  [SECRET_REFS.ownerUserToken, SECRET_ACCOUNTS.ownerUserToken],
-  [SECRET_REFS.ownerRefreshToken, SECRET_ACCOUNTS.ownerRefreshToken]
+  [SECRET_REFS.ownerUserToken, SECRET_ACCOUNTS.ownerUserToken]
 ]);
 
 export interface SecretStore {

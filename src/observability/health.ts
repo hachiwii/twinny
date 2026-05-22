@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { execa } from "execa";
 import { DEFAULT_CAFFEINATE_COMMAND } from "../app/caffeinate.js";
 import { formatStartupInitializationProbeDetail, runStartupInitializationProbe } from "../app/startup-probe.js";
-import { readConfigStatus, resolveSecretRef, SecurityCliSecretStore, type SecretStore } from "../config/index.js";
+import { readConfigStatus, resolveSecretRef, SECRET_REFS, SecurityCliSecretStore, type SecretStore } from "../config/index.js";
 import { LarkBotDirectory, LarkOpenApiClient, TenantAccessTokenManager } from "../lark/index.js";
 import { isTwinnyLockHeld, readTwinnyLockMetadata } from "../lock/index.js";
 import { openRuntimeDatabase } from "../store/index.js";
@@ -44,12 +44,9 @@ export async function runDoctorChecks(): Promise<HealthSnapshot> {
   });
 
   await checkAsync(checks, "owner user token", async () => {
-    if (!config.owner.tokenRef) {
-      throw new Error("owner.token_ref missing");
-    }
-    const token = await resolveSecretRef(config.owner.tokenRef, secretStore);
+    const token = await resolveSecretRef(SECRET_REFS.ownerUserToken, secretStore);
     if (!token) {
-      throw new Error(`missing ${config.owner.tokenRef}`);
+      throw new Error(`missing ${SECRET_REFS.ownerUserToken}`);
     }
   });
 

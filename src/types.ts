@@ -79,14 +79,11 @@ export interface OwnerConfig {
   openId: string;
   userId?: string;
   displayName: string;
-  tokenRef?: string;
-  refreshTokenRef?: string;
 }
 
 export interface LarkConfig {
   appId: string;
   appSecretRef: string;
-  eventKey: "im.message.receive_v1";
   identity: "bot";
   workingReaction: string;
   completedReaction: string;

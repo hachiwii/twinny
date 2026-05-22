@@ -42,13 +42,13 @@ describe("Twinny config loading and bootstrap", () => {
       owner: {
         openId: "ou_owner",
         userId: "user_owner",
-        displayName: "Owner",
-        refreshTokenRef: SECRET_REFS.ownerRefreshToken
+        displayName: "Owner"
       }
     });
 
     await bootstrapTwinnyHome(config, { ownerCodexTarget: path.join(home, ".codex") });
     const loaded = await loadTwinnyConfig({ home, env: {} });
+    const raw = await fs.readFile(path.join(home, "config.toml"), "utf8");
 
     expect(loaded.lark.appId).toBe("cli_test");
     expect(loaded.lark.workingReaction).toBe("JubilantRabbit");
@@ -59,13 +59,17 @@ describe("Twinny config loading and bootstrap", () => {
     expect(loaded.owner.openId).toBe("ou_owner");
     expect(loaded.roles.owner.codexHome).toBe(path.join(home, "roles", "owner", "codex"));
     expect(loaded.roles.guest.codexHome).toBe(path.join(home, "roles", "guest", "codex"));
+    expect(raw).not.toContain("event_key");
+    expect(raw).not.toContain("token_ref");
+    expect(raw).not.toContain("refresh_token_ref");
   });
 
-  it("ignores legacy agent message mode and serializes icon image key and message redaction", () => {
+  it("ignores legacy lark and owner secret config fields when serializing", () => {
     const config = parseTwinnyConfig(
       [
         "[lark]",
         'app_id = "cli_test"',
+        'event_key = "im.message.receive_v1"',
         'queued_reaction = "Alarm"',
         'agent_message_mode = "plain"',
         'icon_image_key = "img_logo"',
@@ -76,20 +80,27 @@ describe("Twinny config loading and bootstrap", () => {
         "",
         "[owner]",
         'open_id = "ou_owner"',
+        'token_ref = "keychain:twinny/lark/owner_user_token"',
+        'refresh_token_ref = "keychain:twinny/lark/owner_refresh_token"',
         'display_name = "Owner"'
       ].join("\n"),
       { home: "/tmp/twinny" }
     );
 
+    const serialized = serializeTwinnyConfig(config);
+
     expect(config.lark.queuedReaction).toBe("Alarm");
     expect(config.lark.iconImageKey).toBe("img_logo");
     expect(config.lark.messageRedaction).toEqual({ email: "whitespace", chinesePhoneNumber: "none" });
-    expect(serializeTwinnyConfig(config)).not.toContain("agent_message_mode");
-    expect(serializeTwinnyConfig(config)).toContain('queued_reaction = "Alarm"');
-    expect(serializeTwinnyConfig(config)).toContain('icon_image_key = "img_logo"');
-    expect(serializeTwinnyConfig(config)).toContain("[lark.redaction]");
-    expect(serializeTwinnyConfig(config)).toContain('email = "whitespace"');
-    expect(serializeTwinnyConfig(config)).toContain('chinese_phone_number = "none"');
+    expect(serialized).not.toContain("event_key");
+    expect(serialized).not.toContain("agent_message_mode");
+    expect(serialized).not.toContain("token_ref");
+    expect(serialized).not.toContain("refresh_token_ref");
+    expect(serialized).toContain('queued_reaction = "Alarm"');
+    expect(serialized).toContain('icon_image_key = "img_logo"');
+    expect(serialized).toContain("[lark.redaction]");
+    expect(serialized).toContain('email = "whitespace"');
+    expect(serialized).toContain('chinese_phone_number = "none"');
   });
 
   it("writes icon_image_key back into the lark section", async () => {
