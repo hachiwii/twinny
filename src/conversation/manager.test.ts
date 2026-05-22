@@ -1508,16 +1508,38 @@ describe("ConversationManager", () => {
     expect(lark.replyImage).not.toHaveBeenCalled();
   });
 
-  it("replies to /twinny and /banner with the banner card", async () => {
+  it("sends /twinny and /banner directly to the source chat with the banner card", async () => {
     const lark = createLarkResponder();
     const manager = createManager({ lark, assetImageKeys: { bannerImageKey: "img_banner" } });
 
     manager.submitIncoming(message("m1", "/twinny"));
     manager.submitIncoming(message("m2", "/banner"));
 
-    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(2));
-    expect(JSON.stringify(vi.mocked(lark.replyCard).mock.calls[0]![1])).toContain("img_banner");
-    expect(JSON.stringify(vi.mocked(lark.replyCard).mock.calls[1]![1])).toContain("Twinny v0.4.0");
+    await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(2));
+    expect(lark.replyCard).not.toHaveBeenCalled();
+    expect(lark.sendCardToChatId).toHaveBeenNthCalledWith(1, "oc_ignored", expect.any(Object), { uuid: expect.any(String) });
+    expect(lark.sendCardToChatId).toHaveBeenNthCalledWith(2, "oc_ignored", expect.any(Object), { uuid: expect.any(String) });
+    expect(JSON.stringify(vi.mocked(lark.sendCardToChatId).mock.calls[0]![1])).toContain("img_banner");
+    expect(JSON.stringify(vi.mocked(lark.sendCardToChatId).mock.calls[1]![1])).toContain("Twinny v0.4.0");
+  });
+
+  it("sends /banner to the source Lark thread without replying to the command message", async () => {
+    const row = groupConversationRecord({ responseMode: "all", codexThreadId: "thread_group" });
+    const { repository } = createRepository(row);
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, lark, assetImageKeys: { bannerImageKey: "img_banner" } });
+
+    manager.submitIncoming(groupMessage("topic_banner", "/banner", {
+      chatType: "topic_group",
+      larkThreadId: "omt_topic",
+      larkRootMessageId: "om_root"
+    }));
+
+    await waitForExpect(() =>
+      expect(lark.replyCard).toHaveBeenCalledWith("om_root", expect.any(Object), { replyInThread: true })
+    );
+    expect(vi.mocked(lark.replyCard).mock.calls.map(([messageId]) => messageId)).not.toContain("topic_banner");
+    expect(lark.sendCardToChatId).not.toHaveBeenCalled();
   });
 
   it("replies to /status with conversation, thread, and token usage", async () => {

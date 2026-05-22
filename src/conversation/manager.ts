@@ -2855,12 +2855,17 @@ export class ConversationManager {
   }
 
   private async handleBannerCommand(message: IncomingLarkMessage): Promise<void> {
-    await this.options.lark.replyCard(
-      message.messageId,
-      renderTwinnyBannerCard({
-        bannerImageKey: this.bannerImageKey()
-      })
-    );
+    const card = renderTwinnyBannerCard({
+      bannerImageKey: this.bannerImageKey()
+    });
+    const threadAnchorMessageId = bannerThreadAnchorMessageId(message);
+    if (threadAnchorMessageId) {
+      await this.options.lark.replyCard(threadAnchorMessageId, card, { replyInThread: true });
+    } else {
+      await this.options.lark.sendCardToChatId(message.chatId, card, {
+        uuid: createLarkUuid("twinny-banner", message.eventId)
+      });
+    }
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
@@ -7387,6 +7392,14 @@ function createMessageContext(type: ConversationType, message: IncomingLarkMessa
 
 function isMainSessionContext(context: MessageContext): boolean {
   return context.larkThreadId === undefined;
+}
+
+function bannerThreadAnchorMessageId(message: IncomingLarkMessage): string | undefined {
+  const anchorMessageId =
+    nonEmptyString(message.larkRootMessageId) ??
+    nonEmptyString(message.larkParentMessageId) ??
+    nonEmptyString(message.larkThreadId);
+  return anchorMessageId && anchorMessageId !== message.messageId ? anchorMessageId : undefined;
 }
 
 function createThreadReplyContext(context: MessageContext, larkThreadId: string): MessageContext {
