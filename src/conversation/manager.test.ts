@@ -3878,6 +3878,10 @@ describe("ConversationManager", () => {
     });
 
     await goals[0]!.params.onAgentMessage?.({ id: "goal-final", text: "goal final answer", phase: "final_answer" });
+    await waitForExpect(() => {
+      const patched = vi.mocked(lark.patchCard).mock.calls.find(([, card]) => JSON.stringify(card).includes("goal final answer"))?.[1];
+      expect(JSON.stringify(patched)).toContain("实现目标中");
+    });
     goals[0]!.resolve({ ...completed("thread_1", "goal_1"), text: "aggregate text" });
 
     await waitForExpect(() =>
@@ -3897,6 +3901,50 @@ describe("ConversationManager", () => {
     expect(completedSerialized).toContain("goal final answer");
     expect(completedSerialized).toContain("[设置目标] 012345678901234567890123456789abcdef");
     expect(completedSerialized).toContain("doing the goal");
+    expect(completedSerialized).not.toContain("aggregate text");
+  });
+
+  it("keeps a goal final answer out of the working process after the goal is complete", async () => {
+    const { codex, goals } = createDeferredGoalCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "/goal calculate pi"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    await goals[0]!.params.onGoalUpdated?.({
+      threadId: "thread_1",
+      objective: "calculate pi",
+      status: "complete",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 2
+    }, "goal_1");
+
+    const patchCountBeforeFinal = vi.mocked(lark.patchCard).mock.calls.length;
+    await goals[0]!.params.onAgentMessage?.({ id: "goal-final", text: "terminal goal final", phase: "final_answer" });
+    expect(vi.mocked(lark.patchCard).mock.calls).toHaveLength(patchCountBeforeFinal);
+    expect(JSON.stringify(vi.mocked(lark.patchCard).mock.calls)).not.toContain("terminal goal final");
+
+    goals[0]!.resolve({ ...completed("thread_1", "goal_1"), text: "aggregate text" });
+    await waitForExpect(() =>
+      expect(lark.replyCard).toHaveBeenNthCalledWith(
+        2,
+        "m1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已实现目标" }
+          })
+        })
+      )
+    );
+
+    const completedCard = vi.mocked(lark.replyCard).mock.calls[1]![1] as Record<string, unknown>;
+    const completedSerialized = JSON.stringify(completedCard);
+    expect(completedSerialized).toContain("terminal goal final");
     expect(completedSerialized).not.toContain("aggregate text");
   });
 

@@ -522,6 +522,8 @@ interface ActiveGoalState {
   objective: string;
   content: string;
   title: string;
+  status?: ThreadGoal["status"];
+  completed?: boolean;
   recovering?: boolean;
 }
 
@@ -3719,6 +3721,7 @@ export class ConversationManager {
           onTurnStarted: (turnId: string) => this.handleTurnStarted(state, active, turnId),
           onAgentMessage: (agentMessage: CodexAgentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
           onTokenUsage: (usage: CodexThreadTokenUsageUpdate) => this.recordThreadTokenUsageBestEffort(state, active, usage),
+          onGoalUpdated: (goal: ThreadGoal) => this.recordGoalUpdateForActiveBestEffort(state, active, goal),
           onRequestUserInput: (
             request: CodexRequestUserInputRequest,
             responder: CodexRequestUserInputResponder
@@ -5285,6 +5288,21 @@ export class ConversationManager {
     }
   }
 
+  private recordGoalUpdateForActiveBestEffort(
+    state: ConversationState,
+    active: ActiveTurn,
+    goal: ThreadGoal
+  ): void {
+    if (state.active !== active || active.kind !== "goal" || !active.goal || active.cancelRequested) {
+      return;
+    }
+    if (goal.threadId !== active.threadId) {
+      return;
+    }
+    active.goal.status = goal.status;
+    active.goal.completed = goal.status === "complete";
+  }
+
   private async updateAgentCardWithMessageBestEffort(
     state: ConversationState,
     active: ActiveTurn,
@@ -5302,12 +5320,12 @@ export class ConversationManager {
       await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
       return;
     }
-    if (agentMessage.phase === "final_answer" && active.kind !== "goal") {
+    if (
+      agentMessage.phase === "final_answer" &&
+      !(active.kind === "goal" && active.goal?.completed !== true)
+    ) {
       active.finalAgentMessageText = text;
       return;
-    }
-    if (agentMessage.phase === "final_answer") {
-      active.finalAgentMessageText = text;
     }
     card.messages.push({ id: agentMessage.id, text });
 
@@ -5458,7 +5476,7 @@ export class ConversationManager {
       const final = active.kind === "compact"
         ? { text: COMPACT_COMPLETED_TEXT, processMessages: [] }
         : active.kind === "goal"
-          ? splitGoalAgentCardMessages(card.messages, active.resultText ?? "")
+          ? splitGoalAgentCardMessages(card.messages, active.resultText ?? "", active.finalAgentMessageText)
         : splitFinalAgentCardMessages(
             card.messages,
             active.resultText ?? "",
@@ -7177,8 +7195,12 @@ function splitFinalAgentCardMessages(
 
 function splitGoalAgentCardMessages(
   messages: TwinnyAgentCardMessage[],
-  fallbackFinalText: string
+  fallbackFinalText: string,
+  explicitFinalText?: string
 ): { text: string; processMessages: TwinnyAgentCardMessage[] } {
+  if (explicitFinalText !== undefined) {
+    return { text: explicitFinalText, processMessages: messages };
+  }
   let finalMessageIndex = -1;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];

@@ -261,7 +261,7 @@ class GoalOutputAccumulator {
     });
     if (isTerminalGoalStatus(goal.status)) {
       this.terminalGoal = goal;
-      this.terminalTurnId = turnId;
+      this.terminalTurnId = turnId ?? this.turnId ?? null;
       this.resolveTerminalIfReady();
     }
   }
