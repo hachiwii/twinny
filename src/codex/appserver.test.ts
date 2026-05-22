@@ -69,7 +69,7 @@ describe("CodexAppServer", () => {
       });
       expect(server.readCodexVersion()).toBe("fake-codex 1.2.3");
 
-      await expect(server.startThread(workspace)).resolves.toMatchObject({
+      await expect(server.startThread(workspace, { developerInstructions: "main instructions" })).resolves.toMatchObject({
         thread: { id: "thread-start" }
       });
       await expect(threadNameUpdated).resolves.toEqual({
@@ -155,6 +155,7 @@ describe("CodexAppServer", () => {
           cwd: workspace,
           approvalPolicy: "never",
           persistExtendedHistory: true,
+          developerInstructions: "main instructions",
           dynamicTools: [
             expect.objectContaining({
               namespace: "twinny",

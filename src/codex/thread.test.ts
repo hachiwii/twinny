@@ -42,6 +42,17 @@ describe("codex thread payloads", () => {
     });
   });
 
+  it("includes optional thread/start developer instructions", () => {
+    expect(
+      buildThreadStartParams({
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        developerInstructions: "Twinny context"
+      })
+    ).toMatchObject({
+      developerInstructions: "Twinny context"
+    });
+  });
+
   it("builds thread/fork with the persisted thread id and lightweight response payload", () => {
     expect(buildThreadForkParams("thread_123", { cwd: "/tmp/twinny/workspaces/p2p_ou_1" })).toEqual({
       threadId: "thread_123",

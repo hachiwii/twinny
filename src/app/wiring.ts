@@ -403,8 +403,16 @@ export function adaptConversationRepository(repository: ConversationRepository) 
 
 function adaptCodexPool(pool: RoleCodexAppServerPool) {
   return {
-    startThread: async ({ role, cwd }: { role: RoleName; cwd: string }) => {
-      const response = await pool.get(role).startThread(cwd);
+    startThread: async ({
+      role,
+      cwd,
+      developerInstructions
+    }: {
+      role: RoleName;
+      cwd: string;
+      developerInstructions?: string;
+    }) => {
+      const response = await pool.get(role).startThread(cwd, { developerInstructions });
       return { threadId: response.thread.id };
     },
     resumeThread: async ({ role, threadId, cwd }: { role: RoleName; threadId: string; cwd: string }) => {

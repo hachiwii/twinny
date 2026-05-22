@@ -2135,8 +2135,18 @@ describe("ConversationManager", () => {
     expect(codex.startThread).toHaveBeenCalledWith({
       role: "owner",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
-      approvalPolicy: "never"
+      approvalPolicy: "never",
+      developerInstructions: expect.stringContaining("Twinny Lark Context")
     });
+    expect(vi.mocked(codex.startThread).mock.calls[0]![0].developerInstructions).toContain(
+      "The current device owner is Owner, whose Feishu/Lark open_id is ou_owner."
+    );
+    expect(vi.mocked(codex.startThread).mock.calls[0]![0].developerInstructions).toContain(
+      "The current Twinny conversation key is group_oc_group. The current conversation type is group_chat."
+    );
+    expect(vi.mocked(codex.startThread).mock.calls[0]![0].developerInstructions).not.toContain(
+      "Do not modify the current thread name"
+    );
     expect(lark.sendCardToChatId).toHaveBeenCalledWith(
       "oc_group",
       expect.objectContaining({
@@ -2195,8 +2205,15 @@ describe("ConversationManager", () => {
     expect(codex.startThread).toHaveBeenCalledWith({
       role: "owner",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
-      approvalPolicy: "never"
+      approvalPolicy: "never",
+      developerInstructions: expect.stringContaining("Twinny Lark Context")
     });
+    expect(vi.mocked(codex.startThread).mock.calls[0]![0].developerInstructions).toContain(
+      "The current Twinny conversation key is group_oc_group. The current conversation type is group_chat."
+    );
+    expect(vi.mocked(codex.startThread).mock.calls[0]![0].developerInstructions).not.toContain(
+      "Do not modify the current thread name"
+    );
     expect(lark.sendCardToChatId).toHaveBeenCalledWith(
       "oc_group",
       expect.objectContaining({
@@ -2503,7 +2520,10 @@ describe("ConversationManager", () => {
       role: "owner",
       threadId: "thread_group",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
-      approvalPolicy: "never"
+      approvalPolicy: "never",
+      developerInstructions: expect.stringContaining(
+        "The current Twinny conversation key is group_oc_group. The current conversation type is group_chat."
+      )
     });
     expect(codex.startThread).not.toHaveBeenCalled();
     expect(codex.resumeThread).toHaveBeenCalledWith({
@@ -2645,7 +2665,10 @@ describe("ConversationManager", () => {
       role: "owner",
       threadId: "thread_topic_source",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
-      approvalPolicy: "never"
+      approvalPolicy: "never",
+      developerInstructions: expect.stringContaining(
+        "The current Twinny conversation key is group_oc_group. The current conversation type is group_chat."
+      )
     });
     expect(lark.sendCardToChatId).toHaveBeenCalledWith("oc_group", expect.any(Object), {
       uuid: expect.stringMatching(UUID_PATTERN)
@@ -2710,6 +2733,9 @@ describe("ConversationManager", () => {
       model: undefined,
       effort: undefined
     });
+    expect(vi.mocked(codex.forkThread).mock.calls[0]![0].developerInstructions).toContain(
+      "The current Twinny conversation key is p2p_ou_guest. The current conversation type is p2p."
+    );
     expect(codex.injectThreadItems).toHaveBeenCalledWith({
       role: "guest",
       threadId: "thread_1_side_1",
@@ -3431,8 +3457,15 @@ describe("ConversationManager", () => {
     expect(codex.startThread).toHaveBeenCalledWith({
       role: "guest",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
-      approvalPolicy: "never"
+      approvalPolicy: "never",
+      developerInstructions: expect.stringContaining("Do not modify the current thread name")
     });
+    expect(vi.mocked(codex.startThread).mock.calls[0]![0].developerInstructions).toContain(
+      "Do not disclose private information to non-owner users."
+    );
+    expect(vi.mocked(codex.startThread).mock.calls[0]![0].developerInstructions).toContain(
+      "The current Twinny conversation key is group_oc_group. The current conversation type is group_chat."
+    );
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         larkMessageId: "g1",
@@ -5236,18 +5269,18 @@ describe("ConversationManager", () => {
         await onTurnStarted?.("turn_1");
         await onAgentMessage?.({
           id: "agent_1",
-          text: "checking <mention-lark-user>ou_noise</mention-lark-user>",
+          text: "checking <mention_lark_user>ou_noise</mention_lark_user>",
           phase: "commentary"
         });
         await onAgentMessage?.({
           id: "agent_2",
-          text: "请看 <mention-lark-user>ou_target</mention-lark-user>",
+          text: "请看 <mention_lark_user>ou_target</mention_lark_user>",
           phase: "final_answer"
         });
         return {
           threadId,
           turnId: "turn_1",
-          text: "checking <mention-lark-user>ou_noise</mention-lark-user>\n\n请看 <mention-lark-user>ou_target</mention-lark-user>",
+          text: "checking <mention_lark_user>ou_noise</mention_lark_user>\n\n请看 <mention_lark_user>ou_target</mention_lark_user>",
           status: "completed" as const
         };
       })
@@ -5273,7 +5306,7 @@ describe("ConversationManager", () => {
     const serialized = JSON.stringify(finalCard);
     expect(serialized).toContain("<at id=ou_target></at>");
     expect(serialized).not.toContain("<at id=ou_noise></at>");
-    expect(serialized).not.toContain("<mention-lark-user>ou_target</mention-lark-user>");
+    expect(serialized).not.toContain("<mention_lark_user>ou_target</mention_lark_user>");
     expect(finalCard.config).toMatchObject({
       summary: { content: "请看 @ou_target" }
     });
@@ -5285,12 +5318,12 @@ describe("ConversationManager", () => {
         await onTurnStarted?.("turn_1");
         await onAgentMessage?.({
           id: "agent_1",
-          text: "checking <mention-lark-user>ou_noise</mention-lark-user>",
+          text: "checking <mention_lark_user>ou_noise</mention_lark_user>",
           phase: "commentary"
         });
         await onAgentMessage?.({
           id: "agent_2",
-          text: "hi <mention-lark-user>ou_target</mention-lark-user> please",
+          text: "hi <mention_lark_user>ou_target</mention_lark_user> please",
           phase: "final_answer"
         });
         return completed(threadId, "turn_1");
@@ -5305,7 +5338,7 @@ describe("ConversationManager", () => {
 
     expect(lark.replyMarkdown).toHaveBeenCalledWith(
       "m1",
-      "checking <mention-lark-user>ou_noise</mention-lark-user>"
+      "checking <mention_lark_user>ou_noise</mention_lark_user>"
     );
     expect(lark.replyPost).toHaveBeenCalledWith("m1", [
       [

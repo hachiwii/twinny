@@ -2179,16 +2179,24 @@ function adaptConversationRepository(repository: StoreConversationRepository): M
 
 function adaptCodexPool(pool: RoleCodexAppServerPool): CodexBridge {
   return {
-    startThread: async ({ role, cwd }: { role: RoleName; cwd: string }) => {
-      const response = await pool.get(role).startThread(cwd);
+    startThread: async ({
+      role,
+      cwd,
+      developerInstructions
+    }: {
+      role: RoleName;
+      cwd: string;
+      developerInstructions?: string;
+    }) => {
+      const response = await pool.get(role).startThread(cwd, { developerInstructions });
       return { threadId: response.thread.id };
     },
     resumeThread: async ({ role, threadId, cwd }: { role: RoleName; threadId: string; cwd: string }) => {
       const response = await pool.get(role).resumeThread(threadId, cwd);
       return { threadId: response.thread.id };
     },
-    forkThread: async ({ role, threadId, cwd }) => {
-      const response = await pool.get(role).forkThread(threadId, cwd);
+    forkThread: async ({ role, threadId, cwd, developerInstructions }) => {
+      const response = await pool.get(role).forkThread(threadId, cwd, { developerInstructions });
       return { threadId: response.thread.id };
     },
     startTurn: async ({

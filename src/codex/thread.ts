@@ -10,6 +10,7 @@ export interface ThreadRuntimeParams {
 
 export interface ThreadStartParams extends ThreadRuntimeParams {
   dynamicTools: DynamicToolSpec[];
+  developerInstructions?: string;
 }
 
 export interface ThreadResumeParams extends ThreadRuntimeParams {
@@ -77,22 +78,26 @@ export interface ThreadForkResponse {
 
 export interface ThreadRuntimeOptions {
   cwd: string;
+  developerInstructions?: string;
 }
 
 export interface ThreadForkOptions extends ThreadRuntimeOptions {
   ephemeral?: boolean;
-  developerInstructions?: string;
   model?: string;
   effort?: string;
 }
 
 export function buildThreadStartParams(options: ThreadRuntimeOptions): ThreadStartParams {
-  return {
+  const params: ThreadStartParams = {
     cwd: options.cwd,
     approvalPolicy: "never",
     persistExtendedHistory: true,
     dynamicTools: [SET_THREAD_NAME_TOOL_SPEC]
   };
+  if (options.developerInstructions) {
+    params.developerInstructions = options.developerInstructions;
+  }
+  return params;
 }
 
 export function buildThreadResumeParams(threadId: string, options: ThreadRuntimeOptions): ThreadResumeParams {
