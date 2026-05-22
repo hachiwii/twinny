@@ -78,6 +78,8 @@ export interface TurnStartResponse {
   [key: string]: unknown;
 }
 
+type TurnIdSource = "response" | "notification";
+
 interface TurnCompletedParams {
   threadId: string;
   turn: {
@@ -253,7 +255,7 @@ export async function startCodexTurn(
       { timeoutMs: requestOptions.requestTimeoutMs }
     );
     if (response.turn?.id) {
-      accumulator.setTurnId(response.turn.id);
+      accumulator.setTurnId(response.turn.id, "response");
     }
     return await accumulator.wait(requestOptions.completionTimeoutMs);
   } catch (error) {
@@ -326,7 +328,8 @@ export class TurnOutputAccumulator {
   private readonly startedAt = Date.now();
   private finalAnswerText: string | undefined;
   private turnId: string | undefined;
-  private emittedTurnStarted = false;
+  private turnIdSource: TurnIdSource | undefined;
+  private emittedTurnStartedId: string | undefined;
   private completed: TurnCompletedParams | undefined;
   private completionError: Error | undefined;
   private resolveWait: ((result: CodexTurnResult) => void) | undefined;
@@ -344,15 +347,24 @@ export class TurnOutputAccumulator {
     } = {}
   ) {
     this.turnId = turnId;
+    this.turnIdSource = turnId ? "response" : undefined;
   }
 
-  setTurnId(turnId: string): void {
-    if (!this.turnId) {
+  setTurnId(turnId: string, source: TurnIdSource = "notification"): void {
+    const canReplaceResponseTurnId =
+      source === "notification" &&
+      this.turnIdSource === "response" &&
+      this.turnId !== undefined &&
+      this.turnId !== turnId;
+    if (!this.turnId || canReplaceResponseTurnId) {
       this.turnId = turnId;
+      this.turnIdSource = source;
+    } else if (!this.turnIdSource) {
+      this.turnIdSource = source;
     }
-    if (!this.emittedTurnStarted) {
-      this.emittedTurnStarted = true;
-      void Promise.resolve(this.callbacks.onTurnStarted?.(this.turnId)).catch((error: unknown) => {
+    if (this.emittedTurnStartedId !== this.turnId) {
+      this.emittedTurnStartedId = this.turnId;
+      void Promise.resolve(this.callbacks.onTurnStarted?.(this.turnId!)).catch((error: unknown) => {
         const parsedError =
           error instanceof Error ? error : new TwinnyError(toErrorMessage(error), "CODEX_TURN_STARTED_CALLBACK_FAILED");
         this.completionError = parsedError;
@@ -433,7 +445,7 @@ export class TurnOutputAccumulator {
     }
     const turnId = stringValue(params.turn.id);
     if (turnId) {
-      this.setTurnId(turnId);
+      this.setTurnId(turnId, "notification");
     }
   }
 
@@ -443,6 +455,9 @@ export class TurnOutputAccumulator {
     }
     if (params.threadId !== this.threadId) {
       return;
+    }
+    if (params.turnId) {
+      this.setTurnId(params.turnId, "notification");
     }
     if (this.turnId && params.turnId && params.turnId !== this.turnId) {
       return;
@@ -479,11 +494,11 @@ export class TurnOutputAccumulator {
       return;
     }
     const completedTurnId = stringValue(params.turn.id);
+    if (completedTurnId) {
+      this.setTurnId(completedTurnId, "notification");
+    }
     if (this.turnId && completedTurnId && completedTurnId !== this.turnId) {
       return;
-    }
-    if (completedTurnId) {
-      this.setTurnId(completedTurnId);
     }
 
     for (const item of params.turn.items ?? []) {

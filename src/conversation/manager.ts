@@ -4107,9 +4107,6 @@ export class ConversationManager {
 
   private async handleTurnStarted(state: ConversationState, active: ActiveTurn, turnId: string): Promise<void> {
     await state.controlQueue.enqueue(async () => {
-      if (active.turnId && active.turnId !== turnId && active.kind !== "goal") {
-        return;
-      }
       active.turnId = turnId;
       if (active.cancelRequested) {
         await this.interruptActiveTurnBestEffort(active);
@@ -4136,9 +4133,6 @@ export class ConversationManager {
 
   private async handleSideTurnStarted(state: ConversationState, active: ActiveTurn, turnId: string): Promise<void> {
     await state.controlQueue.enqueue(async () => {
-      if (active.turnId && active.turnId !== turnId) {
-        return;
-      }
       active.turnId = turnId;
       if (active.cancelRequested) {
         await this.interruptActiveTurnBestEffort(active);

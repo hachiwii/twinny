@@ -478,6 +478,56 @@ describe("TurnOutputAccumulator", () => {
     expect(turnStarted).toHaveBeenCalledWith("turn_1");
   });
 
+  it("uses the notification turn id when it differs from the turn/start response id", async () => {
+    const turnStarted = vi.fn();
+    const messages: Array<{ id: string; text: string }> = [];
+    const accumulator = new TurnOutputAccumulator("thread_123", undefined, {
+      onTurnStarted: turnStarted,
+      onAgentMessage: (message) => {
+        messages.push(message);
+      }
+    });
+
+    accumulator.setTurnId("response_turn", "response");
+    accumulator.record({
+      method: "turn/started",
+      params: {
+        threadId: "thread_123",
+        turn: { id: "notification_turn" }
+      }
+    });
+    accumulator.record({
+      method: "item/completed",
+      params: {
+        threadId: "thread_123",
+        turnId: "notification_turn",
+        item: { type: "agentMessage", id: "msg_1", text: "progress" }
+      }
+    });
+    accumulator.record({
+      method: "turn/completed",
+      params: {
+        threadId: "thread_123",
+        turn: {
+          id: "notification_turn",
+          status: "completed",
+          items: [{ type: "agentMessage", id: "msg_1", text: "progress" }]
+        }
+      }
+    });
+
+    await expect(accumulator.wait()).resolves.toMatchObject({
+      threadId: "thread_123",
+      turnId: "notification_turn",
+      text: "progress",
+      status: "completed"
+    });
+    expect(messages).toEqual([{ id: "msg_1", text: "progress" }]);
+    expect(turnStarted).toHaveBeenCalledTimes(2);
+    expect(turnStarted).toHaveBeenNthCalledWith(1, "response_turn");
+    expect(turnStarted).toHaveBeenNthCalledWith(2, "notification_turn");
+  });
+
   it("keeps waiting when Codex reports a retryable turn error", async () => {
     const accumulator = new TurnOutputAccumulator("thread_123");
 

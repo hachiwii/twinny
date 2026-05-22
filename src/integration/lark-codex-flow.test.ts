@@ -488,6 +488,134 @@ describe("Lark to Codex integration flow", () => {
     );
   });
 
+  it("updates a queued turn card after it starts behind a completed goal", async () => {
+    const harness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        on: { method: "thread/goal/set", nth: 1 },
+        reply: {
+          goal: {
+            threadId: "guest_thread_1",
+            objective: "finish goal before queued turn",
+            status: "active",
+            tokenBudget: null,
+            tokensUsed: 0,
+            timeUsedSeconds: 0,
+            createdAt: 1,
+            updatedAt: 1
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "goal_turn_before_queue" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        delayMs: 180,
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "goal_turn_before_queue",
+              status: "completed",
+              durationMs: 180,
+              items: [{ type: "agentMessage", id: "goal_done_before_queue", text: "goal before queue done", phase: "final_answer" }]
+            }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        delayMs: 200,
+        notify: {
+          method: "thread/goal/updated",
+          params: {
+            threadId: "guest_thread_1",
+            turnId: "goal_turn_before_queue",
+            goal: {
+              threadId: "guest_thread_1",
+              objective: "finish goal before queued turn",
+              status: "complete",
+              tokenBudget: null,
+              tokensUsed: 0,
+              timeUsedSeconds: 0,
+              createdAt: 1,
+              updatedAt: 2
+            }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "queued_turn_after_goal" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        delayMs: 50,
+        notify: {
+          method: "item/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turnId: "queued_turn_after_goal",
+            item: { type: "agentMessage", id: "queued_progress_after_goal", text: "queued turn progress after goal", phase: "commentary" }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        delayMs: 120,
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "queued_turn_after_goal",
+              status: "completed",
+              durationMs: 120,
+              items: [{ type: "agentMessage", id: "queued_final_after_goal", text: "queued final after goal", phase: "final_answer" }]
+            }
+          }
+        }
+      }
+    ));
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_goal_before_queue", messageId: "m_goal_before_queue", text: "/goal finish goal before queued turn" })
+    }));
+    await harness.waitForTrace((trace) => codexOut(trace, "thread/goal/set").length === 1, "goal set");
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_queued_after_goal", messageId: "m_queued_after_goal", text: "/queue queued turn after goal" })
+    }));
+    await harness.waitForExpect(() => {
+      expect(harness.repository.getLarkMessageById("m_queued_after_goal")).toMatchObject({ status: "queued" });
+    });
+
+    await harness.waitForTrace(
+      (trace) => codexOut(trace, "turn/start").some((entry) => traceText(entry).includes("queued turn after goal")),
+      "queued turn starts after goal"
+    );
+    await harness.waitForTrace(
+      (trace) => larkOut(trace).some(
+        (entry) =>
+          entry.method === "PATCH" &&
+          entry.path.includes("m_queued_after_goal") &&
+          traceText(entry).includes("queued turn progress after goal")
+      ),
+      "queued turn progress card patch"
+    );
+  });
+
   it("does not duplicate queued messages when recovering an active goal after app-server restart", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
