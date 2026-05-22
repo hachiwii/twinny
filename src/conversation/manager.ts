@@ -5,6 +5,12 @@ import type { Logger } from "pino";
 import { parse as parseToml } from "smol-toml";
 import { TwinnyError, toErrorMessage } from "../errors.js";
 import {
+  isPositionInTextRanges,
+  markdownCodeRanges,
+  markdownLines,
+  type TextRange
+} from "../markdown.js";
+import {
   imageElement,
   markdownElement,
   mediaElement,
@@ -6576,10 +6582,11 @@ export class ConversationManager {
 
     const builder = new LarkPostContentBuilder({ parseCodexMentions: options.parseCodexMentions });
     const files: PreparedLarkFileReply[] = [];
-    for (const line of text.split(/\r?\n/)) {
-      const directive = parseSendToLarkDirective(line);
+    const codeRanges = markdownCodeRanges(text);
+    for (const line of markdownLines(text)) {
+      const directive = parseSendToLarkDirective(line.text, line.start, codeRanges);
       if (directive.kind === "none") {
-        builder.addTextLine(line);
+        builder.addTextLine(line.text);
         continue;
       }
       if (directive.kind === "invalid") {
@@ -6645,10 +6652,11 @@ export class ConversationManager {
       }
     };
 
-    for (const line of text.split(/\r?\n/)) {
-      const directive = parseSendToLarkDirective(line);
+    const codeRanges = markdownCodeRanges(text);
+    for (const line of markdownLines(text)) {
+      const directive = parseSendToLarkDirective(line.text, line.start, codeRanges);
       if (directive.kind === "none") {
-        pendingText.push(line);
+        pendingText.push(line.text);
         continue;
       }
       flushText();
@@ -6796,25 +6804,56 @@ type CodexMentionTextPart =
   | { kind: "text"; text: string }
   | { kind: "mention"; openId: string };
 
+const CODEX_MENTION_PATTERN = /<mention-lark-user>([\s\S]*?)<\/mention-lark-user>/g;
+
 function hasCodexMentionSyntax(text: string): boolean {
-  return text.includes("<mention-lark-user>");
+  const codeRanges = markdownCodeRanges(text);
+  for (const match of text.matchAll(CODEX_MENTION_PATTERN)) {
+    if (!isPositionInTextRanges(match.index ?? 0, codeRanges)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function postContentForCodexMentionText(text: string): LarkPostContent {
-  const paragraphs = text.split(/\r?\n/).map((line) => postParagraphForCodexMentionText(line));
-  return paragraphs.length > 0 ? paragraphs : [[{ tag: "md", text: "" }]];
+  const paragraphs: LarkPostContent = [[]];
+  for (const part of splitCodexMentionText(text)) {
+    if (part.kind === "mention") {
+      currentPostParagraph(paragraphs).push({ tag: "at", user_id: part.openId });
+      continue;
+    }
+    appendMarkdownTextToPostParagraphs(paragraphs, part.text);
+  }
+  return paragraphs.map((paragraph) => paragraph.length > 0 ? paragraph : [{ tag: "md", text: "" }]);
 }
 
-function postParagraphForCodexMentionText(text: string): LarkPostNode[] {
-  const nodes = splitCodexMentionText(text)
-    .map((part): LarkPostNode | undefined => {
-      if (part.kind === "mention") {
-        return { tag: "at", user_id: part.openId };
-      }
-      return part.text.length > 0 ? { tag: "md", text: part.text } : undefined;
-    })
-    .filter((node): node is LarkPostNode => node !== undefined);
-  return nodes.length > 0 ? nodes : [{ tag: "md", text: "" }];
+function appendMarkdownTextToPostParagraphs(paragraphs: LarkPostContent, text: string): void {
+  const lineEndPattern = /\r?\n/g;
+  let cursor = 0;
+  for (const match of text.matchAll(lineEndPattern)) {
+    const index = match.index ?? 0;
+    const segment = text.slice(cursor, index);
+    if (segment.length > 0) {
+      currentPostParagraph(paragraphs).push({ tag: "md", text: segment });
+    }
+    paragraphs.push([]);
+    cursor = index + match[0]!.length;
+  }
+
+  const rest = text.slice(cursor);
+  if (rest.length > 0) {
+    currentPostParagraph(paragraphs).push({ tag: "md", text: rest });
+  }
+}
+
+function currentPostParagraph(paragraphs: LarkPostContent): LarkPostNode[] {
+  let paragraph = paragraphs.at(-1);
+  if (!paragraph) {
+    paragraph = [];
+    paragraphs.push(paragraph);
+  }
+  return paragraph;
 }
 
 function renderCodexMentionTagsForCardMarkdown(text: string): string {
@@ -6831,11 +6870,14 @@ function renderCodexMentionTagsAsPlainText(text: string): string {
 
 function splitCodexMentionText(text: string): CodexMentionTextPart[] {
   const parts: CodexMentionTextPart[] = [];
-  const pattern = /<mention-lark-user>([\s\S]*?)<\/mention-lark-user>/g;
+  const codeRanges = markdownCodeRanges(text);
   let cursor = 0;
-  for (const match of text.matchAll(pattern)) {
+  for (const match of text.matchAll(CODEX_MENTION_PATTERN)) {
     const index = match.index ?? 0;
     const raw = match[0]!;
+    if (isPositionInTextRanges(index, codeRanges)) {
+      continue;
+    }
     if (index > cursor) {
       parts.push({ kind: "text", text: text.slice(cursor, index) });
     }
@@ -6854,11 +6896,17 @@ function isSafeLarkMentionOpenId(openId: string): boolean {
 }
 
 function containsSendToLarkDirective(text: string): boolean {
-  return text.split(/\r?\n/).some((line) => line.trimStart().startsWith("SEND_TO_LARK:"));
+  const codeRanges = markdownCodeRanges(text);
+  return markdownLines(text).some((line) => parseSendToLarkDirective(line.text, line.start, codeRanges).kind !== "none");
 }
 
-function parseSendToLarkDirective(line: string): SendToLarkDirective {
-  const trimmed = line.trim();
+function parseSendToLarkDirective(line: string, lineStart = 0, codeRanges: TextRange[] = []): SendToLarkDirective {
+  const firstNonWhitespace = line.search(/\S/);
+  if (firstNonWhitespace === -1 || isPositionInTextRanges(lineStart + firstNonWhitespace, codeRanges)) {
+    return { kind: "none" };
+  }
+
+  const trimmed = line.slice(firstNonWhitespace).trimEnd();
   if (!trimmed.startsWith("SEND_TO_LARK:")) {
     return { kind: "none" };
   }

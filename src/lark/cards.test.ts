@@ -501,6 +501,26 @@ describe("renderTwinnyAgentCard", () => {
     expect(serialized).not.toContain("工作过程");
     expect(serialized).not.toContain("暂无进度");
   });
+
+  it("keeps SEND_TO_LARK examples inside markdown code in the process panel", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "finished",
+      messages: [{
+        id: "m1",
+        text: [
+          "```",
+          "SEND_TO_LARK: <img path=\"code.png\"></img>",
+          "```",
+          "SEND_TO_LARK: <img path=\"real.png\"></img>"
+        ].join("\n")
+      }],
+      finalElements: []
+    }));
+    const serialized = JSON.stringify(card);
+
+    expect(serialized).toContain("code.png");
+    expect(serialized).not.toContain("real.png");
+  });
 });
 
 describe("renderTwinnyThreadSummaryCard", () => {

@@ -5316,6 +5316,87 @@ describe("ConversationManager", () => {
     ]);
   });
 
+  it("does not render Codex Lark mention tags inside markdown code in final card output", async () => {
+    const finalText = [
+      "Ping <mention-lark-user>ou_target</mention-lark-user>",
+      "Use `<mention-lark-user>ou_inline</mention-lark-user>` as an example.",
+      "```",
+      "<mention-lark-user>ou_block</mention-lark-user>",
+      "```"
+    ].join("\n");
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: finalText,
+          phase: "final_answer"
+        });
+        return {
+          threadId,
+          turnId: "turn_1",
+          text: finalText,
+          status: "completed" as const
+        };
+      })
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() =>
+      expect(lark.replyCard).toHaveBeenNthCalledWith(
+        2,
+        "m1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+
+    const finalCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const serialized = JSON.stringify(finalCard);
+    expect(serialized).toContain("<mention-lark-user>ou_inline</mention-lark-user>");
+    expect(serialized).toContain("<mention-lark-user>ou_block</mention-lark-user>");
+    expect(serialized).toContain("<at id=ou_target></at>");
+    expect(serialized).not.toContain("<at id=ou_inline></at>");
+    expect(serialized).not.toContain("<at id=ou_block></at>");
+    expect(finalCard.config).toMatchObject({
+      summary: { content: expect.stringContaining("@ou_target") }
+    });
+  });
+
+  it("keeps Codex Lark mention tags inside markdown code in fallback plain final_answer messages", async () => {
+    const finalText = [
+      "```",
+      "<mention-lark-user>ou_block</mention-lark-user>",
+      "```",
+      "`<mention-lark-user>ou_inline</mention-lark-user>`"
+    ].join("\n");
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: finalText,
+          phase: "final_answer"
+        });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
+    const manager = createManager({ codex, lark });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyMarkdown).toHaveBeenCalledWith("m1", finalText));
+
+    expect(lark.replyPost).not.toHaveBeenCalled();
+  });
+
   it("sets finished agent card summary to the first 100 final output characters", async () => {
     const finalText = "a".repeat(120);
     const codex = createCodex({
@@ -6207,6 +6288,48 @@ describe("ConversationManager", () => {
       [{ tag: "md", text: "done" }]
     ]);
     expect(lark.replyMarkdown).not.toHaveBeenCalledWith("m1", expect.stringContaining("SEND_TO_LARK"));
+  });
+
+  it("ignores SEND_TO_LARK directives inside markdown code in fallback plain replies", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-code-"));
+    const workspaceRoot = path.join(tempRoot, "workspaces");
+    const workspace = path.join(workspaceRoot, "p2p_ou_guest");
+    fs.mkdirSync(workspace, { recursive: true });
+    const imagePath = path.join(workspace, "result.png");
+    fs.writeFileSync(imagePath, "png");
+    const finalText = [
+      "ready",
+      "```",
+      `SEND_TO_LARK: <img path="${imagePath}"></img>`,
+      "```",
+      "`inline",
+      `SEND_TO_LARK: <img path="${imagePath}"></img>`,
+      "`",
+      "done"
+    ].join("\n");
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: finalText
+        });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(),
+      uploadImage: vi.fn(async () => ({ imageKey: "img_uploaded" }))
+    };
+    const manager = createManager({ codex, lark, larkFiles, workspaceRoot });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyMarkdown).toHaveBeenCalledWith("m1", finalText));
+
+    expect(larkFiles.uploadImage).not.toHaveBeenCalled();
+    expect(lark.replyPost).not.toHaveBeenCalled();
   });
 
   it("uploads SEND_TO_LARK files through fallback plain replies", async () => {
