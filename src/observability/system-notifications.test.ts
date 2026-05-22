@@ -21,6 +21,10 @@ describe("TwinnySystemNotifier", () => {
       "Twinny - Turn chats into action"
     );
     expect(JSON.stringify(sender.sendInteractiveCardToOpenId.mock.calls[0]![1])).toContain("dev |");
+    expect(
+      (sender.sendInteractiveCardToOpenId.mock.calls[0]![1].config as { summary?: { content?: string } }).summary
+        ?.content
+    ).toBe("🐰 Twinny dev");
     expect(sender.sendInteractiveCardToOpenId).toHaveBeenCalledTimes(1);
   });
 

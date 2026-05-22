@@ -382,6 +382,9 @@ export function renderTwinnyBannerCard(options: RenderTwinnyBannerCardOptions = 
     schema: "2.0",
     config: {
       update_multi: true,
+      summary: {
+        content: `🐰 Twinny ${version}`
+      },
       style: {
         text_size: {
           normal_v2: {
