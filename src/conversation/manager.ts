@@ -1746,14 +1746,16 @@ export class ConversationManager {
     | { kind: "ignored" }
     | { kind: "unauthorized" }
   > {
-    const text = isGroupConversationType(context.type) ? stripBotMention(message.text, message, this.options.botOpenId) : message.text;
+    const hasBotMention = messageMentionsBot(message, this.options.botOpenId);
+    const text = isGroupConversationType(context.type) && hasBotMention
+      ? stripLeadingLarkMentions(message.text, message)
+      : message.text;
     const parsed = parseSlashCommand(text);
     if (!isGroupConversationType(context.type)) {
       return { kind: "allow", text, parsed };
     }
 
     const senderRole = roleForSender(this.options.config, message.senderOpenId);
-    const hasBotMention = messageMentionsBot(message, this.options.botOpenId);
     const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
     const isInactiveGroupCommandAllowed =
       parsed.kind === "thread" || parsed.kind === "fork" || (parsed.kind === "activate" && senderRole === "owner");
@@ -7504,23 +7506,42 @@ function messageMentionsBot(message: IncomingLarkMessage, botOpenId: string | un
   return (message.mentions ?? []).some((mention) => mention.openId === botOpenId);
 }
 
-function stripBotMention(text: string, message: IncomingLarkMessage, botOpenId: string | undefined): string {
-  if (!botOpenId) {
+function stripLeadingLarkMentions(text: string, message: IncomingLarkMessage): string {
+  const refs = larkMentionTextRefs(message.mentions);
+  if (refs.length === 0) {
     return text;
   }
+
   let stripped = text;
-  for (const mention of message.mentions ?? []) {
-    if (mention.openId !== botOpenId) {
-      continue;
-    }
-    if (mention.key) {
-      stripped = stripped.split(mention.key).join("");
-    }
-    if (mention.name) {
-      stripped = stripped.replace(new RegExp(`^\\s*@${escapeRegExp(mention.name)}\\s*`), "");
+  let changed = true;
+  while (changed) {
+    changed = false;
+    stripped = stripped.trimStart();
+    for (const ref of refs) {
+      if (!stripped.startsWith(ref)) {
+        continue;
+      }
+      stripped = stripped.slice(ref.length);
+      changed = true;
+      break;
     }
   }
   return stripped.trimStart();
+}
+
+function larkMentionTextRefs(mentions: IncomingLarkMessage["mentions"]): string[] {
+  const refs = new Set<string>();
+  for (const mention of mentions ?? []) {
+    const key = nonEmptyString(mention.key);
+    if (key) {
+      refs.add(key);
+    }
+    const name = nonEmptyString(mention.name);
+    if (name) {
+      refs.add(`@${name}`);
+    }
+  }
+  return [...refs].sort((left, right) => right.length - left.length);
 }
 
 function helpTextFor(message: IncomingLarkMessage, context: MessageContext, config: TwinnyConfig): string {
@@ -8744,10 +8765,6 @@ function escapeXmlText(value: string): string {
 
 function escapeXmlAttribute(value: string): string {
   return escapeXmlText(value).replace(/"/g, "&quot;");
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function isMissingRolloutError(error: unknown): boolean {

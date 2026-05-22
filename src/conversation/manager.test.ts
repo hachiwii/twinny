@@ -3102,6 +3102,24 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).not.toHaveBeenCalled();
 
     manager.submitIncoming(
+      groupMessage("g4", "@Alice @Twinny /status", {
+        mentions: [
+          { key: "@_alice", openId: "ou_alice", name: "Alice" },
+          botMention()
+        ]
+      })
+    );
+    await waitForExpect(() => expect(lark.sendEphemeralCardToChatId).toHaveBeenCalledTimes(2));
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "g4",
+        routeKind: "control_message",
+        text: "/status"
+      })
+    );
+    expect(codex.startTurn).not.toHaveBeenCalled();
+
+    manager.submitIncoming(
       groupMessage("g3", "@_bot /help", {
         senderOpenId: "ou_owner",
         senderName: "Owner",
