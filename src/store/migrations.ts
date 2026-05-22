@@ -15,7 +15,7 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 19;
+export const currentStoreSchemaVersion = 20;
 
 const initialMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const threadRolloutMigrationFile = fileURLToPath(new URL("../../migrations/0002_codex_thread_rollout.sql", import.meta.url));
@@ -36,6 +36,7 @@ const threadNamesMigrationFile = fileURLToPath(new URL("../../migrations/0016_th
 const threadGoalStatusMigrationFile = fileURLToPath(new URL("../../migrations/0017_thread_goal_status.sql", import.meta.url));
 const larkMessageUsageMigrationFile = fileURLToPath(new URL("../../migrations/0018_lark_message_usage.sql", import.meta.url));
 const statusUsageIndexesMigrationFile = fileURLToPath(new URL("../../migrations/0019_status_usage_indexes.sql", import.meta.url));
+const mainThreadNamesMigrationFile = fileURLToPath(new URL("../../migrations/0020_main_thread_names.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -133,6 +134,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 19,
       name: "0019_status_usage_indexes",
       sql: fs.readFileSync(statusUsageIndexesMigrationFile, "utf8")
+    },
+    {
+      version: 20,
+      name: "0020_main_thread_names",
+      sql: fs.readFileSync(mainThreadNamesMigrationFile, "utf8")
     }
   ];
 }

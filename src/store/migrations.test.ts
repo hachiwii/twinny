@@ -514,6 +514,78 @@ describe("store migrations", () => {
     }
   });
 
+  it("renames existing main thread rows to the fixed main session name", () => {
+    const db = new Database(":memory:");
+    try {
+      const migrationsToV19 = loadStoreMigrations().filter((migration) => migration.version <= 19);
+      expect(runStoreMigrations(db, { migrations: migrationsToV19 })).toBe(19);
+
+      db.prepare(`
+        INSERT INTO conversations (
+          conversation_key,
+          type,
+          chat_id,
+          name,
+          role,
+          thread_id,
+          workspace,
+          role_codex_home,
+          created_at,
+          updated_at,
+          response_mode
+        ) VALUES (?, 'group', ?, ?, 'owner', ?, ?, ?, 1000, 1000, 'all')
+      `).run(
+        "group_oc_main_name",
+        "oc_main_name",
+        "Main Name",
+        "thread_main_name",
+        "/tmp/workspaces/group_oc_main_name",
+        "/tmp/roles/owner/codex"
+      );
+      db.prepare(`
+        INSERT INTO threads (
+          thread_id,
+          conversation_key,
+          name,
+          lark_thread_id,
+          role,
+          total_tokens,
+          token_usage_json,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, 'owner', 0, '{}', 1000, 1000)
+      `).run("thread_main_name", "group_oc_main_name", "旧主会话标题", null);
+      db.prepare(`
+        INSERT INTO threads (
+          thread_id,
+          conversation_key,
+          name,
+          lark_thread_id,
+          role,
+          total_tokens,
+          token_usage_json,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, 'owner', 0, '{}', 1000, 1000)
+      `).run("thread_topic_name", "group_oc_main_name", "分支标题", "topic_1");
+
+      expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
+      const rows = db
+        .prepare<[], { thread_id: string; name: string }>(`
+          SELECT thread_id, name
+          FROM threads
+          ORDER BY thread_id
+        `)
+        .all();
+      expect(rows).toEqual([
+        { thread_id: "thread_main_name", name: "主会话" },
+        { thread_id: "thread_topic_name", name: "分支标题" }
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("migrates v3 user names into p2p conversations and drops users", () => {
     const db = new Database(":memory:");
     try {

@@ -119,6 +119,7 @@ describe("ConversationManager", () => {
       conversationKey: "p2p_ou_guest",
       codexThreadId: "thread_1",
       role: "guest",
+      name: "主会话",
       larkThreadId: undefined
     });
     expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m1"], {
@@ -272,7 +273,28 @@ describe("ConversationManager", () => {
     expect(JSON.stringify(card)).toContain("新标题 来自 Codex");
   });
 
-  it("passes the current thread name when starting a Codex turn", async () => {
+  it("ignores Codex thread name updates for the main session", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_1",
+          conversationKey: "p2p_ou_guest",
+          name: "旧标题",
+          cardMessageId: "card_thread_1"
+        })
+      ]
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, lark });
+
+    manager.submitCodexThreadNameUpdated({ threadId: "thread_1", name: "新标题" });
+    await waitForDelay();
+
+    expect(repository.updateCodexThreadName).not.toHaveBeenCalled();
+    expect(lark.patchCard).not.toHaveBeenCalled();
+  });
+
+  it("does not pass the current thread name when starting a main-session Codex turn", async () => {
     const { repository } = createRepository(conversationRecord(), {
       codexThreads: [
         codexThreadRecord({
@@ -288,15 +310,102 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m1", "hello"));
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    const params = vi.mocked(codex.startTurn).mock.calls[0]![0];
+    expect(params.input).toBe(wrappedMessage("hello", "m1"));
+    expect(params.currentThreadName).toBeUndefined();
+    expect(repository.getCodexThreadById("thread_1")).toMatchObject({ name: "主会话" });
+  });
+
+  it("passes the current thread name when starting a branch Codex turn", async () => {
+    const { repository } = createRepository(groupConversationRecord(), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          larkThreadId: "topic_1",
+          name: "当前标题"
+        })
+      ]
+    });
+    const codex = createCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(groupMessage("g1", "hello", { chatType: "topic_group", larkThreadId: "topic_1" }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        input: wrappedMessage("hello", "m1"),
+        threadId: "thread_topic",
+        input: wrappedMessage("hello", "g1"),
         currentThreadName: "当前标题"
       })
     );
   });
 
-  it("handles set_thread_name tool calls by updating cards and syncing Codex thread name", async () => {
+  it("handles set_thread_name tool calls for branch sessions by updating cards and syncing Codex thread name", async () => {
+    const turn = deferred<CodexTurnResult>();
+    let turnParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
+    const codex = createCodex({
+      setThreadName: vi.fn(async () => undefined),
+      startTurn: vi.fn((params) => {
+        turnParams = params;
+        void params.onTurnStarted?.("turn_1");
+        return turn.promise;
+      })
+    });
+    const { repository } = createRepository(groupConversationRecord(), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          larkThreadId: "topic_1",
+          name: "旧标题",
+          cardMessageId: "card_thread_topic"
+        })
+      ]
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    try {
+      manager.submitIncoming(groupMessage("g1", "hello", { chatType: "topic_group", larkThreadId: "topic_1" }));
+      await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+      await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+      const response = await turnParams?.onSetThreadName?.({
+        requestId: "req_1",
+        threadId: "thread_topic",
+        turnId: "turn_1",
+        callId: "call_1",
+        name: "  新标题\n来自工具  ",
+        rawArguments: { name: "  新标题\n来自工具  " }
+      });
+
+      expect(response).toEqual({
+        success: true,
+        contentItems: [{ type: "inputText", text: "Thread name updated to: 新标题 来自工具" }]
+      });
+      expect(repository.updateCodexThreadName).toHaveBeenCalledWith("thread_topic", "新标题 来自工具");
+      await waitForExpect(() =>
+        expect(codex.setThreadName).toHaveBeenCalledWith({
+          role: "guest",
+          threadId: "thread_topic",
+          name: "新标题 来自工具"
+        })
+      );
+      await waitForExpect(() =>
+        expect(vi.mocked(lark.patchCard).mock.calls.some(([, card]) =>
+          JSON.stringify(card).includes("[已更新标题] 新标题 来自工具")
+        )).toBe(true)
+      );
+    } finally {
+      turn.resolve(completed("thread_topic", "turn_1"));
+      await turn.promise;
+      await waitForDelay();
+    }
+  });
+
+  it("ignores set_thread_name tool calls for the main session", async () => {
     const turn = deferred<CodexTurnResult>();
     let turnParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
     const codex = createCodex({
@@ -323,34 +432,23 @@ describe("ConversationManager", () => {
     try {
       manager.submitIncoming(message("m1", "hello"));
       await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
-      await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
 
       const response = await turnParams?.onSetThreadName?.({
         requestId: "req_1",
         threadId: "thread_1",
         turnId: "turn_1",
         callId: "call_1",
-        name: "  新标题\n来自工具  ",
-        rawArguments: { name: "  新标题\n来自工具  " }
+        name: "新标题",
+        rawArguments: { name: "新标题" }
       });
 
       expect(response).toEqual({
         success: true,
-        contentItems: [{ type: "inputText", text: "Thread name updated to: 新标题 来自工具" }]
+        contentItems: [{ type: "inputText", text: "Main session thread name is fixed to: 主会话" }]
       });
-      expect(repository.updateCodexThreadName).toHaveBeenCalledWith("thread_1", "新标题 来自工具");
-      await waitForExpect(() =>
-        expect(codex.setThreadName).toHaveBeenCalledWith({
-          role: "guest",
-          threadId: "thread_1",
-          name: "新标题 来自工具"
-        })
-      );
-      await waitForExpect(() =>
-        expect(vi.mocked(lark.patchCard).mock.calls.some(([, card]) =>
-          JSON.stringify(card).includes("[已更新标题] 新标题 来自工具")
-        )).toBe(true)
-      );
+      expect(repository.updateCodexThreadName).not.toHaveBeenCalled();
+      expect(codex.setThreadName).not.toHaveBeenCalled();
+      expect(repository.getCodexThreadById("thread_1")).toMatchObject({ name: "主会话" });
     } finally {
       turn.resolve(completed("thread_1", "turn_1"));
       await turn.promise;

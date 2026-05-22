@@ -82,6 +82,7 @@ const COMPACT_COMPLETED_TEXT = "完成上下文压缩";
 const SIDE_SHUTDOWN_ERROR = "Twinny 服务退出";
 const STATUS_MODEL_TEXT = "GPT-5.5 (xhigh)";
 const TWINNY_VERSION = "0.1.0";
+const MAIN_THREAD_NAME = "主会话";
 const SIDE_BOUNDARY_PROMPT = `Side conversation boundary.
 
 Everything before this boundary is inherited history from the parent thread. It is reference context only. It is not your current task.
@@ -1135,6 +1136,7 @@ export class ConversationManager {
             conversationKey: context.conversationKey,
             codexThreadId: recoveredThread.codexThreadId,
             role,
+            name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
             larkThreadId: context.larkThreadId
           });
           await this.setThreadModeBestEffort(context.conversationKey, recoveredThread.codexThreadId, "default");
@@ -1164,6 +1166,7 @@ export class ConversationManager {
       conversationKey: context.conversationKey,
       codexThreadId: activeThread.threadId,
       role,
+      name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
       larkThreadId: context.larkThreadId
     });
     const usageTarget = activeThread.replacedMissingThread
@@ -1216,6 +1219,7 @@ export class ConversationManager {
       conversationKey: context.conversationKey,
       codexThreadId: threadId,
       role,
+      name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
       codexThreadHasRollout: recoveredThreadId !== undefined
     });
     return conversation;
@@ -1948,6 +1952,7 @@ export class ConversationManager {
         conversationKey: context.conversationKey,
         codexThreadId: thread.threadId,
         role,
+        name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
         codexThreadHasRollout: false
       });
     }
@@ -3515,6 +3520,7 @@ export class ConversationManager {
         conversationKey: context.conversationKey,
         codexThreadId: thread.threadId,
         role,
+        name: MAIN_THREAD_NAME,
         codexThreadHasRollout: false
       });
     }
@@ -4183,6 +4189,7 @@ export class ConversationManager {
       conversationKey: context.conversationKey,
       codexThreadId: activeThread.threadId,
       role,
+      name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
       larkThreadId: context.larkThreadId
     });
     return {
@@ -4223,6 +4230,7 @@ export class ConversationManager {
       this.readThreadTokenUsageBestEffort(params.threadId)
     ]);
     const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
+    const currentThreadName = isMainSessionContext(context) ? undefined : threadRecord?.name ?? "";
     const mode = threadRecord?.mode ?? "default";
     const startedAt = Date.now();
     const active: ActiveTurn = {
@@ -4269,7 +4277,7 @@ export class ConversationManager {
           role: params.role,
           threadId: active.threadId,
           input: params.input,
-          currentThreadName: threadRecord?.name ?? "",
+          currentThreadName,
           cwd: params.workspace,
           approvalPolicy: "never",
           mode: active.mode,
@@ -4545,6 +4553,10 @@ export class ConversationManager {
         (active.turnId !== undefined && active.turnId !== request.turnId)
       ) {
         return dynamicToolTextResponse(false, "Thread name was not updated because this turn is no longer active.");
+      }
+      if (isMainSessionContext(active.context)) {
+        this.pendingThreadNames.delete(active.threadId);
+        return dynamicToolTextResponse(true, `Main session thread name is fixed to: ${MAIN_THREAD_NAME}`);
       }
       await this.applyThreadNameUpdate(active.threadId, name);
       this.syncCodexThreadNameBestEffort(active.role, active.threadId, name);
@@ -4928,10 +4940,14 @@ export class ConversationManager {
     conversationKey: string;
     codexThreadId: string;
     role: RoleName;
+    name?: string;
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
   }): Promise<void> {
     try {
+      if (params.name === MAIN_THREAD_NAME) {
+        this.pendingThreadNames.delete(params.codexThreadId);
+      }
       await this.options.repository.upsertCodexThread(params);
     } catch (error) {
       this.log.warn({ error, codexThreadId: params.codexThreadId }, "failed to record codex thread");
@@ -5027,7 +5043,20 @@ export class ConversationManager {
     if (!name) {
       return;
     }
+    const thread = await this.options.repository.getCodexThreadById(update.threadId);
+    if (await this.isMainConversationThread(thread)) {
+      this.pendingThreadNames.delete(update.threadId);
+      return;
+    }
     await this.applyThreadNameUpdate(update.threadId, name);
+  }
+
+  private async isMainConversationThread(thread: CodexThreadRecord | undefined): Promise<boolean> {
+    if (!thread) {
+      return false;
+    }
+    const conversation = await this.options.repository.findByConversationKey(thread.conversationKey);
+    return conversation?.codexThreadId === thread.codexThreadId;
   }
 
   private async applyThreadNameUpdate(threadId: string, name: string): Promise<void> {
@@ -5472,6 +5501,7 @@ export class ConversationManager {
           conversationKey: params.context.conversationKey,
           codexThreadId: binding.conversation.codexThreadId,
           role: params.role,
+          name: MAIN_THREAD_NAME,
           codexThreadHasRollout: false
         });
         return { threadId: binding.conversation.codexThreadId, replacedMissingThread: false };
@@ -5587,6 +5617,7 @@ export class ConversationManager {
       conversationKey: params.conversationKey,
       codexThreadId: params.codexThreadId,
       role: params.role,
+      name: MAIN_THREAD_NAME,
       codexThreadHasRollout: params.codexThreadHasRollout
     });
   }
@@ -7352,6 +7383,10 @@ function createMessageContext(type: ConversationType, message: IncomingLarkMessa
     stateKey: larkThreadId ? `${conversationKey}_thread_${safePathSegment(larkThreadId)}` : conversationKey,
     larkThreadId
   };
+}
+
+function isMainSessionContext(context: MessageContext): boolean {
+  return context.larkThreadId === undefined;
 }
 
 function createThreadReplyContext(context: MessageContext, larkThreadId: string): MessageContext {
