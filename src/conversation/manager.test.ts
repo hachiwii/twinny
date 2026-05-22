@@ -1361,13 +1361,29 @@ describe("ConversationManager", () => {
       "m1",
       expect.stringContaining("/help - 查看可用指令和使用说明")
     );
-    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/new -"));
-    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/stop -"));
-    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/next -"));
-    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/steer -"));
-    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/status -"));
-    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/queue <message> -"));
-    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("/goal <objective> -"));
+    const helpText = vi.mocked(lark.replyText).mock.calls[0]?.[1] ?? "";
+    for (const usage of [
+      "/help - 查看可用指令和使用说明",
+      "/status - 查看当前会话、Codex thread 和 token 用量",
+      "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
+      "/stop [all|<side_id>] - 停止当前任务并清空待处理消息；可停止全部或指定临时会话",
+      "/next - 打断当前任务，并执行队列中的下一条消息",
+      "/steer - 将队列中的下一批消息注入当前任务",
+      "/queue <message> - 将消息加入下一轮队列，不注入当前任务",
+      "/goal <objective> - 设置并自动实现 Codex goal；运行中再次使用会更新目标",
+      "/plan [message] - 开启 plan mode；带 message 时直接以 plan mode 处理",
+      "/exit - 退出 plan mode；默认加入下一轮队列",
+      "/side <message> 或 /btw <message> - 基于当前 Codex thread 发起临时会话",
+      "/compact - 压缩当前 Codex thread 上下文；默认加入下一轮队列",
+      "/logo - 发送 Twinny logo.png",
+      "/twinny 或 /banner - 发送 Twinny banner 卡片",
+      "/thread [message] - 创建新话题",
+      "/fork [message] - 从当前 Codex thread fork 出新话题"
+    ]) {
+      expect(helpText).toContain(usage);
+    }
+    expect(helpText).not.toContain("/activate");
+    expect(helpText).not.toContain("/deactivate");
     expect(codex.startTurn).not.toHaveBeenCalled();
   });
 
