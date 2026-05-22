@@ -1264,10 +1264,6 @@ describe("Lark to Codex integration flow", () => {
       const interruptId = codexOut(items, "turn/interrupt")[0]?.id;
       return interruptId !== undefined && items.some((entry) => entry.kind === "codex.in" && entry.message.id === interruptId);
     }, "compact interrupt response");
-    await harness.waitForTrace(
-      (items) => larkOut(items).some((entry) => entry.path === "/im/v1/messages/m_compact_stop/reply" && traceText(entry).includes("已停止")),
-      "compact stop reply"
-    );
     await harness.waitForExpect(() => {
       expect(harness.repository.getLarkMessageById("m_compact_during")).toMatchObject({ status: "cleared" });
     });
@@ -1278,10 +1274,10 @@ describe("Lark to Codex integration flow", () => {
       (entry) => entry.kind === "codex.in" && traceText(entry).includes("compact_1") && traceText(entry).includes("turn/started")
     )?.at;
     expect(queuedAt).toBeDefined();
+    expect(larkOut(trace).some((entry) => entry.path === "/im/v1/messages/m_compact_stop/reply")).toBe(false);
     expect(compactStartedAt).toBeDefined();
     expect(queuedAt!).toBeLessThan(compactStartedAt!);
     expect(codexOut(trace, "turn/steer")).toHaveLength(0);
-    expect(larkOut(trace).some((entry) => entry.path === "/im/v1/messages/m_compact_stop/reply" && traceText(entry).includes("已停止"))).toBe(true);
   });
 
   it("creates a Lark thread with /thread and routes later topic messages through the new Codex thread", async () => {
@@ -1772,7 +1768,7 @@ describe("Lark to Codex integration flow", () => {
     await waitForDelay(30);
     trace = harness.readTrace();
     expect(codexOut(trace, "turn/start")).toHaveLength(3);
-    expect(larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g_multi_owner_stop/reply" && traceText(entry).includes("已停止"))).toBe(true);
+    expect(larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g_multi_owner_stop/reply")).toBe(false);
   });
 });
 

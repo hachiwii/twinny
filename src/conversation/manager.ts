@@ -1315,12 +1315,9 @@ export class ConversationManager {
         }
         case "stop": {
           const { cleared, interrupted } = await this.stopConversationState(state);
-          await this.sendDirectControlBestEffort(
-            action.operatorOpenId,
-            interrupted
-              ? `已停止当前任务，清空 ${cleared} 条待处理消息。`
-              : `当前没有正在运行的任务，清空 ${cleared} 条待处理消息。`
-          );
+          if (!interrupted && cleared === 0) {
+            await this.sendDirectControlBestEffort(action.operatorOpenId, "当前没有正在运行的任务，队列为空。");
+          }
           return;
         }
         case "new": {
@@ -3115,10 +3112,9 @@ export class ConversationManager {
     if (target === "all") {
       const { cleared, interrupted } = await this.stopConversationState(state);
       const stoppedSides = await this.cancelAllSideTurns(state);
-      await this.replyControlBestEffort(
-        message.messageId,
-        `已停止当前任务，清空 ${cleared} 条待处理消息，停止 ${stoppedSides} 个临时会话。${interrupted ? "" : "当前没有正在运行的主任务。"}`
-      );
+      if (!interrupted && cleared === 0 && stoppedSides === 0) {
+        await this.replyControlBestEffort(message.messageId, "当前没有正在运行的任务或临时会话，队列为空。");
+      }
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
@@ -3141,15 +3137,13 @@ export class ConversationManager {
         return;
       }
       await this.cancelSideTurn(state, side);
-      await this.replyControlBestEffort(message.messageId, `已停止临时会话 [${sideId}]。`);
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
     const { cleared, interrupted } = await this.stopConversationState(state);
-    const summary = interrupted
-      ? `已停止当前任务，清空 ${cleared} 条待处理消息。`
-      : `当前没有正在运行的任务，清空 ${cleared} 条待处理消息。`;
-    await this.replyControlBestEffort(message.messageId, summary);
+    if (!interrupted && cleared === 0) {
+      await this.replyControlBestEffort(message.messageId, "当前没有正在运行的任务，队列为空。");
+    }
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
@@ -3423,19 +3417,13 @@ export class ConversationManager {
     message: IncomingLarkMessage
   ): Promise<void> {
     const queued = state.pendingBatch.length;
-    const nextBatchSize = countNextPendingBatch(state);
     const interrupted = await this.cancelActiveTurn(state, { waitForCompletion: true });
     if (!interrupted || !state.active) {
       await this.startPendingBatch(state, context);
     }
-    const summary = interrupted
-      ? queued > 0
-        ? `已打断当前任务，将执行队列中的下一条消息。队列剩余 ${Math.max(queued - nextBatchSize, 0)} 条。`
-        : "已打断当前任务，但队列为空。"
-      : queued > 0
-        ? `当前没有正在运行的任务，开始执行队列中的下一条消息。队列剩余 ${Math.max(queued - nextBatchSize, 0)} 条。`
-        : "当前没有正在运行的任务，队列为空。";
-    await this.replyControlBestEffort(message.messageId, summary);
+    if (!interrupted && queued === 0) {
+      await this.replyControlBestEffort(message.messageId, "当前没有正在运行的任务，队列为空。");
+    }
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
@@ -5801,7 +5789,7 @@ export class ConversationManager {
     try {
       await this.options.lark.replyText(
         messageId,
-        "WARN: Codex thread state was missing. Twinny created a replacement thread for this conversation; previous context is no longer available."
+        "警告：Codex thread 状态缺失。Twinny 已为当前会话创建替代 thread，之前的上下文已不可用。"
       );
     } catch (error) {
       this.log.warn(

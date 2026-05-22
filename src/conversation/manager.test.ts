@@ -1485,7 +1485,7 @@ describe("ConversationManager", () => {
     );
     expect(repository.markLarkMessagesInterrupted).toHaveBeenCalledWith(["m1"]);
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m3"]);
-    expect(lark.replyText).toHaveBeenCalledWith("m3", "已停止当前任务，清空 1 条待处理消息。");
+    expect(lark.replyText).not.toHaveBeenCalled();
   });
 
   it("replies to /help with available slash command usage", async () => {
@@ -1766,7 +1766,7 @@ describe("ConversationManager", () => {
       expect.objectContaining({ role: "guest", threadId: "thread_1", turnId: "turn_1" })
     );
     expect(lark.removeReaction).toHaveBeenCalledWith({ messageId: "m1", reactionId: "r_m1" });
-    expect(lark.replyText).toHaveBeenCalledWith("m3", "已停止当前任务，清空 1 条待处理消息。");
+    expect(lark.replyText).not.toHaveBeenCalled();
 
     turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
     await waitForDelay();
@@ -1823,10 +1823,7 @@ describe("ConversationManager", () => {
       expect.objectContaining({ input: wrappedMessage("queued one", "m2") })
     );
     expect(manager.queueDepth("p2p_ou_guest")).toBe(1);
-    expect(lark.replyText).toHaveBeenCalledWith(
-      "m4",
-      "已打断当前任务，将执行队列中的下一条消息。队列剩余 1 条。"
-    );
+    expect(lark.replyText).not.toHaveBeenCalled();
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
   });
@@ -1857,10 +1854,7 @@ describe("ConversationManager", () => {
     );
     expect(manager.queueDepth("p2p_ou_guest")).toBe(0);
     expect(repository.markLarkMessagesInterrupted).toHaveBeenCalledWith(["m1"]);
-    expect(lark.replyText).toHaveBeenCalledWith(
-      "m3",
-      "已打断当前任务，将执行队列中的下一条消息。队列剩余 0 条。"
-    );
+    expect(lark.replyText).not.toHaveBeenCalled();
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
     turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
@@ -2956,7 +2950,7 @@ describe("ConversationManager", () => {
     );
     expect(repository.markLarkMessagesInterrupted).toHaveBeenCalledWith(["m_side"]);
     expect(repository.markLarkMessagesInterrupted).not.toHaveBeenCalledWith(["m_main"]);
-    expect(lark.replyText).toHaveBeenCalledWith("m_stop_side", "已停止临时会话 [1]。");
+    expect(lark.replyText).not.toHaveBeenCalled();
 
     turns[1]!.resolve(completed("thread_1_side", "turn_2", "interrupted"));
     turns[0]!.resolve(completed("thread_1", "turn_1"));
@@ -2988,10 +2982,7 @@ describe("ConversationManager", () => {
     );
     expect(repository.markLarkMessagesInterrupted).toHaveBeenCalledWith(["g_side_1"]);
     expect(repository.markLarkMessagesInterrupted).toHaveBeenCalledWith(["g_side_2"]);
-    expect(lark.replyText).toHaveBeenCalledWith(
-      "g_stop_all",
-      "已停止当前任务，清空 0 条待处理消息，停止 2 个临时会话。当前没有正在运行的主任务。"
-    );
+    expect(lark.replyText).not.toHaveBeenCalled();
 
     turns[0]!.resolve(completed("thread_group_side_1", "turn_1", "interrupted"));
     turns[1]!.resolve(completed("thread_group_side_2", "turn_2", "interrupted"));
@@ -4472,7 +4463,11 @@ describe("ConversationManager", () => {
 
     expect(row.codexThreadId).toBe("thread_replacement");
     expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_replacement" }));
-    expect(lark.replyText).toHaveBeenNthCalledWith(1, "m1", expect.stringMatching(/^WARN: .*previous context/));
+    expect(lark.replyText).toHaveBeenNthCalledWith(
+      1,
+      "m1",
+      "警告：Codex thread 状态缺失。Twinny 已为当前会话创建替代 thread，之前的上下文已不可用。"
+    );
   });
 
   it("replaces a missing thread when Codex rejects turn start", async () => {
@@ -4505,7 +4500,11 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenNthCalledWith(2, expect.objectContaining({ threadId: "thread_replacement" }));
     expect(repository.getCodexThreadById("thread_replacement")).toMatchObject({ codexThreadHasRollout: true });
     expect(repository.markLarkMessagesFailed).not.toHaveBeenCalled();
-    expect(lark.replyText).toHaveBeenNthCalledWith(1, "m1", expect.stringMatching(/^WARN: .*previous context/));
+    expect(lark.replyText).toHaveBeenNthCalledWith(
+      1,
+      "m1",
+      "警告：Codex thread 状态缺失。Twinny 已为当前会话创建替代 thread，之前的上下文已不可用。"
+    );
   });
 
   it("falls back to plain agentMessage items when agent cards cannot be sent", async () => {
