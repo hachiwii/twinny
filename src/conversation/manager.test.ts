@@ -3260,7 +3260,7 @@ describe("ConversationManager", () => {
       startTurn: vi.fn(async ({ threadId }) => completed(threadId, "turn_1"))
     });
     const lark = createLarkResponder();
-    vi.mocked(lark.replyCard).mockResolvedValueOnce({
+    vi.mocked(lark.sendCardToOpenId).mockResolvedValueOnce({
       messageId: "card_dm_thread_1",
       raw: { data: { thread_id: "dm_thread_1" } }
     });
@@ -3278,7 +3278,10 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m_thread", "/thread hello", { senderOpenId: "ou_guest" }));
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
-    expect(lark.replyCard).toHaveBeenCalledWith("m_thread", expect.any(Object), { replyInThread: true });
+    expect(lark.sendCardToOpenId).toHaveBeenCalledWith("ou_guest", expect.any(Object), {
+      uuid: expect.stringMatching(UUID_PATTERN)
+    });
+    expect(vi.mocked(lark.replyCard).mock.calls.some(([messageId]) => messageId === "m_thread")).toBe(false);
     expect(lark.replyText).toHaveBeenNthCalledWith(
       1,
       "card_dm_thread_1",
@@ -7168,6 +7171,7 @@ function createLarkResponder(): LarkResponder {
     replyFile: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     replyImage: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     sendTextToOpenId: vi.fn(async () => undefined),
+    sendCardToOpenId: vi.fn(async (openId) => ({ messageId: `card_${openId}_${++markdownReplyCount}`, raw: {} })),
     sendCardToChatId: vi.fn(async (chatId) => ({ messageId: `card_${chatId}_${++markdownReplyCount}`, raw: {} })),
     sendEphemeralCardToChatId: vi.fn(async (chatId) => ({ messageId: `ephemeral_${chatId}_${++markdownReplyCount}`, raw: {} })),
     forwardThreadToThread: vi.fn(async (threadId) => ({ messageId: `forward_${threadId}_${++markdownReplyCount}`, raw: {} })),

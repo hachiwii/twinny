@@ -636,6 +636,13 @@ function adaptLarkSender(
     sendTextToOpenId: async (openId: string, text: string): Promise<void> => {
       await sender.sendTextToOpenId(openId, text);
     },
+    sendCardToOpenId: async (
+      openId: string,
+      card: Parameters<LarkMessageSender["sendInteractiveCardToOpenId"]>[1],
+      options?: { uuid?: string }
+    ) => {
+      return sender.sendInteractiveCardToOpenId(openId, card, options);
+    },
     sendCardToChatId: async (
       chatId: string,
       card: Parameters<LarkMessageSender["sendInteractiveCardToChatId"]>[1],

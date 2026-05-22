@@ -467,6 +467,11 @@ export interface LarkResponder {
   replyFile(messageId: string, fileKey: string): Promise<{ messageId?: string } | void>;
   replyImage(messageId: string, imageKey: string): Promise<{ messageId?: string } | void>;
   sendTextToOpenId(openId: string, text: string): Promise<void>;
+  sendCardToOpenId(
+    openId: string,
+    card: LarkCardJson,
+    options?: { uuid?: string }
+  ): Promise<LarkSendMessageResult | void>;
   sendCardToChatId(
     chatId: string,
     card: LarkCardJson,
@@ -2402,10 +2407,10 @@ export class ConversationManager {
           card,
           { uuid: createLarkUuid("twinny-new-session", request.eventId) }
         )
-      : await this.options.lark.replyCard(
-          request.anchorMessage?.messageId ?? request.eventId,
+      : await this.options.lark.sendCardToOpenId(
+          request.chatId,
           card,
-          { replyInThread: true }
+          { uuid: createLarkUuid("twinny-new-session", request.eventId) }
         );
     const cardMessageId = nonEmptyString(result?.messageId);
     if (!cardMessageId) {

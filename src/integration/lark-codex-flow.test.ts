@@ -2284,6 +2284,7 @@ function adaptLarkSender(sender: LarkMessageSender, config: TwinnyConfig): LarkR
     sendTextToOpenId: async (openId, text) => {
       await sender.sendTextToOpenId(openId, text);
     },
+    sendCardToOpenId: (openId, card, options) => sender.sendInteractiveCardToOpenId(openId, card, options),
     sendCardToChatId: (chatId, card, options) => sender.sendInteractiveCardToChatId(chatId, card, options),
     sendEphemeralCardToChatId: (chatId, openId, card) =>
       sender.sendEphemeralInteractiveCardToChatId(chatId, openId, card),
