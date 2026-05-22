@@ -37,7 +37,6 @@ const config: TwinnyConfig = {
     completedReaction: "DONE",
     queuedReaction: "OneSecond",
     maxMessageAgeSeconds: 60,
-    agentMessageMode: "plain",
     messageRedaction: {
       email: "mask",
       chinesePhoneNumber: "mask"
@@ -2860,7 +2859,7 @@ describe("ConversationManager", () => {
     );
     expect(lark.replyText).toHaveBeenNthCalledWith(2, "card_dm_thread_1", "hello", { replyInThread: true });
     expect(lark.sendCardToChatId).not.toHaveBeenCalled();
-    expect(lark.recallMessage).not.toHaveBeenCalled();
+    expect(lark.recallMessage).toHaveBeenCalledWith("card_reply_dm_thread_1_1");
     expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
       conversationKey: "p2p_ou_guest",
       codexThreadId: "thread_dm_topic",
@@ -3983,6 +3982,7 @@ describe("ConversationManager", () => {
       })
     });
     const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
     const manager = createManager({ repository, codex, lark });
 
     manager.submitIncoming(message("m1", "first"));
@@ -4011,6 +4011,7 @@ describe("ConversationManager", () => {
       })
     });
     const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
     const manager = createManager({ repository, codex, lark });
 
     manager.submitIncoming(message("m1", "first"));
@@ -4025,7 +4026,7 @@ describe("ConversationManager", () => {
     expect(lark.replyText).toHaveBeenNthCalledWith(1, "m1", expect.stringMatching(/^WARN: .*previous context/));
   });
 
-  it("sends completed agentMessage items and skips the turn-finished aggregate reply", async () => {
+  it("falls back to plain agentMessage items when agent cards cannot be sent", async () => {
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
         await onTurnStarted?.("turn_1");
@@ -4040,16 +4041,16 @@ describe("ConversationManager", () => {
       })
     });
     const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
     const manager = createManager({ codex, lark });
 
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(lark.replyMarkdown).toHaveBeenCalledTimes(2));
-    await waitForExpect(() => expect(lark.addCompletedReaction).toHaveBeenCalledWith("reply_m1_2"));
 
     expect(lark.replyMarkdown).toHaveBeenNthCalledWith(1, "m1", "first item");
     expect(lark.replyMarkdown).toHaveBeenNthCalledWith(2, "m1", "second item");
     expect(lark.replyMarkdown).not.toHaveBeenCalledWith("m1", "final aggregate should not be sent");
-    expect(lark.addCompletedReaction).toHaveBeenCalledTimes(1);
+    expect(lark.addCompletedReaction).not.toHaveBeenCalled();
   });
 
   it("creates an agent card immediately after sending input to Codex with an empty-progress placeholder", async () => {
@@ -4814,7 +4815,7 @@ describe("ConversationManager", () => {
     });
   });
 
-  it("renders Codex Lark mention tags only from plain final_answer messages", async () => {
+  it("renders Codex Lark mention tags only from fallback plain final_answer messages", async () => {
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
         await onTurnStarted?.("turn_1");
@@ -4832,6 +4833,7 @@ describe("ConversationManager", () => {
       })
     });
     const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
     const manager = createManager({ codex, lark });
 
     manager.submitIncoming(message("m1", "first"));
@@ -5692,7 +5694,7 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_1", "turn_2"));
   });
 
-  it("uploads SEND_TO_LARK image directives from completed agent messages and embeds them in the Lark post", async () => {
+  it("uploads SEND_TO_LARK image directives through fallback plain replies", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-image-"));
     const workspaceRoot = path.join(tempRoot, "workspaces");
     const workspace = path.join(workspaceRoot, "p2p_ou_guest");
@@ -5710,6 +5712,7 @@ describe("ConversationManager", () => {
       })
     });
     const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
     const larkFiles: LarkFileDownloader = {
       downloadMessageResource: vi.fn(),
       uploadImage: vi.fn(async () => ({ imageKey: "img_uploaded" }))
@@ -5732,7 +5735,7 @@ describe("ConversationManager", () => {
     expect(lark.replyMarkdown).not.toHaveBeenCalledWith("m1", expect.stringContaining("SEND_TO_LARK"));
   });
 
-  it("uploads SEND_TO_LARK files, shows the attachment line, and sends the file as a separate reply", async () => {
+  it("uploads SEND_TO_LARK files through fallback plain replies", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-file-"));
     const workspaceRoot = path.join(tempRoot, "workspaces");
     const workspace = path.join(workspaceRoot, "p2p_ou_guest");
@@ -5750,6 +5753,7 @@ describe("ConversationManager", () => {
       })
     });
     const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
     const larkFiles: LarkFileDownloader = {
       downloadMessageResource: vi.fn(),
       uploadFile: vi.fn(async () => ({ fileKey: "file_uploaded" }))
@@ -5768,7 +5772,7 @@ describe("ConversationManager", () => {
     expect(lark.replyPost).toHaveBeenCalledWith("m1", [[{ tag: "md", text: "see attachment\n📎 report.txt" }]]);
   });
 
-  it("rejects SEND_TO_LARK symlinks whose real target is outside the workspace", async () => {
+  it("rejects SEND_TO_LARK symlinks through fallback plain replies", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-link-"));
     const workspaceRoot = path.join(tempRoot, "workspaces");
     const workspace = path.join(workspaceRoot, "p2p_ou_guest");
@@ -5785,6 +5789,7 @@ describe("ConversationManager", () => {
       })
     });
     const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
     const larkFiles: LarkFileDownloader = {
       downloadMessageResource: vi.fn(),
       uploadImage: vi.fn(async () => ({ imageKey: "img_uploaded" }))
@@ -5880,7 +5885,8 @@ describe("ConversationManager", () => {
     );
     expect(codex.startTurn).not.toHaveBeenCalled();
     await waitForExpect(() => expect(repository.markLarkMessagesFailed).toHaveBeenCalledWith(["m_goal"]));
-    expect(lark.replyText).toHaveBeenCalledWith("m_goal", "处理失败：Goal missed after relaunching");
+    await waitForExpect(() => expect(JSON.stringify(vi.mocked(lark.patchCard).mock.calls)).toContain("Goal missed after relaunching"));
+    expect(lark.replyText).not.toHaveBeenCalledWith("m_goal", "处理失败：Goal missed after relaunching");
   });
 
   it("does not use route_kind=goal_message alone to recover a goal", async () => {
@@ -6364,7 +6370,6 @@ function cardModeConfig(overrides: Partial<TwinnyConfig["lark"]> = {}): TwinnyCo
     ...config,
     lark: {
       ...config.lark,
-      agentMessageMode: "card",
       ...overrides
     }
   };

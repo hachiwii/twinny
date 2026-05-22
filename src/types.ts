@@ -8,8 +8,6 @@ export type LarkGroupMessageType = "chat" | "thread";
 
 export type ConversationResponseMode = "all" | "at" | "none";
 
-export type AgentMessageMode = "plain" | "card";
-
 export type AgentMessagePhase = "commentary" | "final_answer";
 
 export type LarkMessageRedactionStrategy = "mask" | "whitespace" | "none";
@@ -70,7 +68,6 @@ export const DEFAULT_LARK_WORKING_REACTION = "Typing";
 export const DEFAULT_LARK_COMPLETED_REACTION = "DONE";
 export const DEFAULT_LARK_QUEUED_REACTION = "OneSecond";
 export const DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS = 60;
-export const DEFAULT_AGENT_MESSAGE_MODE: AgentMessageMode = "card";
 export const DEFAULT_LARK_MESSAGE_REDACTION_STRATEGY: LarkMessageRedactionStrategy = "mask";
 
 export interface LarkMessageRedactionConfig {
@@ -95,7 +92,6 @@ export interface LarkConfig {
   completedReaction: string;
   queuedReaction: string;
   maxMessageAgeSeconds: number;
-  agentMessageMode: AgentMessageMode;
   iconImageKey?: string;
   messageRedaction: LarkMessageRedactionConfig;
 }

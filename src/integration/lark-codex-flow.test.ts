@@ -2245,7 +2245,6 @@ function createIntegrationConfig(tempDir: string, fakeCodexBinary: string): Twin
     lark: {
       appId: "cli_integration",
       appSecretRef: "test:lark-secret",
-      agentMessageMode: "card",
       iconImageKey: "img_logo"
     },
     owner: {

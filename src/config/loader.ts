@@ -3,13 +3,11 @@ import path from "node:path";
 import { parse, stringify, type TomlTable } from "smol-toml";
 import { z } from "zod";
 import {
-  DEFAULT_AGENT_MESSAGE_MODE,
   DEFAULT_LARK_COMPLETED_REACTION,
   DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
   DEFAULT_LARK_MESSAGE_REDACTION_STRATEGY,
   DEFAULT_LARK_QUEUED_REACTION,
   DEFAULT_LARK_WORKING_REACTION,
-  type AgentMessageMode,
   type LarkMessageRedactionConfig,
   type LarkMessageRedactionStrategy,
   type RoleName,
@@ -36,7 +34,6 @@ const rawConfigSchema = z.object({
       completed_reaction: z.string().optional(),
       queued_reaction: z.string().optional(),
       max_message_age_seconds: z.number().optional(),
-      agent_message_mode: z.enum(["plain", "card"]).optional(),
       icon_image_key: z.string().optional(),
       redaction: z
         .object({
@@ -72,7 +69,6 @@ export interface CreateTwinnyConfigInput {
     completedReaction?: string;
     queuedReaction?: string;
     maxMessageAgeSeconds?: number;
-    agentMessageMode?: AgentMessageMode;
     iconImageKey?: string;
     messageRedaction?: Partial<LarkMessageRedactionConfig>;
   };
@@ -121,7 +117,6 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
       completedReaction: normalizeOptionalString(input.lark.completedReaction) ?? DEFAULT_LARK_COMPLETED_REACTION,
       queuedReaction: normalizeOptionalString(input.lark.queuedReaction) ?? DEFAULT_LARK_QUEUED_REACTION,
       maxMessageAgeSeconds: input.lark.maxMessageAgeSeconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
-      agentMessageMode: input.lark.agentMessageMode ?? DEFAULT_AGENT_MESSAGE_MODE,
       iconImageKey: normalizeOptionalString(input.lark.iconImageKey),
       messageRedaction: normalizeMessageRedactionConfig(input.lark.messageRedaction)
     },
@@ -202,7 +197,6 @@ export function parseTwinnyConfig(rawToml: string, options: LoadConfigOptions = 
       completedReaction: normalizeOptionalString(parsed.lark?.completed_reaction) ?? DEFAULT_LARK_COMPLETED_REACTION,
       queuedReaction: normalizeOptionalString(parsed.lark?.queued_reaction) ?? DEFAULT_LARK_QUEUED_REACTION,
       maxMessageAgeSeconds: parsed.lark?.max_message_age_seconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
-      agentMessageMode: parsed.lark?.agent_message_mode ?? DEFAULT_AGENT_MESSAGE_MODE,
       iconImageKey: normalizeOptionalString(parsed.lark?.icon_image_key),
       messageRedaction: normalizeMessageRedactionConfig({
         email: parsed.lark?.redaction?.email,
@@ -274,9 +268,6 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   if (!Number.isFinite(config.lark.maxMessageAgeSeconds) || config.lark.maxMessageAgeSeconds <= 0) {
     issues.push("lark.max_message_age_seconds must be a positive number");
   }
-  if (config.lark.agentMessageMode !== "plain" && config.lark.agentMessageMode !== "card") {
-    issues.push("lark.agent_message_mode must be plain or card");
-  }
   for (const [key, strategy] of Object.entries(config.lark.messageRedaction)) {
     if (!isMessageRedactionStrategy(strategy)) {
       issues.push(`lark.redaction.${key} must be mask, whitespace, or none`);
@@ -328,7 +319,6 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
       completed_reaction: config.lark.completedReaction,
       queued_reaction: config.lark.queuedReaction,
       max_message_age_seconds: config.lark.maxMessageAgeSeconds,
-      agent_message_mode: config.lark.agentMessageMode,
       ...(config.lark.iconImageKey ? { icon_image_key: config.lark.iconImageKey } : {}),
       redaction: {
         email: config.lark.messageRedaction.email,

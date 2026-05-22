@@ -55,14 +55,13 @@ describe("Twinny config loading and bootstrap", () => {
     expect(loaded.lark.completedReaction).toBe("CheckMark");
     expect(loaded.lark.queuedReaction).toBe("OneSecond");
     expect(loaded.lark.maxMessageAgeSeconds).toBe(30);
-    expect(loaded.lark.agentMessageMode).toBe("card");
     expect(loaded.lark.messageRedaction).toEqual({ email: "mask", chinesePhoneNumber: "mask" });
     expect(loaded.owner.openId).toBe("ou_owner");
     expect(loaded.roles.owner.codexHome).toBe(path.join(home, "roles", "owner", "codex"));
     expect(loaded.roles.guest.codexHome).toBe(path.join(home, "roles", "guest", "codex"));
   });
 
-  it("parses and serializes agent message mode, icon image key, and message redaction", () => {
+  it("ignores legacy agent message mode and serializes icon image key and message redaction", () => {
     const config = parseTwinnyConfig(
       [
         "[lark]",
@@ -82,11 +81,10 @@ describe("Twinny config loading and bootstrap", () => {
       { home: "/tmp/twinny" }
     );
 
-    expect(config.lark.agentMessageMode).toBe("plain");
     expect(config.lark.queuedReaction).toBe("Alarm");
     expect(config.lark.iconImageKey).toBe("img_logo");
     expect(config.lark.messageRedaction).toEqual({ email: "whitespace", chinesePhoneNumber: "none" });
-    expect(serializeTwinnyConfig(config)).toContain('agent_message_mode = "plain"');
+    expect(serializeTwinnyConfig(config)).not.toContain("agent_message_mode");
     expect(serializeTwinnyConfig(config)).toContain('queued_reaction = "Alarm"');
     expect(serializeTwinnyConfig(config)).toContain('icon_image_key = "img_logo"');
     expect(serializeTwinnyConfig(config)).toContain("[lark.redaction]");
@@ -180,7 +178,6 @@ describe("Twinny config loading and bootstrap", () => {
     expect(status.config?.lark.completedReaction).toBe("DONE");
     expect(status.config?.lark.queuedReaction).toBe("OneSecond");
     expect(status.config?.lark.maxMessageAgeSeconds).toBe(60);
-    expect(status.config?.lark.agentMessageMode).toBe("card");
     expect(status.config?.lark.messageRedaction).toEqual({ email: "mask", chinesePhoneNumber: "mask" });
     expect(status.issues).toContain("owner.open_id is required");
   });

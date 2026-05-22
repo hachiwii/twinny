@@ -40,7 +40,6 @@ import type {
   CodexThreadMode,
   CodexThreadNameUpdate,
   CodexThreadStatus,
-  AgentMessageMode,
   ConversationResponseMode,
   ConversationRecord,
   ConversationType,
@@ -599,7 +598,6 @@ interface ActiveTurn {
   kind: "normal" | "compact" | "side" | "goal";
   runId: number;
   sideId?: number;
-  agentMessageMode: AgentMessageMode;
   role: RoleName;
   triggerOpenId: string;
   threadId: string;
@@ -2694,7 +2692,6 @@ export class ConversationManager {
   ): Promise<void> {
     const message = params.message;
     const startedAt = Date.now();
-    const agentMessageMode = this.options.config.lark.agentMessageMode;
     const modelSettings = await this.readCodexTurnModelSettingsBestEffort(params.role, params.workspace);
     let forkedThreadId: string;
     try {
@@ -2736,7 +2733,6 @@ export class ConversationManager {
       kind: "side",
       sideId: params.sideId,
       runId: ++state.nextRunId,
-      agentMessageMode,
       role: params.role,
       triggerOpenId: message.original.senderOpenId,
       threadId: forkedThreadId,
@@ -2753,15 +2749,12 @@ export class ConversationManager {
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
       generatedImagePaths: [],
       reaction: await this.addReactionBestEffort(message.messageId),
-      card:
-        agentMessageMode === "card"
-          ? {
-              anchorMessageId: message.messageId,
-              startedAt,
-              messages: [],
-              fallbackPlain: false
-            }
-          : undefined,
+      card: {
+        anchorMessageId: message.messageId,
+        startedAt,
+        messages: [],
+        fallbackPlain: false
+      },
       pendingSteers: [],
       messagesById: new Map([[message.messageId, message]]),
       messageIds: new Set([message.messageId]),
@@ -2811,7 +2804,7 @@ export class ConversationManager {
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
           this.log.error({ error, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation side turn failed");
           await this.failAgentCardBestEffort(state, active, toErrorMessage(error));
-          if (active.agentMessageMode !== "card" || active.card?.fallbackPlain || !active.card?.messageId) {
+          if (needsPlainFailureFallback(active)) {
             await this.replyErrorBestEffort(active.replyMessageId, error);
           }
         } else {
@@ -3745,11 +3738,9 @@ export class ConversationManager {
     const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
     const mode = threadRecord?.mode ?? "default";
     const startedAt = Date.now();
-    const agentMessageMode = this.options.config.lark.agentMessageMode;
     const active: ActiveTurn = {
       kind: "compact",
       runId: ++state.nextRunId,
-      agentMessageMode,
       role: params.role,
       triggerOpenId: message.original.senderOpenId,
       threadId: params.threadId,
@@ -3766,16 +3757,12 @@ export class ConversationManager {
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
       generatedImagePaths: [],
       reaction: await this.addReactionBestEffort(message.messageId),
-      card: params.card ?? (
-        agentMessageMode === "card"
-          ? {
-              anchorMessageId: message.messageId,
-              startedAt,
-              messages: [],
-              fallbackPlain: false
-            }
-          : undefined
-      ),
+      card: params.card ?? {
+        anchorMessageId: message.messageId,
+        startedAt,
+        messages: [],
+        fallbackPlain: false
+      },
       pendingSteers: [],
       messagesById: new Map([[message.messageId, message]]),
       messageIds: new Set([message.messageId]),
@@ -3820,7 +3807,7 @@ export class ConversationManager {
             "conversation compact failed"
           );
           await this.failAgentCardBestEffort(state, active, toErrorMessage(error));
-          if (active.agentMessageMode !== "card" || active.card?.fallbackPlain || !active.card?.messageId) {
+          if (needsPlainFailureFallback(active)) {
             await this.replyErrorBestEffort(active.replyMessageId, error);
           }
         } else {
@@ -3966,11 +3953,9 @@ export class ConversationManager {
       this.readThreadTokenUsageBestEffort(params.threadId)
     ]);
     const startedAt = Date.now();
-    const agentMessageMode = this.options.config.lark.agentMessageMode;
     const active: ActiveTurn = {
       kind: "goal",
       runId: ++state.nextRunId,
-      agentMessageMode,
       role: params.role,
       triggerOpenId: goalMessage.original.senderOpenId,
       threadId: params.threadId,
@@ -3993,16 +3978,12 @@ export class ConversationManager {
         title: goalWorkingTitle(content),
         recovering: params.recovering
       },
-      card: params.card ?? (
-        agentMessageMode === "card"
-          ? {
-              anchorMessageId: anchor.messageId,
-              startedAt,
-              messages: [{ id: `goal:${anchor.messageId}:set`, text: `[设置目标] ${content}` }],
-              fallbackPlain: false
-            }
-          : undefined
-      ),
+      card: params.card ?? {
+        anchorMessageId: anchor.messageId,
+        startedAt,
+        messages: [{ id: `goal:${anchor.messageId}:set`, text: `[设置目标] ${content}` }],
+        fallbackPlain: false
+      },
       pendingSteers: [],
       messagesById: new Map(params.messages.map((message) => [message.messageId, message])),
       messageIds: new Set(params.messages.map((message) => message.messageId)),
@@ -4068,7 +4049,7 @@ export class ConversationManager {
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
           this.log.error({ error, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation goal failed");
           await this.failAgentCardBestEffort(state, active, toErrorMessage(error));
-          if (active.agentMessageMode !== "card" || active.card?.fallbackPlain || !active.card?.messageId) {
+          if (needsPlainFailureFallback(active)) {
             await this.replyErrorBestEffort(active.replyMessageId, error);
           }
         } else {
@@ -4154,11 +4135,9 @@ export class ConversationManager {
     const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
     const mode = threadRecord?.mode ?? "default";
     const startedAt = Date.now();
-    const agentMessageMode = this.options.config.lark.agentMessageMode;
     const active: ActiveTurn = {
       kind: "normal",
       runId: ++state.nextRunId,
-      agentMessageMode,
       role: params.role,
       triggerOpenId: params.messages[0]!.original.senderOpenId,
       threadId: params.threadId,
@@ -4175,16 +4154,12 @@ export class ConversationManager {
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
       generatedImagePaths: [],
       reaction: await this.addReactionBestEffort(anchor.messageId),
-      card: params.card ?? (
-        agentMessageMode === "card"
-          ? {
-              anchorMessageId: anchor.messageId,
-              startedAt,
-              messages: params.initialCardMessages ? [...params.initialCardMessages] : [],
-              fallbackPlain: false
-            }
-          : undefined
-      ),
+      card: params.card ?? {
+        anchorMessageId: anchor.messageId,
+        startedAt,
+        messages: params.initialCardMessages ? [...params.initialCardMessages] : [],
+        fallbackPlain: false
+      },
       pendingSteers: [],
       messagesById: new Map(params.messages.map((message) => [message.messageId, message])),
       messageIds: new Set(params.messages.map((message) => message.messageId)),
@@ -4262,7 +4237,7 @@ export class ConversationManager {
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
           this.log.error({ error: failure, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation turn failed");
           await this.failAgentCardBestEffort(state, active, toErrorMessage(failure));
-          if (active.agentMessageMode !== "card" || active.card?.fallbackPlain || !active.card?.messageId) {
+          if (needsPlainFailureFallback(active)) {
             await this.replyErrorBestEffort(active.replyMessageId, failure);
           }
         } else {
@@ -4552,7 +4527,6 @@ export class ConversationManager {
       await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
       await this.failAgentCardBestEffort(state, active, active.resultError ?? "Codex turn failed");
     }
-    await this.addCompletedReactionBestEffort(active);
     await this.updateThreadSummaryCardBestEffort(active.threadId);
     await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
     this.stopAgentCardTimer(active);
@@ -4581,7 +4555,6 @@ export class ConversationManager {
       await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
       await this.failAgentCardBestEffort(state, active, active.resultError ?? "Codex side turn failed");
     }
-    await this.addCompletedReactionBestEffort(active);
     this.stopAgentCardTimer(active);
     await this.unsubscribeSideThreadBestEffort(active);
   }
@@ -4684,7 +4657,7 @@ export class ConversationManager {
     if (activeHasGoal(active)) {
       await this.clearActiveGoalBestEffort(active);
     }
-    if (active.agentMessageMode !== "card" || active.card?.fallbackPlain || !active.card?.messageId) {
+    if (needsPlainFailureFallback(active)) {
       await this.replyErrorBestEffort(active.replyMessageId, error);
     }
     if (active.turnId) {
@@ -5505,23 +5478,6 @@ export class ConversationManager {
     return openId === active.triggerOpenId;
   }
 
-  private async addCompletedReactionBestEffort(active: ActiveTurn): Promise<void> {
-    if (active.agentMessageMode === "card") {
-      return;
-    }
-    if (active.completedStatus !== "completed" || active.cancelRequested || !active.lastAgentReplyMessageId) {
-      return;
-    }
-    try {
-      await this.options.lark.addCompletedReaction(active.lastAgentReplyMessageId);
-    } catch (error) {
-      this.log.warn(
-        { error, messageId: active.lastAgentReplyMessageId },
-        "failed to add completed reaction to final lark reply"
-      );
-    }
-  }
-
   private async notifyThreadReplacementBestEffort(
     messageId: string,
     previousThreadId: string | undefined,
@@ -5614,16 +5570,12 @@ export class ConversationManager {
     if (!isActiveTurnCurrent(state, active) || active.cancelRequested) {
       return;
     }
-    if (active.agentMessageMode === "card") {
-      await state.controlQueue.enqueue(async () => {
-        if (!isActiveTurnCurrent(state, active) || active.cancelRequested) {
-          return;
-        }
-        await this.updateAgentCardWithMessageBestEffort(state, active, agentMessage);
-      });
-      return;
-    }
-    await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
+    await state.controlQueue.enqueue(async () => {
+      if (!isActiveTurnCurrent(state, active) || active.cancelRequested) {
+        return;
+      }
+      await this.updateAgentCardWithMessageBestEffort(state, active, agentMessage);
+    });
   }
 
   private async recordImageGenerationForActiveBestEffort(
@@ -5636,9 +5588,6 @@ export class ConversationManager {
       return;
     }
     active.generatedImagePaths = mergeGeneratedImagePaths(active.generatedImagePaths, [image]);
-    if (active.agentMessageMode !== "card") {
-      return;
-    }
     await state.controlQueue.enqueue(async () => {
       if (!isActiveTurnCurrent(state, active) || active.cancelRequested) {
         return;
@@ -6873,6 +6822,10 @@ function isRecoverableGoalStatus(status: ThreadGoal["status"] | CodexThreadGoalS
 
 function activeHasGoal(active: ActiveTurn): boolean {
   return active.kind === "goal" || active.goal !== undefined;
+}
+
+function needsPlainFailureFallback(active: ActiveTurn): boolean {
+  return !active.card?.messageId || active.card.fallbackPlain;
 }
 
 function isSideTurnCurrent(state: ConversationState, active: ActiveTurn): boolean {
