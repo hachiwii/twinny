@@ -488,6 +488,74 @@ describe("Lark to Codex integration flow", () => {
     );
   });
 
+  it("switches an ordinary turn card to a goal card after a passive Codex goal update", async () => {
+    const harness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_passive_goal" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        delayMs: 60,
+        notify: {
+          method: "thread/goal/updated",
+          params: {
+            threadId: "guest_thread_1",
+            turnId: "turn_passive_goal",
+            goal: {
+              threadId: "guest_thread_1",
+              objective: "passive integration goal",
+              status: "active",
+              tokenBudget: null,
+              tokensUsed: 0,
+              timeUsedSeconds: 0,
+              createdAt: 1,
+              updatedAt: 2
+            }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "turn/start", nth: 1 },
+        delayMs: 160,
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "turn_passive_goal",
+              status: "interrupted",
+              durationMs: 160,
+              items: []
+            }
+          }
+        }
+      }
+    ));
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_passive_goal", messageId: "m_passive_goal", text: "start passive goal" })
+    }));
+
+    await harness.waitForTrace(
+      (trace) => larkOut(trace).some((entry) =>
+        entry.method === "PATCH" &&
+        traceText(entry).includes("实现目标中：passive integration goal")
+      ),
+      "passive goal working card"
+    );
+    await harness.waitForExpect(() => {
+      expect(harness.repository.getCodexThreadById("guest_thread_1")).toMatchObject({
+        goalStatus: "active",
+        goalUpdatedAt: 2
+      });
+    });
+  });
+
   it("updates a queued turn card after it starts behind a completed goal", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
@@ -2027,6 +2095,8 @@ function adaptConversationRepository(repository: StoreConversationRepository): M
     upsertCodexThread: repository.upsertCodexThread.bind(repository),
     replaceCodexThreadForLarkThread: repository.replaceCodexThreadForLarkThread.bind(repository),
     updateCodexThreadTokenUsage: repository.updateCodexThreadTokenUsage.bind(repository),
+    updateCodexThreadGoalStatus: repository.updateCodexThreadGoalStatus.bind(repository),
+    clearCodexThreadGoalStatus: repository.clearCodexThreadGoalStatus.bind(repository),
     updateCodexThreadCard: repository.updateCodexThreadCard.bind(repository),
     updateCodexThreadName: repository.updateCodexThreadName.bind(repository),
     updateCodexThreadMode: repository.updateCodexThreadMode.bind(repository),
@@ -2071,6 +2141,8 @@ function adaptCodexPool(pool: RoleCodexAppServerPool): CodexBridge {
       onAgentMessage,
       onImageGeneration,
       onTokenUsage,
+      onGoalUpdated,
+      onGoalCleared,
       onPlanUpdated,
       onRequestUserInput
     }: {
@@ -2085,6 +2157,8 @@ function adaptCodexPool(pool: RoleCodexAppServerPool): CodexBridge {
       onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
       onImageGeneration?: (image: CodexImageGeneration) => Promise<void> | void;
       onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
+      onGoalUpdated?: Parameters<NonNullable<CodexBridge["runGoal"]>>[0]["onGoalUpdated"];
+      onGoalCleared?: Parameters<NonNullable<CodexBridge["runGoal"]>>[0]["onGoalCleared"];
       onPlanUpdated?: (plan: CodexPlanUpdate) => Promise<void> | void;
       onRequestUserInput?: (
         request: CodexRequestUserInputRequest,
@@ -2102,6 +2176,8 @@ function adaptCodexPool(pool: RoleCodexAppServerPool): CodexBridge {
         onAgentMessage,
         onImageGeneration,
         onTokenUsage,
+        onGoalUpdated,
+        onGoalCleared,
         onPlanUpdated,
         onRequestUserInput
       }),

@@ -5,6 +5,7 @@ import type Database from "better-sqlite3";
 import { TwinnyError } from "../errors.js";
 import type {
   CodexThreadRecord,
+  CodexThreadGoalStatus,
   CodexThreadMode,
   CodexThreadStatus,
   ConversationResponseMode,
@@ -56,6 +57,8 @@ interface CodexThreadRow {
   role: RoleName;
   mode: CodexThreadMode;
   status: CodexThreadStatus;
+  goal_status: CodexThreadGoalStatus;
+  goal_updated_at: number | null;
   forked_from_thread_id: string | null;
   forked_at: number | null;
   creator_open_id: string | null;
@@ -146,6 +149,12 @@ export interface UpdateCodexThreadTokenUsageInput {
   tokenUsageJson: string;
 }
 
+export interface UpdateCodexThreadGoalStatusInput {
+  codexThreadId: string;
+  goalStatus: CodexThreadGoalStatus;
+  goalUpdatedAt?: number;
+}
+
 export interface UpdateCodexThreadCardInput {
   codexThreadId: string;
   conversationKey: string;
@@ -214,6 +223,7 @@ export class ConversationRepository {
   private readonly updateCodexThreadNameStatement: Database.Statement<[string, number, string]>;
   private readonly updateCodexThreadModeStatement: Database.Statement<[CodexThreadMode, number, string, string]>;
   private readonly updateCodexThreadStatusStatement: Database.Statement<[CodexThreadStatus, number, string, string]>;
+  private readonly updateCodexThreadGoalStatusStatement: Database.Statement<[CodexThreadGoalStatus, number | null, number, string]>;
   private readonly selectCodexThreadWorkStats: Database.Statement<[string], CodexThreadWorkStatsRow>;
   private readonly insertLarkMessageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly selectLarkMessageById: Database.Statement<[string], LarkMessageRow>;
@@ -376,6 +386,8 @@ export class ConversationRepository {
           context_window = 0,
           thread_has_rollout = @codexThreadHasRollout,
           token_usage_json = '{}',
+          goal_status = 'none',
+          goal_updated_at = NULL,
           updated_at = @updatedAt
       WHERE conversation_key = @conversationKey
         AND lark_thread_id = @larkThreadId
@@ -483,6 +495,13 @@ export class ConversationRepository {
           updated_at = ?
       WHERE conversation_key = ?
         AND thread_id = ?
+    `);
+    this.updateCodexThreadGoalStatusStatement = this.db.prepare(`
+      UPDATE threads
+      SET goal_status = ?,
+          goal_updated_at = ?,
+          updated_at = ?
+      WHERE thread_id = ?
     `);
     this.selectCodexThreadWorkStats = this.db.prepare(`
       SELECT
@@ -932,6 +951,22 @@ export class ConversationRepository {
     return this.requireCodexThreadById(codexThreadId);
   }
 
+  updateCodexThreadGoalStatus(input: UpdateCodexThreadGoalStatusInput): CodexThreadRecord {
+    assertNonEmpty(input.codexThreadId, "codexThreadId");
+    assertValidCodexThreadGoalStatus(input.goalStatus);
+    const now = this.now();
+    const goalUpdatedAt = input.goalStatus === "none" ? null : Math.trunc(input.goalUpdatedAt ?? now);
+    const result = this.updateCodexThreadGoalStatusStatement.run(input.goalStatus, goalUpdatedAt, now, input.codexThreadId);
+    if (result.changes === 0) {
+      throw new TwinnyError(`Codex thread ${input.codexThreadId} was not found`, "CODEX_THREAD_NOT_FOUND");
+    }
+    return this.requireCodexThreadById(input.codexThreadId);
+  }
+
+  clearCodexThreadGoalStatus(codexThreadId: string): CodexThreadRecord {
+    return this.updateCodexThreadGoalStatus({ codexThreadId, goalStatus: "none" });
+  }
+
   getCodexThreadWorkStats(codexThreadId: string): CodexThreadWorkStats {
     assertNonEmpty(codexThreadId, "codexThreadId");
     const row = this.selectCodexThreadWorkStats.get(codexThreadId);
@@ -1179,6 +1214,8 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     role: row.role,
     mode: validCodexThreadMode(row.mode) ? row.mode : "default",
     status: validCodexThreadStatus(row.status) ? row.status : "idle",
+    goalStatus: validCodexThreadGoalStatus(row.goal_status) ? row.goal_status : "none",
+    goalUpdatedAt: row.goal_updated_at ?? undefined,
     forkedFromCodexThreadId: row.forked_from_thread_id ?? undefined,
     forkedAt: row.forked_at ?? undefined,
     creatorOpenId: row.creator_open_id ?? undefined,
@@ -1363,6 +1400,12 @@ function assertValidCodexThreadStatus(status: CodexThreadStatus): void {
   }
 }
 
+function assertValidCodexThreadGoalStatus(status: CodexThreadGoalStatus): void {
+  if (!validCodexThreadGoalStatus(status)) {
+    throw new TwinnyError(`Unsupported Codex thread goal status: ${status}`, "CODEX_THREAD_GOAL_STATUS_INVALID");
+  }
+}
+
 function assertValidCodexThreadMode(mode: CodexThreadMode): void {
   if (!validCodexThreadMode(mode)) {
     throw new TwinnyError(`Unsupported Codex thread mode: ${mode}`, "CODEX_THREAD_MODE_INVALID");
@@ -1375,6 +1418,18 @@ function validCodexThreadMode(mode: unknown): mode is CodexThreadMode {
 
 function validCodexThreadStatus(status: unknown): status is CodexThreadStatus {
   return status === "idle" || status === "working" || status === "waiting";
+}
+
+function validCodexThreadGoalStatus(status: unknown): status is CodexThreadGoalStatus {
+  return (
+    status === "none" ||
+    status === "active" ||
+    status === "paused" ||
+    status === "blocked" ||
+    status === "usageLimited" ||
+    status === "budgetLimited" ||
+    status === "complete"
+  );
 }
 
 function validateLarkMessageIds(larkMessageIds: string[]): void {

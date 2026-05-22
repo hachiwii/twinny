@@ -33,6 +33,7 @@ import type {
   CodexPlanUpdate,
   CodexRequestUserInputRequest,
   CodexRequestUserInputResponse,
+  CodexThreadGoalStatus,
   CodexThreadMode,
   CodexThreadNameUpdate,
   CodexThreadStatus,
@@ -182,6 +183,12 @@ export interface ConversationRepository {
     codexThreadId: string,
     status: CodexThreadStatus
   ): Promise<CodexThreadRecord> | CodexThreadRecord;
+  updateCodexThreadGoalStatus(input: {
+    codexThreadId: string;
+    goalStatus: CodexThreadGoalStatus;
+    goalUpdatedAt?: number;
+  }): Promise<CodexThreadRecord> | CodexThreadRecord;
+  clearCodexThreadGoalStatus(codexThreadId: string): Promise<CodexThreadRecord> | CodexThreadRecord;
   getCodexThreadWorkStats(codexThreadId: string): Promise<{ turnCount: number; totalWorkDurationMs: number }> | {
     turnCount: number;
     totalWorkDurationMs: number;
@@ -319,6 +326,8 @@ export interface CodexBridge {
     onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
     onImageGeneration?: (image: CodexImageGeneration) => Promise<void> | void;
     onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
+    onGoalUpdated?: (goal: ThreadGoal, turnId: string | null) => Promise<void> | void;
+    onGoalCleared?: () => Promise<void> | void;
     onPlanUpdated?: (plan: CodexPlanUpdate) => Promise<void> | void;
     onRequestUserInput?: (
       request: CodexRequestUserInputRequest,
@@ -1024,14 +1033,39 @@ export class ConversationManager {
     if (state.active || messages.length === 0) {
       return;
     }
-    if (records.some((record) => record.routeKind === "goal_message")) {
-      await this.startRecoveredGoalMessages(state, context, records, messages);
-      return;
-    }
     const anchor = messages[messages.length - 1]!;
     const conversation = await this.getOrCreateRecoveryConversation(context, records, anchor.original);
     const role = conversation.role;
     const workspace = conversation.workspace;
+    const recoveredThreadId = lastDefined(records.map((record) => record.codexThreadId)) ?? conversation.codexThreadId;
+    const recoveredThread = await this.options.repository.getCodexThreadById(recoveredThreadId);
+    if (recoveredThread && isRecoverableGoalStatus(recoveredThread.goalStatus) && this.options.codex.getThreadGoal) {
+      try {
+        const goal = await this.options.codex.getThreadGoal({ role, threadId: recoveredThread.codexThreadId });
+        if (goal && isRecoverableGoalStatus(goal.status)) {
+          await this.refreshThreadGoalStatusBestEffort(goal);
+          await this.recordCodexThreadBestEffort({
+            conversationKey: context.conversationKey,
+            codexThreadId: recoveredThread.codexThreadId,
+            role,
+            larkThreadId: context.larkThreadId
+          });
+          await this.setThreadModeBestEffort(context.conversationKey, recoveredThread.codexThreadId, "default");
+          await this.beginGoalTurn(state, context, {
+            messages,
+            role,
+            threadId: recoveredThread.codexThreadId,
+            workspace,
+            recovering: true,
+            objective: goal.objective
+          });
+          return;
+        }
+        await this.clearThreadGoalStatusAwaitBestEffort(recoveredThread.codexThreadId);
+      } catch (error) {
+        this.log.warn({ error, threadId: recoveredThread.codexThreadId }, "failed to recover active thread goal; falling back to normal recovery");
+      }
+    }
     const activeThread = await this.resolveActiveThread({ conversation, created: false }, { role, workspace, context });
     if (activeThread.replacedMissingThread) {
       await this.notifyThreadReplacementBestEffort(anchor.messageId, activeThread.previousThreadId, activeThread.threadId);
@@ -1048,36 +1082,6 @@ export class ConversationManager {
       threadId: activeThread.threadId,
       workspace,
       input: ConversationManager.recoveryPrompt
-    });
-  }
-
-  private async startRecoveredGoalMessages(
-    state: ConversationState,
-    context: MessageContext,
-    records: LarkMessageRecord[],
-    messages: PendingMessage[]
-  ): Promise<void> {
-    const goalMessage = messages.find((message) => message.control === "goal_set") ?? messages[0];
-    if (!goalMessage) {
-      return;
-    }
-    const conversation = await this.getOrCreateRecoveryConversation(context, records, goalMessage.original);
-    const role = conversation.role;
-    const workspace = conversation.workspace;
-    const threadId = lastDefined(records.map((record) => record.codexThreadId)) ?? conversation.codexThreadId;
-    await this.recordCodexThreadBestEffort({
-      conversationKey: context.conversationKey,
-      codexThreadId: threadId,
-      role,
-      larkThreadId: context.larkThreadId
-    });
-    await this.setThreadModeBestEffort(context.conversationKey, threadId, "default");
-    await this.beginGoalTurn(state, context, {
-      messages,
-      role,
-      threadId,
-      workspace,
-      recovering: true
     });
   }
 
@@ -2523,6 +2527,7 @@ export class ConversationManager {
     active.goal.title = goalWorkingTitle(content);
     active.goal.status = goal.status;
     active.goal.completed = goal.status === "complete";
+    await this.refreshThreadGoalStatusBestEffort(goal);
     active.card?.messages.push({
       id: `goal:${message.messageId}:updated`,
       text: `[已更新目标] ${content}`
@@ -2643,6 +2648,11 @@ export class ConversationManager {
       return;
     }
 
+    await this.recordCodexThreadBestEffort({
+      conversationKey: context.conversationKey,
+      codexThreadId: forkedThreadId,
+      role: params.role
+    });
     await this.markPendingMessagesProcessingBestEffort([message], {
       conversationKey: context.conversationKey,
       codexThreadId: forkedThreadId
@@ -2700,7 +2710,9 @@ export class ConversationManager {
           onTurnStarted: (turnId) => this.handleSideTurnStarted(state, active, turnId),
           onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
           onImageGeneration: (image) => this.recordImageGenerationForActiveBestEffort(state, active, image),
-          onTokenUsage: (usage) => this.recordSideTokenUsageBestEffort(state, active, usage)
+          onTokenUsage: (usage) => this.recordSideTokenUsageBestEffort(state, active, usage),
+          onGoalUpdated: (goal, turnId) => this.recordGoalUpdateForActiveBestEffort(state, active, goal, turnId),
+          onGoalCleared: () => this.recordGoalClearedForActiveBestEffort(state, active)
         });
         active.completedStatus = result.status;
         active.resultText = result.text;
@@ -3731,6 +3743,7 @@ export class ConversationManager {
       threadId: string;
       workspace: string;
       recovering: boolean;
+      objective?: string;
       card?: ActiveTurnCardState;
     }
   ): Promise<void> {
@@ -3743,7 +3756,7 @@ export class ConversationManager {
       return;
     }
     const goalMessage = params.messages.find((message) => message.control === "goal_set") ?? params.messages[0]!;
-    const content = goalContentForPendingMessage(goalMessage);
+    const content = params.objective ?? goalContentForPendingMessage(goalMessage);
     if (!content) {
       await this.markMessagesFailedBestEffort(params.messages.map((message) => message.messageId));
       await this.replyControlBestEffort(goalMessage.messageId, "用法：/goal <objective>");
@@ -3812,7 +3825,8 @@ export class ConversationManager {
           onTurnStarted: (turnId: string) => this.handleTurnStarted(state, active, turnId),
           onAgentMessage: (agentMessage: CodexAgentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
           onTokenUsage: (usage: CodexThreadTokenUsageUpdate) => this.recordThreadTokenUsageBestEffort(state, active, usage),
-          onGoalUpdated: (goal: ThreadGoal) => this.recordGoalUpdateForActiveBestEffort(state, active, goal),
+          onGoalUpdated: (goal: ThreadGoal, turnId: string | null) => this.recordGoalUpdateForActiveBestEffort(state, active, goal, turnId),
+          onGoalCleared: () => this.recordGoalClearedForActiveBestEffort(state, active),
           onRequestUserInput: (
             request: CodexRequestUserInputRequest,
             responder: CodexRequestUserInputResponder
@@ -4003,6 +4017,8 @@ export class ConversationManager {
           onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
           onImageGeneration: (image) => this.recordImageGenerationForActiveBestEffort(state, active, image),
           onTokenUsage: (usage) => this.recordThreadTokenUsageBestEffort(state, active, usage),
+          onGoalUpdated: (goal, turnId) => this.recordGoalUpdateForActiveBestEffort(state, active, goal, turnId),
+          onGoalCleared: () => this.recordGoalClearedForActiveBestEffort(state, active),
           onPlanUpdated: (plan) => this.handlePlanUpdated(state, active, plan),
           onRequestUserInput: (request, responder) => this.handleRequestUserInput(state, active, request, responder),
           onSetThreadName: (request) => this.handleSetThreadNameToolCall(state, active, request)
@@ -4309,6 +4325,10 @@ export class ConversationManager {
       this.stopAgentCardTimer(active);
       return;
     }
+    if (this.goalNeedsResume(active)) {
+      this.resumeGoalForActiveBestEffort(state, active);
+      return;
+    }
     if (
       !active.cancelRequested &&
       active.completedStatus === "completed" &&
@@ -4350,6 +4370,10 @@ export class ConversationManager {
       await this.clearReactionBestEffort(active);
       this.stopAgentCardTimer(active);
       await this.unsubscribeSideThreadBestEffort(active);
+      return;
+    }
+    if (this.goalNeedsResume(active)) {
+      this.resumeGoalForActiveBestEffort(state, active);
       return;
     }
     if (active.sideId !== undefined) {
@@ -4402,7 +4426,7 @@ export class ConversationManager {
     if (!options.waitForCompletion || noCompletionExpected) {
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
     }
-    if (active.kind === "goal") {
+    if (activeHasGoal(active)) {
       await this.clearActiveGoalBestEffort(active);
     }
     let interruptResult: ActiveTurnInterruptResult = "missing";
@@ -4425,6 +4449,9 @@ export class ConversationManager {
     await this.clearReactionBestEffort(active);
     await this.markMessagesInterruptedBestEffort([...active.processingMessageIds]);
     await this.interruptAgentCardBestEffort(state, active);
+    if (activeHasGoal(active)) {
+      await this.clearActiveGoalBestEffort(active);
+    }
     if (active.turnId) {
       await this.interruptActiveTurnBestEffort(active);
     }
@@ -4460,6 +4487,9 @@ export class ConversationManager {
     await this.clearReactionBestEffort(active);
     await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
     await this.failAgentCardBestEffort(state, active, error);
+    if (activeHasGoal(active)) {
+      await this.clearActiveGoalBestEffort(active);
+    }
     if (active.agentMessageMode !== "card" || active.card?.fallbackPlain || !active.card?.messageId) {
       await this.replyErrorBestEffort(active.replyMessageId, error);
     }
@@ -4591,17 +4621,20 @@ export class ConversationManager {
   }
 
   private async clearActiveGoalBestEffort(active: ActiveTurn): Promise<void> {
-    if (active.kind !== "goal" || !this.options.codex.clearThreadGoal) {
+    if (!activeHasGoal(active)) {
       return;
     }
-    try {
-      await this.options.codex.clearThreadGoal({
-        role: active.role,
-        threadId: active.threadId
-      });
-    } catch (error) {
-      this.log.warn({ error, threadId: active.threadId }, "failed to clear active codex goal");
+    if (this.options.codex.clearThreadGoal) {
+      try {
+        await this.options.codex.clearThreadGoal({
+          role: active.role,
+          threadId: active.threadId
+        });
+      } catch (error) {
+        this.log.warn({ error, threadId: active.threadId }, "failed to clear active codex goal");
+      }
     }
+    await this.clearThreadGoalStatusAwaitBestEffort(active.threadId);
   }
 
   private async unsubscribeSideThreadBestEffort(active: ActiveTurn): Promise<void> {
@@ -5449,16 +5482,153 @@ export class ConversationManager {
   private recordGoalUpdateForActiveBestEffort(
     state: ConversationState,
     active: ActiveTurn,
-    goal: ThreadGoal
+    goal: ThreadGoal,
+    _turnId: string | null = null
   ): void {
-    if (state.active !== active || active.kind !== "goal" || !active.goal || active.cancelRequested) {
+    if (!isActiveTurnCurrent(state, active) || active.cancelRequested) {
       return;
     }
     if (goal.threadId !== active.threadId) {
       return;
     }
-    active.goal.status = goal.status;
-    active.goal.completed = goal.status === "complete";
+    this.updateThreadGoalStatusBestEffort(goal);
+    if (active.kind === "compact") {
+      return;
+    }
+    if (active.kind !== "goal" && active.kind !== "side") {
+      active.kind = "goal";
+    }
+    const previousObjective = active.goal?.objective;
+    active.goal = {
+      objective: goal.objective,
+      content: goal.objective,
+      title: goalWorkingTitle(goal.objective),
+      status: goal.status,
+      completed: goal.status === "complete",
+      recovering: active.goal?.recovering
+    };
+    if (goal.objective && previousObjective !== goal.objective && active.card) {
+      const messageId = `goal:${goal.threadId}:${goal.updatedAt}:set`;
+      if (!active.card.messages.some((message) => message.id === messageId)) {
+        active.card.messages.push({
+          id: messageId,
+          text: `[设置目标] ${goal.objective}`
+        });
+      }
+    }
+    if (isRecoverableGoalStatus(goal.status)) {
+      this.patchActiveAgentCardTokenUsageBestEffort(state, active);
+    }
+  }
+
+  private recordGoalClearedForActiveBestEffort(state: ConversationState, active: ActiveTurn): void {
+    if (!isActiveTurnCurrent(state, active)) {
+      return;
+    }
+    this.clearThreadGoalStatusBestEffort(active.threadId);
+    if (active.goal) {
+      active.goal.completed = true;
+      active.goal.status = "complete";
+    }
+  }
+
+  private updateThreadGoalStatusBestEffort(goal: ThreadGoal): void {
+    void Promise.resolve(
+      this.options.repository.updateCodexThreadGoalStatus({
+        codexThreadId: goal.threadId,
+        goalStatus: goal.status,
+        goalUpdatedAt: goal.updatedAt
+      })
+    ).catch((error) => {
+      this.log.warn({ error, threadId: goal.threadId, goalStatus: goal.status }, "failed to update thread goal status");
+    });
+  }
+
+  private clearThreadGoalStatusBestEffort(codexThreadId: string): void {
+    void Promise.resolve(this.options.repository.clearCodexThreadGoalStatus(codexThreadId)).catch((error) => {
+      this.log.warn({ error, threadId: codexThreadId }, "failed to clear thread goal status");
+    });
+  }
+
+  private async refreshThreadGoalStatusBestEffort(goal: ThreadGoal): Promise<void> {
+    try {
+      await this.options.repository.updateCodexThreadGoalStatus({
+        codexThreadId: goal.threadId,
+        goalStatus: goal.status,
+        goalUpdatedAt: goal.updatedAt
+      });
+    } catch (error) {
+      this.log.warn({ error, threadId: goal.threadId, goalStatus: goal.status }, "failed to refresh thread goal status");
+    }
+  }
+
+  private async clearThreadGoalStatusAwaitBestEffort(codexThreadId: string): Promise<void> {
+    try {
+      await this.options.repository.clearCodexThreadGoalStatus(codexThreadId);
+    } catch (error) {
+      this.log.warn({ error, threadId: codexThreadId }, "failed to clear thread goal status");
+    }
+  }
+
+  private goalNeedsResume(active: ActiveTurn): boolean {
+    return !!active.goal &&
+      active.goal.recovering !== true &&
+      active.completedStatus === "completed" &&
+      !active.cancelRequested &&
+      isRecoverableGoalStatus(active.goal.status);
+  }
+
+  private resumeGoalForActiveBestEffort(state: ConversationState, active: ActiveTurn): void {
+    if (!this.options.codex.resumeGoal) {
+      active.completedStatus = "failed";
+      active.resultError = "当前 Codex app-server 不支持恢复 goal。";
+      return;
+    }
+    active.completedStatus = undefined;
+    active.resultError = undefined;
+    active.resultText = undefined;
+    active.finalAgentMessageText = undefined;
+    if (active.goal) {
+      active.goal.recovering = true;
+    }
+    void this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
+
+    const runGoal = async (): Promise<void> => {
+      try {
+        const result = await this.options.codex.resumeGoal!({
+          role: active.role,
+          threadId: active.threadId,
+          cwd: active.workspace,
+          onTurnStarted: (turnId) => active.kind === "side"
+            ? this.handleSideTurnStarted(state, active, turnId)
+            : this.handleTurnStarted(state, active, turnId),
+          onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
+          onTokenUsage: (usage) => active.kind === "side"
+            ? this.recordSideTokenUsageBestEffort(state, active, usage)
+            : this.recordThreadTokenUsageBestEffort(state, active, usage),
+          onGoalUpdated: (goal, turnId) => this.recordGoalUpdateForActiveBestEffort(state, active, goal, turnId),
+          onGoalCleared: () => this.recordGoalClearedForActiveBestEffort(state, active),
+          onRequestUserInput: active.kind === "side"
+            ? undefined
+            : (request, responder) => this.handleRequestUserInput(state, active, request, responder)
+        });
+        active.completedStatus = result.status;
+        active.resultText = result.text;
+        active.resultError = result.error;
+      } catch (error) {
+        if (isActiveTurnCurrent(state, active) && !active.cancelRequested) {
+          active.completedStatus = "failed";
+          active.resultError = toErrorMessage(error);
+          this.log.error({ error, threadId: active.threadId }, "conversation passive goal failed");
+        }
+      }
+    };
+
+    void runGoal().finally(() => {
+      void state.controlQueue.enqueue(() =>
+        active.kind === "side" ? this.finishSideTurn(state, active) : this.finishActiveTurn(state, active.conversationKey, active)
+      );
+    });
   }
 
   private async updateAgentCardWithMessageBestEffort(
@@ -5480,7 +5650,7 @@ export class ConversationManager {
     }
     if (
       agentMessage.phase === "final_answer" &&
-      !(active.kind === "goal" && active.goal?.completed !== true)
+      !(activeHasGoal(active) && active.goal?.completed !== true)
     ) {
       active.finalAgentMessageText = text;
       return;
@@ -5633,7 +5803,7 @@ export class ConversationManager {
     try {
       const final = active.kind === "compact"
         ? { text: COMPACT_COMPLETED_TEXT, processMessages: [] }
-        : active.kind === "goal"
+        : activeHasGoal(active)
           ? splitGoalAgentCardMessages(card.messages, active.resultText ?? "", active.finalAgentMessageText)
         : splitFinalAgentCardMessages(
             card.messages,
@@ -5882,9 +6052,9 @@ export class ConversationManager {
       runId: active.runId,
       iconImageKey: this.options.config.lark.iconImageKey,
       mode: active.mode,
-      title: active.kind === "goal" && status === "working"
+      title: activeHasGoal(active) && status === "working"
         ? active.goal?.title
-        : active.kind === "goal" && status === "finished"
+        : activeHasGoal(active) && status === "finished"
           ? "已实现目标"
           : undefined,
       subtitle: active.kind === "side" ? sideCardSubtitle(status, active.sideId) : undefined,
@@ -6457,6 +6627,14 @@ function activeTurnWorkDurationMs(codexThreadId: string, active: ActiveTurn | un
   }
   const durationMs = now - active.startedAt;
   return Number.isFinite(durationMs) && durationMs > 0 ? Math.trunc(durationMs) : 0;
+}
+
+function isRecoverableGoalStatus(status: ThreadGoal["status"] | CodexThreadGoalStatus | undefined): boolean {
+  return status === "active" || status === "paused";
+}
+
+function activeHasGoal(active: ActiveTurn): boolean {
+  return active.kind === "goal" || active.goal !== undefined;
 }
 
 function isSideTurnCurrent(state: ConversationState, active: ActiveTurn): boolean {

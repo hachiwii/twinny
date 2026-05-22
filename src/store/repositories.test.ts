@@ -195,6 +195,18 @@ describe("ConversationRepository", () => {
       updatedAt: 1250
     });
 
+    now = 1275;
+    repo.updateCodexThreadGoalStatus({
+      codexThreadId: "thread-1",
+      goalStatus: "active",
+      goalUpdatedAt: 1260
+    });
+    expect(repo.getCodexThreadById("thread-1")).toMatchObject({
+      goalStatus: "active",
+      goalUpdatedAt: 1260,
+      updatedAt: 1275
+    });
+
     now = 1300;
     const message = repo.insertLarkMessage({
       larkMessageId: "om_1",
@@ -348,8 +360,20 @@ describe("ConversationRepository", () => {
       contextTokens: 60,
       contextWindow: 200,
       codexThreadHasRollout: true,
+      goalStatus: "active",
+      goalUpdatedAt: 1260,
       tokenUsageJson: '{"totalTokens":123}',
       updatedAt: 1700
+    });
+
+    now = 1725;
+    repo.clearCodexThreadGoalStatus("thread-1");
+    expect(repo.getCodexThreadById("thread-1")).toMatchObject({
+      goalStatus: "none",
+      goalUpdatedAt: undefined,
+      inputTokens: 80,
+      outputTokens: 40,
+      updatedAt: 1725
     });
     repo.insertLarkMessage({
       larkMessageId: "om_side",

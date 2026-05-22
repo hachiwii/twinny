@@ -92,7 +92,9 @@ describe("store migrations", () => {
         { name: "thread_has_rollout", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "mode", type: "TEXT", notnull: 1, pk: 0 },
         { name: "status", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "name", type: "TEXT", notnull: 1, pk: 0 }
+        { name: "name", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "goal_status", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "goal_updated_at", type: "INTEGER", notnull: 0, pk: 0 }
       ]);
       const threadIndexes = db
         .prepare<[], SqliteNameRow>(
@@ -165,6 +167,108 @@ describe("store migrations", () => {
         .all()
         .map((row) => row.name);
       expect(tables).toEqual(["conversations", "lark_messages", "threads"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("backfills active goal state for processing goal messages", () => {
+    const db = new Database(":memory:");
+    try {
+      const migrationsToV16 = loadStoreMigrations().filter((migration) => migration.version <= 16);
+      expect(runStoreMigrations(db, { migrations: migrationsToV16 })).toBe(16);
+
+      db.prepare(`
+        INSERT INTO conversations (
+          conversation_key,
+          type,
+          chat_id,
+          name,
+          role,
+          thread_id,
+          workspace,
+          role_codex_home,
+          created_at,
+          updated_at,
+          response_mode
+        ) VALUES (
+          'p2p_ou_user',
+          'p2p',
+          'ou_user',
+          'User',
+          'guest',
+          'thread_goal',
+          '/tmp/twinny/workspaces/p2p_ou_user',
+          '/tmp/twinny/roles/guest/codex',
+          100,
+          100,
+          'all'
+        )
+      `).run();
+      db.prepare(`
+        INSERT INTO threads (
+          thread_id,
+          conversation_key,
+          role,
+          total_tokens,
+          token_usage_json,
+          created_at,
+          updated_at
+        ) VALUES (?, 'p2p_ou_user', 'guest', 0, '{}', 100, ?)
+      `).run("thread_goal", 110);
+      db.prepare(`
+        INSERT INTO threads (
+          thread_id,
+          conversation_key,
+          role,
+          total_tokens,
+          token_usage_json,
+          created_at,
+          updated_at
+        ) VALUES (?, 'p2p_ou_user', 'guest', 0, '{}', 100, ?)
+      `).run("thread_ordinary", 120);
+      db.prepare(`
+        INSERT INTO lark_messages (
+          lark_message_id,
+          event_id,
+          lark_user_id,
+          conversation_key,
+          thread_id,
+          route_kind,
+          status,
+          text,
+          received_at,
+          updated_at,
+          processing_started_at
+        ) VALUES (?, ?, 'ou_user', 'p2p_ou_user', ?, ?, ?, 'text', ?, ?, ?)
+      `).run("m_goal", "event_goal", "thread_goal", "goal_message", "processing", 1000, 1200, 1500);
+      db.prepare(`
+        INSERT INTO lark_messages (
+          lark_message_id,
+          event_id,
+          lark_user_id,
+          conversation_key,
+          thread_id,
+          route_kind,
+          status,
+          text,
+          received_at,
+          updated_at,
+          processing_started_at
+        ) VALUES (?, ?, 'ou_user', 'p2p_ou_user', ?, ?, ?, 'text', ?, ?, ?)
+      `).run("m_ordinary", "event_ordinary", "thread_ordinary", "message", "processing", 2000, 2200, 2500);
+
+      expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
+      expect(
+        db.prepare<[], { thread_id: string; goal_status: string; goal_updated_at: number | null }>(`
+          SELECT thread_id, goal_status, goal_updated_at
+          FROM threads
+          ORDER BY thread_id
+        `).all()
+      ).toEqual([
+        { thread_id: "thread_goal", goal_status: "active", goal_updated_at: 1500 },
+        { thread_id: "thread_ordinary", goal_status: "none", goal_updated_at: null }
+      ]);
     } finally {
       db.close();
     }

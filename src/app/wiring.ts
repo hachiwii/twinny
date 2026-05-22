@@ -385,6 +385,8 @@ export function adaptConversationRepository(repository: ConversationRepository) 
     upsertCodexThread: repository.upsertCodexThread.bind(repository),
     replaceCodexThreadForLarkThread: repository.replaceCodexThreadForLarkThread.bind(repository),
     updateCodexThreadTokenUsage: repository.updateCodexThreadTokenUsage.bind(repository),
+    updateCodexThreadGoalStatus: repository.updateCodexThreadGoalStatus.bind(repository),
+    clearCodexThreadGoalStatus: repository.clearCodexThreadGoalStatus.bind(repository),
     updateCodexThreadCard: repository.updateCodexThreadCard.bind(repository),
     updateCodexThreadName: repository.updateCodexThreadName.bind(repository),
     updateCodexThreadMode: repository.updateCodexThreadMode.bind(repository),

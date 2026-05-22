@@ -12,6 +12,7 @@ import type {
   CodexTurnResult
 } from "../types.js";
 import type { CodexNotificationMessage, CodexProtocolClient, CodexRequestMessage } from "./protocol.js";
+import { isThreadGoal, type ThreadGoal } from "./goal.js";
 
 export interface TextTurnInput {
   type: "text";
@@ -57,6 +58,8 @@ export interface TurnStartOptions {
   onAgentMessage?: (message: CompletedAgentMessage) => Promise<void> | void;
   onImageGeneration?: (image: CodexImageGeneration) => Promise<void> | void;
   onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
+  onGoalUpdated?: (goal: ThreadGoal, turnId: string | null) => Promise<void> | void;
+  onGoalCleared?: () => Promise<void> | void;
   onPlanUpdated?: (plan: CodexPlanUpdate) => Promise<void> | void;
   onRequestUserInput?: (
     request: CodexRequestUserInputRequest,
@@ -237,6 +240,8 @@ export async function startCodexTurn(
     onAgentMessage: options.onAgentMessage,
     onImageGeneration: options.onImageGeneration,
     onTokenUsage: options.onTokenUsage,
+    onGoalUpdated: options.onGoalUpdated,
+    onGoalCleared: options.onGoalCleared,
     onPlanUpdated: options.onPlanUpdated
   });
   const onNotification = (notification: CodexNotificationMessage): void => {
@@ -343,6 +348,8 @@ export class TurnOutputAccumulator {
       onAgentMessage?: (message: CompletedAgentMessage) => Promise<void> | void;
       onImageGeneration?: (image: CodexImageGeneration) => Promise<void> | void;
       onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
+      onGoalUpdated?: (goal: ThreadGoal, turnId: string | null) => Promise<void> | void;
+      onGoalCleared?: () => Promise<void> | void;
       onPlanUpdated?: (plan: CodexPlanUpdate) => Promise<void> | void;
     } = {}
   ) {
@@ -389,6 +396,14 @@ export class TurnOutputAccumulator {
       }
       if (notification.method === "thread/tokenUsage/updated") {
         this.recordTokenUsage(notification.params);
+        return;
+      }
+      if (notification.method === "thread/goal/updated") {
+        this.recordGoalUpdated(notification.params);
+        return;
+      }
+      if (notification.method === "thread/goal/cleared") {
+        this.recordGoalCleared(notification.params);
         return;
       }
       if (notification.method === "error") {
@@ -549,6 +564,30 @@ export class TurnOutputAccumulator {
     void Promise.resolve(this.callbacks.onTokenUsage?.(usage)).catch((error: unknown) => {
       const parsedError =
         error instanceof Error ? error : new TwinnyError(toErrorMessage(error), "CODEX_TOKEN_USAGE_CALLBACK_FAILED");
+      this.completionError = parsedError;
+      this.rejectWait?.(parsedError);
+    });
+  }
+
+  private recordGoalUpdated(params: unknown): void {
+    if (!isRecord(params) || params.threadId !== this.threadId || !isThreadGoal(params.goal)) {
+      return;
+    }
+    void Promise.resolve(this.callbacks.onGoalUpdated?.(params.goal, stringValue(params.turnId) ?? null)).catch((error: unknown) => {
+      const parsedError =
+        error instanceof Error ? error : new TwinnyError(toErrorMessage(error), "CODEX_THREAD_GOAL_CALLBACK_FAILED");
+      this.completionError = parsedError;
+      this.rejectWait?.(parsedError);
+    });
+  }
+
+  private recordGoalCleared(params: unknown): void {
+    if (!isRecord(params) || params.threadId !== this.threadId) {
+      return;
+    }
+    void Promise.resolve(this.callbacks.onGoalCleared?.()).catch((error: unknown) => {
+      const parsedError =
+        error instanceof Error ? error : new TwinnyError(toErrorMessage(error), "CODEX_THREAD_GOAL_CALLBACK_FAILED");
       this.completionError = parsedError;
       this.rejectWait?.(parsedError);
     });

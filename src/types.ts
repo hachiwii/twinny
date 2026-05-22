@@ -18,6 +18,15 @@ export type CodexThreadMode = "default" | "plan";
 
 export type CodexThreadStatus = "idle" | "working" | "waiting";
 
+export type CodexThreadGoalStatus =
+  | "none"
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete";
+
 export interface CodexAgentMessage {
   id: string;
   text: string;
@@ -158,6 +167,8 @@ export interface CodexThreadRecord {
   role: RoleName;
   mode: CodexThreadMode;
   status: CodexThreadStatus;
+  goalStatus: CodexThreadGoalStatus;
+  goalUpdatedAt?: number;
   forkedFromCodexThreadId?: string;
   forkedAt?: number;
   creatorOpenId?: string;

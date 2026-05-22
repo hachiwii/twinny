@@ -2275,7 +2275,11 @@ describe("ConversationManager", () => {
       codexThreadId: "thread_1_side_1",
       codexTurnId: "side_turn_1"
     });
-    expect(repository.upsertCodexThread).not.toHaveBeenCalled();
+    expect(repository.upsertCodexThread).toHaveBeenCalledWith({
+      conversationKey: "p2p_ou_guest",
+      codexThreadId: "thread_1_side_1",
+      role: "guest"
+    });
     expect(repository.updateCodexThreadMode).not.toHaveBeenCalled();
     expect(repository.updateCodexThreadTokenUsage).not.toHaveBeenCalled();
 
@@ -2310,6 +2314,55 @@ describe("ConversationManager", () => {
     expect(lark.replyCard).toHaveBeenCalledTimes(1);
     expect(lark.getMessageReadOpenIds).not.toHaveBeenCalled();
     expect(lark.recallMessage).not.toHaveBeenCalledWith("card_m_side_1");
+  });
+
+  it("switches a side turn to a goal card only after a passive Codex goal notification", async () => {
+    const sideTurn = deferred<CodexTurnResult>();
+    const { repository } = createRepository(conversationRecord());
+    const codex = createCodex({
+      forkThread: vi.fn(async () => ({ threadId: "thread_1_side_goal" })),
+      startTurn: vi.fn((params) => {
+        void params.onTurnStarted?.("side_goal_turn_1");
+        return sideTurn.promise;
+      })
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m_side_goal", "/side inspect passive goal"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    await vi.mocked(codex.startTurn).mock.calls[0]![0].onGoalUpdated?.({
+      threadId: "thread_1_side_goal",
+      objective: "side passive goal",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 2
+    }, "side_goal_turn_1");
+
+    await waitForExpect(() => {
+      const patched = vi.mocked(lark.patchCard).mock.calls.find(([, card]) =>
+        JSON.stringify(card).includes("实现目标中：side passive goal")
+      )?.[1];
+      expect(patched).toMatchObject({
+        header: expect.objectContaining({
+          title: { tag: "plain_text", content: "实现目标中：side passive goal" },
+          subtitle: { tag: "plain_text", content: "临时会话 [1]" }
+        })
+      });
+    });
+    expect(repository.updateCodexThreadGoalStatus).toHaveBeenCalledWith({
+      codexThreadId: "thread_1_side_goal",
+      goalStatus: "active",
+      goalUpdatedAt: 2
+    });
+    expect(codex.runGoal).not.toHaveBeenCalled();
+
+    sideTurn.resolve(completed("thread_1_side_goal", "side_goal_turn_1", "interrupted"));
+    await waitForExpect(() => expect(repository.markLarkMessagesFailed).toHaveBeenCalledWith(["m_side_goal"]));
   });
 
   it("allocates the smallest free side id and releases it after completion", async () => {
@@ -3990,6 +4043,47 @@ describe("ConversationManager", () => {
     expect(completedSerialized).not.toContain("aggregate text");
   });
 
+  it("switches an ordinary turn to a goal card when Codex reports a passive goal", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "start ordinary work"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    await turns[0]!.params.onGoalUpdated?.({
+      threadId: "thread_1",
+      objective: "passive ordinary goal",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 2
+    }, "turn_1");
+
+    await waitForExpect(() => {
+      const patched = vi.mocked(lark.patchCard).mock.calls.find(([, card]) =>
+        JSON.stringify(card).includes("实现目标中：passive ordinary goal")
+      )?.[1];
+      expect(patched).toMatchObject({
+        header: expect.objectContaining({
+          title: { tag: "plain_text", content: "实现目标中：passive ordinary goal" }
+        })
+      });
+    });
+    expect(repository.updateCodexThreadGoalStatus).toHaveBeenCalledWith({
+      codexThreadId: "thread_1",
+      goalStatus: "active",
+      goalUpdatedAt: 2
+    });
+    expect(codex.runGoal).not.toHaveBeenCalled();
+
+    turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
+    await waitForExpect(() => expect(repository.markLarkMessagesFailed).toHaveBeenCalledWith(["m1"]));
+  });
+
   it("keeps a goal final answer out of the working process after the goal is complete", async () => {
     const { codex, goals } = createDeferredGoalCodex();
     const lark = createLarkResponder();
@@ -5543,7 +5637,7 @@ describe("ConversationManager", () => {
     });
   });
 
-  it("recovers processing goal messages by resuming the goal and fails when the goal is missing", async () => {
+  it("recovers processing messages with active persisted goal state by resuming the goal", async () => {
     const row = conversationRecord({ codexThreadId: "thread_recovered" });
     const record = larkMessageRecord({
       larkMessageId: "m_goal",
@@ -5554,7 +5648,18 @@ describe("ConversationManager", () => {
       text: "finish recovered goal",
       rawEventJson: JSON.stringify(rawReceiveEvent("m_goal", "/goal finish recovered goal"))
     });
-    const { repository } = createRepository(row, { larkMessages: [record] });
+    const { repository } = createRepository(row, {
+      larkMessages: [record],
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_recovered",
+          conversationKey: "p2p_ou_guest",
+          role: "guest",
+          goalStatus: "active",
+          goalUpdatedAt: 1000
+        })
+      ]
+    });
     const codex = createCodex({
       resumeGoal: vi.fn(async () => {
         throw new Error("Goal missed after relaunching");
@@ -5565,6 +5670,15 @@ describe("ConversationManager", () => {
 
     await manager.recoverUnfinishedMessages();
 
+    await waitForExpect(() => expect(codex.getThreadGoal).toHaveBeenCalledWith({
+      role: "guest",
+      threadId: "thread_recovered"
+    }));
+    expect(repository.updateCodexThreadGoalStatus).toHaveBeenCalledWith({
+      codexThreadId: "thread_recovered",
+      goalStatus: "active",
+      goalUpdatedAt: 1
+    });
     await waitForExpect(() => expect(codex.resumeGoal).toHaveBeenCalledTimes(1));
     expect(codex.resumeGoal).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -5576,6 +5690,32 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).not.toHaveBeenCalled();
     await waitForExpect(() => expect(repository.markLarkMessagesFailed).toHaveBeenCalledWith(["m_goal"]));
     expect(lark.replyText).toHaveBeenCalledWith("m_goal", "处理失败：Goal missed after relaunching");
+  });
+
+  it("does not use route_kind=goal_message alone to recover a goal", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_recovered" });
+    const record = larkMessageRecord({
+      larkMessageId: "m_goal_without_status",
+      eventId: "e_m_goal_without_status",
+      codexThreadId: "thread_recovered",
+      routeKind: "goal_message",
+      status: "processing",
+      text: "finish recovered goal",
+      rawEventJson: JSON.stringify(rawReceiveEvent("m_goal_without_status", "/goal finish recovered goal"))
+    });
+    const { repository } = createRepository(row, { larkMessages: [record] });
+    const codex = createCodex();
+    const manager = createManager({ repository, codex });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    expect(codex.getThreadGoal).not.toHaveBeenCalled();
+    expect(codex.resumeGoal).not.toHaveBeenCalled();
+    expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread_recovered",
+      input: "Twinny daemon has beed reloaded, continue with the unfinished work."
+    }));
   });
 
   it("recovers only unfinished messages for the selected role", async () => {
@@ -6409,6 +6549,26 @@ function createRepository(initial?: ConversationRecord, options: {
         existing.updatedAt = Date.now();
         return existing;
       }),
+      updateCodexThreadGoalStatus: vi.fn((input) => {
+        const existing = codexThreads.get(input.codexThreadId);
+        if (!existing) {
+          throw new Error("missing codex thread");
+        }
+        existing.goalStatus = input.goalStatus;
+        existing.goalUpdatedAt = input.goalStatus === "none" ? undefined : input.goalUpdatedAt ?? Date.now();
+        existing.updatedAt = Date.now();
+        return existing;
+      }),
+      clearCodexThreadGoalStatus: vi.fn((codexThreadId) => {
+        const existing = codexThreads.get(codexThreadId);
+        if (!existing) {
+          throw new Error("missing codex thread");
+        }
+        existing.goalStatus = "none";
+        existing.goalUpdatedAt = undefined;
+        existing.updatedAt = Date.now();
+        return existing;
+      }),
       getCodexThreadWorkStats: vi.fn((codexThreadId) => {
         const turns = new Map<string, { startedAt: number; terminalAt?: number }>();
         for (const message of larkMessages.values()) {
@@ -6591,6 +6751,7 @@ function codexThreadRecord(overrides: Partial<CodexThreadRecord> = {}): CodexThr
     role: "guest",
     mode: "default",
     status: "idle",
+    goalStatus: "none",
     inputTokens: 0,
     outputTokens: 0,
     cachedInputTokens: 0,

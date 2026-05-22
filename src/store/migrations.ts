@@ -15,7 +15,7 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 16;
+export const currentStoreSchemaVersion = 17;
 
 const initialMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const threadRolloutMigrationFile = fileURLToPath(new URL("../../migrations/0002_codex_thread_rollout.sql", import.meta.url));
@@ -33,6 +33,7 @@ const removeConversationChatModeMigrationFile = fileURLToPath(new URL("../../mig
 const sideMessagesMigrationFile = fileURLToPath(new URL("../../migrations/0014_side_messages.sql", import.meta.url));
 const routeKindGoalMessagesMigrationFile = fileURLToPath(new URL("../../migrations/0015_route_kind_goal_messages.sql", import.meta.url));
 const threadNamesMigrationFile = fileURLToPath(new URL("../../migrations/0016_thread_names.sql", import.meta.url));
+const threadGoalStatusMigrationFile = fileURLToPath(new URL("../../migrations/0017_thread_goal_status.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -115,6 +116,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 16,
       name: "0016_thread_names",
       sql: fs.readFileSync(threadNamesMigrationFile, "utf8")
+    },
+    {
+      version: 17,
+      name: "0017_thread_goal_status",
+      sql: fs.readFileSync(threadGoalStatusMigrationFile, "utf8")
     }
   ];
 }
@@ -262,6 +268,15 @@ function ensureThreadsSummarySchemaConsistency(db: Database.Database): void {
   ensureTableColumn(db, threadsTable, "card_message_id", "card_message_id TEXT");
   if (getStoreSchemaVersion(db) >= 16) {
     ensureTableColumn(db, threadsTable, "name", "name TEXT NOT NULL DEFAULT '新会话'");
+  }
+  if (getStoreSchemaVersion(db) >= 17) {
+    ensureTableColumn(
+      db,
+      threadsTable,
+      "goal_status",
+      "goal_status TEXT NOT NULL DEFAULT 'none' CHECK(goal_status IN ('none', 'active', 'paused', 'blocked', 'usageLimited', 'budgetLimited', 'complete'))"
+    );
+    ensureTableColumn(db, threadsTable, "goal_updated_at", "goal_updated_at INTEGER");
   }
   ensureTableColumn(db, threadsTable, "input_tokens", "input_tokens INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(db, threadsTable, "output_tokens", "output_tokens INTEGER NOT NULL DEFAULT 0");
