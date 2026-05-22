@@ -1248,6 +1248,41 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).not.toHaveBeenCalled();
   });
 
+  it("replies to /logo with the uploaded logo image key", async () => {
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, assetImageKeys: { logoImageKey: "img_logo" } });
+
+    manager.submitIncoming(message("m1", "/logo"));
+
+    await waitForExpect(() => expect(lark.replyImage).toHaveBeenCalledWith("m1", "img_logo"));
+    expect(codex.startTurn).not.toHaveBeenCalled();
+  });
+
+  it("reports an error for /logo when no logo image key is available", async () => {
+    const lark = createLarkResponder();
+    const manager = createManager({ lark, assetImageKeys: {} });
+
+    manager.submitIncoming(message("m1", "/logo"));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith("m1", "logo.png 暂无可用 image_key，无法发送。")
+    );
+    expect(lark.replyImage).not.toHaveBeenCalled();
+  });
+
+  it("replies to /twinny and /banner with the banner card", async () => {
+    const lark = createLarkResponder();
+    const manager = createManager({ lark, assetImageKeys: { bannerImageKey: "img_banner" } });
+
+    manager.submitIncoming(message("m1", "/twinny"));
+    manager.submitIncoming(message("m2", "/banner"));
+
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(vi.mocked(lark.replyCard).mock.calls[0]![1])).toContain("img_banner");
+    expect(JSON.stringify(vi.mocked(lark.replyCard).mock.calls[1]![1])).toContain("Twinny v0.4.0");
+  });
+
   it("replies to /status with conversation, thread, and token usage", async () => {
     const row = conversationRecord({ codexThreadId: "thread_status" });
     const { repository } = createRepository(row);
@@ -4531,6 +4566,41 @@ describe("ConversationManager", () => {
     expect(lark.recallMessage).toHaveBeenCalledWith("card_m1_1");
   });
 
+  it("uses runtime logo image keys for turn card headers when provided", async () => {
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({
+      codex,
+      lark,
+      config: cardModeConfig({ iconImageKey: "img_config_logo" }),
+      assetImageKeys: { logoImageKey: "img_runtime_logo" }
+    });
+
+    manager.submitIncoming(message("m1", "first"));
+
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalled());
+    const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
+    expect(JSON.stringify(card)).toContain("img_runtime_logo");
+    expect(JSON.stringify(card)).not.toContain("img_config_logo");
+  });
+
+  it("omits turn card header logo when runtime logo image key is unavailable", async () => {
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({
+      codex,
+      lark,
+      config: cardModeConfig({ iconImageKey: "img_config_logo" }),
+      assetImageKeys: {}
+    });
+
+    manager.submitIncoming(message("m1", "first"));
+
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalled());
+    const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as { header?: Record<string, unknown> };
+    expect(card.header).not.toHaveProperty("icon");
+  });
+
   it("uses agent message phase to keep commentary in card progress and final_answer as the result", async () => {
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
@@ -6260,6 +6330,7 @@ function createManager(options: {
   larkFiles?: LarkFileDownloader;
   larkMessages?: LarkMessageReader;
   botOpenId?: string;
+  assetImageKeys?: ConstructorParameters<typeof ConversationManager>[0]["assetImageKeys"];
   workspaceRoot?: string;
   logger?: ConstructorParameters<typeof ConversationManager>[0]["logger"];
   config?: TwinnyConfig;
@@ -6282,6 +6353,7 @@ function createManager(options: {
     larkFiles: options.larkFiles,
     larkMessages: options.larkMessages,
     botOpenId: options.botOpenId,
+    assetImageKeys: options.assetImageKeys,
     logger: options.logger,
     nameLookupFailureTtlMs: 60_000
   });
@@ -6448,6 +6520,7 @@ function createLarkResponder(): LarkResponder {
     replyMarkdown: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     replyPost: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     replyFile: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
+    replyImage: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     sendTextToOpenId: vi.fn(async () => undefined),
     sendCardToChatId: vi.fn(async (chatId) => ({ messageId: `card_${chatId}_${++markdownReplyCount}`, raw: {} })),
     sendEphemeralCardToChatId: vi.fn(async (chatId) => ({ messageId: `ephemeral_${chatId}_${++markdownReplyCount}`, raw: {} })),

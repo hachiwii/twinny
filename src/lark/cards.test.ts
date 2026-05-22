@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   markdownElement,
+  renderTwinnyBannerCard,
   renderTwinnyAgentCard,
   renderTwinnyStatusCard,
   renderTwinnyThreadSummaryCard,
@@ -694,5 +695,27 @@ describe("renderTwinnyStatusCard", () => {
     expect(serialized).toContain("CodeX 版本");
     expect(serialized).toContain("cli_xxx");
     expect(serialized).toContain("23% (重置于 23:59)");
+  });
+});
+
+describe("renderTwinnyBannerCard", () => {
+  it("renders the Twinny banner image when an image key is available", () => {
+    const card = renderTwinnyBannerCard({ bannerImageKey: "img_banner" });
+
+    expect((card.body as { elements: unknown[] }).elements[0]).toMatchObject({
+      tag: "img",
+      img_key: "img_banner",
+      scale_type: "fit_horizontal"
+    });
+    expect(JSON.stringify(card)).toContain("Twinny v0.4.0");
+  });
+
+  it("omits the banner image when no image key is available", () => {
+    const card = renderTwinnyBannerCard();
+
+    expect((card.body as { elements: Array<{ tag?: string }> }).elements[0]).toMatchObject({
+      tag: "markdown"
+    });
+    expect(JSON.stringify(card)).not.toContain("\"tag\":\"img\"");
   });
 });

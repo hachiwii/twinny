@@ -10,6 +10,7 @@ import {
   markdownElement,
   mediaElement,
   PLAN_IMPLEMENT_INSTRUCTION_FORM_NAME,
+  renderTwinnyBannerCard,
   renderTwinnyAgentCard,
   renderTwinnyStatusCard,
   renderTwinnyThreadSummaryCard,
@@ -448,6 +449,7 @@ export interface LarkResponder {
   replyMarkdown(messageId: string, markdown: string, options?: LarkReplyOptions): Promise<LarkReplyResult | void>;
   replyPost(messageId: string, content: LarkPostContent, options?: LarkReplyOptions): Promise<LarkReplyResult | void>;
   replyFile(messageId: string, fileKey: string): Promise<{ messageId?: string } | void>;
+  replyImage(messageId: string, imageKey: string): Promise<{ messageId?: string } | void>;
   sendTextToOpenId(openId: string, text: string): Promise<void>;
   sendCardToChatId(
     chatId: string,
@@ -481,6 +483,10 @@ export interface ConversationManagerOptions {
   larkFiles?: LarkFileDownloader;
   larkMessages?: LarkMessageReader;
   botOpenId?: string;
+  assetImageKeys?: {
+    logoImageKey?: string;
+    bannerImageKey?: string;
+  };
   roles: RoleHomeResolver;
   logger?: Logger;
   nameLookupFailureTtlMs?: number;
@@ -670,6 +676,8 @@ type ParsedCommand =
   | { kind: "plan"; text: string }
   | { kind: "exit" }
   | { kind: "compact" }
+  | { kind: "logo" }
+  | { kind: "banner" }
   | { kind: "stop"; text: string }
   | { kind: "next" }
   | { kind: "steer" }
@@ -1665,6 +1673,14 @@ export class ConversationManager {
     }
     if (parsed.kind === "compact") {
       await this.handleCompactCommand(state, context, message);
+      return;
+    }
+    if (parsed.kind === "logo") {
+      await this.handleLogoCommand(message);
+      return;
+    }
+    if (parsed.kind === "banner") {
+      await this.handleBannerCommand(message);
       return;
     }
     await this.handleUserMessage(state, context, message, parsed.text);
@@ -2878,6 +2894,28 @@ export class ConversationManager {
     } else if (!state.active && state.suspendedActiveTurns.length === 0) {
       await this.startPendingBatch(state, context);
     }
+  }
+
+  private async handleLogoCommand(message: IncomingLarkMessage): Promise<void> {
+    const imageKey = this.logoImageKey();
+    if (!imageKey) {
+      await this.replyControlBestEffort(message.messageId, "logo.png 暂无可用 image_key，无法发送。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    await this.options.lark.replyImage(message.messageId, imageKey);
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async handleBannerCommand(message: IncomingLarkMessage): Promise<void> {
+    await this.options.lark.replyCard(
+      message.messageId,
+      renderTwinnyBannerCard({
+        bannerImageKey: this.bannerImageKey()
+      })
+    );
+    await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
   private async handleHelpCommand(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
@@ -4901,7 +4939,7 @@ export class ConversationManager {
       totalWorkDurationMs: stats.totalWorkDurationMs + (options.additionalWorkDurationMs ?? 0),
       contextTokens: thread.contextTokens,
       contextWindow: thread.contextWindow,
-      iconImageKey: this.options.config.lark.iconImageKey
+      iconImageKey: this.logoImageKey()
     });
   }
 
@@ -4938,6 +4976,14 @@ export class ConversationManager {
     void this.options.codex.setThreadName({ role, threadId, name }).catch((error) => {
       this.log.warn({ error, threadId, name }, "failed to sync Codex thread name");
     });
+  }
+
+  private logoImageKey(): string | undefined {
+    return this.options.assetImageKeys ? this.options.assetImageKeys.logoImageKey : this.options.config.lark.iconImageKey;
+  }
+
+  private bannerImageKey(): string | undefined {
+    return this.options.assetImageKeys?.bannerImageKey;
   }
 
   private findActiveTurn(codexThreadId: string): ActiveTurn | undefined {
@@ -6120,7 +6166,7 @@ export class ConversationManager {
           queueNextMessage: false,
           stateKey: context.stateKey,
           runId: 0,
-          iconImageKey: this.options.config.lark.iconImageKey,
+          iconImageKey: this.logoImageKey(),
           mode: "default",
           subtitle: sideCardSubtitle("failed", record.sideId),
           hideQueueControls: true,
@@ -6236,7 +6282,7 @@ export class ConversationManager {
       queueNextMessage: active.kind === "side" ? false : state.queueNextMessage,
       stateKey: active.context.stateKey,
       runId: active.runId,
-      iconImageKey: this.options.config.lark.iconImageKey,
+      iconImageKey: this.logoImageKey(),
       mode: active.mode,
       title: activeHasGoal(active) && status === "working"
         ? active.goal?.title
@@ -6745,6 +6791,12 @@ function parseSlashCommand(text: string): ParsedCommand {
   }
   if (command === "compact") {
     return { kind: "compact" };
+  }
+  if (command === "logo") {
+    return { kind: "logo" };
+  }
+  if (command === "twinny" || command === "banner") {
+    return { kind: "banner" };
   }
   return { kind: "message", text };
 }
@@ -7531,6 +7583,8 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/goal <objective> - 设置并自动实现 Codex goal；运行中再次使用会更新目标",
     "/side <message> 或 /btw <message> - 基于当前 Codex thread 发起临时会话",
     "/compact - 压缩当前 Codex thread 上下文；默认加入下一轮队列",
+    "/logo - 发送 Twinny logo.png",
+    "/twinny 或 /banner - 发送 Twinny banner 卡片",
     "/thread [message] - 创建新话题",
     "/fork [message] - 从当前 Codex thread fork 出新话题"
   ];
@@ -7606,7 +7660,9 @@ function classifyInitialRoute(
     parsed.kind === "fork" ||
     parsed.kind === "activate" ||
     parsed.kind === "deactivate" ||
-    parsed.kind === "queue"
+    parsed.kind === "queue" ||
+    parsed.kind === "logo" ||
+    parsed.kind === "banner"
   ) {
     return { routeKind: "control_message", status: "processing", text: originalText };
   }

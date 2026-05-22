@@ -136,6 +136,23 @@ export class LarkMessageSender {
     };
   }
 
+  async replyImage(messageId: string, imageKey: string, options: TextMessageOptions = {}): Promise<LarkSendMessageResult> {
+    const raw = await this.openApiClient.request(`/im/v1/messages/${encodePathSegment(messageId)}/reply`, {
+      method: "POST",
+      signal: options.signal,
+      body: {
+        content: this.stringifyMessageContent({ image_key: imageKey }),
+        msg_type: "image",
+        ...(options.replyInThread ? { reply_in_thread: true } : {}),
+        ...(options.uuid ? { uuid: options.uuid } : {})
+      }
+    });
+    return {
+      messageId: extractMessageId(raw),
+      raw
+    };
+  }
+
   async replyInteractiveCard(
     messageId: string,
     card: LarkInteractiveCard,

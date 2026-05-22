@@ -2219,6 +2219,7 @@ function adaptLarkSender(sender: LarkMessageSender, config: TwinnyConfig): LarkR
     replyMarkdown: (messageId, markdown, options) => sender.replyMarkdown(messageId, markdown, options),
     replyPost: (messageId, content, options) => sender.replyPost(messageId, content, options),
     replyFile: (messageId, fileKey) => sender.replyFile(messageId, fileKey),
+    replyImage: (messageId, imageKey) => sender.replyImage(messageId, imageKey),
     sendTextToOpenId: async (openId, text) => {
       await sender.sendTextToOpenId(openId, text);
     },

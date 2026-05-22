@@ -1,10 +1,10 @@
 import type { Logger } from "pino";
 import {
   createRuntimePaths,
+  resolveBundledBannerPath,
   resolveBundledLogoPath,
   resolveSecretRef,
-  SecurityCliSecretStore,
-  writeLarkIconImageKey
+  SecurityCliSecretStore
 } from "../config/index.js";
 import { RoleCodexAppServerPool } from "../codex/index.js";
 import { ConversationManager, type CodexBridge } from "../conversation/manager.js";
@@ -43,11 +43,16 @@ import type {
 } from "../codex/turn.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { MacIdleSleepPreventer, type IdleSleepPreventer } from "./caffeinate.js";
+import {
+  provisionLarkAssetImageKeys as provisionRuntimeLarkAssetImageKeys,
+  type LarkAssetImageKeys
+} from "./lark-assets.js";
 
 export interface TwinnyRuntimeOptions {
   logger?: Logger;
   requestTimeoutMs?: number;
   logoFilePath?: string;
+  bannerFilePath?: string;
   idleSleepPreventer?: IdleSleepPreventer;
 }
 
@@ -129,7 +134,7 @@ export class TwinnyRuntime {
         return undefined;
       });
       const larkFiles = new LarkFileDownloader({ openApiClient });
-      await this.provisionLarkIconImageKey(larkFiles);
+      const assetImageKeys = await this.provisionLarkAssetImageKeys(larkFiles);
       const systemNotifier = new TwinnySystemNotifier({
         ownerOpenId: this.config.owner.openId,
         sender: larkSender,
@@ -154,6 +159,7 @@ export class TwinnyRuntime {
         larkFiles,
         larkMessages,
         botOpenId,
+        assetImageKeys,
         roles: { codexHomeFor: (role) => getRoleCodexHome(this.config, role) },
         logger: this.log
       });
@@ -340,29 +346,14 @@ export class TwinnyRuntime {
     }
   }
 
-  private async provisionLarkIconImageKey(larkFiles: LarkFileDownloader): Promise<void> {
-    if (this.config.lark.iconImageKey) {
-      return;
-    }
-    let imageKey: string;
-    try {
-      const uploaded = await larkFiles.uploadImage({
-        filePath: this.options.logoFilePath ?? resolveBundledLogoPath(),
-        fileName: "twinny-logo.jpg",
-        contentType: "image/jpeg"
-      });
-      imageKey = uploaded.imageKey;
-      this.config.lark.iconImageKey = imageKey;
-    } catch (error) {
-      this.log.warn({ error }, "failed to upload lark card icon; continuing without custom icon");
-      return;
-    }
-
-    try {
-      await writeLarkIconImageKey(this.config, imageKey, this.paths.configFile);
-    } catch (error) {
-      this.log.warn({ error }, "failed to write lark card icon image key to config; continuing with in-memory icon");
-    }
+  private async provisionLarkAssetImageKeys(larkFiles: LarkFileDownloader): Promise<LarkAssetImageKeys> {
+    return provisionRuntimeLarkAssetImageKeys({
+      cacheFile: this.paths.larkAssetsFile,
+      logoFilePath: this.options.logoFilePath ?? resolveBundledLogoPath(),
+      bannerFilePath: this.options.bannerFilePath ?? resolveBundledBannerPath(),
+      uploader: larkFiles,
+      logger: this.log
+    });
   }
 }
 
@@ -633,6 +624,9 @@ function adaptLarkSender(
     },
     replyFile: async (messageId: string, fileKey: string): Promise<{ messageId?: string }> => {
       return sender.replyFile(messageId, fileKey);
+    },
+    replyImage: async (messageId: string, imageKey: string): Promise<{ messageId?: string }> => {
+      return sender.replyImage(messageId, imageKey);
     },
     sendTextToOpenId: async (openId: string, text: string): Promise<void> => {
       await sender.sendTextToOpenId(openId, text);

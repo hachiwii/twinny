@@ -158,6 +158,10 @@ export interface RenderTwinnyStatusCardOptions {
   };
 }
 
+export interface RenderTwinnyBannerCardOptions {
+  bannerImageKey?: string;
+}
+
 const STATUS_HEADER: Record<TwinnyAgentCardStatus, { title: string; subtitle?: string; template: string }> = {
   working: { title: "工作中...", template: "purple" },
   finished: { title: "已完成", template: "green" },
@@ -356,6 +360,53 @@ export function renderTwinnyThreadSummaryCard(options: RenderTwinnyThreadSummary
       template: threadSummaryHeaderTemplate(options.status),
       icon: threadSummaryHeaderIcon(options.iconImageKey),
       padding: "12px 12px 12px 12px"
+    }
+  };
+}
+
+export function renderTwinnyBannerCard(options: RenderTwinnyBannerCardOptions = {}): LarkCardJson {
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      style: {
+        text_size: {
+          normal_v2: {
+            default: "normal",
+            pc: "normal",
+            mobile: "heading"
+          }
+        }
+      }
+    },
+    body: {
+      direction: "vertical",
+      horizontal_spacing: "8px",
+      vertical_spacing: "8px",
+      horizontal_align: "left",
+      vertical_align: "top",
+      padding: "0px 0px 12px 0px",
+      elements: [
+        ...(options.bannerImageKey
+          ? [
+              {
+                tag: "img",
+                img_key: options.bannerImageKey,
+                preview: true,
+                transparent: false,
+                scale_type: "fit_horizontal",
+                margin: "0px 0px 0px 0px"
+              }
+            ]
+          : []),
+        {
+          tag: "markdown",
+          content: "### 🐰 Twinny v0.4.0\n🌟 me on [Github](https://github.com/hachiwii/twinny)",
+          text_align: "center",
+          text_size: "normal_v2",
+          margin: "0px 0px 0px 0px"
+        }
+      ]
     }
   };
 }

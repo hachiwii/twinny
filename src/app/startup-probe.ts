@@ -94,6 +94,7 @@ function createFailingLarkResponder(): LarkResponder {
     replyMarkdown: fail,
     replyPost: fail,
     replyFile: fail,
+    replyImage: fail,
     sendTextToOpenId: fail,
     sendCardToChatId: fail,
     sendEphemeralCardToChatId: fail,

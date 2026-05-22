@@ -127,6 +127,7 @@ export interface RuntimePaths {
   sqliteFile: string;
   workspacesDir: string;
   runtimeDir: string;
+  larkAssetsFile: string;
   lockFile: string;
   logsDir: string;
 }

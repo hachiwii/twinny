@@ -42,11 +42,16 @@ export function createRuntimePaths(home = resolveTwinnyHome()): RuntimePaths {
     sqliteFile: path.join(sqliteDir, "twinny.db"),
     workspacesDir: path.join(resolvedHome, "workspaces"),
     runtimeDir,
+    larkAssetsFile: path.join(runtimeDir, "lark-assets.json"),
     lockFile: path.join(runtimeDir, "twinny.lock"),
     logsDir: path.join(os.homedir(), "Library", "Logs", "twinny")
   };
 }
 
 export function resolveBundledLogoPath(): string {
-  return fileURLToPath(new URL("../../configs/twinny-logo.jpg", import.meta.url));
+  return fileURLToPath(new URL("../../configs/logo.png", import.meta.url));
+}
+
+export function resolveBundledBannerPath(): string {
+  return fileURLToPath(new URL("../../configs/banner.png", import.meta.url));
 }
