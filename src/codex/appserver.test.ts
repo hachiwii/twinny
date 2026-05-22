@@ -95,6 +95,7 @@ describe("CodexAppServer", () => {
       });
       await expect(server.injectThreadItems("thread-forked", [{ type: "message" }])).resolves.toBeUndefined();
       await expect(server.unsubscribeThread("thread-forked")).resolves.toBeUndefined();
+      await expect(server.setThreadName("thread-existing", "排查标题更新")).resolves.toBeUndefined();
       await expect(
         server.startTurn({
           threadId: "thread-existing",
@@ -152,7 +153,17 @@ describe("CodexAppServer", () => {
         params: {
           cwd: workspace,
           approvalPolicy: "never",
-          persistExtendedHistory: true
+          persistExtendedHistory: true,
+          dynamicTools: [
+            expect.objectContaining({
+              namespace: "twinny",
+              name: "set_thread_name",
+              description: expect.stringContaining("15 Chinese characters or 10 words"),
+              inputSchema: expect.not.objectContaining({
+                maxLength: 15
+              })
+            })
+          ]
         }
       });
       expect(sent.find((message) => message.method === "thread/resume")).toMatchObject({
@@ -190,6 +201,9 @@ describe("CodexAppServer", () => {
       });
       expect(sent.find((message) => message.method === "thread/unsubscribe")).toMatchObject({
         params: { threadId: "thread-forked" }
+      });
+      expect(sent.find((message) => message.method === "thread/name/set")).toMatchObject({
+        params: { threadId: "thread-existing", name: "排查标题更新" }
       });
       expect(sent.find((message) => message.method === "turn/start")).toMatchObject({
         params: {
@@ -435,6 +449,10 @@ rl.on("line", (line) => {
   }
   if (message.method === "thread/unsubscribe") {
     send({ id: message.id, result: { status: "unsubscribed" } });
+    return;
+  }
+  if (message.method === "thread/name/set") {
+    send({ id: message.id, result: {} });
     return;
   }
   if (message.method === "turn/start") {

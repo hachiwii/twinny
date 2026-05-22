@@ -48,6 +48,7 @@ export interface TurnStartOptions {
   threadId: string;
   text?: string;
   input?: CodexTurnInput;
+  currentThreadName?: string;
   cwd: string;
   mode?: CodexThreadMode;
   model?: string;
@@ -61,6 +62,7 @@ export interface TurnStartOptions {
     request: CodexRequestUserInputRequest,
     responder: CodexRequestUserInputResponder
   ) => Promise<void> | void;
+  onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
 }
 
 export interface TurnRequestOptions {
@@ -98,6 +100,20 @@ export type CompletedAgentMessage = CodexAgentMessage;
 export interface CodexRequestUserInputResponder {
   respond(response: CodexRequestUserInputResponse): void;
   reject(error: Error | string): void;
+}
+
+export interface CodexSetThreadNameToolRequest {
+  requestId: string | number;
+  threadId: string;
+  turnId: string;
+  callId: string;
+  name: string;
+  rawArguments: unknown;
+}
+
+export interface CodexDynamicToolCallResponse {
+  success: boolean;
+  contentItems: Array<{ type: "inputText"; text: string }>;
 }
 
 export interface TurnSteerOptions {
@@ -156,10 +172,28 @@ export function normalizeCodexTurnInput(input?: CodexTurnInput, fallbackText = "
   return [buildTextTurnInput(input ?? fallbackText)];
 }
 
+export function prefixCurrentThreadNameInput(input: CodexUserInput[], threadName: string): CodexUserInput[] {
+  const prefix = `<current_thread_name>${escapeXmlText(threadName)}</current_thread_name>\n`;
+  const firstTextIndex = input.findIndex((item) => item.type === "text");
+  if (firstTextIndex < 0) {
+    return [buildTextTurnInput(prefix), ...input];
+  }
+  return input.map((item, index): CodexUserInput => {
+    if (index !== firstTextIndex || item.type !== "text") {
+      return item;
+    }
+    return {
+      ...item,
+      text: `${prefix}${item.text}`
+    };
+  });
+}
+
 export function buildTurnStartParams(options: TurnStartOptions): TurnStartParams {
+  const input = normalizeCodexTurnInput(options.input, options.text ?? "");
   const params: TurnStartParams = {
     threadId: options.threadId,
-    input: normalizeCodexTurnInput(options.input, options.text ?? ""),
+    input: options.currentThreadName === undefined ? input : prefixCurrentThreadNameInput(input, options.currentThreadName),
     cwd: options.cwd,
     approvalPolicy: "never"
   };
@@ -636,6 +670,10 @@ export function handleTurnServerRequest(
   options: TurnStartOptions,
   request: CodexRequestMessage
 ): void {
+  if (request.method === "item/tool/call") {
+    handleDynamicToolCallRequest(protocol, options, request);
+    return;
+  }
   if (request.method !== "item/tool/requestUserInput") {
     if (requestMatchesThread(request, options.threadId)) {
       protocol.respondError(request.id, {
@@ -691,8 +729,122 @@ export function handleTurnServerRequest(
   });
 }
 
+function handleDynamicToolCallRequest(
+  protocol: CodexProtocolClient,
+  options: TurnStartOptions,
+  request: CodexRequestMessage
+): void {
+  const params = parseDynamicToolCallParams(request.params);
+  if (!params) {
+    if (requestMatchesThread(request, options.threadId)) {
+      protocol.respondError(request.id, {
+        code: "TWINNY_INVALID_DYNAMIC_TOOL_CALL",
+        message: "Invalid Codex dynamic tool call request"
+      });
+    }
+    return;
+  }
+  if (params.threadId !== options.threadId) {
+    return;
+  }
+  if (params.namespace !== "twinny" || params.tool !== "set_thread_name") {
+    protocol.respondError(request.id, {
+      code: "TWINNY_UNSUPPORTED_SERVER_REQUEST",
+      message: `Twinny does not implement dynamic tool ${params.namespace ? `${params.namespace}.` : ""}${params.tool}`
+    });
+    return;
+  }
+
+  if (!options.onSetThreadName) {
+    protocol.respondError(request.id, {
+      code: "TWINNY_UNSUPPORTED_SERVER_REQUEST",
+      message: "Twinny does not implement twinny.set_thread_name for this turn"
+    });
+    return;
+  }
+
+  const name = parseSetThreadNameArguments(params.arguments);
+  if (!name) {
+    protocol.respond(request.id, dynamicToolTextResponse(false, "Invalid thread name: expected a non-empty name string."));
+    return;
+  }
+
+  void Promise.resolve(
+    options.onSetThreadName({
+      requestId: request.id,
+      threadId: params.threadId,
+      turnId: params.turnId,
+      callId: params.callId,
+      name,
+      rawArguments: params.arguments
+    })
+  ).then(
+    (response) => protocol.respond(request.id, response),
+    (error: unknown) => {
+      protocol.respond(
+        request.id,
+        dynamicToolTextResponse(false, `Failed to update thread name: ${toErrorMessage(error)}`)
+      );
+    }
+  );
+}
+
 function requestMatchesThread(request: CodexRequestMessage, threadId: string): boolean {
   return isRecord(request.params) && request.params.threadId === threadId;
+}
+
+interface DynamicToolCallParams {
+  threadId: string;
+  turnId: string;
+  callId: string;
+  namespace: string | null;
+  tool: string;
+  arguments: unknown;
+}
+
+function parseDynamicToolCallParams(value: unknown): DynamicToolCallParams | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.threadId !== "string" ||
+    typeof value.turnId !== "string" ||
+    typeof value.callId !== "string" ||
+    typeof value.tool !== "string"
+  ) {
+    return undefined;
+  }
+  if (value.namespace !== null && typeof value.namespace !== "string") {
+    return undefined;
+  }
+  return {
+    threadId: value.threadId,
+    turnId: value.turnId,
+    callId: value.callId,
+    namespace: value.namespace,
+    tool: value.tool,
+    arguments: value.arguments
+  };
+}
+
+function parseSetThreadNameArguments(value: unknown): string | undefined {
+  if (!isRecord(value) || typeof value.name !== "string") {
+    return undefined;
+  }
+  const name = value.name.replace(/\s+/g, " ").trim();
+  return name || undefined;
+}
+
+export function dynamicToolTextResponse(success: boolean, text: string): CodexDynamicToolCallResponse {
+  return {
+    success,
+    contentItems: [{ type: "inputText", text }]
+  };
+}
+
+function escapeXmlText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function parseRequestUserInputParams(value: unknown): CodexRequestUserInputParams | undefined {

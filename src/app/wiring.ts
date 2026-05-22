@@ -35,7 +35,12 @@ import type {
   RoleName,
   TwinnyConfig
 } from "../types.js";
-import type { CodexRequestUserInputResponder, CodexTurnInput } from "../codex/turn.js";
+import type {
+  CodexDynamicToolCallResponse,
+  CodexRequestUserInputResponder,
+  CodexSetThreadNameToolRequest,
+  CodexTurnInput
+} from "../codex/turn.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { MacIdleSleepPreventer, type IdleSleepPreventer } from "./caffeinate.js";
 
@@ -444,6 +449,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       role,
       threadId,
       input,
+      currentThreadName,
       cwd,
       mode,
       model,
@@ -453,11 +459,13 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       onImageGeneration,
       onTokenUsage,
       onPlanUpdated,
-      onRequestUserInput
+      onRequestUserInput,
+      onSetThreadName
     }: {
       role: RoleName;
       threadId: string;
       input: CodexTurnInput;
+      currentThreadName?: string;
       cwd: string;
       mode?: CodexThreadMode;
       model?: string;
@@ -471,10 +479,12 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
         request: CodexRequestUserInputRequest,
         responder: CodexRequestUserInputResponder
       ) => Promise<void> | void;
+      onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
     }) =>
       pool.get(role).startTurn({
         threadId,
         ...(typeof input === "string" ? { text: input } : { input }),
+        currentThreadName,
         cwd,
         mode,
         model,
@@ -484,7 +494,8 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
         onImageGeneration,
         onTokenUsage,
         onPlanUpdated,
-        onRequestUserInput
+        onRequestUserInput,
+        onSetThreadName
       }),
     compactThread: async ({
       role,
@@ -529,6 +540,17 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
       threadId: string;
     }): Promise<void> => {
       await pool.get(role).clearThreadGoal(threadId);
+    },
+    setThreadName: async ({
+      role,
+      threadId,
+      name
+    }: {
+      role: RoleName;
+      threadId: string;
+      name: string;
+    }): Promise<void> => {
+      await pool.get(role).setThreadName(threadId, name);
     },
     runGoal: async ({
       role,

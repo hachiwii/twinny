@@ -55,7 +55,14 @@ import type {
   LarkChatMode,
   LarkGroupMessageType
 } from "../types.js";
-import type { CodexRequestUserInputResponder, CodexTurnInput, CodexUserInput } from "../codex/turn.js";
+import {
+  dynamicToolTextResponse,
+  type CodexDynamicToolCallResponse,
+  type CodexRequestUserInputResponder,
+  type CodexSetThreadNameToolRequest,
+  type CodexTurnInput,
+  type CodexUserInput
+} from "../codex/turn.js";
 import type { ThreadGoal } from "../codex/goal.js";
 import type { LarkSendMessageResult } from "../lark/types.js";
 import { SerialQueue } from "./queue.js";
@@ -302,6 +309,7 @@ export interface CodexBridge {
     role: RoleName;
     threadId: string;
     input: CodexTurnInput;
+    currentThreadName?: string;
     cwd: string;
     approvalPolicy: "never";
     mode?: CodexThreadMode;
@@ -316,6 +324,7 @@ export interface CodexBridge {
       request: CodexRequestUserInputRequest,
       responder: CodexRequestUserInputResponder
     ) => Promise<void> | void;
+    onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
   }): Promise<CodexTurnResult>;
   compactThread(params: {
     role: RoleName;
@@ -352,6 +361,11 @@ export interface CodexBridge {
     role: RoleName;
     threadId: string;
   }): Promise<void>;
+  setThreadName?(params: {
+    role: RoleName;
+    threadId: string;
+    name: string;
+  }): Promise<void>;
   runGoal?(params: {
     role: RoleName;
     threadId: string;
@@ -365,6 +379,7 @@ export interface CodexBridge {
       request: CodexRequestUserInputRequest,
       responder: CodexRequestUserInputResponder
     ) => Promise<void> | void;
+    onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
   }): Promise<CodexTurnResult>;
   resumeGoal?(params: {
     role: RoleName;
@@ -379,6 +394,7 @@ export interface CodexBridge {
       request: CodexRequestUserInputRequest,
       responder: CodexRequestUserInputResponder
     ) => Promise<void> | void;
+    onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
   }): Promise<CodexTurnResult>;
 }
 
@@ -3800,7 +3816,8 @@ export class ConversationManager {
           onRequestUserInput: (
             request: CodexRequestUserInputRequest,
             responder: CodexRequestUserInputResponder
-          ) => this.handleRequestUserInput(state, active, request, responder)
+          ) => this.handleRequestUserInput(state, active, request, responder),
+          onSetThreadName: (request: CodexSetThreadNameToolRequest) => this.handleSetThreadNameToolCall(state, active, request)
         };
         const result = params.recovering
           ? await this.options.codex.resumeGoal!({
@@ -3976,6 +3993,7 @@ export class ConversationManager {
           role: params.role,
           threadId: active.threadId,
           input: params.input,
+          currentThreadName: threadRecord?.name ?? "",
           cwd: params.workspace,
           approvalPolicy: "never",
           mode: active.mode,
@@ -3986,7 +4004,8 @@ export class ConversationManager {
           onImageGeneration: (image) => this.recordImageGenerationForActiveBestEffort(state, active, image),
           onTokenUsage: (usage) => this.recordThreadTokenUsageBestEffort(state, active, usage),
           onPlanUpdated: (plan) => this.handlePlanUpdated(state, active, plan),
-          onRequestUserInput: (request, responder) => this.handleRequestUserInput(state, active, request, responder)
+          onRequestUserInput: (request, responder) => this.handleRequestUserInput(state, active, request, responder),
+          onSetThreadName: (request) => this.handleSetThreadNameToolCall(state, active, request)
         });
         active.completedStatus = result.status;
         active.resultText = result.text;
@@ -4233,6 +4252,31 @@ export class ConversationManager {
         return;
       }
       await this.notifyAgentCardBestEffort(state, active, "waiting_input");
+    });
+  }
+
+  private async handleSetThreadNameToolCall(
+    state: ConversationState,
+    active: ActiveTurn,
+    request: CodexSetThreadNameToolRequest
+  ): Promise<CodexDynamicToolCallResponse> {
+    const name = normalizeThreadName(request.name);
+    if (!name) {
+      return dynamicToolTextResponse(false, "Invalid thread name: expected a non-empty name string.");
+    }
+    return await state.controlQueue.enqueue(async () => {
+      if (
+        !isActiveTurnCurrent(state, active) ||
+        active.cancelRequested ||
+        active.threadId !== request.threadId ||
+        (active.turnId !== undefined && active.turnId !== request.turnId)
+      ) {
+        return dynamicToolTextResponse(false, "Thread name was not updated because this turn is no longer active.");
+      }
+      await this.applyThreadNameUpdate(active.threadId, name);
+      this.syncCodexThreadNameBestEffort(active.role, active.threadId, name);
+      await this.updateAgentCardWithThreadNameBestEffort(state, active, request.callId, name);
+      return dynamicToolTextResponse(true, `Thread name updated to: ${name}`);
     });
   }
 
@@ -4683,21 +4727,34 @@ export class ConversationManager {
     if (!name) {
       return;
     }
-    const thread = await this.options.repository.updateCodexThreadName(update.threadId, name);
+    await this.applyThreadNameUpdate(update.threadId, name);
+  }
+
+  private async applyThreadNameUpdate(threadId: string, name: string): Promise<void> {
+    const thread = await this.options.repository.updateCodexThreadName(threadId, name);
     if (!thread) {
-      this.rememberPendingThreadName(update.threadId, name);
+      this.rememberPendingThreadName(threadId, name);
       return;
     }
     if (!thread.cardMessageId) {
-      this.rememberPendingThreadName(update.threadId, name);
+      this.rememberPendingThreadName(threadId, name);
       return;
     }
     await this.options.lark.patchCard(
       thread.cardMessageId,
       await this.renderThreadSummaryCard(thread, {
-        additionalWorkDurationMs: activeTurnWorkDurationMs(update.threadId, this.findActiveTurn(update.threadId))
+        additionalWorkDurationMs: activeTurnWorkDurationMs(threadId, this.findActiveTurn(threadId))
       })
     );
+  }
+
+  private syncCodexThreadNameBestEffort(role: RoleName, threadId: string, name: string): void {
+    if (!this.options.codex.setThreadName) {
+      return;
+    }
+    void this.options.codex.setThreadName({ role, threadId, name }).catch((error) => {
+      this.log.warn({ error, threadId, name }, "failed to sync Codex thread name");
+    });
   }
 
   private findActiveTurn(codexThreadId: string): ActiveTurn | undefined {
@@ -5358,6 +5415,38 @@ export class ConversationManager {
       await this.patchAgentCardBestEffort(state, active, "working");
     } catch (error) {
       this.log.warn({ error, messageId: active.replyMessageId, imagePath }, "failed to update agent card with generated image");
+      card.fallbackPlain = true;
+      this.stopAgentCardTimer(active);
+    }
+  }
+
+  private async updateAgentCardWithThreadNameBestEffort(
+    state: ConversationState,
+    active: ActiveTurn,
+    callId: string,
+    name: string
+  ): Promise<void> {
+    const card = active.card;
+    if (!card || card.fallbackPlain) {
+      return;
+    }
+    const messageId = `thread-name:${callId}`;
+    if (!card.messages.some((message) => message.id === messageId)) {
+      card.messages.push({
+        id: messageId,
+        text: `[已更新标题] ${name}`,
+        processOnly: true
+      });
+    }
+
+    try {
+      if (!card.messageId) {
+        await this.createAgentCardBestEffort(state, active);
+        return;
+      }
+      await this.patchAgentCardBestEffort(state, active, "working");
+    } catch (error) {
+      this.log.warn({ error, messageId: active.replyMessageId, name }, "failed to update agent card with thread name");
       card.fallbackPlain = true;
       this.stopAgentCardTimer(active);
     }

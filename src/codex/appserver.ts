@@ -19,6 +19,7 @@ import {
   forkCodexThread,
   injectCodexThreadItems,
   resumeCodexThread,
+  setCodexThreadName,
   startCodexThread,
   unsubscribeCodexThread,
   type ThreadForkResponse,
@@ -193,6 +194,10 @@ export class CodexAppServer extends EventEmitter {
 
   async unsubscribeThread(threadId: string): Promise<void> {
     await unsubscribeCodexThread(this.protocol, threadId);
+  }
+
+  async setThreadName(threadId: string, name: string): Promise<void> {
+    await setCodexThreadName(this.protocol, { threadId, name });
   }
 
   async startTurn(options: TurnStartOptions): Promise<import("../types.js").CodexTurnResult> {

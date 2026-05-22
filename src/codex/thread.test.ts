@@ -6,8 +6,31 @@ describe("codex thread payloads", () => {
     expect(buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" })).toEqual({
       cwd: "/tmp/twinny/workspaces/p2p_ou_1",
       approvalPolicy: "never",
-      persistExtendedHistory: true
+      persistExtendedHistory: true,
+      dynamicTools: [
+        {
+          namespace: "twinny",
+          name: "set_thread_name",
+          description: expect.stringContaining("15 Chinese characters or 10 words"),
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["name"],
+            properties: {
+              name: {
+                type: "string",
+                minLength: 1,
+                description: expect.stringContaining("15 Chinese characters or 10 words")
+              }
+            }
+          },
+          deferLoading: false
+        }
+      ]
     });
+    const tool = buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools[0]!;
+    expect(JSON.stringify(tool.inputSchema)).not.toContain("maxLength");
+    expect(tool.description).not.toContain("Twinny");
   });
 
   it("builds thread/resume with the persisted thread id and the same thread overrides", () => {

@@ -5,6 +5,8 @@ import {
   buildTurnInterruptParams,
   buildTurnStartParams,
   buildTurnSteerParams,
+  dynamicToolTextResponse,
+  handleTurnServerRequest,
   startCodexTurn,
   TurnOutputAccumulator
 } from "./turn.js";
@@ -40,6 +42,25 @@ describe("codex turn payloads", () => {
           developer_instructions: null
         }
       }
+    });
+  });
+
+  it("injects the current thread name into turn/start text input", () => {
+    expect(
+      buildTurnStartParams({
+        threadId: "thread_123",
+        text: "hello",
+        currentThreadName: "A&B <work>",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1"
+      })
+    ).toMatchObject({
+      input: [
+        {
+          type: "text",
+          text: "<current_thread_name>A&amp;B &lt;work&gt;</current_thread_name>\nhello",
+          text_elements: []
+        }
+      ]
     });
   });
 
@@ -79,6 +100,144 @@ describe("codex turn payloads", () => {
       threadId: "thread_123",
       turnId: "turn_1"
     });
+  });
+});
+
+describe("handleTurnServerRequest", () => {
+  it("handles set_thread_name dynamic tool calls without enforcing title length", async () => {
+    const protocol = new FakeProtocol();
+    const onSetThreadName = vi.fn(async (request) =>
+      dynamicToolTextResponse(true, `updated ${request.name}`)
+    );
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onSetThreadName
+      },
+      {
+        id: "req-1",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_1",
+          namespace: "twinny",
+          tool: "set_thread_name",
+          arguments: { name: "  this is a very long thread name with many words  " }
+        }
+      }
+    );
+
+    await Promise.resolve();
+
+    expect(onSetThreadName).toHaveBeenCalledWith({
+      requestId: "req-1",
+      threadId: "thread_123",
+      turnId: "turn_1",
+      callId: "call_1",
+      name: "this is a very long thread name with many words",
+      rawArguments: { name: "  this is a very long thread name with many words  " }
+    });
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-1", {
+      success: true,
+      contentItems: [{ type: "inputText", text: "updated this is a very long thread name with many words" }]
+    });
+    expect(protocol.respondErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("returns dynamic tool failure for empty set_thread_name input", () => {
+    const protocol = new FakeProtocol();
+    const onSetThreadName = vi.fn();
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onSetThreadName
+      },
+      {
+        id: "req-2",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_2",
+          namespace: "twinny",
+          tool: "set_thread_name",
+          arguments: { name: "   " }
+        }
+      }
+    );
+
+    expect(onSetThreadName).not.toHaveBeenCalled();
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-2", {
+      success: false,
+      contentItems: [{ type: "inputText", text: "Invalid thread name: expected a non-empty name string." }]
+    });
+  });
+
+  it("rejects unsupported dynamic tools for the active thread", () => {
+    const protocol = new FakeProtocol();
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1"
+      },
+      {
+        id: "req-3",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_3",
+          namespace: "other",
+          tool: "set_thread_name",
+          arguments: { name: "Title" }
+        }
+      }
+    );
+
+    expect(protocol.respondErrorMock).toHaveBeenCalledWith("req-3", {
+      code: "TWINNY_UNSUPPORTED_SERVER_REQUEST",
+      message: "Twinny does not implement dynamic tool other.set_thread_name"
+    });
+  });
+
+  it("ignores dynamic tool calls for a different thread", () => {
+    const protocol = new FakeProtocol();
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1"
+      },
+      {
+        id: "req-4",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_other",
+          turnId: "turn_1",
+          callId: "call_4",
+          namespace: "twinny",
+          tool: "set_thread_name",
+          arguments: { name: "Title" }
+        }
+      }
+    );
+
+    expect(protocol.respondMock).not.toHaveBeenCalled();
+    expect(protocol.respondErrorMock).not.toHaveBeenCalled();
   });
 });
 
@@ -500,8 +659,18 @@ describe("startCodexTurn", () => {
 
 class FakeProtocol extends EventEmitter {
   readonly requestMock = vi.fn();
+  readonly respondMock = vi.fn();
+  readonly respondErrorMock = vi.fn();
 
   request<TResult = unknown>(...args: unknown[]): Promise<TResult> {
     return this.requestMock(...args) as Promise<TResult>;
+  }
+
+  respond(...args: unknown[]): void {
+    this.respondMock(...args);
+  }
+
+  respondError(...args: unknown[]): void {
+    this.respondErrorMock(...args);
   }
 }
