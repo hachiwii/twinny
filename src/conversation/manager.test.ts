@@ -3948,6 +3948,88 @@ describe("ConversationManager", () => {
     expect(completedSerialized).not.toContain("aggregate text");
   });
 
+  it("updates an active goal objective with /goal and refreshes the working card", async () => {
+    const { codex, goals } = createDeferredGoalCodex();
+    const lark = createLarkResponder();
+    const { repository } = createRepository();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "/goal calculate pi"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    manager.submitIncoming(message("m2", "/goal calculate tau"));
+    await waitForExpect(() =>
+      expect(codex.setThreadGoal).toHaveBeenCalledWith({
+        role: "guest",
+        threadId: "thread_1",
+        objective: "calculate tau"
+      })
+    );
+
+    expect(codex.runGoal).toHaveBeenCalledTimes(1);
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
+      larkMessageId: "m2",
+      routeKind: "goal_message",
+      status: "processing",
+      text: "calculate tau"
+    }));
+    expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m2"], {
+      conversationKey: "p2p_ou_guest",
+      codexThreadId: "thread_1",
+      codexTurnId: "goal_1"
+    });
+    await waitForExpect(() => expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m2"]));
+
+    await waitForExpect(() => {
+      const patched = vi.mocked(lark.patchCard).mock.calls.find(([, card]) =>
+        JSON.stringify(card).includes("[已更新目标] calculate tau")
+      )?.[1];
+      expect(patched).toMatchObject({
+        header: expect.objectContaining({
+          title: { tag: "plain_text", content: "实现目标中：calculate tau" }
+        })
+      });
+    });
+
+    goals[0]!.resolve({ ...completed("thread_1", "goal_1"), text: "aggregate text" });
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(2));
+  });
+
+  it("updates the same user's active goal immediately even when messages are queued", async () => {
+    const { codex } = createDeferredGoalCodex();
+    const lark = createLarkResponder();
+    const { repository } = createRepository();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "/goal calculate pi"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    manager.submitIncoming(message("m2", "/queue later work"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+
+    manager.submitIncoming(message("m3", "/goal calculate tau"));
+    await waitForExpect(() =>
+      expect(codex.setThreadGoal).toHaveBeenCalledWith(expect.objectContaining({ objective: "calculate tau" }))
+    );
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(1);
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
+      larkMessageId: "m3",
+      routeKind: "goal_message",
+      status: "processing",
+      text: "calculate tau"
+    }));
+
+    manager.submitIncoming(message("m4", "/queue /goal queued target"));
+    await waitForExpect(() => expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
+      larkMessageId: "m4",
+      routeKind: "goal_message",
+      status: "queued",
+      text: "queued target"
+    })));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(2));
+    expect(codex.setThreadGoal).toHaveBeenCalledTimes(1);
+  });
+
   it("updates the working agent card footer with model and current turn token usage", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-codex-config-"));
     const codexHome = path.join(tempRoot, "codex");

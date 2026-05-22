@@ -2440,9 +2440,15 @@ export class ConversationManager {
       queueBoundary: true,
       control: "goal_set"
     });
-    if (!goalContentForPendingMessage(pending)) {
+    const content = goalContentForPendingMessage(pending);
+    if (!content) {
       await this.replyControlBestEffort(message.messageId, "用法：/goal <objective>");
       await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    const active = state.active;
+    if (canUpdateActiveGoalWithMessage(active, message)) {
+      await this.updateActiveGoalCommand(state, message, active, content);
       return;
     }
     if (state.active || state.suspendedActiveTurns.length > 0 || state.pendingBatch.length > 0) {
@@ -2454,6 +2460,75 @@ export class ConversationManager {
     } else if (!state.active && state.suspendedActiveTurns.length === 0) {
       await this.startPendingBatch(state, context);
     }
+  }
+
+  private async updateActiveGoalCommand(
+    state: ConversationState,
+    message: IncomingLarkMessage,
+    active: ActiveTurn & { kind: "goal"; goal: ActiveGoalState },
+    content: string
+  ): Promise<void> {
+    if (!this.options.codex.setThreadGoal) {
+      await this.replyControlBestEffort(message.messageId, "当前 Codex app-server 不支持更新 goal。");
+      await this.markMessagesFailedBestEffort([message.messageId]);
+      return;
+    }
+
+    await this.markMessagesProcessingBestEffort([message.messageId], {
+      conversationKey: active.conversationKey,
+      codexThreadId: active.threadId,
+      codexTurnId: active.turnId
+    });
+
+    let goal: ThreadGoal;
+    try {
+      goal = await this.options.codex.setThreadGoal({
+        role: active.role,
+        threadId: active.threadId,
+        objective: content
+      });
+    } catch (error) {
+      this.log.warn(
+        { error, threadId: active.threadId, messageId: message.messageId },
+        "failed to update active goal objective"
+      );
+      await this.replyErrorBestEffort(message.messageId, error);
+      await this.markMessagesFailedBestEffort([message.messageId]);
+      return;
+    }
+
+    if (state.active !== active || active.cancelRequested || active.kind !== "goal" || !active.goal) {
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    active.goal.objective = content;
+    active.goal.content = content;
+    active.goal.title = goalWorkingTitle(content);
+    active.goal.status = goal.status;
+    active.goal.completed = goal.status === "complete";
+    active.card?.messages.push({
+      id: `goal:${message.messageId}:updated`,
+      text: `[已更新目标] ${content}`
+    });
+
+    if (active.card && !active.card.fallbackPlain) {
+      try {
+        if (active.card.messageId) {
+          await this.patchAgentCardBestEffort(state, active, "working");
+        } else {
+          await this.createAgentCardBestEffort(state, active);
+        }
+      } catch (error) {
+        this.log.warn(
+          { error, threadId: active.threadId, messageId: message.messageId },
+          "failed to refresh agent card after updating goal objective"
+        );
+        active.card.fallbackPlain = true;
+        this.stopAgentCardTimer(active);
+      }
+    }
+    await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
   private async handleSideCommand(
@@ -7006,7 +7081,7 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/next - 打断当前任务，并执行队列中的下一条消息",
     "/steer - 将队列中的下一批消息注入当前任务",
     "/queue <message> - 将消息加入下一轮队列，不注入当前任务",
-    "/goal <objective> - 设置并自动实现 Codex goal",
+    "/goal <objective> - 设置并自动实现 Codex goal；运行中再次使用会更新目标",
     "/side <message> 或 /btw <message> - 基于当前 Codex thread 发起临时会话",
     "/compact - 压缩当前 Codex thread 上下文；默认加入下一轮队列",
     "/thread [message] - 创建新话题",
@@ -7060,7 +7135,9 @@ function classifyInitialRoute(
     return { routeKind: "side_message", status: "processing", text: parsed.text };
   }
   if (parsed.kind === "goal") {
-    return { routeKind: "goal_message", status: "queued", text: parsed.text };
+    return canUpdateActiveGoalWithMessage(active, message)
+      ? { routeKind: "goal_message", status: "processing", text: parsed.text }
+      : { routeKind: "goal_message", status: "queued", text: parsed.text };
   }
   if (parsed.kind === "plan") {
     return { routeKind: "queued_message", status: "queued", text: parsed.text };
@@ -7104,6 +7181,20 @@ function classifyInitialRoute(
       : { routeKind: "queued_message", status: "queued", text: parsed.text };
   }
   return { routeKind: "message", status: "processing", text: parsed.text };
+}
+
+function canUpdateActiveGoalWithMessage(
+  active: ActiveTurn | undefined,
+  message: IncomingLarkMessage
+): active is ActiveTurn & { kind: "goal"; goal: ActiveGoalState } {
+  return (
+    active?.kind === "goal" &&
+    !!active.goal &&
+    !active.cancelRequested &&
+    active.completedStatus === undefined &&
+    active.goal.completed !== true &&
+    message.senderOpenId === active.triggerOpenId
+  );
 }
 
 function toPendingMessage(
