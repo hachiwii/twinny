@@ -2488,7 +2488,11 @@ export class ConversationManager {
     text: string
   ): Promise<void> {
     if (!text) {
-      await this.replyControlBestEffort(message.messageId, "用法：/queue <message>");
+      state.queueNextMessage = true;
+      if (state.active) {
+        await this.patchAgentCardBestEffort(state, state.active, "working");
+      }
+      await this.replyControlBestEffort(message.messageId, "已开启排队模式：你的下一条消息会排队等待当前工作结束。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
@@ -7828,7 +7832,7 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/stop [all|<side_id>] - 停止当前任务并清空待处理消息；可停止全部或指定临时会话",
     "/next - 打断当前任务，并执行队列中的下一条消息",
     "/steer - 将队列中的下一批消息注入当前任务",
-    "/queue <message> - 将消息加入下一轮队列，不注入当前任务",
+    "/queue [message] - 不带 message 时开启排队模式；带 message 时将消息加入下一轮队列",
     "/goal <objective> - 设置并自动实现 Codex goal；运行中再次使用会更新目标",
     "/plan [message] - 开启 plan mode；带 message 时直接以 plan mode 处理",
     "/exit - 退出 plan mode；默认加入下一轮队列",

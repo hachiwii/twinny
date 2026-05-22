@@ -871,6 +871,48 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_1", "turn_2"));
   });
 
+  it("enables queue mode from empty /queue and queues the next ordinary message", async () => {
+    const { repository } = createRepository();
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    manager.submitIncoming(message("m2", "/queue"));
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith(
+        "m2",
+        "已开启排队模式：你的下一条消息会排队等待当前工作结束。"
+      )
+    );
+
+    manager.submitIncoming(message("m3", "queued after mode"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+
+    expect(codex.steerTurn).not.toHaveBeenCalled();
+    await waitForExpect(() =>
+      expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          larkMessageId: "m3",
+          routeKind: "queued_message",
+          status: "queued",
+          text: "queued after mode"
+        })
+      )
+    );
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ input: wrappedMessage("queued after mode", "m3") })
+    );
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
   it("adds queued reactions to waiting /queue and following ordinary messages, then clears them when consumed", async () => {
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();
@@ -1466,7 +1508,7 @@ describe("ConversationManager", () => {
       "/stop [all|<side_id>] - 停止当前任务并清空待处理消息；可停止全部或指定临时会话",
       "/next - 打断当前任务，并执行队列中的下一条消息",
       "/steer - 将队列中的下一批消息注入当前任务",
-      "/queue <message> - 将消息加入下一轮队列，不注入当前任务",
+      "/queue [message] - 不带 message 时开启排队模式；带 message 时将消息加入下一轮队列",
       "/goal <objective> - 设置并自动实现 Codex goal；运行中再次使用会更新目标",
       "/plan [message] - 开启 plan mode；带 message 时直接以 plan mode 处理",
       "/exit - 退出 plan mode；默认加入下一轮队列",
