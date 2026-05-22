@@ -414,7 +414,7 @@ export function renderTwinnyBannerCard(options: RenderTwinnyBannerCardOptions = 
           : []),
         {
           tag: "markdown",
-          content: `### 🐰 Twinny ${version}\n🌟 me on [Github](https://github.com/hachiwii/twinny)`,
+          content: `### 🐰 Twinny - Turn chats into action\n${version} | 🌟 me on [Github](https://github.com/hachiwii/twinny)`,
           text_align: "center",
           text_size: "normal_v2",
           margin: "0px 0px 0px 0px"

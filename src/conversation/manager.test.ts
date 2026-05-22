@@ -1519,7 +1519,9 @@ describe("ConversationManager", () => {
     expect(lark.sendCardToChatId).toHaveBeenNthCalledWith(1, "oc_ignored", expect.any(Object), { uuid: expect.any(String) });
     expect(lark.sendCardToChatId).toHaveBeenNthCalledWith(2, "oc_ignored", expect.any(Object), { uuid: expect.any(String) });
     expect(JSON.stringify(vi.mocked(lark.sendCardToChatId).mock.calls[0]![1])).toContain("img_banner");
-    expect(JSON.stringify(vi.mocked(lark.sendCardToChatId).mock.calls[1]![1])).toContain("Twinny dev");
+    expect(JSON.stringify(vi.mocked(lark.sendCardToChatId).mock.calls[1]![1])).toContain(
+      "Twinny - Turn chats into action"
+    );
   });
 
   it("sends /banner to the source Lark thread without replying to the command message", async () => {

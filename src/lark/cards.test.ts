@@ -764,7 +764,8 @@ describe("renderTwinnyBannerCard", () => {
       img_key: "img_banner",
       scale_type: "fit_horizontal"
     });
-    expect(JSON.stringify(card)).toContain("Twinny 20260523-d786ff949");
+    expect(JSON.stringify(card)).toContain("Twinny - Turn chats into action");
+    expect(JSON.stringify(card)).toContain("20260523-d786ff949 |");
   });
 
   it("omits the banner image when no image key is available", () => {

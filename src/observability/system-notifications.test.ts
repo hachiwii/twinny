@@ -17,7 +17,10 @@ describe("TwinnySystemNotifier", () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
     expect(JSON.stringify(sender.sendInteractiveCardToOpenId.mock.calls[0]![1])).toContain("img_banner");
-    expect(JSON.stringify(sender.sendInteractiveCardToOpenId.mock.calls[0]![1])).toContain("Twinny dev");
+    expect(JSON.stringify(sender.sendInteractiveCardToOpenId.mock.calls[0]![1])).toContain(
+      "Twinny - Turn chats into action"
+    );
+    expect(JSON.stringify(sender.sendInteractiveCardToOpenId.mock.calls[0]![1])).toContain("dev |");
     expect(sender.sendInteractiveCardToOpenId).toHaveBeenCalledTimes(1);
   });
 
