@@ -378,7 +378,7 @@ export class LarkMessageReader {
     const raw = await this.options.openApiClient.request("/im/v1/messages/mget", {
       method: "GET",
       query: {
-        card_msg_content_type: "raw_card_content",
+        card_msg_content_type: "user_card_content",
         message_ids: messageId
       }
     });
@@ -394,7 +394,7 @@ export class LarkMessageReader {
       method: "GET",
       query: {
         user_id_type: "open_id",
-        card_msg_content_type: "raw_card_content"
+        card_msg_content_type: "user_card_content"
       }
     });
     const data = getData(raw);

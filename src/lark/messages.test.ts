@@ -461,7 +461,7 @@ describe("LarkMessageSender", () => {
     });
 
     expect(fetch).toHaveBeenLastCalledWith(
-      "https://open.feishu.cn/open-apis/im/v1/messages/mget?card_msg_content_type=raw_card_content&message_ids=om_source",
+      "https://open.feishu.cn/open-apis/im/v1/messages/mget?card_msg_content_type=user_card_content&message_ids=om_source",
       {
         method: "GET",
         headers: {
@@ -474,7 +474,7 @@ describe("LarkMessageSender", () => {
     );
   });
 
-  it("fetches merge-forward message items through the get API with raw card content", async () => {
+  it("fetches merge-forward message items through the get API with user card content", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
       {
@@ -492,7 +492,7 @@ describe("LarkMessageSender", () => {
     await expect(reader.getMessageItems("om_outer")).resolves.toHaveLength(2);
 
     expect(fetch).toHaveBeenLastCalledWith(
-      "https://open.feishu.cn/open-apis/im/v1/messages/om_outer?user_id_type=open_id&card_msg_content_type=raw_card_content",
+      "https://open.feishu.cn/open-apis/im/v1/messages/om_outer?user_id_type=open_id&card_msg_content_type=user_card_content",
       {
         method: "GET",
         headers: {

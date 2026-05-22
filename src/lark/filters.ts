@@ -336,16 +336,16 @@ function getPostContent(content: Record<string, unknown>): Record<string, unknow
 }
 
 function normalizeInteractiveCardContent(content: unknown): NormalizedPostContent | null {
-  const card = parseContentObject(content);
-  if (!card || stringValue(card.schema) !== "2.0") {
+  const resolved = resolveInteractiveCardContent(content);
+  if (!resolved) {
     return null;
   }
 
   const resources: IncomingLarkMessageResource[] = [];
   const attributes: Array<[string, string]> = [];
-  const header = isRecord(card.header) ? card.header : {};
-  const title = cardTextContent(header.title);
-  const subtitle = cardTextContent(header.subtitle);
+  const header = isRecord(resolved.header) ? resolved.header : {};
+  const title = cardHeaderTextContent(header, "title");
+  const subtitle = cardHeaderTextContent(header, "subtitle");
   if (title) {
     attributes.push(["title", title]);
   }
@@ -354,8 +354,8 @@ function normalizeInteractiveCardContent(content: unknown): NormalizedPostConten
   }
 
   const bodyParts: string[] = [];
-  const body = isRecord(card.body) ? card.body : {};
-  renderCardElements(body.elements, resources, bodyParts);
+  const body = isRecord(resolved.body) ? resolved.body : {};
+  renderCardElements(cardChildElements(body), resources, bodyParts);
 
   const openTag = attributes.length > 0
     ? `<card ${attributes.map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`).join(" ")}>`
@@ -364,6 +364,27 @@ function normalizeInteractiveCardContent(content: unknown): NormalizedPostConten
     text: [openTag, ...bodyParts, "</card>"].join("\n"),
     resources
   };
+}
+
+function resolveInteractiveCardContent(content: unknown): Record<string, unknown> | null {
+  const card = parseContentObject(content);
+  if (!card) {
+    return null;
+  }
+  if (isJson2InteractiveCard(card)) {
+    return card;
+  }
+
+  const userDsl = parseContentObject(card.user_dsl);
+  if (userDsl && isJson2InteractiveCard(userDsl)) {
+    return userDsl;
+  }
+
+  return null;
+}
+
+function isJson2InteractiveCard(card: Record<string, unknown>): boolean {
+  return stringValue(card.schema) === "2.0";
 }
 
 function renderCardElements(
@@ -390,7 +411,7 @@ function renderCardElement(
 
   const tag = stringValue(element.tag);
   if (tag === "markdown") {
-    pushNonEmpty(parts, stringValue(element.content));
+    pushNonEmpty(parts, cardMarkdownContent(element));
     return;
   }
   if (tag === "div") {
@@ -398,11 +419,11 @@ function renderCardElement(
     return;
   }
   if (tag === "plain_text") {
-    pushNonEmpty(parts, stringValue(element.content));
+    pushNonEmpty(parts, cardTextContent(element));
     return;
   }
   if (tag === "img") {
-    const imageKey = stringValue(element.img_key) ?? stringValue(element.image_key);
+    const imageKey = cardImageKey(element);
     if (imageKey) {
       const placeholder = resourcePlaceholder(resources.length);
       resources.push({
@@ -434,9 +455,9 @@ function renderCardElement(
   }
   if (tag === "collapsible_panel") {
     if (isRecord(element.header)) {
-      pushNonEmpty(parts, cardTextContent(element.header.title));
+      pushNonEmpty(parts, cardHeaderTextContent(element.header, "title"));
     }
-    renderCardElements(element.elements, resources, parts);
+    renderCardElements(cardChildElements(element), resources, parts);
     return;
   }
   if (tag === "column_set") {
@@ -444,7 +465,7 @@ function renderCardElement(
     return;
   }
   if (isCardContainerTag(tag)) {
-    renderCardElements(element.elements, resources, parts);
+    renderCardElements(cardChildElements(element), resources, parts);
   }
 }
 
@@ -458,9 +479,21 @@ function renderCardColumns(
   }
   for (const column of columns) {
     if (isRecord(column)) {
-      renderCardElements(column.elements, resources, parts);
+      renderCardElements(cardChildElements(column), resources, parts);
     }
   }
+}
+
+function cardMarkdownContent(element: Record<string, unknown>): string | undefined {
+  return stringValue(element.content);
+}
+
+function cardHeaderTextContent(header: Record<string, unknown>, key: "title" | "subtitle"): string | undefined {
+  return cardTextContent(header[key]);
+}
+
+function cardChildElements(element: Record<string, unknown>): unknown {
+  return element.elements;
 }
 
 function cardTextContent(value: unknown): string | undefined {
@@ -468,6 +501,10 @@ function cardTextContent(value: unknown): string | undefined {
     return undefined;
   }
   return stringValue(value.content);
+}
+
+function cardImageKey(element: Record<string, unknown>): string | undefined {
+  return stringValue(element.img_key) ?? stringValue(element.image_key);
 }
 
 function pushNonEmpty(parts: string[], value: string | undefined): void {

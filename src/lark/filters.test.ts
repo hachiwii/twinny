@@ -175,6 +175,47 @@ describe("normalizeIncomingLarkMessage", () => {
     expect(normalized?.text).not.toContain("Ignored");
   });
 
+  it("converts nested user_dsl interactive cards into flattened card text", () => {
+    const normalized = normalizeIncomingLarkMessage(
+      receiveEvent({
+        message: {
+          message_type: "interactive",
+          content: JSON.stringify({
+            title: "fallback title",
+            elements: [[{ tag: "text", text: "fallback body" }]],
+            user_dsl: JSON.stringify({
+              schema: "2.0",
+              header: {
+                title: { tag: "plain_text", content: "User Card" }
+              },
+              body: {
+                elements: [
+                  { tag: "markdown", content: "Nested **body**" },
+                  { tag: "img", image_key: "img_nested" }
+                ]
+              }
+            })
+          })
+        }
+      })
+    );
+
+    expect(normalized).toMatchObject({
+      messageId: "om_1",
+      messageType: "interactive",
+      text:
+        '<card title="User Card">\n' +
+        "Nested **body**\n" +
+        "{{TWINNY_LARK_RESOURCE_0}}\n" +
+        "</card>",
+      resources: [
+        { resourceType: "image", fileKey: "img_nested", codexTag: "file", textPlaceholder: "{{TWINNY_LARK_RESOURCE_0}}" }
+      ]
+    });
+    expect(normalized?.rawForCodex).toBeUndefined();
+    expect(normalized?.text).not.toContain("fallback");
+  });
+
   it("normalizes unsupported p2p message types as raw messages for Codex", () => {
     const event = receiveEvent({
       message: {
