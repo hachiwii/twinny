@@ -7,7 +7,7 @@ import type {
   CodexTurnResult
 } from "../types.js";
 import type { CodexDynamicToolCallResponse, CodexRequestUserInputResponder, CodexSetThreadNameToolRequest } from "./turn.js";
-import { handleTurnServerRequest } from "./turn.js";
+import { extractTotalTokens, handleTurnServerRequest } from "./turn.js";
 import type { CodexNotificationMessage, CodexProtocolClient, CodexRequestMessage } from "./protocol.js";
 import { resumeCodexThread, type ThreadRuntimeOptions } from "./thread.js";
 
@@ -543,7 +543,7 @@ function isTerminalGoalStatus(status: ThreadGoalStatus): boolean {
   return status === "complete" || status === "blocked" || status === "usageLimited" || status === "budgetLimited";
 }
 
-function isThreadGoal(value: unknown): value is ThreadGoal {
+export function isThreadGoal(value: unknown): value is ThreadGoal {
   return isRecord(value) &&
     typeof value.threadId === "string" &&
     typeof value.objective === "string" &&
@@ -599,12 +599,6 @@ function extractAgentMessage(item: unknown): CodexAgentMessage | undefined {
 
 function agentMessagePhaseValue(value: unknown): CodexAgentMessage["phase"] | undefined {
   return value === "commentary" || value === "final_answer" ? value : undefined;
-}
-
-function extractTotalTokens(params: Record<string, unknown>): number | undefined {
-  const usage = isRecord(params.usage) ? params.usage : undefined;
-  const total = params.totalTokens ?? usage?.totalTokens ?? usage?.total_tokens;
-  return typeof total === "number" && Number.isFinite(total) ? total : undefined;
 }
 
 function isRetryableTurnError(params: unknown): boolean {

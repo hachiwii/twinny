@@ -383,6 +383,111 @@ describe("Lark to Codex integration flow", () => {
     ]);
   });
 
+  it("updates a goal card status line when Codex reports turn token usage", async () => {
+    const harness = await IntegrationHarness.create(jsonl(
+      {
+        role: "guest",
+        on: { method: "thread/goal/set", nth: 1 },
+        reply: {
+          goal: {
+            threadId: "guest_thread_1",
+            objective: "show goal token usage",
+            status: "active",
+            tokenBudget: null,
+            tokensUsed: 0,
+            timeUsedSeconds: 0,
+            createdAt: 1,
+            updatedAt: 1
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "goal_turn_token_usage" } } }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        delayMs: 80,
+        notify: {
+          method: "thread/tokenUsage/updated",
+          params: {
+            threadId: "guest_thread_1",
+            turnId: "goal_turn_token_usage",
+            tokenUsage: {
+              total: {
+                totalTokens: 27_210,
+                inputTokens: 27_000,
+                cachedInputTokens: 21_600,
+                outputTokens: 210
+              },
+              last: {
+                totalTokens: 57_000
+              },
+              modelContextWindow: 100_000
+            }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        delayMs: 180,
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "goal_turn_token_usage",
+              status: "completed",
+              durationMs: 180,
+              items: [{ type: "agentMessage", id: "goal_token_done", text: "goal token done", phase: "final_answer" }]
+            }
+          }
+        }
+      },
+      {
+        role: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        delayMs: 200,
+        notify: {
+          method: "thread/goal/updated",
+          params: {
+            threadId: "guest_thread_1",
+            turnId: "goal_turn_token_usage",
+            goal: {
+              threadId: "guest_thread_1",
+              objective: "show goal token usage",
+              status: "complete",
+              tokenBudget: null,
+              tokensUsed: 0,
+              timeUsedSeconds: 0,
+              createdAt: 1,
+              updatedAt: 2
+            }
+          }
+        }
+      }
+    ));
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_goal_token_usage", messageId: "m_goal_token_usage", text: "/goal show goal token usage" })
+    }));
+
+    await harness.waitForTrace((trace) => codexOut(trace, "thread/goal/set").length === 1, "goal set");
+    await harness.waitForTrace(
+      (trace) => larkOut(trace).some(
+        (entry) =>
+          entry.method === "PATCH" &&
+          traceText(entry).includes("实现目标中") &&
+          traceText(entry).includes("57% · ↑ 27 K (80% Cached) ↓ 210")
+      ),
+      "goal card token usage status line"
+    );
+  });
+
   it("does not duplicate queued messages when recovering an active goal after app-server restart", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {

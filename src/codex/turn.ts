@@ -924,7 +924,7 @@ function extractErrorMessage(error: unknown): string | undefined {
   return String(error);
 }
 
-function extractTotalTokens(params: Record<string, unknown>): number | undefined {
+export function extractTotalTokens(params: Record<string, unknown>): number | undefined {
   return firstFiniteNumber(
     params.totalTokens,
     params.total_tokens,
