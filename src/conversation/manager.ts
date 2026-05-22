@@ -3657,6 +3657,7 @@ export class ConversationManager {
       threadTokenUsage,
       turnStartThreadTokenUsage: threadTokenUsage,
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      generatedImagePaths: [],
       reaction: await this.addReactionBestEffort(anchor.messageId),
       goal: {
         objective: content,
@@ -5378,7 +5379,9 @@ export class ConversationManager {
       const rendered = this.renderAgentCard(state, active, "finished", output.elements, undefined, final.processMessages, output.summaryText);
       const previousMessageId = card.messageId;
       const shouldUpdateInPlace =
-        state.pendingBatch.length > 0 || (await this.shouldUpdateCompletedAgentCardInPlace(active, previousMessageId));
+        active.kind === "side" ||
+        state.pendingBatch.length > 0 ||
+        (await this.shouldUpdateCompletedAgentCardInPlace(active, previousMessageId));
       if (shouldUpdateInPlace) {
         await this.updateCompletedAgentCardInPlace(active, card, previousMessageId, rendered);
         await this.replyAgentCardFilesBestEffort(active.replyMessageId, output.files);
@@ -5497,7 +5500,7 @@ export class ConversationManager {
           runId: 0,
           iconImageKey: this.options.config.lark.iconImageKey,
           mode: "default",
-          subtitle: record.sideId === undefined ? "临时会话" : `临时会话 [${record.sideId}]`,
+          subtitle: sideCardSubtitle("failed", record.sideId),
           hideQueueControls: true,
           error
         })
@@ -5618,7 +5621,7 @@ export class ConversationManager {
         : active.kind === "goal" && status === "finished"
           ? "已实现目标"
           : undefined,
-      subtitle: active.kind === "side" ? sideCardSubtitle(active) : undefined,
+      subtitle: active.kind === "side" ? sideCardSubtitle(status, active.sideId) : undefined,
       hideQueueControls: active.kind === "side",
       waiting:
         status === "waiting_input" ||
@@ -6226,8 +6229,11 @@ function allocateSideId(state: ConversationState): number {
   return sideId;
 }
 
-function sideCardSubtitle(active: ActiveTurn): string {
-  return active.sideId === undefined ? "临时会话" : `临时会话 [${active.sideId}]`;
+function sideCardSubtitle(status: TwinnyAgentCardStatus, sideId: number | undefined): string {
+  if (status === "working" && sideId !== undefined) {
+    return `临时会话 [${sideId}]`;
+  }
+  return "临时会话";
 }
 
 function sideBoundaryResponseItem(): Record<string, unknown> {

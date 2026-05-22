@@ -1971,10 +1971,25 @@ describe("ConversationManager", () => {
     expect(serializedCard).not.toContain("排队模式");
 
     sideTurn.resolve(completed("thread_1_side_1", "side_turn_1"));
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith(
+        "card_m_side_1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" },
+            subtitle: { tag: "plain_text", content: "临时会话" }
+          })
+        })
+      )
+    );
     await waitForExpect(() => expect(codex.unsubscribeThread).toHaveBeenCalledWith({
       role: "guest",
       threadId: "thread_1_side_1"
     }));
+    expect(lark.replyCard).toHaveBeenCalledTimes(1);
+    expect(lark.getMessageReadOpenIds).not.toHaveBeenCalled();
+    expect(lark.recallMessage).not.toHaveBeenCalledWith("card_m_side_1");
   });
 
   it("allocates the smallest free side id and releases it after completion", async () => {
@@ -5368,7 +5383,7 @@ describe("ConversationManager", () => {
         header: expect.objectContaining({
           template: "red",
           title: { tag: "plain_text", content: "发生错误" },
-          subtitle: { tag: "plain_text", content: "临时会话 [1]" }
+          subtitle: { tag: "plain_text", content: "临时会话" }
         })
       })
     );
@@ -5400,7 +5415,7 @@ describe("ConversationManager", () => {
         header: expect.objectContaining({
           template: "red",
           title: { tag: "plain_text", content: "发生错误" },
-          subtitle: { tag: "plain_text", content: "临时会话 [1]" }
+          subtitle: { tag: "plain_text", content: "临时会话" }
         })
       })
     );
