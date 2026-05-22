@@ -2223,16 +2223,17 @@ export class ConversationManager {
   ): Promise<{ messageId: string; text: string; larkThreadId?: string }> {
     const resourceText = threadTextWithDownloadedFiles(text, message);
     const codexText = replaceMentionKeysForCodex(resourceText, message.mentions);
+    const larkText = textForThreadProxyReply(text, message.messageType);
     const postResources = message.messageType === "post"
       ? await this.prepareThreadReplyPostResources(message)
       : message.resources;
     const result = message.messageType === "post"
       ? await this.options.lark.replyPost(
           anchorMessageId,
-          postContentForThreadReply(text, message.mentions, postResources),
+          postContentForThreadReply(larkText, message.mentions, postResources),
           { replyInThread: true }
         )
-      : await this.options.lark.replyText(anchorMessageId, textForLarkReply(text, message.mentions), { replyInThread: true });
+      : await this.options.lark.replyText(anchorMessageId, textForLarkReply(larkText, message.mentions), { replyInThread: true });
     const replyMessageId = nonEmptyString(result?.messageId);
     if (!replyMessageId) {
       throw new TwinnyError("Lark thread reply response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
@@ -7493,6 +7494,14 @@ function textForLarkReply(text: string, mentions: IncomingLarkMessage["mentions"
       return `<at user_id="${escapeLarkTextAttribute(part.id)}">${escapeLarkText(part.name ?? part.id)}</at>`;
     })
     .join("");
+}
+
+function textForThreadProxyReply(text: string, messageType: string): string {
+  return messageType.trim().toLowerCase() === "post" ? unescapeNormalizedPostMarkdown(text) : text;
+}
+
+function unescapeNormalizedPostMarkdown(text: string): string {
+  return text.replace(/\\([\\`*_{}\[\]()#+.!|>~-])/g, "$1");
 }
 
 function threadTextWithDownloadedFiles(text: string, message: IncomingLarkMessage): string {

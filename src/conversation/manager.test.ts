@@ -2314,6 +2314,58 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("unescapes normalized post markdown when proxying /thread initial text", async () => {
+    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_post" }))
+    });
+    const lark = createLarkResponder();
+    const cardMessageId = "card_oc_group_1";
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: cardMessageId,
+      raw: {}
+    });
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_thread_post_intro_1",
+      raw: { data: { thread_id: "topic_thread_post" } }
+    });
+    vi.mocked(lark.replyPost).mockResolvedValueOnce({
+      messageId: "reply_thread_post_1",
+      raw: { data: { thread_id: "topic_thread_post" } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage(
+      "g_thread_post",
+      "/thread 修复以下问题：\n\n1\\. 点击 status card 的隐藏不生效\n2\\. gpt\\-5\\.5 输出",
+      {
+        messageType: "post",
+        senderOpenId: "ou_guest",
+        senderName: "Guest User"
+      }
+    ));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    const proxiedPost = vi.mocked(lark.replyPost).mock.calls[0]?.[1] as Array<Array<{ text?: string }>>;
+    const proxiedText = proxiedPost.flat().map((node) => node.text ?? "").join("\n");
+    expect(proxiedText).toContain("1. 点击 status card 的隐藏不生效");
+    expect(proxiedText).toContain("2. gpt-5.5 输出");
+    expect(proxiedText).not.toContain("\\.");
+    expect(proxiedText).not.toContain("\\-");
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_post",
+        input: wrappedMessage(
+          "修复以下问题：\n\n1\\. 点击 status card 的隐藏不生效\n2\\. gpt\\-5\\.5 输出",
+          "reply_thread_post_1",
+          "ou_guest"
+        )
+      })
+    );
+  });
+
   it("parses slash commands from /thread initial text before starting the topic turn", async () => {
     const row = groupConversationRecord({ role: "owner", responseMode: "at" });
     const { repository } = createRepository(row);
