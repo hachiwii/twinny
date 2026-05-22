@@ -987,10 +987,10 @@ describe("Lark to Codex integration flow", () => {
     expect(codexOut(harness.readTrace(), "turn/start")).toHaveLength(0);
 
     await harness.dispatchLarkJsonl(`
-{"event":"im.message.receive_v1","data":${JSON.stringify(receiveMessageEvent({ eventId: "e_activate", messageId: "g2", text: "/activate at guest", chatType: "group", chatId: "oc_group", senderOpenId: "ou_owner" }))}}
+{"event":"im.message.receive_v1","data":${JSON.stringify(receiveMessageEvent({ eventId: "e_activate", messageId: "g2", text: "/activate all_at guest", chatType: "group", chatId: "oc_group", senderOpenId: "ou_owner" }))}}
 `);
     await harness.waitForTrace(
-      (trace) => larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g2/reply" && traceText(entry).includes("Role")),
+      (trace) => larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g2/reply" && traceText(entry).includes("Profile")),
       "group activation reply"
     );
 
@@ -1338,7 +1338,7 @@ describe("Lark to Codex integration flow", () => {
       })
     }));
     await harness.waitForTrace(
-      (trace) => larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g_thread_activate/reply" && traceText(entry).includes("Role")),
+      (trace) => larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g_thread_activate/reply" && traceText(entry).includes("Profile")),
       "thread group activation"
     );
 
@@ -1671,7 +1671,7 @@ describe("Lark to Codex integration flow", () => {
       })
     }));
     await harness.waitForTrace(
-      (trace) => larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g_multi_activate/reply" && traceText(entry).includes("Role")),
+      (trace) => larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g_multi_activate/reply" && traceText(entry).includes("Profile")),
       "multi-user group activation"
     );
 
@@ -1817,7 +1817,7 @@ class IntegrationHarness {
     const repository = createConversationRepository(db);
     const pool = new RoleCodexAppServerPool({
       binary: fakeCodexBinary,
-      roles: config.roles,
+      profiles: config.profiles,
       requestTimeoutMs: 2_000,
       clientVersion: "integration-test",
       env: {
@@ -1829,7 +1829,7 @@ class IntegrationHarness {
 
     const larkApi = new FakeLarkApi(traceFile);
     const tokenManager = new TenantAccessTokenManager({
-      appId: config.lark.appId,
+      appId: config.auth.larkAppId,
       appSecret: "secret",
       fetch: larkApi.fetch,
       now: () => 1_000_000
@@ -1845,7 +1845,7 @@ class IntegrationHarness {
       repository: adaptConversationRepository(repository),
       workspaces: WorkspaceManager.fromTwinnyHome(tempDir),
       roles: {
-        codexHomeFor: (role) => config.roles[role].codexHome
+        codexHomeFor: (role) => config.profiles[role].codexHome
       },
       codex: adaptCodexPool(pool),
       lark: adaptLarkSender(larkSender, config),
@@ -1869,7 +1869,7 @@ class IntegrationHarness {
       close: () => undefined
     };
     const consumer = new LarkEventConsumer({
-      appId: config.lark.appId,
+      appId: config.auth.larkAppId,
       appSecret: "secret",
       warmTenantToken: false,
       botOpenId: "ou_bot",
@@ -2305,22 +2305,21 @@ function adaptLarkSender(sender: LarkMessageSender, config: TwinnyConfig): LarkR
 function createIntegrationConfig(tempDir: string, fakeCodexBinary: string): TwinnyConfig {
   return createTwinnyConfig({
     home: tempDir,
-    codex: {
-      binary: fakeCodexBinary,
-      appServerListen: "stdio://"
-    },
-    lark: {
-      appId: "cli_integration",
-      appSecretRef: "test:lark-secret",
-      iconImageKey: "img_logo"
-    },
-    owner: {
-      openId: "ou_owner",
+    homeRandom: "0123456789abcdef0123456789abcdef",
+    auth: {
+      larkAppId: "cli_integration",
+      ownerOpenId: "ou_owner",
       displayName: "Owner User"
     },
-    roles: {
-      owner: { codexHome: path.join(tempDir, "roles", "owner", "codex") },
-      guest: { codexHome: path.join(tempDir, "roles", "guest", "codex") }
+    codex: {
+      binary: fakeCodexBinary
+    },
+    permissions: {
+      p2pDefaultProfile: "guest"
+    },
+    profiles: {
+      host: { codexHome: path.join(tempDir, "profiles", "host", "codex") },
+      guest: { codexHome: path.join(tempDir, "profiles", "guest", "codex") }
     }
   });
 }
@@ -2345,7 +2344,7 @@ const script = fs.readFileSync(scriptFile, "utf8")
   .split(/\\r?\\n/)
   .filter(Boolean)
   .map((line) => JSON.parse(line));
-const role = process.env.CODEX_HOME && process.env.CODEX_HOME.includes("/owner/") ? "owner" : "guest";
+const role = process.env.CODEX_HOME && process.env.CODEX_HOME.includes("/host/") ? "host" : "guest";
 const counts = new Map();
 const goals = new Map();
 const rl = readline.createInterface({ input: process.stdin });

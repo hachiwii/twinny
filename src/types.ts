@@ -1,4 +1,9 @@
-export type RoleName = "owner" | "guest";
+export type ProfileName = string;
+export type RoleName = ProfileName;
+
+export const HOST_PROFILE_NAME = "host";
+export const GUEST_PROFILE_NAME = "guest";
+export const NONE_PROFILE_NAME = "none";
 
 export type ConversationType = "p2p" | "group" | "topic_group";
 
@@ -6,7 +11,7 @@ export type LarkChatMode = "group" | "topic";
 
 export type LarkGroupMessageType = "chat" | "thread";
 
-export type ConversationResponseMode = "all" | "at" | "none";
+export type ConversationResponseMode = "all" | "all_at" | "owner" | "owner_at" | "none";
 
 export type AgentMessagePhase = "commentary" | "final_answer";
 
@@ -81,41 +86,58 @@ export interface OwnerConfig {
   displayName: string;
 }
 
+export interface TwinnyAuthFile {
+  larkAppId: string;
+  ownerOpenId: string;
+  displayName: string;
+}
+
+export interface TwinnyHomeIdentity {
+  random: string;
+  telemetryHashSalt: string;
+  keychainAccounts: {
+    larkAppSecret: string;
+  };
+}
+
 export interface LarkConfig {
-  appId: string;
-  appSecretRef: string;
-  identity: "bot";
   workingReaction: string;
   completedReaction: string;
   queuedReaction: string;
   maxMessageAgeSeconds: number;
-  iconImageKey?: string;
   messageRedaction: LarkMessageRedactionConfig;
 }
 
 export interface CodexConfig {
   binary: string;
-  appServerListen: "stdio://";
 }
 
-export interface RoleConfig {
+export interface ProfileConfig {
   codexHome: string;
+  defaultModel?: string;
+  defaultEffort?: string;
+}
+
+export interface PermissionsConfig {
+  p2pDefaultProfile: ProfileName;
 }
 
 export interface TwinnyConfig {
   home: string;
   codex: CodexConfig;
   lark: LarkConfig;
+  auth: TwinnyAuthFile;
+  homeIdentity: TwinnyHomeIdentity;
+  permissions: PermissionsConfig;
   owner: OwnerConfig;
-  roles: Record<RoleName, RoleConfig>;
+  profiles: Record<ProfileName, ProfileConfig>;
 }
 
 export interface RuntimePaths {
   home: string;
   configFile: string;
-  rolesDir: string;
-  ownerCodexHome: string;
-  guestCodexHome: string;
+  authFile: string;
+  homeRandomFile: string;
   sqliteDir: string;
   sqliteFile: string;
   workspacesDir: string;
@@ -132,9 +154,11 @@ export interface ConversationRecord {
   chatId: string;
   name: string;
   responseMode: ConversationResponseMode;
-  role: RoleName;
+  profile: ProfileName;
+  role: ProfileName;
   codexThreadId: string;
   workspace: string;
+  profileCodexHome: string;
   roleCodexHome: string;
   createdAt: number;
   updatedAt: number;
@@ -146,10 +170,12 @@ export interface NewConversationRecord {
   chatId: string;
   name: string;
   responseMode?: ConversationResponseMode;
-  role: RoleName;
+  profile?: ProfileName;
+  role?: ProfileName;
   codexThreadId: string;
   workspace: string;
-  roleCodexHome: string;
+  profileCodexHome?: string;
+  roleCodexHome?: string;
 }
 
 export interface CodexThreadRecord {
@@ -158,7 +184,8 @@ export interface CodexThreadRecord {
   conversationKey: string;
   name: string;
   larkThreadId?: string;
-  role: RoleName;
+  profile: ProfileName;
+  role: ProfileName;
   mode: CodexThreadMode;
   status: CodexThreadStatus;
   goalStatus: CodexThreadGoalStatus;
@@ -295,7 +322,7 @@ export interface CodexTurnRequest {
   threadId: string;
   input: string;
   cwd: string;
-  role: RoleName;
+  profile: ProfileName;
 }
 
 export interface CodexTurnResult {

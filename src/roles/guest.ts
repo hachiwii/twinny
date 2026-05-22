@@ -71,7 +71,7 @@ export function serializeGuestCodexConfig(options: GuestCodexConfigOptions = {})
   return stringify(createGuestCodexConfigDocument(options)) + "\n";
 }
 
-export async function ensureGuestWorkspaceProjectTrusted(codexHome: string, cwd: string): Promise<boolean> {
+export async function ensureWorkspaceTrust(codexHome: string, cwd: string): Promise<boolean> {
   const configPath = path.join(codexHome, "config.toml");
   return withGuestConfigWriteLock(configPath, async () => {
     const document = await readGuestCodexConfigDocument(configPath);

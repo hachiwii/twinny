@@ -626,7 +626,7 @@ describe("renderTwinnyStatusCard", () => {
       workspace: {
         id: "group_oc_group",
         type: "group",
-        responseMode: "at",
+        responseMode: "all_at",
         role: "owner",
         path: "/tmp/twinny/workspaces/group_oc_group",
         topicCount: 39,
@@ -665,7 +665,7 @@ describe("renderTwinnyStatusCard", () => {
     expect(serialized).toContain("123 M (80% Cached)");
     expect(serialized).toContain("123 K (23% Reasoning)");
     expect(serialized).toContain("群聊");
-    expect(serialized).toContain("仅 at");
+    expect(serialized).toContain("全部用户，at 消息");
     expect(serialized).not.toContain("系统");
   });
 
@@ -736,7 +736,7 @@ describe("renderTwinnyStatusCard", () => {
       workspace: {
         id: "group_oc_group",
         type: "group",
-        responseMode: "at",
+        responseMode: "all_at",
         topicCount: 0,
         userMessageCount: 0,
         inputTokens: 0,

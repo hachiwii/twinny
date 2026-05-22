@@ -8,11 +8,6 @@ export async function runCli(argv: string[]): Promise<void> {
     .description("Bridge Lark p2p messages to Codex app-server threads.")
     .version(TWINNY_VERSION);
 
-  program.command("wizard").description("Initialize Twinny configuration.").action(async () => {
-    const { runWizardCommand } = await import("../wizard/first-run.js");
-    await runWizardCommand();
-  });
-
   program.command("run").description("Run the daemon in the foreground.").action(async () => {
     const { runDaemonCommand } = await import("../app/daemon.js");
     await runDaemonCommand();

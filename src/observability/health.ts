@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { execa } from "execa";
 import { DEFAULT_CAFFEINATE_COMMAND } from "../app/caffeinate.js";
 import { formatStartupInitializationProbeDetail, runStartupInitializationProbe } from "../app/startup-probe.js";
-import { readConfigStatus, resolveSecretRef, SECRET_REFS, SecurityCliSecretStore, type SecretStore } from "../config/index.js";
+import { readConfigStatus, resolveLarkAppSecret, SecurityCliSecretStore, type SecretStore } from "../config/index.js";
 import { LarkBotDirectory, LarkOpenApiClient, TenantAccessTokenManager } from "../lark/index.js";
 import { isTwinnyLockHeld, readTwinnyLockMetadata } from "../lock/index.js";
 import { openRuntimeDatabase } from "../store/index.js";
@@ -38,16 +38,9 @@ export async function runDoctorChecks(): Promise<HealthSnapshot> {
   const secretStore = new SecurityCliSecretStore();
   let appSecret: string | undefined;
   await checkAsync(checks, "lark app_secret", async () => {
-    const secret = await resolveDoctorSecretRef(config.lark.appSecretRef, secretStore);
+    const secret = await resolveDoctorLarkAppSecret(config.homeIdentity.keychainAccounts.larkAppSecret, secretStore);
     appSecret = secret.value;
     return secret.detail;
-  });
-
-  await checkAsync(checks, "owner user token", async () => {
-    const token = await resolveSecretRef(SECRET_REFS.ownerUserToken, secretStore);
-    if (!token) {
-      throw new Error(`missing ${SECRET_REFS.ownerUserToken}`);
-    }
   });
 
   await checkAsync(checks, "codex binary", async () => {
@@ -90,7 +83,7 @@ export async function runDoctorChecks(): Promise<HealthSnapshot> {
   if (resolvedAppSecret) {
     await checkAsync(checks, "lark tenant token", async () => {
       const manager = new TenantAccessTokenManager({
-        appId: config.lark.appId,
+        appId: config.auth.larkAppId,
         appSecret: resolvedAppSecret
       });
       await manager.getTenantAccessToken();
@@ -123,7 +116,7 @@ export async function checkCaffeinateBinary(options: {
 }
 
 export async function checkLarkBotOpenId(
-  config: Pick<TwinnyConfig, "lark">,
+  config: Pick<TwinnyConfig, "auth">,
   appSecret: string,
   options: {
     tokenManager?: TenantAccessTokenManager;
@@ -133,7 +126,7 @@ export async function checkLarkBotOpenId(
 ): Promise<string> {
   const botDirectory = options.botDirectory ?? (() => {
     const tokenManager = options.tokenManager ?? new TenantAccessTokenManager({
-      appId: config.lark.appId,
+      appId: config.auth.larkAppId,
       appSecret
     });
     const openApiClient = options.openApiClient ?? new LarkOpenApiClient({ tokenManager });
@@ -146,13 +139,13 @@ export async function checkLarkBotOpenId(
   return botOpenId;
 }
 
-export async function resolveDoctorSecretRef(
-  ref: string,
+export async function resolveDoctorLarkAppSecret(
+  account: string,
   secretStore: SecretStore
 ): Promise<{ value: string; detail: "present" }> {
-  const value = await resolveSecretRef(ref, secretStore);
+  const value = await resolveLarkAppSecret(account, secretStore);
   if (!value) {
-    throw new Error(`missing ${ref}`);
+    throw new Error(`missing keychain:${account}`);
   }
   return {
     value,

@@ -8,81 +8,102 @@ import {
   DEFAULT_LARK_MESSAGE_REDACTION_STRATEGY,
   DEFAULT_LARK_QUEUED_REACTION,
   DEFAULT_LARK_WORKING_REACTION,
+  GUEST_PROFILE_NAME,
+  HOST_PROFILE_NAME,
+  NONE_PROFILE_NAME,
   type LarkMessageRedactionConfig,
   type LarkMessageRedactionStrategy,
-  type RoleName,
-  type TwinnyConfig
+  type PermissionsConfig,
+  type ProfileConfig,
+  type ProfileName,
+  type RuntimePaths,
+  type TwinnyAuthFile,
+  type TwinnyConfig,
+  type TwinnyHomeIdentity
 } from "../types.js";
 import { createRuntimePaths, expandHomePath, resolveTwinnyHome, type ResolveHomeOptions } from "./paths.js";
-import { SECRET_REFS } from "./secrets.js";
+import { larkAppSecretAccountForHomeRandom } from "./secrets.js";
 
-const rawConfigSchema = z.object({
-  home: z.object({ path: z.string().optional() }).optional(),
-  codex: z
-    .object({
-      binary: z.string().optional(),
-      app_server_listen: z.literal("stdio://").optional()
-    })
-    .optional(),
-  lark: z
-    .object({
-      identity: z.literal("bot").optional(),
-      app_id: z.string().optional(),
-      secret_ref: z.string().optional(),
-      working_reaction: z.string().optional(),
-      completed_reaction: z.string().optional(),
-      queued_reaction: z.string().optional(),
-      max_message_age_seconds: z.number().optional(),
-      icon_image_key: z.string().optional(),
-      redaction: z
-        .object({
-          email: z.enum(["mask", "whitespace", "none"]).optional(),
-          chinese_phone_number: z.enum(["mask", "whitespace", "none"]).optional()
-        })
-        .optional()
-    })
-    .optional(),
-  owner: z
-    .object({
-      open_id: z.string().optional(),
-      user_id: z.string().optional(),
-      display_name: z.string().optional()
-    })
-    .optional(),
-  roles: z
-    .object({
-      owner: z.object({ codex_home: z.string().optional() }).optional(),
-      guest: z.object({ codex_home: z.string().optional() }).optional()
-    })
-    .optional()
-});
+export const DEFAULT_PROFILE_MODEL = "gpt-5.5";
+export const DEFAULT_PROFILE_EFFORT = "medium";
+
+const redactionSchema = z.enum(["mask", "whitespace", "none"]);
+
+const rawProfileSchema = z
+  .object({
+    codex_home: z.string().optional(),
+    default_model: z.string().optional(),
+    default_effort: z.string().optional()
+  })
+  .strict();
+
+const rawConfigSchema = z
+  .object({
+    codex: z
+      .object({
+        binary: z.string().optional()
+      })
+      .strict()
+      .optional(),
+    lark: z
+      .object({
+        reaction: z
+          .object({
+            working: z.string().optional(),
+            queued: z.string().optional()
+          })
+          .strict()
+          .optional(),
+        redaction: z
+          .object({
+            email: redactionSchema.optional(),
+            chinese_phone_number: redactionSchema.optional()
+          })
+          .strict()
+          .optional()
+      })
+      .strict()
+      .optional(),
+    permissions: z
+      .object({
+        p2p_default_profile: z.string().optional()
+      })
+      .strict()
+      .optional(),
+    profiles: z.record(rawProfileSchema).optional()
+  })
+  .strict();
+
+const rawAuthSchema = z
+  .object({
+    lark_app_id: z.string(),
+    owner_open_id: z.string(),
+    displayName: z.string()
+  })
+  .strict();
+
+type RawProfileConfig = z.infer<typeof rawProfileSchema>;
 
 export interface CreateTwinnyConfigInput {
   home: string;
-  lark: {
-    appId: string;
-    appSecretRef?: string;
+  auth: TwinnyAuthFile;
+  homeRandom: string;
+  codex?: {
+    binary?: string;
+  };
+  lark?: {
     workingReaction?: string;
     completedReaction?: string;
     queuedReaction?: string;
     maxMessageAgeSeconds?: number;
-    iconImageKey?: string;
     messageRedaction?: Partial<LarkMessageRedactionConfig>;
   };
-  owner: {
-    openId: string;
-    userId?: string;
-    displayName: string;
-  };
-  codex?: {
-    binary?: string;
-    appServerListen?: "stdio://";
-  };
-  roles?: Partial<Record<RoleName, { codexHome: string }>>;
+  permissions?: Partial<PermissionsConfig>;
+  profiles?: Record<ProfileName, Partial<ProfileConfig>>;
 }
 
 export interface ConfigStatus {
-  paths: ReturnType<typeof createRuntimePaths>;
+  paths: RuntimePaths;
   exists: boolean;
   complete: boolean;
   issues: string[];
@@ -95,35 +116,32 @@ export type LoadConfigOptions = ResolveHomeOptions & {
 
 export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig {
   const home = path.resolve(expandHomePath(input.home));
-  const paths = createRuntimePaths(home);
-
-  return {
+  const homeIdentity = createTwinnyHomeIdentity(input.homeRandom);
+  const profiles = resolveProfiles(input.profiles, home);
+  const config: TwinnyConfig = {
     home,
     codex: {
-      binary: input.codex?.binary ?? "codex",
-      appServerListen: input.codex?.appServerListen ?? "stdio://"
+      binary: normalizeOptionalString(input.codex?.binary) ?? "codex"
     },
     lark: {
-      appId: input.lark.appId,
-      appSecretRef: input.lark.appSecretRef ?? SECRET_REFS.larkAppSecret,
-      identity: "bot",
-      workingReaction: normalizeOptionalString(input.lark.workingReaction) ?? DEFAULT_LARK_WORKING_REACTION,
-      completedReaction: normalizeOptionalString(input.lark.completedReaction) ?? DEFAULT_LARK_COMPLETED_REACTION,
-      queuedReaction: normalizeOptionalString(input.lark.queuedReaction) ?? DEFAULT_LARK_QUEUED_REACTION,
-      maxMessageAgeSeconds: input.lark.maxMessageAgeSeconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
-      iconImageKey: normalizeOptionalString(input.lark.iconImageKey),
-      messageRedaction: normalizeMessageRedactionConfig(input.lark.messageRedaction)
+      workingReaction: normalizeOptionalString(input.lark?.workingReaction) ?? DEFAULT_LARK_WORKING_REACTION,
+      completedReaction: normalizeOptionalString(input.lark?.completedReaction) ?? DEFAULT_LARK_COMPLETED_REACTION,
+      queuedReaction: normalizeOptionalString(input.lark?.queuedReaction) ?? DEFAULT_LARK_QUEUED_REACTION,
+      maxMessageAgeSeconds: input.lark?.maxMessageAgeSeconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
+      messageRedaction: normalizeMessageRedactionConfig(input.lark?.messageRedaction)
+    },
+    auth: normalizeAuthFile(input.auth),
+    homeIdentity,
+    permissions: {
+      p2pDefaultProfile: normalizeProfileName(input.permissions?.p2pDefaultProfile) ?? NONE_PROFILE_NAME
     },
     owner: {
-      openId: input.owner.openId,
-      userId: input.owner.userId,
-      displayName: input.owner.displayName
+      openId: input.auth.ownerOpenId,
+      displayName: input.auth.displayName
     },
-    roles: {
-      owner: { codexHome: input.roles?.owner?.codexHome ?? paths.ownerCodexHome },
-      guest: { codexHome: input.roles?.guest?.codexHome ?? paths.guestCodexHome }
-    }
+    profiles
   };
+  return config;
 }
 
 export async function loadTwinnyConfig(options: LoadConfigOptions = {}): Promise<TwinnyConfig> {
@@ -135,7 +153,7 @@ export async function loadTwinnyConfig(options: LoadConfigOptions = {}): Promise
     throw new Error(`Twinny config could not be parsed at ${status.paths.configFile}`);
   }
   if (!status.complete) {
-    throw new Error(`Twinny config is incomplete: ${status.issues.join("; ")}`);
+    throw new Error(`Twinny home is incomplete: ${status.issues.join("; ")}`);
   }
   return status.config;
 }
@@ -143,6 +161,7 @@ export async function loadTwinnyConfig(options: LoadConfigOptions = {}): Promise
 export async function readConfigStatus(options: LoadConfigOptions = {}): Promise<ConfigStatus> {
   const home = path.resolve(expandHomePath(options.home ?? resolveTwinnyHome(options), options.homeDir));
   const paths = createRuntimePaths(home);
+  const issues: string[] = [];
 
   let rawToml: string;
   try {
@@ -154,9 +173,35 @@ export async function readConfigStatus(options: LoadConfigOptions = {}): Promise
     throw error;
   }
 
-  const config = parseTwinnyConfig(rawToml, { ...options, home });
-  applyEnvironmentOverrides(config, options.env ?? process.env);
-  const issues = validateTwinnyConfig(config);
+  let auth: TwinnyAuthFile | undefined;
+  try {
+    auth = await readTwinnyAuthFile(paths.authFile);
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) {
+      issues.push("auth.json does not exist");
+    } else {
+      throw error;
+    }
+  }
+
+  let homeIdentity: TwinnyHomeIdentity | undefined;
+  try {
+    homeIdentity = await readTwinnyHomeIdentity(paths.homeRandomFile);
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) {
+      issues.push("runtime/home-random does not exist");
+    } else {
+      throw error;
+    }
+  }
+
+  const parsedConfig = parseTwinnyConfigFile(rawToml, { ...options, home });
+  const config = createRuntimeConfig(parsedConfig, {
+    home,
+    auth: auth ?? emptyAuthFile(),
+    homeIdentity: homeIdentity ?? createTwinnyHomeIdentity("0".repeat(32))
+  });
+  issues.push(...validateTwinnyConfig(config));
 
   return {
     paths,
@@ -168,152 +213,256 @@ export async function readConfigStatus(options: LoadConfigOptions = {}): Promise
 }
 
 export function parseTwinnyConfig(rawToml: string, options: LoadConfigOptions = {}): TwinnyConfig {
-  const parsed = rawConfigSchema.parse(parse(rawToml));
-  const home = path.resolve(
-    expandHomePath(parsed.home?.path ?? options.home ?? resolveTwinnyHome(options), options.homeDir)
-  );
-  const paths = createRuntimePaths(home);
-
-  return {
+  const home = path.resolve(expandHomePath(options.home ?? resolveTwinnyHome(options), options.homeDir));
+  return createRuntimeConfig(parseTwinnyConfigFile(rawToml, { ...options, home }), {
     home,
-    codex: {
-      binary: parsed.codex?.binary ?? "codex",
-      appServerListen: parsed.codex?.app_server_listen ?? "stdio://"
-    },
-    lark: {
-      appId: parsed.lark?.app_id ?? "",
-      appSecretRef: parsed.lark?.secret_ref ?? SECRET_REFS.larkAppSecret,
-      identity: parsed.lark?.identity ?? "bot",
-      workingReaction: normalizeOptionalString(parsed.lark?.working_reaction) ?? DEFAULT_LARK_WORKING_REACTION,
-      completedReaction: normalizeOptionalString(parsed.lark?.completed_reaction) ?? DEFAULT_LARK_COMPLETED_REACTION,
-      queuedReaction: normalizeOptionalString(parsed.lark?.queued_reaction) ?? DEFAULT_LARK_QUEUED_REACTION,
-      maxMessageAgeSeconds: parsed.lark?.max_message_age_seconds ?? DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
-      iconImageKey: normalizeOptionalString(parsed.lark?.icon_image_key),
-      messageRedaction: normalizeMessageRedactionConfig({
-        email: parsed.lark?.redaction?.email,
-        chinesePhoneNumber: parsed.lark?.redaction?.chinese_phone_number
-      })
-    },
-    owner: {
-      openId: parsed.owner?.open_id ?? "",
-      userId: parsed.owner?.user_id,
-      displayName: parsed.owner?.display_name ?? ""
-    },
-    roles: {
-      owner: { codexHome: resolveConfigPath(parsed.roles?.owner?.codex_home ?? paths.ownerCodexHome, home) },
-      guest: { codexHome: resolveConfigPath(parsed.roles?.guest?.codex_home ?? paths.guestCodexHome, home) }
-    }
-  };
+    auth: emptyAuthFile(),
+    homeIdentity: createTwinnyHomeIdentity("0".repeat(32))
+  });
 }
 
-export async function writeTwinnyConfig(config: TwinnyConfig, configFile = createRuntimePaths(config.home).configFile): Promise<void> {
-  await fs.mkdir(path.dirname(configFile), { recursive: true });
-  await fs.writeFile(configFile, serializeTwinnyConfig(config), { encoding: "utf8", mode: 0o600 });
-}
-
-export async function writeLarkIconImageKey(
+export async function writeTwinnyConfig(
   config: TwinnyConfig,
-  iconImageKey: string,
   configFile = createRuntimePaths(config.home).configFile
 ): Promise<void> {
-  const normalized = normalizeOptionalString(iconImageKey);
-  if (!normalized) {
-    throw new Error("iconImageKey is required");
-  }
-  config.lark.iconImageKey = normalized;
-
-  let rawToml = "";
-  try {
-    rawToml = await fs.readFile(configFile, "utf8");
-  } catch (error) {
-    if (!isNodeError(error, "ENOENT")) {
-      throw error;
-    }
-  }
-
-  const nextToml = rawToml ? patchLarkIconImageKey(rawToml, normalized) : serializeTwinnyConfig(config);
   await fs.mkdir(path.dirname(configFile), { recursive: true });
-  const tempFile = `${configFile}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tempFile, nextToml, { encoding: "utf8", mode: 0o600 });
-  await fs.rename(tempFile, configFile);
+  await fs.writeFile(configFile, serializeTwinnyConfig(config), { encoding: "utf8", mode: 0o600 });
 }
 
 export function serializeTwinnyConfig(config: TwinnyConfig): string {
   return stringify(toTomlDocument(config)) + "\n";
 }
 
+export async function readTwinnyAuthFile(authFile: string): Promise<TwinnyAuthFile> {
+  const parsed = rawAuthSchema.parse(JSON.parse(await fs.readFile(authFile, "utf8")));
+  return normalizeAuthFile({
+    larkAppId: parsed.lark_app_id,
+    ownerOpenId: parsed.owner_open_id,
+    displayName: parsed.displayName
+  });
+}
+
+export async function writeTwinnyAuthFile(auth: TwinnyAuthFile, authFile: string): Promise<void> {
+  await fs.mkdir(path.dirname(authFile), { recursive: true });
+  await fs.writeFile(authFile, serializeTwinnyAuthFile(auth), { encoding: "utf8", mode: 0o600 });
+}
+
+export function serializeTwinnyAuthFile(auth: TwinnyAuthFile): string {
+  const normalized = normalizeAuthFile(auth);
+  return JSON.stringify(
+    {
+      lark_app_id: normalized.larkAppId,
+      owner_open_id: normalized.ownerOpenId,
+      displayName: normalized.displayName
+    },
+    null,
+    2
+  ) + "\n";
+}
+
+export async function readTwinnyHomeIdentity(homeRandomFile: string): Promise<TwinnyHomeIdentity> {
+  const value = (await fs.readFile(homeRandomFile, "utf8")).trim();
+  return createTwinnyHomeIdentity(value);
+}
+
+export async function writeTwinnyHomeRandom(homeRandom: string, homeRandomFile: string): Promise<void> {
+  await fs.mkdir(path.dirname(homeRandomFile), { recursive: true });
+  await fs.writeFile(homeRandomFile, `${createTwinnyHomeIdentity(homeRandom).random}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
+export function createTwinnyHomeIdentity(homeRandom: string): TwinnyHomeIdentity {
+  const random = homeRandom.trim().toLowerCase();
+  return {
+    random,
+    telemetryHashSalt: random,
+    keychainAccounts: {
+      larkAppSecret: larkAppSecretAccountForHomeRandom(random)
+    }
+  };
+}
+
 export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   const issues: string[] = [];
-  if (!config.home) issues.push("home.path is required");
+  if (!config.home) issues.push("home is required");
   if (!config.codex.binary) issues.push("codex.binary is required");
-  if (config.codex.appServerListen !== "stdio://") issues.push("codex.app_server_listen must be stdio://");
-  if (!config.lark.appId) issues.push("lark.app_id is required");
-  if (!config.lark.appSecretRef) issues.push("lark.secret_ref is required");
-  if (config.lark.identity !== "bot") issues.push("lark.identity must be bot");
-  if (!config.lark.workingReaction) issues.push("lark.working_reaction is required");
-  if (!config.lark.completedReaction) issues.push("lark.completed_reaction is required");
-  if (!config.lark.queuedReaction) issues.push("lark.queued_reaction is required");
+  if (!config.auth.larkAppId) issues.push("auth.json lark_app_id is required");
+  if (!config.auth.ownerOpenId) issues.push("auth.json owner_open_id is required");
+  if (!config.auth.displayName) issues.push("auth.json displayName is required");
+  if (!/^[0-9a-f]{32,64}$/.test(config.homeIdentity.random)) {
+    issues.push("runtime/home-random must be 128-bit or 256-bit lowercase hex");
+  }
+  if (!config.lark.workingReaction) issues.push("lark.reaction.working is required");
+  if (!config.lark.completedReaction) issues.push("lark completed reaction internal default is required");
+  if (!config.lark.queuedReaction) issues.push("lark.reaction.queued is required");
   if (!Number.isFinite(config.lark.maxMessageAgeSeconds) || config.lark.maxMessageAgeSeconds <= 0) {
-    issues.push("lark.max_message_age_seconds must be a positive number");
+    issues.push("lark max message age internal default must be a positive number");
   }
   for (const [key, strategy] of Object.entries(config.lark.messageRedaction)) {
     if (!isMessageRedactionStrategy(strategy)) {
       issues.push(`lark.redaction.${key} must be mask, whitespace, or none`);
     }
   }
-  if (!config.owner.openId) issues.push("owner.open_id is required");
-  if (!config.owner.displayName) issues.push("owner.display_name is required");
-  if (!config.roles.owner.codexHome) issues.push("roles.owner.codex_home is required");
-  if (!config.roles.guest.codexHome) issues.push("roles.guest.codex_home is required");
+  if (!config.profiles[HOST_PROFILE_NAME]) {
+    issues.push("profiles.host is required");
+  }
+  if (config.profiles[NONE_PROFILE_NAME]) {
+    issues.push("profiles.none is reserved and must not be configured");
+  }
+  for (const [name, profile] of Object.entries(config.profiles)) {
+    if (!normalizeProfileName(name)) {
+      issues.push(`profiles.${name} name is invalid`);
+    }
+    if (!profile.codexHome) {
+      issues.push(`profiles.${name}.codex_home is required after defaults`);
+    }
+  }
+  const p2pDefault = config.permissions.p2pDefaultProfile;
+  if (!p2pDefault) {
+    issues.push("permissions.p2p_default_profile is required after defaults");
+  } else if (p2pDefault !== NONE_PROFILE_NAME && !config.profiles[p2pDefault]) {
+    issues.push(`permissions.p2p_default_profile references unknown profile: ${p2pDefault}`);
+  }
   return issues;
 }
 
-function applyEnvironmentOverrides(config: TwinnyConfig, env: NodeJS.ProcessEnv): void {
-  if (env.TWINNY_LARK_APP_ID) {
-    config.lark.appId = env.TWINNY_LARK_APP_ID;
+function parseTwinnyConfigFile(rawToml: string, options: LoadConfigOptions): z.infer<typeof rawConfigSchema> {
+  void options;
+  return rawConfigSchema.parse(parse(rawToml));
+}
+
+function createRuntimeConfig(
+  parsed: z.infer<typeof rawConfigSchema>,
+  runtime: { home: string; auth: TwinnyAuthFile; homeIdentity: TwinnyHomeIdentity }
+): TwinnyConfig {
+  const profiles = resolveProfiles(rawProfilesToCamel(parsed.profiles), runtime.home);
+  const auth = normalizeAuthFile(runtime.auth);
+  return {
+    home: runtime.home,
+    codex: {
+      binary: normalizeOptionalString(parsed.codex?.binary) ?? "codex"
+    },
+    lark: {
+      workingReaction: normalizeOptionalString(parsed.lark?.reaction?.working) ?? DEFAULT_LARK_WORKING_REACTION,
+      completedReaction: DEFAULT_LARK_COMPLETED_REACTION,
+      queuedReaction: normalizeOptionalString(parsed.lark?.reaction?.queued) ?? DEFAULT_LARK_QUEUED_REACTION,
+      maxMessageAgeSeconds: DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS,
+      messageRedaction: normalizeMessageRedactionConfig({
+        email: parsed.lark?.redaction?.email,
+        chinesePhoneNumber: parsed.lark?.redaction?.chinese_phone_number
+      })
+    },
+    auth,
+    homeIdentity: runtime.homeIdentity,
+    permissions: {
+      p2pDefaultProfile: normalizeProfileName(parsed.permissions?.p2p_default_profile) ?? NONE_PROFILE_NAME
+    },
+    owner: {
+      openId: auth.ownerOpenId,
+      displayName: auth.displayName
+    },
+    profiles
+  };
+}
+
+function rawProfilesToCamel(
+  profiles: Record<string, RawProfileConfig> | undefined
+): Record<string, Partial<ProfileConfig>> | undefined {
+  if (!profiles) {
+    return undefined;
   }
+  const result: Record<string, Partial<ProfileConfig>> = {};
+  for (const [name, profile] of Object.entries(profiles)) {
+    result[name] = {
+      codexHome: profile.codex_home,
+      defaultModel: profile.default_model,
+      defaultEffort: profile.default_effort
+    };
+  }
+  return result;
+}
+
+function resolveProfiles(
+  input: Record<ProfileName, Partial<ProfileConfig>> | undefined,
+  home: string
+): Record<ProfileName, ProfileConfig> {
+  const hostInput = input?.[HOST_PROFILE_NAME] ?? {};
+  const host: ProfileConfig = {
+    codexHome: resolveConfigPath(hostInput.codexHome ?? "~/.codex", home),
+    defaultModel: normalizeOptionalString(hostInput.defaultModel) ?? DEFAULT_PROFILE_MODEL,
+    defaultEffort: normalizeOptionalString(hostInput.defaultEffort) ?? DEFAULT_PROFILE_EFFORT
+  };
+  const result: Record<ProfileName, ProfileConfig> = {
+    [HOST_PROFILE_NAME]: host
+  };
+  const profileNames = new Set([GUEST_PROFILE_NAME, ...Object.keys(input ?? {})]);
+  for (const name of profileNames) {
+    if (name === HOST_PROFILE_NAME || name === NONE_PROFILE_NAME) {
+      continue;
+    }
+    const profileInput = input?.[name] ?? {};
+    result[name] = {
+      codexHome: resolveConfigPath(profileInput.codexHome ?? host.codexHome, home),
+      defaultModel: normalizeOptionalString(profileInput.defaultModel) ?? host.defaultModel,
+      defaultEffort: normalizeOptionalString(profileInput.defaultEffort) ?? host.defaultEffort
+    };
+  }
+  return result;
 }
 
 function toTomlDocument(config: TwinnyConfig): TomlTable {
-  const owner: TomlTable = {
-    open_id: config.owner.openId,
-    display_name: config.owner.displayName
-  };
-  if (config.owner.userId) {
-    owner.user_id = config.owner.userId;
+  const profiles: TomlTable = {};
+  for (const [name, profile] of Object.entries(config.profiles)) {
+    if (name === NONE_PROFILE_NAME) {
+      continue;
+    }
+    const table: TomlTable = {};
+    if (name === HOST_PROFILE_NAME || profile.codexHome !== config.profiles[HOST_PROFILE_NAME]?.codexHome) {
+      table.codex_home = profile.codexHome;
+    }
+    if (name === HOST_PROFILE_NAME || profile.defaultModel !== config.profiles[HOST_PROFILE_NAME]?.defaultModel) {
+      table.default_model = profile.defaultModel ?? "";
+    }
+    if (name === HOST_PROFILE_NAME || profile.defaultEffort !== config.profiles[HOST_PROFILE_NAME]?.defaultEffort) {
+      table.default_effort = profile.defaultEffort ?? "";
+    }
+    profiles[name] = table;
   }
+  profiles[GUEST_PROFILE_NAME] ??= {};
 
   return {
-    home: {
-      path: config.home
-    },
     codex: {
-      binary: config.codex.binary,
-      app_server_listen: config.codex.appServerListen
+      binary: config.codex.binary
     },
     lark: {
-      identity: config.lark.identity,
-      app_id: config.lark.appId,
-      secret_ref: config.lark.appSecretRef,
-      working_reaction: config.lark.workingReaction,
-      completed_reaction: config.lark.completedReaction,
-      queued_reaction: config.lark.queuedReaction,
-      max_message_age_seconds: config.lark.maxMessageAgeSeconds,
-      ...(config.lark.iconImageKey ? { icon_image_key: config.lark.iconImageKey } : {}),
+      reaction: {
+        working: config.lark.workingReaction,
+        queued: config.lark.queuedReaction
+      },
       redaction: {
         email: config.lark.messageRedaction.email,
         chinese_phone_number: config.lark.messageRedaction.chinesePhoneNumber
       }
     },
-    owner,
-    roles: {
-      owner: {
-        codex_home: config.roles.owner.codexHome
-      },
-      guest: {
-        codex_home: config.roles.guest.codexHome
-      }
-    }
+    permissions: {
+      p2p_default_profile: config.permissions.p2pDefaultProfile
+    },
+    profiles
+  };
+}
+
+function normalizeAuthFile(input: TwinnyAuthFile): TwinnyAuthFile {
+  return {
+    larkAppId: input.larkAppId.trim(),
+    ownerOpenId: input.ownerOpenId.trim(),
+    displayName: input.displayName.trim()
+  };
+}
+
+function emptyAuthFile(): TwinnyAuthFile {
+  return {
+    larkAppId: "",
+    ownerOpenId: "",
+    displayName: ""
   };
 }
 
@@ -328,6 +477,14 @@ function normalizeOptionalString(value: string | undefined): string | undefined 
   }
   const trimmed = value.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function normalizeProfileName(value: string | undefined): string | undefined {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized || !/^[A-Za-z0-9_.-]+$/.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
 }
 
 function normalizeMessageRedactionConfig(
@@ -347,31 +504,6 @@ function normalizeMessageRedactionStrategy(
 
 function isMessageRedactionStrategy(value: unknown): value is LarkMessageRedactionStrategy {
   return value === "mask" || value === "whitespace" || value === "none";
-}
-
-function patchLarkIconImageKey(rawToml: string, iconImageKey: string): string {
-  const lines = rawToml.split(/\r?\n/);
-  const larkHeaderIndex = lines.findIndex((line) => /^\s*\[lark]\s*(?:#.*)?$/.test(line));
-  const rendered = `icon_image_key = ${JSON.stringify(iconImageKey)}`;
-  if (larkHeaderIndex < 0) {
-    const suffix = rawToml.endsWith("\n") ? "" : "\n";
-    return `${rawToml}${suffix}\n[lark]\n${rendered}\n`;
-  }
-
-  let insertIndex = lines.length;
-  for (let index = larkHeaderIndex + 1; index < lines.length; index += 1) {
-    if (/^\s*\[[^\]]+]\s*(?:#.*)?$/.test(lines[index]!)) {
-      insertIndex = index;
-      break;
-    }
-    if (/^\s*icon_image_key\s*=/.test(lines[index]!)) {
-      lines[index] = rendered;
-      return lines.join("\n");
-    }
-  }
-
-  lines.splice(insertIndex, 0, rendered);
-  return lines.join("\n");
 }
 
 function isNodeError(error: unknown, code: string): boolean {

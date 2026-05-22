@@ -30,10 +30,10 @@ describe("startup initialization probe", () => {
       type: "p2p",
       chatId: "ou_guest",
       name: "Guest User",
-      role: "guest",
+      profile: "guest",
       codexThreadId: "thread_recovered",
       workspace: path.join(paths.workspacesDir, "p2p_ou_guest"),
-      roleCodexHome: config.roles.guest.codexHome
+      profileCodexHome: config.profiles.guest.codexHome
     });
     repository.insertLarkMessage({
       larkMessageId: "m1",
@@ -63,7 +63,7 @@ describe("startup initialization probe", () => {
       failedMessages: 0,
       stateCount: 1,
       pendingMessages: 1,
-      roles: { owner: 0, guest: 1 }
+      roles: { guest: 1 }
     });
     expect(formatStartupInitializationProbeDetail(result)).toContain("unfinished=1");
 
@@ -137,8 +137,8 @@ describe("startup initialization probe", () => {
     tempDirs.push(home);
     const config = createTwinnyConfig({
       home,
-      lark: { appId: "cli_app" },
-      owner: { openId: "ou_owner", displayName: "Owner User" }
+      homeRandom: "0123456789abcdef0123456789abcdef",
+      auth: { larkAppId: "cli_app", ownerOpenId: "ou_owner", displayName: "Owner User" }
     });
     return {
       config,

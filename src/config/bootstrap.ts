@@ -1,27 +1,24 @@
+import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import type { RuntimePaths, TwinnyConfig } from "../types.js";
-import { defaultOwnerCodexTarget, renderGuestAgents, serializeGuestCodexConfig, type GuestCodexConfigOptions } from "../roles/index.js";
 import { createRuntimePaths } from "./paths.js";
-import { writeTwinnyConfig } from "./loader.js";
+import { writeTwinnyAuthFile, writeTwinnyConfig, writeTwinnyHomeRandom } from "./loader.js";
 
 export interface BootstrapTwinnyHomeOptions {
   overwriteConfig?: boolean;
-  ownerCodexTarget?: string;
-  guestAuthTarget?: string;
-  guestSessionsTarget?: string;
-  guestCodexConfig?: GuestCodexConfigOptions;
+  overwriteAuth?: boolean;
 }
 
 export interface BootstrapTwinnyHomeResult {
   paths: RuntimePaths;
   wroteConfig: boolean;
-  createdOwnerSymlink: boolean;
-  createdGuestAuthSymlink: boolean;
-  createdGuestSessionsSymlink: boolean;
-  wroteGuestConfig: boolean;
-  wroteGuestAgents: boolean;
+  wroteAuth: boolean;
+  wroteHomeRandom: boolean;
+}
+
+export function generateTwinnyHomeRandom(bytes = 32): string {
+  return randomBytes(bytes).toString("hex");
 }
 
 export async function bootstrapTwinnyHome(
@@ -30,28 +27,18 @@ export async function bootstrapTwinnyHome(
 ): Promise<BootstrapTwinnyHomeResult> {
   const paths = createRuntimePaths(config.home);
   await ensureTwinnyHomeDirectories(paths);
-  const ownerCodexTarget = options.ownerCodexTarget ?? defaultOwnerCodexTarget(os.homedir());
-  const createdOwnerSymlink = await ensureOwnerCodexSymlink(
-    config.roles.owner.codexHome,
-    ownerCodexTarget
-  );
-  const createdGuestAuthSymlink = await ensureGuestAuthSymlink(
-    path.join(config.roles.guest.codexHome, "auth.json"),
-    options.guestAuthTarget ?? path.join(ownerCodexTarget, "auth.json")
-  );
-  const createdGuestSessionsSymlink = await ensureGuestSessionsSymlink(
-    path.join(config.roles.guest.codexHome, "sessions"),
-    options.guestSessionsTarget ?? path.join(ownerCodexTarget, "sessions")
-  );
 
-  const wroteGuestConfig = await writeFileIfChanged(
-    path.join(config.roles.guest.codexHome, "config.toml"),
-    serializeGuestCodexConfig(options.guestCodexConfig)
-  );
-  const wroteGuestAgents = await writeFileIfChanged(
-    path.join(config.roles.guest.codexHome, "AGENTS.md"),
-    renderGuestAgents(config.owner)
-  );
+  let wroteHomeRandom = false;
+  if (!(await pathExists(paths.homeRandomFile))) {
+    await writeTwinnyHomeRandom(config.homeIdentity.random, paths.homeRandomFile);
+    wroteHomeRandom = true;
+  }
+
+  let wroteAuth = false;
+  if (options.overwriteAuth || !(await pathExists(paths.authFile))) {
+    await writeTwinnyAuthFile(config.auth, paths.authFile);
+    wroteAuth = true;
+  }
 
   let wroteConfig = false;
   if (options.overwriteConfig || !(await pathExists(paths.configFile))) {
@@ -62,96 +49,18 @@ export async function bootstrapTwinnyHome(
   return {
     paths,
     wroteConfig,
-    createdOwnerSymlink,
-    createdGuestAuthSymlink,
-    createdGuestSessionsSymlink,
-    wroteGuestConfig,
-    wroteGuestAgents
+    wroteAuth,
+    wroteHomeRandom
   };
 }
 
 export async function ensureTwinnyHomeDirectories(paths: RuntimePaths): Promise<void> {
   await Promise.all([
     fs.mkdir(paths.home, { recursive: true }),
-    fs.mkdir(path.dirname(paths.ownerCodexHome), { recursive: true }),
-    fs.mkdir(paths.guestCodexHome, { recursive: true }),
     fs.mkdir(paths.sqliteDir, { recursive: true }),
     fs.mkdir(paths.workspacesDir, { recursive: true }),
     fs.mkdir(paths.runtimeDir, { recursive: true })
   ]);
-}
-
-export async function ensureOwnerCodexSymlink(linkPath: string, targetPath: string): Promise<boolean> {
-  await fs.mkdir(path.dirname(linkPath), { recursive: true });
-  try {
-    const stat = await fs.lstat(linkPath);
-    if (!stat.isSymbolicLink()) {
-      throw new Error(`${linkPath} exists and is not a symlink`);
-    }
-
-    const currentTarget = await fs.readlink(linkPath);
-    const resolvedCurrent = path.resolve(path.dirname(linkPath), currentTarget);
-    if (resolvedCurrent !== path.resolve(targetPath)) {
-      throw new Error(`${linkPath} points to ${currentTarget}, expected ${targetPath}`);
-    }
-    return false;
-  } catch (error) {
-    if (!isNodeError(error, "ENOENT")) {
-      throw error;
-    }
-  }
-
-  await fs.symlink(targetPath, linkPath, "dir");
-  return true;
-}
-
-export async function ensureGuestAuthSymlink(linkPath: string, targetPath: string): Promise<boolean> {
-  return ensureSymlink(linkPath, targetPath, "file");
-}
-
-export async function ensureGuestSessionsSymlink(linkPath: string, targetPath: string): Promise<boolean> {
-  await fs.mkdir(targetPath, { recursive: true });
-  return ensureSymlink(linkPath, targetPath, "dir");
-}
-
-async function ensureSymlink(linkPath: string, targetPath: string, type: "file" | "dir"): Promise<boolean> {
-  await fs.mkdir(path.dirname(linkPath), { recursive: true });
-  try {
-    const stat = await fs.lstat(linkPath);
-    if (!stat.isSymbolicLink()) {
-      throw new Error(`${linkPath} exists and is not a symlink`);
-    }
-
-    const currentTarget = await fs.readlink(linkPath);
-    const resolvedCurrent = path.resolve(path.dirname(linkPath), currentTarget);
-    if (resolvedCurrent !== path.resolve(targetPath)) {
-      throw new Error(`${linkPath} points to ${currentTarget}, expected ${targetPath}`);
-    }
-    return false;
-  } catch (error) {
-    if (!isNodeError(error, "ENOENT")) {
-      throw error;
-    }
-  }
-
-  await fs.symlink(targetPath, linkPath, type);
-  return true;
-}
-
-async function writeFileIfChanged(filePath: string, content: string): Promise<boolean> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  try {
-    const existing = await fs.readFile(filePath, "utf8");
-    if (existing === content) {
-      return false;
-    }
-  } catch (error) {
-    if (!isNodeError(error, "ENOENT")) {
-      throw error;
-    }
-  }
-  await fs.writeFile(filePath, content, { encoding: "utf8", mode: 0o600 });
-  return true;
 }
 
 async function pathExists(filePath: string): Promise<boolean> {

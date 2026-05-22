@@ -1,0 +1,3 @@
+-- Role/profile column renames are handled idempotently in store migrations code
+-- so fresh databases with already-updated baseline migrations and existing
+-- databases at schema version 20 both converge to the same schema.

@@ -4,7 +4,6 @@ import path from "node:path";
 import { execa } from "execa";
 import { createRuntimePaths, readConfigStatus, resolveTwinnyHome } from "../config/index.js";
 import { isTwinnyLockHeld, readTwinnyLockPid } from "../lock/index.js";
-import { runFirstRunWizard } from "../wizard/first-run.js";
 import { createLaunchAgentPlist, launchAgentLabel } from "./plist.js";
 
 const defaultStopWaitTimeoutMs = 35_000;
@@ -20,7 +19,7 @@ export interface WaitForRuntimeLockReleaseOptions {
 export async function installLaunchAgent(): Promise<void> {
   const status = await ensureConfiguredBeforeInstall();
   if (!status.complete) {
-    throw new Error(`Twinny is not configured. Run "twinny wizard" first. Issues: ${status.issues.join("; ")}`);
+    throw new Error(`Twinny home is not configured. Issues: ${status.issues.join("; ")}`);
   }
   const plistPath = getLaunchAgentPath();
   fs.mkdirSync(path.dirname(plistPath), { recursive: true });
@@ -106,11 +105,6 @@ function getLaunchAgentPath(): string {
 }
 
 async function ensureConfiguredBeforeInstall(): Promise<Awaited<ReturnType<typeof readConfigStatus>>> {
-  const status = await readConfigStatus();
-  if (status.complete) {
-    return status;
-  }
-  await runFirstRunWizard();
   return readConfigStatus();
 }
 

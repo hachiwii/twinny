@@ -2,12 +2,13 @@ import type { Logger } from "pino";
 import path from "node:path";
 import {
   createRuntimePaths,
+  loadTwinnyConfig,
   resolveBundledBannerPath,
   resolveBundledLogoPath,
-  resolveSecretRef,
+  resolveLarkAppSecret,
   SecurityCliSecretStore
 } from "../config/index.js";
-import { RoleCodexAppServerPool } from "../codex/index.js";
+import { RoleCodexAppServerPool, type CodexAppServer } from "../codex/index.js";
 import { ConversationManager, type CodexBridge } from "../conversation/manager.js";
 import {
   LarkEventConsumer,
@@ -24,7 +25,7 @@ import {
 import { acquireTwinnyLock, type TwinnyRuntimeLock } from "../lock/index.js";
 import { createLarkSdkLogger, createLogger, logger as defaultLogger } from "../observability/logs.js";
 import { TwinnySystemNotifier } from "../observability/system-notifications.js";
-import { getRoleCodexHome } from "../roles/index.js";
+import { getProfileCodexHome } from "../roles/index.js";
 import { createConversationRepository, openRuntimeDatabase, type ConversationRepository, type TwinnyDatabase } from "../store/index.js";
 import type {
   CodexAgentMessage,
@@ -72,6 +73,7 @@ export class TwinnyRuntime {
   private conversation?: ConversationManager;
   private systemNotifier?: TwinnySystemNotifier;
   private readonly codexRecoveryByRole = new Map<RoleName, Promise<void>>();
+  private readonly codexIntentionalStopByRole = new Set<RoleName>();
   private stopped = false;
   private stopPromise: Promise<void>;
   private resolveStopped!: () => void;
@@ -97,33 +99,23 @@ export class TwinnyRuntime {
       this.idleSleepPreventer.start();
       this.db = openRuntimeDatabase(this.paths);
 
-      const appSecret = await resolveSecretRef(this.config.lark.appSecretRef, this.secretStore);
+      const appSecretAccount = this.config.homeIdentity.keychainAccounts.larkAppSecret;
+      const appSecret = await resolveLarkAppSecret(appSecretAccount, this.secretStore);
       if (!appSecret) {
-        throw new Error(`Lark app secret is missing: ${this.config.lark.appSecretRef}`);
+        throw new Error(`Lark app secret is missing: keychain:${appSecretAccount}`);
       }
       this.codexPool = new RoleCodexAppServerPool({
         binary: this.config.codex.binary,
-        roles: this.config.roles,
+        profiles: this.config.profiles,
         requestTimeoutMs: this.options.requestTimeoutMs ?? 10 * 60 * 1000
       });
-      for (const role of ["owner", "guest"] as RoleName[]) {
-        this.codexPool.get(role).on("stderr", (chunk) => {
-          this.log.debug({ role, stream: "stderr", chunk }, "codex app-server stderr");
-        });
-        this.codexPool.get(role).on("threadNameUpdated", (update) => {
-          this.conversation?.submitCodexThreadNameUpdated(update);
-        });
-        this.codexPool.get(role).on("exit", (code, signal) => {
-          this.log.error({ role, code, signal }, "codex app-server exited");
-          void this.handleCodexAppServerExit(role).catch((error) => {
-            this.log.error({ error, role }, "failed to recover codex app-server after exit");
-          });
-        });
+      for (const role of Object.keys(this.config.profiles) as RoleName[]) {
+        this.attachCodexAppServerListeners(role, this.codexPool.get(role));
       }
       await this.codexPool.startAll();
 
       const tokenManager = new TenantAccessTokenManager({
-        appId: this.config.lark.appId,
+        appId: this.config.auth.larkAppId,
         appSecret
       });
       const openApiClient = new LarkOpenApiClient({ tokenManager });
@@ -167,14 +159,15 @@ export class TwinnyRuntime {
         larkMessages,
         botOpenId,
         assetImageKeys,
-        roles: { codexHomeFor: (role) => getRoleCodexHome(this.config, role) },
+        roles: { codexHomeFor: (role) => getProfileCodexHome(this.config, role) },
+        runtime: { reloadProfile: (role) => this.reloadProfile(role) },
         logger: this.log
       });
       this.conversation = conversation;
       await conversation.recoverUnfinishedMessages();
 
       this.larkConsumer = new LarkEventConsumer({
-        appId: this.config.lark.appId,
+        appId: this.config.auth.larkAppId,
         appSecret,
         botOpenId,
         logger: this.log,
@@ -275,6 +268,85 @@ export class TwinnyRuntime {
     this.log.info({ role, suspended, recovered }, "codex app-server recovered after exit");
   }
 
+  private attachCodexAppServerListeners(role: RoleName, server: CodexAppServer): void {
+    server.on("stderr", (chunk) => {
+      this.log.debug({ role, stream: "stderr", chunk }, "codex app-server stderr");
+    });
+    server.on("threadNameUpdated", (update) => {
+      this.conversation?.submitCodexThreadNameUpdated(update);
+    });
+    server.on("exit", (code, signal) => {
+      if (this.codexIntentionalStopByRole.delete(role)) {
+        this.log.info({ role, code, signal }, "codex app-server stopped intentionally");
+        return;
+      }
+      this.log.error({ role, code, signal }, "codex app-server exited");
+      void this.handleCodexAppServerExit(role).catch((error) => {
+        this.log.error({ error, role }, "failed to recover codex app-server after exit");
+      });
+    });
+  }
+
+  async reloadProfile(profile?: RoleName): Promise<void> {
+    const pool = this.codexPool;
+    if (!pool) {
+      throw new Error("Codex app-server pool is not started");
+    }
+    if (profile === "none") {
+      throw new Error("profile none is reserved");
+    }
+
+    const nextConfig = await loadTwinnyConfig({ home: this.config.home });
+    if (profile && !nextConfig.profiles[profile]) {
+      throw new Error(`Unknown profile: ${profile}`);
+    }
+
+    const currentProfiles = new Set(pool.listProfiles());
+    const nextProfiles = new Set(Object.keys(nextConfig.profiles) as RoleName[]);
+    const profilesToReload = profile
+      ? [profile]
+      : Array.from(new Set<RoleName>([...currentProfiles, ...nextProfiles]));
+
+    this.log.info({ profiles: profilesToReload }, "reloading twinny profiles");
+    for (const profileName of profilesToReload) {
+      const nextProfile = nextConfig.profiles[profileName];
+      if (!nextProfile) {
+        if (currentProfiles.has(profileName)) {
+          await this.stopCodexAppServerForReload(pool, profileName);
+        }
+        continue;
+      }
+
+      const suspended = currentProfiles.has(profileName)
+        ? (await this.conversation?.suspendActiveTurnsForCodexAppServerExit(profileName)) ?? 0
+        : 0;
+      if (currentProfiles.has(profileName)) {
+        await this.stopCodexAppServerForReload(pool, profileName);
+      }
+      const server = pool.replace(profileName, {
+        binary: nextConfig.codex.binary,
+        codexHome: nextProfile.codexHome
+      });
+      this.attachCodexAppServerListeners(profileName, server);
+      await server.start();
+      const recovered = currentProfiles.has(profileName)
+        ? (await this.conversation?.recoverSuspendedActiveTurnsForCodexAppServerExit(profileName)) ?? 0
+        : 0;
+      this.log.info({ profile: profileName, suspended, recovered }, "reloaded codex app-server profile");
+    }
+
+    replaceTwinnyConfigContents(this.config, nextConfig);
+  }
+
+  private async stopCodexAppServerForReload(pool: RoleCodexAppServerPool, profile: RoleName): Promise<void> {
+    this.codexIntentionalStopByRole.add(profile);
+    try {
+      await pool.remove(profile);
+    } finally {
+      this.codexIntentionalStopByRole.delete(profile);
+    }
+  }
+
   private async shutdownConversation(): Promise<void> {
     if (!this.conversation) {
       return;
@@ -366,6 +438,10 @@ export class TwinnyRuntime {
 
 export async function createRuntime(config: TwinnyConfig, options: TwinnyRuntimeOptions = {}): Promise<TwinnyRuntime> {
   return new TwinnyRuntime(config, options);
+}
+
+function replaceTwinnyConfigContents(target: TwinnyConfig, source: TwinnyConfig): void {
+  Object.assign(target, source);
 }
 
 export function adaptConversationRepository(repository: ConversationRepository) {

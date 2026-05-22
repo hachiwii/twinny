@@ -70,7 +70,7 @@ describe("ConversationRepository", () => {
       type: "topic_group",
       chatId: "oc_group",
       name: "Topic Group",
-      responseMode: "at",
+      responseMode: "all_at",
       role: "owner",
       codexThreadId: "thread-group",
       workspace,
@@ -82,7 +82,7 @@ describe("ConversationRepository", () => {
       type: "topic_group",
       chatId: "oc_group",
       name: "Topic Group",
-      responseMode: "at",
+      responseMode: "all_at",
       role: "owner"
     });
     expect(repo.getByTypeAndChatId("topic_group", "oc_group")).toEqual(created);

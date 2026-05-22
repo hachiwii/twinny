@@ -4,20 +4,8 @@ import { TwinnyError } from "../errors.js";
 export const TWINNY_KEYCHAIN_SERVICE = "twinny";
 
 export const SECRET_ACCOUNTS = {
-  larkAppSecret: "lark.app_secret",
-  ownerUserToken: "lark.owner.user_token",
-  ownerRefreshToken: "lark.owner.refresh_token"
+  larkAppSecret: "lark.app_secret"
 } as const;
-
-export const SECRET_REFS = {
-  larkAppSecret: "keychain:twinny/lark/app_secret",
-  ownerUserToken: "keychain:twinny/lark/owner_user_token"
-} as const;
-
-const REF_TO_ACCOUNT = new Map<string, string>([
-  [SECRET_REFS.larkAppSecret, SECRET_ACCOUNTS.larkAppSecret],
-  [SECRET_REFS.ownerUserToken, SECRET_ACCOUNTS.ownerUserToken]
-]);
 
 export interface SecretStore {
   get(account: string): Promise<string | null>;
@@ -108,28 +96,23 @@ export class MemorySecretStore implements SecretStore {
   }
 }
 
-export function secretAccountFromRef(ref: string): string {
-  const known = REF_TO_ACCOUNT.get(ref);
-  if (known) {
-    return known;
+export function larkAppSecretAccountForHomeRandom(homeRandom: string): string {
+  const normalized = homeRandom.trim().toLowerCase();
+  if (!/^[0-9a-f]{32,64}$/.test(normalized)) {
+    throw new TwinnyError("invalid Twinny home random value", "TWINNY_HOME_RANDOM_INVALID");
   }
-
-  const prefix = `keychain:${TWINNY_KEYCHAIN_SERVICE}/`;
-  if (!ref.startsWith(prefix)) {
-    throw new TwinnyError(`unsupported secret reference: ${ref}`, "UNSUPPORTED_SECRET_REF");
-  }
-  return ref.slice(prefix.length).replaceAll("/", ".");
+  return `twinny.home.${normalized}.lark.app_secret`;
 }
 
-export async function resolveSecretRef(
-  ref: string,
+export async function resolveLarkAppSecret(
+  account: string,
   secretStore: SecretStore,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<string | null> {
-  if (ref === SECRET_REFS.larkAppSecret && env.TWINNY_LARK_APP_SECRET) {
+  if (env.TWINNY_LARK_APP_SECRET) {
     return env.TWINNY_LARK_APP_SECRET;
   }
-  return secretStore.get(secretAccountFromRef(ref));
+  return secretStore.get(account);
 }
 
 function isSecurityNotFound(error: unknown): boolean {

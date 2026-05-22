@@ -18,8 +18,8 @@ afterEach(async () => {
 });
 
 describe("role helpers", () => {
-  it("routes owner open_id to owner and everyone else to guest", () => {
-    expect(resolveRoleForSender("ou_owner", "ou_owner")).toBe("owner");
+  it("routes owner open_id to host and everyone else to guest", () => {
+    expect(resolveRoleForSender("ou_owner", "ou_owner")).toBe("host");
     expect(resolveRoleForSender("ou_guest", "ou_owner")).toBe("guest");
   });
 

@@ -15,7 +15,7 @@ import type {
   LarkMessageRouteKind,
   LarkMessageStatus,
   NewConversationRecord,
-  RoleName
+  ProfileName
 } from "../types.js";
 import { assertValidConversationKey, createGroupConversationKey, createP2PConversationKey } from "../workspace/slug.js";
 
@@ -26,10 +26,10 @@ interface ConversationRow {
   chat_id: string;
   name: string;
   response_mode: ConversationResponseMode;
-  role: RoleName;
+  profile: ProfileName;
   thread_id: string;
   workspace: string;
-  role_codex_home: string;
+  profile_codex_home: string;
   created_at: number;
   updated_at: number;
 }
@@ -40,10 +40,10 @@ interface InsertConversationParams {
   chatId: string;
   name: string;
   responseMode: ConversationResponseMode;
-  role: RoleName;
+  profile: ProfileName;
   codexThreadId: string;
   workspace: string;
-  roleCodexHome: string;
+  profileCodexHome: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -54,7 +54,7 @@ interface CodexThreadRow {
   conversation_key: string;
   name: string;
   lark_thread_id: string | null;
-  role: RoleName;
+  profile: ProfileName;
   mode: CodexThreadMode;
   status: CodexThreadStatus;
   goal_status: CodexThreadGoalStatus;
@@ -129,7 +129,8 @@ interface LarkMessageRow {
 export interface UpsertCodexThreadInput {
   codexThreadId: string;
   conversationKey: string;
-  role: RoleName;
+  profile?: ProfileName;
+  role?: ProfileName;
   name?: string;
   larkThreadId?: string;
   codexThreadHasRollout?: boolean;
@@ -158,7 +159,8 @@ export interface InsertLarkMessageInput {
 export interface UpdateCodexThreadTokenUsageInput {
   codexThreadId: string;
   conversationKey: string;
-  role: RoleName;
+  profile?: ProfileName;
+  role?: ProfileName;
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
@@ -187,7 +189,8 @@ export interface UpdateCodexThreadGoalStatusInput {
 export interface UpdateCodexThreadCardInput {
   codexThreadId: string;
   conversationKey: string;
-  role: RoleName;
+  profile?: ProfileName;
+  role?: ProfileName;
   name?: string;
   larkThreadId?: string;
   creatorOpenId?: string;
@@ -218,13 +221,16 @@ export interface ReplaceCodexThreadForLarkThreadInput {
   conversationKey: string;
   larkThreadId: string;
   codexThreadId: string;
-  role: RoleName;
+  profile?: ProfileName;
+  role?: ProfileName;
   codexThreadHasRollout?: boolean;
 }
 
 export interface UpdateConversationThreadBinding {
   codexThreadId: string;
-  role?: RoleName;
+  profile?: ProfileName;
+  role?: ProfileName;
+  profileCodexHome?: string;
   roleCodexHome?: string;
   workspace?: string;
 }
@@ -250,7 +256,7 @@ export class ConversationRepository {
   private readonly updateSettings: Database.Statement<[ConversationType, string, string, number, string]>;
   private readonly updateThread: Database.Statement<[
     string,
-    RoleName,
+    ProfileName,
     string,
     string,
     number,
@@ -314,10 +320,10 @@ export class ConversationRepository {
         chat_id,
         name,
         response_mode,
-        role,
+        profile,
         thread_id,
         workspace,
-        role_codex_home,
+        profile_codex_home,
         created_at,
         updated_at
       ) VALUES (
@@ -326,10 +332,10 @@ export class ConversationRepository {
         @chatId,
         @name,
         @responseMode,
-        @role,
+        @profile,
         @codexThreadId,
         @workspace,
-        @roleCodexHome,
+        @profileCodexHome,
         @createdAt,
         @updatedAt
       )
@@ -357,8 +363,8 @@ export class ConversationRepository {
     this.updateThread = this.db.prepare(`
       UPDATE conversations
       SET thread_id = ?,
-          role = ?,
-          role_codex_home = ?,
+          profile = ?,
+          profile_codex_home = ?,
           workspace = ?,
           updated_at = ?
       WHERE conversation_key = ?
@@ -379,7 +385,7 @@ export class ConversationRepository {
         conversation_key,
         name,
         lark_thread_id,
-        role,
+        profile,
         forked_from_thread_id,
         forked_at,
         thread_has_rollout,
@@ -392,7 +398,7 @@ export class ConversationRepository {
         @conversationKey,
         COALESCE(@name, '新会话'),
         @larkThreadId,
-        @role,
+        @profile,
         @forkedFromCodexThreadId,
         @forkedAt,
         @codexThreadHasRollout,
@@ -405,7 +411,7 @@ export class ConversationRepository {
         conversation_key = excluded.conversation_key,
         name = COALESCE(@name, threads.name),
         lark_thread_id = COALESCE(excluded.lark_thread_id, threads.lark_thread_id),
-        role = excluded.role,
+        profile = excluded.profile,
         forked_from_thread_id = COALESCE(excluded.forked_from_thread_id, threads.forked_from_thread_id),
         forked_at = COALESCE(excluded.forked_at, threads.forked_at),
         thread_has_rollout = CASE
@@ -425,7 +431,7 @@ export class ConversationRepository {
     this.replaceCodexThreadForLarkThreadStatement = this.db.prepare(`
       UPDATE threads
       SET thread_id = @codexThreadId,
-          role = @role,
+          profile = @profile,
           input_tokens = 0,
           output_tokens = 0,
           cached_input_tokens = 0,
@@ -447,7 +453,7 @@ export class ConversationRepository {
         conversation_key,
         name,
         lark_thread_id,
-        role,
+        profile,
         input_tokens,
         output_tokens,
         cached_input_tokens,
@@ -464,7 +470,7 @@ export class ConversationRepository {
         @conversationKey,
         COALESCE(@name, '新会话'),
         NULL,
-        @role,
+        @profile,
         @inputTokens,
         @outputTokens,
         @cachedInputTokens,
@@ -480,7 +486,7 @@ export class ConversationRepository {
       ON CONFLICT(thread_id) DO UPDATE SET
         conversation_key = excluded.conversation_key,
         name = COALESCE(@name, threads.name),
-        role = excluded.role,
+        profile = excluded.profile,
         input_tokens = excluded.input_tokens,
         output_tokens = excluded.output_tokens,
         cached_input_tokens = excluded.cached_input_tokens,
@@ -498,7 +504,7 @@ export class ConversationRepository {
         conversation_key,
         name,
         lark_thread_id,
-        role,
+        profile,
         creator_open_id,
         card_message_id,
         thread_has_rollout,
@@ -509,7 +515,7 @@ export class ConversationRepository {
         @conversationKey,
         COALESCE(@name, '新会话'),
         @larkThreadId,
-        @role,
+        @profile,
         @creatorOpenId,
         @cardMessageId,
         0,
@@ -520,7 +526,7 @@ export class ConversationRepository {
         conversation_key = excluded.conversation_key,
         name = COALESCE(@name, threads.name),
         lark_thread_id = COALESCE(excluded.lark_thread_id, threads.lark_thread_id),
-        role = excluded.role,
+        profile = excluded.profile,
         creator_open_id = COALESCE(excluded.creator_open_id, threads.creator_open_id),
         card_message_id = COALESCE(excluded.card_message_id, threads.card_message_id),
         updated_at = excluded.updated_at
@@ -865,11 +871,13 @@ export class ConversationRepository {
   updateThreadBinding(conversationKey: string, update: UpdateConversationThreadBinding): ConversationRecord {
     assertValidConversationKey(conversationKey);
     assertNonEmpty(update.codexThreadId, "codexThreadId");
-    if (update.role !== undefined) {
-      assertValidRole(update.role);
+    const updateProfile = resolveOptionalInputProfile(update);
+    if (updateProfile !== undefined) {
+      assertValidProfile(updateProfile);
     }
-    if (update.roleCodexHome !== undefined) {
-      assertNonEmpty(update.roleCodexHome, "roleCodexHome");
+    const updateProfileCodexHome = update.profileCodexHome ?? update.roleCodexHome;
+    if (updateProfileCodexHome !== undefined) {
+      assertNonEmpty(updateProfileCodexHome, "profileCodexHome");
     }
     if (update.workspace !== undefined) {
       assertAbsolutePath(update.workspace, "workspace");
@@ -877,13 +885,13 @@ export class ConversationRepository {
 
     const updateBinding = this.db.transaction(() => {
       const existing = this.requireByConversationKey(conversationKey);
-      const role = update.role ?? existing.role;
-      const roleCodexHome = update.roleCodexHome ?? existing.roleCodexHome;
+      const profile = updateProfile ?? existing.profile;
+      const profileCodexHome = updateProfileCodexHome ?? existing.profileCodexHome;
       const workspace = update.workspace ?? existing.workspace;
       this.updateThread.run(
         update.codexThreadId,
-        role,
-        roleCodexHome,
+        profile,
+        profileCodexHome,
         workspace,
         this.now(),
         conversationKey
@@ -935,12 +943,13 @@ export class ConversationRepository {
   upsertCodexThread(input: UpsertCodexThreadInput): CodexThreadRecord {
     validateCodexThreadInput(input);
     const now = this.now();
+    const profile = resolveRequiredInputProfile(input);
     this.upsertCodexThreadStatement.run({
       codexThreadId: input.codexThreadId,
       conversationKey: input.conversationKey,
       name: input.name ?? null,
       larkThreadId: input.larkThreadId ?? null,
-      role: input.role,
+      profile,
       forkedFromCodexThreadId: input.forkedFromCodexThreadId ?? null,
       forkedAt: input.forkedAt ?? null,
       codexThreadHasRollout: input.codexThreadHasRollout === true ? 1 : 0,
@@ -969,21 +978,24 @@ export class ConversationRepository {
   replaceCodexThreadForLarkThread(
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; role: RoleName; codexThreadHasRollout?: boolean }
+    update: { codexThreadId: string; profile?: ProfileName; role?: ProfileName; codexThreadHasRollout?: boolean }
   ): CodexThreadRecord {
     const input = {
       conversationKey,
       larkThreadId,
       codexThreadId: update.codexThreadId,
+      profile: update.profile,
       role: update.role,
       codexThreadHasRollout: update.codexThreadHasRollout
     };
     validateReplaceCodexThreadForLarkThread(input);
+    const profile = resolveRequiredInputProfile(input);
     const now = this.now();
     const codexThreadHasRollout = input.codexThreadHasRollout === true ? 1 : 0;
     const replace = this.db.transaction(() => {
       const result = this.replaceCodexThreadForLarkThreadStatement.run({
         ...input,
+        profile,
         codexThreadHasRollout,
         updatedAt: now
       });
@@ -993,7 +1005,7 @@ export class ConversationRepository {
           conversationKey: input.conversationKey,
           name: null,
           larkThreadId: input.larkThreadId,
-          role: input.role,
+          profile,
           forkedFromCodexThreadId: null,
           forkedAt: null,
           codexThreadHasRollout,
@@ -1011,7 +1023,8 @@ export class ConversationRepository {
   updateCodexThreadTokenUsage(input: UpdateCodexThreadTokenUsageInput): CodexThreadRecord {
     assertNonEmpty(input.codexThreadId, "codexThreadId");
     assertValidConversationKey(input.conversationKey);
-    assertValidRole(input.role);
+    const profile = resolveRequiredInputProfile(input);
+    assertValidProfile(profile);
     assertNonNegativeFinite(input.inputTokens, "inputTokens");
     assertNonNegativeFinite(input.outputTokens, "outputTokens");
     assertNonNegativeFinite(input.cachedInputTokens, "cachedInputTokens");
@@ -1027,7 +1040,7 @@ export class ConversationRepository {
       codexThreadId: input.codexThreadId,
       conversationKey: input.conversationKey,
       name: null,
-      role: input.role,
+      profile,
       inputTokens: Math.trunc(input.inputTokens),
       outputTokens: Math.trunc(input.outputTokens),
       cachedInputTokens: Math.trunc(input.cachedInputTokens),
@@ -1045,7 +1058,8 @@ export class ConversationRepository {
   updateCodexThreadCard(input: UpdateCodexThreadCardInput): CodexThreadRecord {
     assertNonEmpty(input.codexThreadId, "codexThreadId");
     assertValidConversationKey(input.conversationKey);
-    assertValidRole(input.role);
+    const profile = resolveRequiredInputProfile(input);
+    assertValidProfile(profile);
     if (input.larkThreadId !== undefined) {
       assertNonEmpty(input.larkThreadId, "larkThreadId");
     }
@@ -1063,7 +1077,7 @@ export class ConversationRepository {
       codexThreadId: input.codexThreadId,
       conversationKey: input.conversationKey,
       name: input.name ?? null,
-      role: input.role,
+      profile,
       larkThreadId: input.larkThreadId ?? null,
       creatorOpenId: input.creatorOpenId ?? null,
       cardMessageId: input.cardMessageId ?? null,
@@ -1339,16 +1353,18 @@ export class ConversationRepository {
   private toInsertParams(input: NewConversationRecord): InsertConversationParams {
     validateNewConversation(input);
     const now = this.now();
+    const profile = resolveRequiredInputProfile(input);
+    const profileCodexHome = input.profileCodexHome ?? input.roleCodexHome;
     return {
       conversationKey: input.conversationKey,
       type: input.type,
       chatId: input.chatId,
       name: input.name,
       responseMode: input.responseMode ?? (input.type === "p2p" ? "all" : "none"),
-      role: input.role,
+      profile,
       codexThreadId: input.codexThreadId,
       workspace: input.workspace,
-      roleCodexHome: input.roleCodexHome,
+      profileCodexHome: profileCodexHome!,
       createdAt: now,
       updatedAt: now
     };
@@ -1418,10 +1434,12 @@ function mapRequiredConversationRow(row: ConversationRow): ConversationRecord {
     chatId: row.chat_id,
     name: row.name,
     responseMode: row.response_mode,
-    role: row.role,
+    profile: row.profile,
+    role: row.profile,
     codexThreadId: row.thread_id,
     workspace: row.workspace,
-    roleCodexHome: row.role_codex_home,
+    profileCodexHome: row.profile_codex_home,
+    roleCodexHome: row.profile_codex_home,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -1437,7 +1455,8 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     conversationKey: row.conversation_key,
     name: row.name,
     larkThreadId: row.lark_thread_id ?? undefined,
-    role: row.role,
+    profile: row.profile,
+    role: row.profile,
     mode: validCodexThreadMode(row.mode) ? row.mode : "default",
     status: validCodexThreadStatus(row.status) ? row.status : "idle",
     goalStatus: validCodexThreadGoalStatus(row.goal_status) ? row.goal_status : "none",
@@ -1505,16 +1524,16 @@ function validateNewConversation(input: NewConversationRecord): void {
   if (input.responseMode !== undefined) {
     assertValidResponseMode(input.responseMode);
   }
-  assertValidRole(input.role);
+  assertValidProfile(resolveRequiredInputProfile(input));
   assertNonEmpty(input.codexThreadId, "codexThreadId");
   assertAbsolutePath(input.workspace, "workspace");
-  assertNonEmpty(input.roleCodexHome, "roleCodexHome");
+  assertNonEmpty(input.profileCodexHome ?? input.roleCodexHome ?? "", "profileCodexHome");
 }
 
 function validateCodexThreadInput(input: UpsertCodexThreadInput): void {
   assertNonEmpty(input.codexThreadId, "codexThreadId");
   assertValidConversationKey(input.conversationKey);
-  assertValidRole(input.role);
+  assertValidProfile(resolveRequiredInputProfile(input));
   if (input.name !== undefined) {
     assertNonEmpty(input.name, "name");
   }
@@ -1530,7 +1549,7 @@ function validateReplaceCodexThreadForLarkThread(input: ReplaceCodexThreadForLar
   assertValidConversationKey(input.conversationKey);
   assertNonEmpty(input.larkThreadId, "larkThreadId");
   assertNonEmpty(input.codexThreadId, "codexThreadId");
-  assertValidRole(input.role);
+  assertValidProfile(resolveRequiredInputProfile(input));
 }
 
 function validateLarkMessageInput(input: InsertLarkMessageInput): void {
@@ -1584,14 +1603,32 @@ function assertValidConversationType(type: ConversationType): void {
 }
 
 function assertValidResponseMode(responseMode: ConversationResponseMode): void {
-  if (responseMode !== "all" && responseMode !== "at" && responseMode !== "none") {
+  if (
+    responseMode !== "all" &&
+    responseMode !== "all_at" &&
+    responseMode !== "owner" &&
+    responseMode !== "owner_at" &&
+    responseMode !== "none"
+  ) {
     throw new TwinnyError(`Unsupported conversation response mode: ${responseMode}`, "CONVERSATION_RESPONSE_MODE_INVALID");
   }
 }
 
-function assertValidRole(role: RoleName): void {
-  if (role !== "owner" && role !== "guest") {
-    throw new TwinnyError(`Unsupported role: ${role}`, "CONVERSATION_ROLE_INVALID");
+function resolveRequiredInputProfile(input: { profile?: ProfileName; role?: ProfileName }): ProfileName {
+  const profile = resolveOptionalInputProfile(input);
+  if (!profile) {
+    throw new TwinnyError("profile must not be empty", "CONVERSATION_FIELD_EMPTY");
+  }
+  return profile;
+}
+
+function resolveOptionalInputProfile(input: { profile?: ProfileName; role?: ProfileName }): ProfileName | undefined {
+  return input.profile ?? input.role;
+}
+
+function assertValidProfile(profile: ProfileName): void {
+  if (!/^[A-Za-z0-9_.-]+$/.test(profile) || profile === "none") {
+    throw new TwinnyError(`Unsupported profile: ${profile}`, "CONVERSATION_PROFILE_INVALID");
   }
 }
 

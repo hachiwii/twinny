@@ -9,15 +9,13 @@ import {
   MemorySecretStore,
   parseTwinnyConfig,
   readConfigStatus,
-  resolveSecretRef,
+  resolveLarkAppSecret,
   resolveTwinnyHome,
-  SECRET_ACCOUNTS,
-  SECRET_REFS,
-  serializeTwinnyConfig,
-  writeLarkIconImageKey
+  serializeTwinnyConfig
 } from "./index.js";
 
 const tempDirs: string[] = [];
+const homeRandom = "0123456789abcdef0123456789abcdef";
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
@@ -28,181 +26,120 @@ describe("Twinny config loading and bootstrap", () => {
     expect(resolveTwinnyHome({ env: {}, homeDir: "/Users/tester" })).toBe("/Users/tester/.twinny");
   });
 
-  it("writes and reloads config.toml with smol-toml shape", async () => {
+  it("writes and reloads config.toml, auth.json, and runtime/home-random", async () => {
     const home = await tempHome();
     const config = createTwinnyConfig({
       home,
-      lark: {
-        appId: "cli_test",
-        workingReaction: "JubilantRabbit",
-        completedReaction: "CheckMark",
-        queuedReaction: "OneSecond",
-        maxMessageAgeSeconds: 30
-      },
-      owner: {
-        openId: "ou_owner",
-        userId: "user_owner",
+      homeRandom,
+      auth: {
+        larkAppId: "cli_test",
+        ownerOpenId: "ou_owner",
         displayName: "Owner"
+      },
+      lark: {
+        workingReaction: "JubilantRabbit",
+        queuedReaction: "OneSecond",
+        messageRedaction: { email: "whitespace" }
+      },
+      permissions: { p2pDefaultProfile: "none" },
+      profiles: {
+        host: { codexHome: path.join(home, ".codex"), defaultModel: "gpt-5.5", defaultEffort: "high" },
+        guest: {}
       }
     });
 
-    await bootstrapTwinnyHome(config, { ownerCodexTarget: path.join(home, ".codex") });
+    const result = await bootstrapTwinnyHome(config);
     const loaded = await loadTwinnyConfig({ home, env: {} });
-    const raw = await fs.readFile(path.join(home, "config.toml"), "utf8");
+    const rawConfig = await fs.readFile(path.join(home, "config.toml"), "utf8");
+    const rawAuth = await fs.readFile(path.join(home, "auth.json"), "utf8");
+    const rawRandom = await fs.readFile(path.join(home, "runtime", "home-random"), "utf8");
 
-    expect(loaded.lark.appId).toBe("cli_test");
+    expect(result).toMatchObject({ wroteConfig: true, wroteAuth: true, wroteHomeRandom: true });
+    expect(loaded.auth).toEqual({ larkAppId: "cli_test", ownerOpenId: "ou_owner", displayName: "Owner" });
+    expect(loaded.owner).toEqual({ openId: "ou_owner", displayName: "Owner" });
+    expect(loaded.homeIdentity.random).toBe(homeRandom);
+    expect(loaded.homeIdentity.keychainAccounts.larkAppSecret).toBe(`twinny.home.${homeRandom}.lark.app_secret`);
     expect(loaded.lark.workingReaction).toBe("JubilantRabbit");
-    expect(loaded.lark.completedReaction).toBe("CheckMark");
+    expect(loaded.lark.completedReaction).toBe("DONE");
     expect(loaded.lark.queuedReaction).toBe("OneSecond");
-    expect(loaded.lark.maxMessageAgeSeconds).toBe(30);
-    expect(loaded.lark.messageRedaction).toEqual({ email: "mask", chinesePhoneNumber: "mask" });
-    expect(loaded.owner.openId).toBe("ou_owner");
-    expect(loaded.roles.owner.codexHome).toBe(path.join(home, "roles", "owner", "codex"));
-    expect(loaded.roles.guest.codexHome).toBe(path.join(home, "roles", "guest", "codex"));
-    expect(raw).not.toContain("event_key");
-    expect(raw).not.toContain("token_ref");
-    expect(raw).not.toContain("refresh_token_ref");
+    expect(loaded.lark.messageRedaction).toEqual({ email: "whitespace", chinesePhoneNumber: "mask" });
+    expect(loaded.profiles.host.codexHome).toBe(path.join(home, ".codex"));
+    expect(loaded.profiles.guest.codexHome).toBe(path.join(home, ".codex"));
+    expect(rawRandom.trim()).toBe(homeRandom);
+    expect(JSON.parse(rawAuth)).toEqual({
+      lark_app_id: "cli_test",
+      owner_open_id: "ou_owner",
+      displayName: "Owner"
+    });
+    expect(rawConfig).not.toContain("[roles");
+    expect(rawConfig).not.toContain("app_id");
+    expect(rawConfig).not.toContain("owner_open_id");
+    expect(rawConfig).not.toContain("secret_ref");
+    await expect(fs.stat(path.join(home, "roles"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("ignores legacy lark and owner secret config fields when serializing", () => {
-    const config = parseTwinnyConfig(
-      [
-        "[lark]",
-        'app_id = "cli_test"',
-        'event_key = "im.message.receive_v1"',
-        'queued_reaction = "Alarm"',
-        'agent_message_mode = "plain"',
-        'icon_image_key = "img_logo"',
-        "",
-        "[lark.redaction]",
-        'email = "whitespace"',
-        'chinese_phone_number = "none"',
-        "",
-        "[owner]",
-        'open_id = "ou_owner"',
-        'token_ref = "keychain:twinny/lark/owner_user_token"',
-        'refresh_token_ref = "keychain:twinny/lark/owner_refresh_token"',
-        'display_name = "Owner"'
-      ].join("\n"),
-      { home: "/tmp/twinny" }
-    );
+  it("serializes only the new config shape", () => {
+    const config = createTwinnyConfig({
+      home: "/tmp/twinny",
+      homeRandom,
+      auth: { larkAppId: "cli_test", ownerOpenId: "ou_owner", displayName: "Owner" },
+      profiles: {
+        host: { codexHome: "/Users/tester/.codex" },
+        guest: {}
+      }
+    });
 
     const serialized = serializeTwinnyConfig(config);
 
-    expect(config.lark.queuedReaction).toBe("Alarm");
-    expect(config.lark.iconImageKey).toBe("img_logo");
-    expect(config.lark.messageRedaction).toEqual({ email: "whitespace", chinesePhoneNumber: "none" });
-    expect(serialized).not.toContain("event_key");
-    expect(serialized).not.toContain("agent_message_mode");
-    expect(serialized).not.toContain("token_ref");
-    expect(serialized).not.toContain("refresh_token_ref");
-    expect(serialized).toContain('queued_reaction = "Alarm"');
-    expect(serialized).toContain('icon_image_key = "img_logo"');
-    expect(serialized).toContain("[lark.redaction]");
-    expect(serialized).toContain('email = "whitespace"');
-    expect(serialized).toContain('chinese_phone_number = "none"');
+    expect(serialized).toContain("[profiles.host]");
+    expect(serialized).toContain("[profiles.guest]");
+    expect(serialized).toContain("[permissions]");
+    expect(serialized).not.toContain("[owner]");
+    expect(serialized).not.toContain("[roles");
+    expect(serialized).not.toContain("secret_ref");
   });
 
-  it("writes icon_image_key back into the lark section", async () => {
-    const home = await tempHome();
-    const config = createTwinnyConfig({
-      home,
-      lark: { appId: "cli_test" },
-      owner: {
-        openId: "ou_owner",
-        displayName: "Owner"
-      }
-    });
-
-    await bootstrapTwinnyHome(config, { ownerCodexTarget: path.join(home, ".codex") });
-    await writeLarkIconImageKey(config, "img_uploaded");
-    const raw = await fs.readFile(path.join(home, "config.toml"), "utf8");
-    const loaded = await loadTwinnyConfig({ home, env: {} });
-
-    expect(raw).toContain('icon_image_key = "img_uploaded"');
-    expect(loaded.lark.iconImageKey).toBe("img_uploaded");
-  });
-
-  it("creates the required role files and owner codex symlink", async () => {
-    const home = await tempHome();
-    const ownerCodexTarget = path.join(home, "real-owner-codex");
-    await fs.mkdir(path.join(ownerCodexTarget, "sessions"), { recursive: true });
-    await fs.writeFile(path.join(ownerCodexTarget, "auth.json"), "{}\n");
-
-    const config = createTwinnyConfig({
-      home,
-      lark: { appId: "cli_test" },
-      owner: {
-        openId: "ou_owner",
-        displayName: "Owner"
-      }
-    });
-
-    const result = await bootstrapTwinnyHome(config, { ownerCodexTarget });
-    const ownerLink = await fs.lstat(config.roles.owner.codexHome);
-    const guestAuthLink = await fs.lstat(path.join(config.roles.guest.codexHome, "auth.json"));
-    const guestSessionsLink = await fs.lstat(path.join(config.roles.guest.codexHome, "sessions"));
-    const guestConfig = await fs.readFile(path.join(config.roles.guest.codexHome, "config.toml"), "utf8");
-    const guestAgents = await fs.readFile(path.join(config.roles.guest.codexHome, "AGENTS.md"), "utf8");
-
-    expect(result.wroteConfig).toBe(true);
-    expect(result.createdGuestAuthSymlink).toBe(true);
-    expect(result.createdGuestSessionsSymlink).toBe(true);
-    expect(ownerLink.isSymbolicLink()).toBe(true);
-    expect(path.resolve(path.dirname(config.roles.owner.codexHome), await fs.readlink(config.roles.owner.codexHome))).toBe(
-      ownerCodexTarget
-    );
-    expect(guestAuthLink.isSymbolicLink()).toBe(true);
-    expect(
-      path.resolve(
-        config.roles.guest.codexHome,
-        await fs.readlink(path.join(config.roles.guest.codexHome, "auth.json"))
+  it("rejects old config fields instead of keeping compatibility", () => {
+    expect(() =>
+      parseTwinnyConfig(
+        [
+          "[lark]",
+          'app_id = "cli_test"',
+          'secret_ref = "keychain:twinny/lark/app_secret"',
+          "",
+          "[owner]",
+          'open_id = "ou_owner"',
+          "",
+          "[roles.guest]",
+          'codex_home = "/tmp/guest"'
+        ].join("\n"),
+        { home: "/tmp/twinny" }
       )
-    ).toBe(path.join(ownerCodexTarget, "auth.json"));
-    expect(guestSessionsLink.isSymbolicLink()).toBe(true);
-    expect(
-      path.resolve(
-        config.roles.guest.codexHome,
-        await fs.readlink(path.join(config.roles.guest.codexHome, "sessions"))
-      )
-    ).toBe(path.join(ownerCodexTarget, "sessions"));
-    expect(guestConfig).toContain('sandbox_mode = "workspace-write"');
-    expect(guestConfig).toContain('approval_policy = "never"');
-    expect(guestConfig).toContain('default_permissions = "twinny_guest"');
-    expect(guestConfig).toContain('":tmpdir" = "write"');
-    expect(guestConfig).toContain("allow_local_binding = true");
-    expect(guestConfig).toContain('inherit = "none"');
-    expect(guestAgents).toContain("Owner");
-    expect(guestAgents).toContain("ou_owner");
+    ).toThrow();
   });
 
-  it("reports incomplete config without treating it as complete", async () => {
+  it("reports missing auth.json and runtime/home-random as incomplete setup", async () => {
     const home = await tempHome();
     await fs.mkdir(home, { recursive: true });
-    await fs.writeFile(path.join(home, "config.toml"), "[lark]\napp_id = \"cli_test\"\n");
+    await fs.writeFile(path.join(home, "config.toml"), "[profiles.host]\ncodex_home = \"~/.codex\"\n[profiles.guest]\n");
 
     const status = await readConfigStatus({ home, env: {} });
 
     expect(status.exists).toBe(true);
     expect(status.complete).toBe(false);
-    expect(status.config?.lark.workingReaction).toBe("Typing");
-    expect(status.config?.lark.completedReaction).toBe("DONE");
-    expect(status.config?.lark.queuedReaction).toBe("OneSecond");
-    expect(status.config?.lark.maxMessageAgeSeconds).toBe(60);
-    expect(status.config?.lark.messageRedaction).toEqual({ email: "mask", chinesePhoneNumber: "mask" });
-    expect(status.issues).toContain("owner.open_id is required");
+    expect(status.issues).toContain("auth.json does not exist");
+    expect(status.issues).toContain("runtime/home-random does not exist");
   });
 });
 
 describe("secrets", () => {
-  it("resolves secrets through the SecretStore abstraction with env override for app_secret", async () => {
+  it("resolves the per-home lark app secret account with env override", async () => {
     const store = new MemorySecretStore();
-    await store.set(SECRET_ACCOUNTS.larkAppSecret, "from-store");
+    const account = `twinny.home.${homeRandom}.lark.app_secret`;
+    await store.set(account, "from-store");
 
-    await expect(resolveSecretRef(SECRET_REFS.larkAppSecret, store, {})).resolves.toBe("from-store");
-    await expect(resolveSecretRef(SECRET_REFS.larkAppSecret, store, { TWINNY_LARK_APP_SECRET: "from-env" })).resolves.toBe(
-      "from-env"
-    );
+    await expect(resolveLarkAppSecret(account, store, {})).resolves.toBe("from-store");
+    await expect(resolveLarkAppSecret(account, store, { TWINNY_LARK_APP_SECRET: "from-env" })).resolves.toBe("from-env");
   });
 });
 

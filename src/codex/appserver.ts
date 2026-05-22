@@ -2,8 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { execa } from "execa";
-import { ensureGuestWorkspaceProjectTrusted } from "../roles/index.js";
-import type { CodexThreadNameUpdate, RoleName } from "../types.js";
+import { ensureWorkspaceTrust } from "../roles/index.js";
+import type { CodexThreadNameUpdate, ProfileName } from "../types.js";
 import { CodexProtocolClient, createInitializeParams, type CodexNotificationMessage, type InitializeResponse } from "./protocol.js";
 import { parseCodexThreadNameUpdatedNotification } from "./thread-name.js";
 import {
@@ -38,7 +38,8 @@ import {
 } from "./turn.js";
 
 export interface CodexAppServerOptions {
-  role: RoleName;
+  profile?: ProfileName;
+  role?: ProfileName;
   binary: string;
   codexHome: string;
   cwd?: string;
@@ -48,14 +49,15 @@ export interface CodexAppServerOptions {
   stopTimeoutMs?: number;
 }
 
-export interface RoleCodexAppServerConfig {
-  role: RoleName;
+export interface ProfileCodexAppServerConfig {
+  profile: ProfileName;
   codexHome: string;
 }
 
-export interface RoleCodexAppServerPoolOptions {
+export interface ProfileCodexAppServerPoolOptions {
   binary: string;
-  roles: Record<RoleName, { codexHome: string }>;
+  profiles?: Record<ProfileName, { codexHome: string }>;
+  roles?: Record<ProfileName, { codexHome: string }>;
   requestTimeoutMs?: number;
   clientVersion?: string;
   env?: NodeJS.ProcessEnv;
@@ -146,7 +148,7 @@ export class CodexAppServer extends EventEmitter {
 
     const protocol = new CodexProtocolClient(child.stdout, child.stdin, {
       requestTimeoutMs: this.options.requestTimeoutMs,
-      requestIdPrefix: `twinny-${this.options.role}`
+      requestIdPrefix: `twinny-${this.profileName()}`
     });
     this.attachProtocolNotifications(protocol);
     this.child = child;
@@ -282,10 +284,15 @@ export class CodexAppServer extends EventEmitter {
   }
 
   private async prepareThreadWorkspace(cwd: string): Promise<void> {
-    if (this.options.role !== "guest") {
-      return;
+    await ensureWorkspaceTrust(this.options.codexHome, cwd);
+  }
+
+  private profileName(): ProfileName {
+    const profile = this.options.profile ?? this.options.role;
+    if (!profile) {
+      throw new Error("Codex app-server profile is required");
     }
-    await ensureGuestWorkspaceProjectTrusted(this.options.codexHome, cwd);
+    return profile;
   }
 
   private async readCodexBinaryVersionBestEffort(): Promise<string> {
@@ -303,17 +310,18 @@ export class CodexAppServer extends EventEmitter {
   }
 }
 
-export class RoleCodexAppServerPool {
-  private readonly servers = new Map<RoleName, CodexAppServer>();
+export class ProfileCodexAppServerPool {
+  private readonly servers = new Map<ProfileName, CodexAppServer>();
 
-  constructor(private readonly options: RoleCodexAppServerPoolOptions) {
-    for (const role of Object.keys(options.roles) as RoleName[]) {
+  constructor(private readonly options: ProfileCodexAppServerPoolOptions) {
+    const profiles = options.profiles ?? options.roles ?? {};
+    for (const profile of Object.keys(profiles)) {
       this.servers.set(
-        role,
+        profile,
         new CodexAppServer({
-          role,
+          profile,
           binary: options.binary,
-          codexHome: options.roles[role].codexHome,
+          codexHome: profiles[profile].codexHome,
           env: options.env,
           requestTimeoutMs: options.requestTimeoutMs,
           clientVersion: options.clientVersion
@@ -322,32 +330,61 @@ export class RoleCodexAppServerPool {
     }
   }
 
-  async startAll(): Promise<Record<RoleName, InitializeResponse>> {
-    const owner = this.get("owner").start();
-    const guest = this.get("guest").start();
-    const [ownerResponse, guestResponse] = await Promise.all([owner, guest]);
-    return {
-      owner: ownerResponse,
-      guest: guestResponse
-    };
+  async startAll(): Promise<Record<ProfileName, InitializeResponse>> {
+    const entries = await Promise.all(
+      Array.from(this.servers.entries(), async ([profile, server]) => [profile, await server.start()] as const)
+    );
+    return Object.fromEntries(entries);
   }
 
-  get(role: RoleName): CodexAppServer {
-    const server = this.servers.get(role);
+  get(profile: ProfileName): CodexAppServer {
+    const server = this.servers.get(profile);
     if (!server) {
-      throw new Error(`No Codex app-server configured for role ${role}`);
+      throw new Error(`No Codex app-server configured for profile ${profile}`);
     }
     return server;
   }
 
-  async restart(role: RoleName): Promise<InitializeResponse> {
-    return this.get(role).start();
+  listProfiles(): ProfileName[] {
+    return [...this.servers.keys()];
+  }
+
+  replace(profile: ProfileName, config: { binary?: string; codexHome: string }): CodexAppServer {
+    const server = new CodexAppServer({
+      profile,
+      binary: config.binary ?? this.options.binary,
+      codexHome: config.codexHome,
+      env: this.options.env,
+      requestTimeoutMs: this.options.requestTimeoutMs,
+      clientVersion: this.options.clientVersion
+    });
+    this.servers.set(profile, server);
+    return server;
+  }
+
+  async remove(profile: ProfileName, signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
+    const server = this.servers.get(profile);
+    if (!server) {
+      return;
+    }
+    this.servers.delete(profile);
+    await server.stop(signal);
+  }
+
+  async restart(profile: ProfileName): Promise<InitializeResponse> {
+    const server = this.get(profile);
+    await server.stop();
+    return server.start();
   }
 
   async stopAll(signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
     await Promise.all(Array.from(this.servers.values(), (server) => server.stop(signal)));
   }
 }
+
+export class RoleCodexAppServerPool extends ProfileCodexAppServerPool {}
+export type RoleCodexAppServerConfig = ProfileCodexAppServerConfig;
+export type RoleCodexAppServerPoolOptions = ProfileCodexAppServerPoolOptions;
 
 function hasExited(child: ChildProcessWithoutNullStreams): boolean {
   return child.exitCode !== null || child.signalCode !== null;

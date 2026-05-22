@@ -516,9 +516,13 @@ function formatConversationType(type: ConversationType): string {
 function formatResponseMode(mode: ConversationResponseMode): string {
   switch (mode) {
     case "all":
-      return "全部";
-    case "at":
-      return "仅 at";
+      return "全部用户，全部消息";
+    case "all_at":
+      return "全部用户，at 消息";
+    case "owner":
+      return "仅 owner，全部消息";
+    case "owner_at":
+      return "仅 owner，at 消息";
     case "none":
       return "未激活";
   }

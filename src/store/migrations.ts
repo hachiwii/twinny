@@ -15,7 +15,7 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 20;
+export const currentStoreSchemaVersion = 21;
 
 const initialMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const threadRolloutMigrationFile = fileURLToPath(new URL("../../migrations/0002_codex_thread_rollout.sql", import.meta.url));
@@ -37,6 +37,7 @@ const threadGoalStatusMigrationFile = fileURLToPath(new URL("../../migrations/00
 const larkMessageUsageMigrationFile = fileURLToPath(new URL("../../migrations/0018_lark_message_usage.sql", import.meta.url));
 const statusUsageIndexesMigrationFile = fileURLToPath(new URL("../../migrations/0019_status_usage_indexes.sql", import.meta.url));
 const mainThreadNamesMigrationFile = fileURLToPath(new URL("../../migrations/0020_main_thread_names.sql", import.meta.url));
+const profilesMigrationFile = fileURLToPath(new URL("../../migrations/0021_profiles.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -139,6 +140,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 20,
       name: "0020_main_thread_names",
       sql: fs.readFileSync(mainThreadNamesMigrationFile, "utf8")
+    },
+    {
+      version: 21,
+      name: "0021_profiles",
+      sql: fs.readFileSync(profilesMigrationFile, "utf8")
     }
   ];
 }
@@ -197,6 +203,9 @@ export function runStoreMigrations(db: Database.Database, options: RunMigrations
   if (appliedVersion >= 13) {
     removeConversationChatModeColumnIfPresent(db);
   }
+  if (appliedVersion >= 21) {
+    ensureProfileSchemaConsistency(db);
+  }
   return appliedVersion;
 }
 
@@ -224,6 +233,35 @@ function removeConversationChatModeColumnIfPresent(db: Database.Database): void 
   const columns = getTableColumns(db, "conversations");
   if (columns.has("chat_mode")) {
     db.exec("ALTER TABLE conversations DROP COLUMN chat_mode");
+  }
+}
+
+function ensureProfileSchemaConsistency(db: Database.Database): void {
+  if (tableExists(db, "conversations")) {
+    const conversationColumns = getTableColumns(db, "conversations");
+    if (conversationColumns.has("role") && !conversationColumns.has("profile")) {
+      db.exec("ALTER TABLE conversations RENAME COLUMN role TO profile");
+    }
+    const nextConversationColumns = getTableColumns(db, "conversations");
+    if (nextConversationColumns.has("role_codex_home") && !nextConversationColumns.has("profile_codex_home")) {
+      db.exec("ALTER TABLE conversations RENAME COLUMN role_codex_home TO profile_codex_home");
+    }
+    db.exec("DROP INDEX IF EXISTS idx_conversations_role");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_conversations_profile ON conversations(profile)");
+  }
+
+  if (tableExists(db, "threads")) {
+    const threadColumns = getTableColumns(db, "threads");
+    if (threadColumns.has("role") && !threadColumns.has("profile")) {
+      db.exec("ALTER TABLE threads RENAME COLUMN role TO profile");
+    }
+  }
+
+  if (tableExists(db, "users")) {
+    const userColumns = getTableColumns(db, "users");
+    if (userColumns.has("role") && !userColumns.has("profile")) {
+      db.exec("ALTER TABLE users RENAME COLUMN role TO profile");
+    }
   }
 }
 

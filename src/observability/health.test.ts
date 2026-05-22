@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTwinnyConfig, MemorySecretStore } from "../config/index.js";
-import { checkCaffeinateBinary, checkLarkBotOpenId, resolveDoctorSecretRef } from "./health.js";
+import { checkCaffeinateBinary, checkLarkBotOpenId, resolveDoctorLarkAppSecret } from "./health.js";
 
 describe("doctor health checks", () => {
   const tempDirs: string[] = [];
@@ -38,9 +38,10 @@ describe("doctor health checks", () => {
 
   it("keeps resolved secret values out of doctor detail", async () => {
     const store = new MemorySecretStore();
-    await store.set("custom.secret", "super-secret-value");
+    const account = "twinny.home.0123456789abcdef0123456789abcdef.lark.app_secret";
+    await store.set(account, "super-secret-value");
 
-    await expect(resolveDoctorSecretRef("keychain:twinny/custom/secret", store)).resolves.toEqual({
+    await expect(resolveDoctorLarkAppSecret(account, store)).resolves.toEqual({
       value: "super-secret-value",
       detail: "present"
     });
@@ -49,8 +50,8 @@ describe("doctor health checks", () => {
   it("checks Lark bot open_id through a separate doctor item", async () => {
     const config = createTwinnyConfig({
       home: fs.mkdtempSync(path.join(os.tmpdir(), "twinny-bot-check-")),
-      lark: { appId: "cli_app" },
-      owner: { openId: "ou_owner", displayName: "Owner User" }
+      homeRandom: "0123456789abcdef0123456789abcdef",
+      auth: { larkAppId: "cli_app", ownerOpenId: "ou_owner", displayName: "Owner User" }
     });
     tempDirs.push(config.home);
     const getBotOpenId = vi.fn(async () => "ou_bot");
@@ -62,8 +63,8 @@ describe("doctor health checks", () => {
   it("fails the Lark bot open_id check when the API response is empty", async () => {
     const config = createTwinnyConfig({
       home: fs.mkdtempSync(path.join(os.tmpdir(), "twinny-bot-check-empty-")),
-      lark: { appId: "cli_app" },
-      owner: { openId: "ou_owner", displayName: "Owner User" }
+      homeRandom: "0123456789abcdef0123456789abcdef",
+      auth: { larkAppId: "cli_app", ownerOpenId: "ou_owner", displayName: "Owner User" }
     });
     tempDirs.push(config.home);
 

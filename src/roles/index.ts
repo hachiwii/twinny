@@ -1,18 +1,26 @@
-import type { RoleName, TwinnyConfig } from "../types.js";
+import { GUEST_PROFILE_NAME, HOST_PROFILE_NAME, type ProfileName, type TwinnyConfig } from "../types.js";
 
-export function resolveRoleForSender(senderOpenId: string, ownerOpenId: string): RoleName {
-  return senderOpenId === ownerOpenId ? "owner" : "guest";
+export function defaultProfileForSender(senderOpenId: string, ownerOpenId: string): ProfileName {
+  return senderOpenId === ownerOpenId ? HOST_PROFILE_NAME : GUEST_PROFILE_NAME;
 }
 
-export function getRoleCodexHome(config: TwinnyConfig, role: RoleName): string {
-  return config.roles[role].codexHome;
+export function getProfileCodexHome(config: TwinnyConfig, profile: ProfileName): string {
+  const resolved = config.profiles[profile];
+  if (!resolved) {
+    throw new Error(`Unknown Twinny profile: ${profile}`);
+  }
+  return resolved.codexHome;
 }
+
+export const resolveRoleForSender = defaultProfileForSender;
+export const getRoleCodexHome = getProfileCodexHome;
 
 export { defaultOwnerCodexTarget } from "./owner.js";
 export {
   createGuestCodexConfigDocument,
   DEFAULT_GUEST_CODEX_MODEL,
-  ensureGuestWorkspaceProjectTrusted,
+  ensureWorkspaceTrust,
+  ensureWorkspaceTrust as ensureGuestWorkspaceProjectTrusted,
   renderGuestAgents,
   serializeGuestCodexConfig,
   validateGuestCodexConfigDocument,

@@ -1,4 +1,4 @@
-import type { ConversationType, RoleName, TwinnyConfig } from "../types.js";
+import { GUEST_PROFILE_NAME, HOST_PROFILE_NAME, type ConversationType, type ProfileName, type TwinnyConfig } from "../types.js";
 import { TwinnyError } from "../errors.js";
 
 const unsafeConversationKey = /(^$|\/)/;
@@ -31,9 +31,11 @@ export function validateConversationKey(conversationKey: string): void {
   }
 }
 
-export function roleForSender(config: TwinnyConfig, senderOpenId: string): RoleName {
-  return senderOpenId === config.owner.openId ? "owner" : "guest";
+export function profileForSender(config: TwinnyConfig, senderOpenId: string): ProfileName {
+  return senderOpenId === config.owner.openId ? HOST_PROFILE_NAME : GUEST_PROFILE_NAME;
 }
+
+export const roleForSender = profileForSender;
 
 export function conversationTypeForChat(chatType: string): ConversationType | null {
   switch (chatType.toLowerCase()) {

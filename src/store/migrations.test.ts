@@ -41,10 +41,10 @@ describe("store migrations", () => {
         { name: "type", type: "TEXT", notnull: 1, pk: 0 },
         { name: "chat_id", type: "TEXT", notnull: 1, pk: 0 },
         { name: "name", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "role", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "profile", type: "TEXT", notnull: 1, pk: 0 },
         { name: "thread_id", type: "TEXT", notnull: 1, pk: 0 },
         { name: "workspace", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "role_codex_home", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "profile_codex_home", type: "TEXT", notnull: 1, pk: 0 },
         { name: "created_at", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "response_mode", type: "TEXT", notnull: 1, pk: 0 }
@@ -57,7 +57,7 @@ describe("store migrations", () => {
         .all()
         .map((row) => row.name);
       expect(indexes).toEqual([
-        "idx_conversations_role",
+        "idx_conversations_profile",
         "idx_conversations_thread_id",
         "idx_conversations_type_chat_id",
         "sqlite_autoindex_conversations_1"
@@ -74,7 +74,7 @@ describe("store migrations", () => {
         { name: "thread_id", type: "TEXT", notnull: 1, pk: 0 },
         { name: "conversation_key", type: "TEXT", notnull: 1, pk: 0 },
         { name: "lark_thread_id", type: "TEXT", notnull: 0, pk: 0 },
-        { name: "role", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "profile", type: "TEXT", notnull: 1, pk: 0 },
         { name: "forked_from_thread_id", type: "TEXT", notnull: 0, pk: 0 },
         { name: "forked_at", type: "INTEGER", notnull: 0, pk: 0 },
         { name: "total_tokens", type: "INTEGER", notnull: 1, pk: 0 },
@@ -350,10 +350,10 @@ describe("store migrations", () => {
           'project',
           'oc_project',
           'Legacy Project',
-          'owner',
+          'host',
           'thread_project',
           '/tmp/twinny/workspaces/group_oc_project',
-          '/tmp/twinny/roles/owner/codex',
+          '/tmp/twinny/roles/host/codex',
           100,
           100,
           'all',
@@ -394,7 +394,7 @@ describe("store migrations", () => {
           created_at,
           updated_at,
           response_mode
-        ) VALUES (?, 'group', ?, ?, 'owner', ?, ?, ?, ?, 1000, 1000, 'at')
+        ) VALUES (?, 'group', ?, ?, 'host', ?, ?, ?, ?, 1000, 1000, 'at')
       `).run(
         "group_oc_main_started",
         "oc_main_started",
@@ -402,7 +402,7 @@ describe("store migrations", () => {
         "thread_main_started",
         1,
         "/tmp/workspaces/group_oc_main_started",
-        "/tmp/roles/owner/codex"
+        "/tmp/roles/host/codex"
       );
       db.prepare(`
         INSERT INTO conversations (
@@ -418,7 +418,7 @@ describe("store migrations", () => {
           created_at,
           updated_at,
           response_mode
-        ) VALUES (?, 'group', ?, ?, 'owner', ?, ?, ?, ?, 1000, 1000, 'at')
+        ) VALUES (?, 'group', ?, ?, 'host', ?, ?, ?, ?, 1000, 1000, 'at')
       `).run(
         "group_oc_main_empty",
         "oc_main_empty",
@@ -426,7 +426,7 @@ describe("store migrations", () => {
         "thread_main_empty",
         0,
         "/tmp/workspaces/group_oc_main_empty",
-        "/tmp/roles/owner/codex"
+        "/tmp/roles/host/codex"
       );
       db.prepare(`
         INSERT INTO threads (
@@ -439,7 +439,7 @@ describe("store migrations", () => {
           created_at,
           updated_at
         ) VALUES (?, ?, NULL, ?, 0, '{}', 1000, 1000)
-      `).run("thread_main_started", "group_oc_main_started", "owner");
+      `).run("thread_main_started", "group_oc_main_started", "host");
       db.prepare(`
         INSERT INTO threads (
           thread_id,
@@ -451,7 +451,7 @@ describe("store migrations", () => {
           created_at,
           updated_at
         ) VALUES (?, ?, NULL, ?, 0, '{}', 1000, 1000)
-      `).run("thread_main_empty", "group_oc_main_empty", "owner");
+      `).run("thread_main_empty", "group_oc_main_empty", "host");
       db.prepare(`
         INSERT INTO threads (
           thread_id,
@@ -463,7 +463,7 @@ describe("store migrations", () => {
           created_at,
           updated_at
         ) VALUES (?, ?, ?, ?, 0, '{}', 1000, 1000)
-      `).run("thread_empty", "group_oc_group", "topic_empty", "owner");
+      `).run("thread_empty", "group_oc_group", "topic_empty", "host");
       db.prepare(`
         INSERT INTO threads (
           thread_id,
@@ -475,7 +475,7 @@ describe("store migrations", () => {
           created_at,
           updated_at
         ) VALUES (?, ?, ?, ?, 0, '{}', 1000, 1000)
-      `).run("thread_started", "group_oc_group", "topic_started", "owner");
+      `).run("thread_started", "group_oc_group", "topic_started", "host");
       db.prepare(`
         INSERT INTO lark_messages (
           lark_message_id,
@@ -491,7 +491,7 @@ describe("store migrations", () => {
           updated_at,
           processing_started_at
         ) VALUES (?, ?, ?, ?, ?, ?, 'message', 'completed', 'hello', 1100, 1100, 1100)
-      `).run("om_started", "event_started", "ou_owner", "group_oc_group", "thread_started", "turn_1");
+      `).run("om_started", "event_started", "ou_host", "group_oc_group", "thread_started", "turn_1");
 
       expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
       const conversationColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(conversations)").all();
@@ -533,14 +533,14 @@ describe("store migrations", () => {
           created_at,
           updated_at,
           response_mode
-        ) VALUES (?, 'group', ?, ?, 'owner', ?, ?, ?, 1000, 1000, 'all')
+        ) VALUES (?, 'group', ?, ?, 'host', ?, ?, ?, 1000, 1000, 'all')
       `).run(
         "group_oc_main_name",
         "oc_main_name",
         "Main Name",
         "thread_main_name",
         "/tmp/workspaces/group_oc_main_name",
-        "/tmp/roles/owner/codex"
+        "/tmp/roles/host/codex"
       );
       db.prepare(`
         INSERT INTO threads (
@@ -553,7 +553,7 @@ describe("store migrations", () => {
           token_usage_json,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, 'owner', 0, '{}', 1000, 1000)
+        ) VALUES (?, ?, ?, ?, 'host', 0, '{}', 1000, 1000)
       `).run("thread_main_name", "group_oc_main_name", "旧主会话标题", null);
       db.prepare(`
         INSERT INTO threads (
@@ -566,7 +566,7 @@ describe("store migrations", () => {
           token_usage_json,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, 'owner', 0, '{}', 1000, 1000)
+        ) VALUES (?, ?, ?, ?, 'host', 0, '{}', 1000, 1000)
       `).run("thread_topic_name", "group_oc_main_name", "分支标题", "topic_1");
 
       expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
@@ -596,10 +596,10 @@ describe("store migrations", () => {
           type TEXT NOT NULL,
           chat_id TEXT NOT NULL,
           name TEXT NOT NULL,
-          role TEXT NOT NULL,
+          profile TEXT NOT NULL,
           codex_thread_id TEXT NOT NULL,
           workspace TEXT NOT NULL,
-          role_codex_home TEXT NOT NULL,
+          profile_codex_home TEXT NOT NULL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
           codex_thread_has_rollout INTEGER NOT NULL DEFAULT 1
@@ -608,7 +608,7 @@ describe("store migrations", () => {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           lark_user_id TEXT NOT NULL UNIQUE,
           name TEXT NOT NULL DEFAULT '',
-          role TEXT NOT NULL DEFAULT 'guest',
+          profile TEXT NOT NULL DEFAULT 'guest',
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
           last_seen_at INTEGER NOT NULL
@@ -618,7 +618,7 @@ describe("store migrations", () => {
           codex_thread_id TEXT NOT NULL UNIQUE,
           conversation_key TEXT NOT NULL,
           lark_thread_id TEXT,
-          role TEXT NOT NULL,
+          profile TEXT NOT NULL,
           forked_from_codex_thread_id TEXT,
           forked_at INTEGER,
           total_tokens INTEGER NOT NULL DEFAULT 0,
@@ -649,14 +649,14 @@ describe("store migrations", () => {
           raw_event_json TEXT
         );
         INSERT INTO conversations (
-          conversation_key, type, chat_id, name, role, codex_thread_id,
-          workspace, role_codex_home, created_at, updated_at, codex_thread_has_rollout
+          conversation_key, type, chat_id, name, profile, codex_thread_id,
+          workspace, profile_codex_home, created_at, updated_at, codex_thread_has_rollout
         ) VALUES (
           'p2p_ou_user', 'p2p', 'ou_user', '', 'guest', 'thread-1',
-          '/tmp/workspaces/p2p_ou_user', '/tmp/roles/guest/codex', 1, 1, 1
+          '/tmp/workspaces/p2p_ou_user', '/tmp/profiles/guest/codex', 1, 1, 1
         );
         INSERT INTO users (
-          lark_user_id, name, role, created_at, updated_at, last_seen_at
+          lark_user_id, name, profile, created_at, updated_at, last_seen_at
         ) VALUES (
           'ou_user', 'Stored User', 'guest', 1, 1, 1
         );
@@ -690,10 +690,10 @@ describe("store migrations", () => {
           type TEXT NOT NULL,
           chat_id TEXT NOT NULL,
           name TEXT NOT NULL,
-          role TEXT NOT NULL,
+          profile TEXT NOT NULL,
           codex_thread_id TEXT NOT NULL,
           workspace TEXT NOT NULL,
-          role_codex_home TEXT NOT NULL,
+          profile_codex_home TEXT NOT NULL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
           codex_thread_has_rollout INTEGER NOT NULL DEFAULT 1
@@ -703,7 +703,7 @@ describe("store migrations", () => {
           codex_thread_id TEXT NOT NULL UNIQUE,
           conversation_key TEXT NOT NULL,
           lark_thread_id TEXT,
-          role TEXT NOT NULL,
+          profile TEXT NOT NULL,
           forked_from_codex_thread_id TEXT,
           forked_at INTEGER,
           total_tokens INTEGER NOT NULL DEFAULT 0,

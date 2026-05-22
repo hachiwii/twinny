@@ -536,6 +536,10 @@ export interface RoleHomeResolver {
   codexHomeFor(role: RoleName): string;
 }
 
+export interface RuntimeControlBridge {
+  reloadProfile(profile?: RoleName): Promise<void>;
+}
+
 export interface ConversationManagerOptions {
   config: TwinnyConfig;
   repository: ConversationRepository;
@@ -552,6 +556,7 @@ export interface ConversationManagerOptions {
     bannerImageKey?: string;
   };
   roles: RoleHomeResolver;
+  runtime?: RuntimeControlBridge;
   logger?: Logger;
   nameLookupFailureTtlMs?: number;
 }
@@ -753,6 +758,8 @@ type ParsedCommand =
   | { kind: "thread"; text: string }
   | { kind: "fork"; text: string }
   | { kind: "activate"; text: string }
+  | { kind: "pair"; text: string }
+  | { kind: "reload"; text: string }
   | { kind: "deactivate" }
   | { kind: "help" };
 
@@ -1010,7 +1017,7 @@ export class ConversationManager {
 
   async probeUnfinishedMessages(): Promise<ConversationRecoveryProbeSnapshot> {
     const records = await this.options.repository.listUnfinishedLarkMessages();
-    const roles: Record<RoleName, number> = { owner: 0, guest: 0 };
+    const roles: Record<RoleName, number> = {};
     const failures: ConversationRecoveryProbeFailure[] = [];
     let queuedMessages = 0;
     let processingMessages = 0;
@@ -1030,7 +1037,7 @@ export class ConversationManager {
 
       try {
         const role = await this.roleForRecoverableRecord(record, context);
-        roles[role] += 1;
+        roles[role] = (roles[role] ?? 0) + 1;
         const raw = parseStoredRawEvent(record.rawEventJson);
         const normalized = normalizeIncomingLarkMessage(raw) ?? recoverLarkMessageFromRecord(record, context);
         if (!normalized) {
@@ -1258,7 +1265,7 @@ export class ConversationManager {
       type: context.type,
       chatId: context.type === "p2p" ? message.senderOpenId : message.chatId,
       name: conversationNameForMessage(this.options.config, role, message),
-      responseMode: context.type === "p2p" ? "all" : "at",
+      responseMode: context.type === "p2p" ? "all" : "all_at",
       role,
       codexThreadId: threadId,
       workspace,
@@ -1456,6 +1463,18 @@ export class ConversationManager {
     const parsed = routed.parsed;
     if (parsed.kind === "activate") {
       await this.handleActivateCommand(state, context, message, parsed.text);
+      return;
+    }
+    if (parsed.kind === "pair") {
+      await this.handlePairCommand(state, context, message, parsed.text);
+      return;
+    }
+    if (parsed.kind === "reload") {
+      await this.handleReloadCommand(state, context, message, parsed.text);
+      return;
+    }
+
+    if (await this.rejectUnauthorizedP2pBestEffort(context, message)) {
       return;
     }
 
@@ -1857,10 +1876,12 @@ export class ConversationManager {
       return { kind: "allow", text, parsed };
     }
 
-    const senderRole = roleForSender(this.options.config, message.senderOpenId);
+    const senderRole = this.profileForNewConversation(context, message);
     const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
     const isInactiveGroupCommandAllowed =
-      parsed.kind === "thread" || parsed.kind === "fork" || (parsed.kind === "activate" && senderRole === "owner");
+      parsed.kind === "thread" ||
+      parsed.kind === "fork" ||
+      ((parsed.kind === "activate" || parsed.kind === "pair" || parsed.kind === "reload") && senderRole === "host");
     if (!conversation || conversation.responseMode === "none") {
       if (isInactiveGroupCommandAllowed) {
         return { kind: "allow", text, parsed, conversation };
@@ -1868,15 +1889,45 @@ export class ConversationManager {
       return hasBotMention ? { kind: "unauthorized" } : { kind: "ignored" };
     }
 
+    if (groupResponseModeRequiresOwner(conversation.responseMode) && senderRole !== "host") {
+      return { kind: "ignored" };
+    }
+
     if (
-      conversation.responseMode === "at" &&
+      groupResponseModeRequiresMention(conversation.responseMode) &&
       !hasBotMention &&
       parsed.kind !== "thread" &&
-      parsed.kind !== "fork"
+      parsed.kind !== "fork" &&
+      parsed.kind !== "pair" &&
+      parsed.kind !== "reload"
     ) {
       return { kind: "ignored" };
     }
     return { kind: "allow", text, parsed, conversation };
+  }
+
+  private async rejectUnauthorizedP2pBestEffort(
+    context: MessageContext,
+    message: IncomingLarkMessage
+  ): Promise<boolean> {
+    if (context.type !== "p2p") {
+      return false;
+    }
+    if (message.senderOpenId === this.options.config.owner.openId) {
+      return false;
+    }
+    const existing = await this.options.repository.findByConversationKey(context.conversationKey);
+    if (existing) {
+      return false;
+    }
+    if (this.options.config.permissions.p2pDefaultProfile !== "none") {
+      return false;
+    }
+    await this.replyControlBestEffort(
+      message.messageId,
+      `访问未获授权，联系 owner @${this.options.config.owner.openId}，请他在任意 Twinny 会话中发送 /pair ${message.senderOpenId} <profile> 授权`
+    );
+    return true;
   }
 
   private async resolveSenderName(
@@ -1940,7 +1991,7 @@ export class ConversationManager {
 
     const senderRole = roleForSender(this.options.config, message.senderOpenId);
     const existing = await this.options.repository.findByConversationKey(context.conversationKey);
-    if (senderRole !== "owner") {
+    if (senderRole !== "host") {
       if (existing && existing.responseMode !== "none") {
         await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
         await this.replyControlBestEffort(message.messageId, "只有 owner 可以激活群聊。");
@@ -1959,11 +2010,18 @@ export class ConversationManager {
       return;
     }
 
+    if (parsed.role && !this.options.config.profiles[parsed.role]) {
+      await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
+      await this.replyControlBestEffort(message.messageId, `未知 profile：${parsed.role}`);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
     if (existing && parsed.role && existing.role !== parsed.role) {
       await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
       await this.replyControlBestEffort(
         message.messageId,
-        `该群已绑定 role=${existing.role}，本期不支持修改为 ${parsed.role}。`
+        `该群已绑定 profile=${existing.role}，本期不支持修改为 ${parsed.role}。`
       );
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
@@ -2010,9 +2068,109 @@ export class ConversationManager {
       [
         `已激活群聊：${groupInfo.name}`,
         `响应模式：${parsed.responseMode}`,
-        `Role：${role}`
+        `Profile：${role}`
       ].filter(Boolean).join("\n")
     );
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async handlePairCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    await this.recordIncomingMessage(state, context, message, { kind: "pair", text });
+    if (roleForSender(this.options.config, message.senderOpenId) !== "host") {
+      await this.replyControlBestEffort(message.messageId, "只有 owner 可以授权 /pair。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const parsed = parsePairCommand(text);
+    if (parsed.kind === "invalid") {
+      await this.replyControlBestEffort(message.messageId, parsed.message);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (!this.options.config.profiles[parsed.profile]) {
+      await this.replyControlBestEffort(message.messageId, `未知 profile：${parsed.profile}`);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const conversationKey = conversationKeyForP2p(parsed.guestOpenId);
+    const existing = await this.options.repository.findByConversationKey(conversationKey);
+    if (existing) {
+      await this.replyControlBestEffort(message.messageId, `用户 ${parsed.guestOpenId} 已存在 conversation。`);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const workspace = await this.options.workspaces.ensureWorkspace(conversationKey);
+    const thread = await this.options.codex.startThread({
+      role: parsed.profile,
+      cwd: workspace,
+      approvalPolicy: "never",
+      developerInstructions: twinnyThreadDeveloperInstructions(
+        this.options.config,
+        { type: "p2p", conversationKey, stateKey: conversationKey },
+        { mainThread: true }
+      )
+    });
+    await this.options.repository.create({
+      conversationKey,
+      type: "p2p",
+      chatId: parsed.guestOpenId,
+      name: parsed.guestOpenId,
+      responseMode: "all",
+      role: parsed.profile,
+      codexThreadId: thread.threadId,
+      workspace,
+      roleCodexHome: this.options.roles.codexHomeFor(parsed.profile)
+    });
+    await this.recordCodexThreadBestEffort({
+      conversationKey,
+      codexThreadId: thread.threadId,
+      role: parsed.profile,
+      name: MAIN_THREAD_NAME,
+      codexThreadHasRollout: false
+    });
+    await this.replyControlBestEffort(message.messageId, `已授权 ${parsed.guestOpenId} 使用 profile=${parsed.profile}。`);
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async handleReloadCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    await this.recordIncomingMessage(state, context, message, { kind: "reload", text });
+    if (roleForSender(this.options.config, message.senderOpenId) !== "host") {
+      await this.replyControlBestEffort(message.messageId, "只有 owner 可以执行 /reload。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (!this.options.runtime?.reloadProfile) {
+      await this.replyControlBestEffort(message.messageId, "当前运行环境不支持 /reload。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    const profile = normalizeCommandProfileName(text);
+    if (profile === "none") {
+      await this.replyControlBestEffort(message.messageId, "profile none 为保留名，不能 reload。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    try {
+      await this.options.runtime.reloadProfile(profile);
+    } catch (error) {
+      await this.replyControlBestEffort(message.messageId, toErrorMessage(error));
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    await this.replyControlBestEffort(message.messageId, profile ? `已 reload profile=${profile}。` : "已 reload 全部 profiles。");
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
@@ -2489,7 +2647,7 @@ export class ConversationManager {
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
-    if (roleForSender(this.options.config, message.senderOpenId) !== "owner") {
+    if (roleForSender(this.options.config, message.senderOpenId) !== "host") {
       await this.replyControlBestEffort(message.messageId, "只有 owner 可以停用群聊。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
@@ -2972,11 +3130,11 @@ export class ConversationManager {
     const activeConversationDurationMs = state.active && state.active.conversationKey === context.conversationKey && state.active.completedStatus === undefined
       ? Date.now() - state.active.startedAt
       : 0;
-    const system = role === "owner"
+    const system = role === "host"
       ? {
           twinnyVersion: TWINNY_VERSION,
           codexVersion: await this.readCodexVersionBestEffort(role),
-          larkAppId: this.options.config.lark.appId,
+          larkAppId: this.options.config.auth.larkAppId,
           ...(await this.formatOwnerRateLimitCardStatus(role))
         }
       : undefined;
@@ -3046,7 +3204,7 @@ export class ConversationManager {
       lines.push(
         `Chat Name: ${conversation?.name ?? actor.chatName ?? actor.chatId ?? context.conversationKey}`,
         `Response Mode: ${conversation?.responseMode ?? "none"}`,
-        `Role: ${conversation?.role ?? "未创建"}`,
+        `Profile: ${conversation?.role ?? "未创建"}`,
         `Workspace: ${conversation?.workspace ?? "未创建"}`
       );
       if (context.larkThreadId) {
@@ -3061,7 +3219,7 @@ export class ConversationManager {
       ...formatThreadTokenStatus(thread)
     );
 
-    if (role === "owner") {
+    if (role === "host") {
       lines.push(...(await this.formatOwnerRateLimitStatus(role)));
     }
 
@@ -3561,7 +3719,7 @@ export class ConversationManager {
         type: context.type,
         chatId: context.type === "p2p" ? message.senderOpenId : message.chatId,
         name: conversationNameForMessage(this.options.config, role, message),
-        responseMode: context.type === "p2p" ? "all" : "at",
+        responseMode: context.type === "p2p" ? "all" : "all_at",
         role,
         codexThreadId: thread.threadId,
         workspace,
@@ -4254,6 +4412,16 @@ export class ConversationManager {
       replacedMissingThread: activeThread.replacedMissingThread,
       previousThreadId: activeThread.previousThreadId
     };
+  }
+
+  private profileForNewConversation(context: MessageContext, message: IncomingLarkMessage): RoleName {
+    if (message.senderOpenId === this.options.config.owner.openId) {
+      return "host";
+    }
+    if (context.type === "p2p" && this.options.config.permissions.p2pDefaultProfile !== "none") {
+      return this.options.config.permissions.p2pDefaultProfile;
+    }
+    return "guest";
   }
 
   private async beginActiveTurn(
@@ -5142,7 +5310,7 @@ export class ConversationManager {
   }
 
   private logoImageKey(): string | undefined {
-    return this.options.assetImageKeys ? this.options.assetImageKeys.logoImageKey : this.options.config.lark.iconImageKey;
+    return this.options.assetImageKeys?.logoImageKey;
   }
 
   private bannerImageKey(): string | undefined {
@@ -5527,7 +5695,7 @@ export class ConversationManager {
       type: params.type,
       chatId: params.type === "p2p" ? params.message.senderOpenId : params.message.chatId,
       name: conversationNameForMessage(this.options.config, params.role, params.message),
-      responseMode: params.type === "p2p" ? "all" : "at",
+      responseMode: params.type === "p2p" ? "all" : "all_at",
       role: params.role,
       codexThreadId: thread.threadId,
       workspace: params.workspace,
@@ -7056,6 +7224,12 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "activate") {
     return { kind: "activate", text: rest };
   }
+  if (command === "pair") {
+    return { kind: "pair", text: rest };
+  }
+  if (command === "reload") {
+    return { kind: "reload", text: rest };
+  }
   if (command === "deactivate") {
     return { kind: "deactivate" };
   }
@@ -7417,6 +7591,8 @@ function parsedCommandTitleText(command: ParsedCommand): string | undefined {
     command.kind === "plan" ||
     command.kind === "stop" ||
     command.kind === "activate" ||
+    command.kind === "pair" ||
+    command.kind === "reload" ||
     command.kind === "thread" ||
     command.kind === "fork"
   ) {
@@ -7461,21 +7637,47 @@ function goalResourceLabel(
 function parseActivateCommand(
   text: string
 ): { kind: "valid"; responseMode: Exclude<ConversationResponseMode, "none">; role?: RoleName } | { kind: "invalid"; message: string } {
-  let responseMode: Exclude<ConversationResponseMode, "none"> = "at";
-  let role: RoleName | undefined;
-  const tokens = text.split(/\s+/).map((token) => token.trim().toLowerCase()).filter(Boolean);
-  for (const token of tokens) {
-    if (token === "all" || token === "at") {
-      responseMode = token;
-      continue;
-    }
-    if (token === "guest" || token === "owner") {
-      role = token;
-      continue;
-    }
-    return { kind: "invalid", message: "用法：/activate [all|at] [guest|owner]" };
+  const tokens = text.split(/\s+/).map((token) => token.trim()).filter(Boolean);
+  const mode = tokens[0]?.toLowerCase();
+  if (mode !== "owner_at" && mode !== "owner" && mode !== "all_at" && mode !== "all") {
+    return { kind: "invalid", message: "用法：/activate <owner_at|owner|all_at|all> [profile]" };
   }
-  return { kind: "valid", responseMode, role };
+  if (tokens.length > 2) {
+    return { kind: "invalid", message: "用法：/activate <owner_at|owner|all_at|all> [profile]" };
+  }
+  const profile = tokens[1];
+  if (profile === "none") {
+    return { kind: "invalid", message: "profile none 为保留名，不能用于 /activate。" };
+  }
+  return { kind: "valid", responseMode: mode, role: profile };
+}
+
+function parsePairCommand(text: string): { kind: "valid"; guestOpenId: string; profile: RoleName } | { kind: "invalid"; message: string } {
+  const tokens = text.split(/\s+/).map((token) => token.trim()).filter(Boolean);
+  if (tokens.length !== 2) {
+    return { kind: "invalid", message: "用法：/pair {guest_ou_id} <profile>" };
+  }
+  const [guestOpenId, profile] = tokens as [string, string];
+  if (!guestOpenId.startsWith("ou_")) {
+    return { kind: "invalid", message: "guest_ou_id 必须是 Lark open_id。" };
+  }
+  if (profile === "none") {
+    return { kind: "invalid", message: "profile none 为保留名，不能用于 /pair。" };
+  }
+  return { kind: "valid", guestOpenId, profile };
+}
+
+function normalizeCommandProfileName(text: string): RoleName | undefined {
+  const trimmed = text.trim();
+  return trimmed || undefined;
+}
+
+function groupResponseModeRequiresMention(mode: ConversationResponseMode): boolean {
+  return mode === "owner_at" || mode === "all_at";
+}
+
+function groupResponseModeRequiresOwner(mode: ConversationResponseMode): boolean {
+  return mode === "owner_at" || mode === "owner";
 }
 
 function createMessageContext(type: ConversationType, message: IncomingLarkMessage): MessageContext {
@@ -7971,9 +8173,9 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/thread [message] - 创建新话题",
     "/fork [message] - 从当前 Codex thread fork 出新话题"
   ];
-  if (isGroupConversationType(context.type) && roleForSender(config, message.senderOpenId) === "owner") {
+  if (isGroupConversationType(context.type) && roleForSender(config, message.senderOpenId) === "host") {
     lines.push(
-      "/activate [all|at] [guest|owner] - 激活群聊、设置响应模式并刷新群名",
+      "/activate <owner_at|owner|all_at|all> [profile] - 激活群聊、设置响应模式并刷新群名",
       "/deactivate - 停用当前群聊"
     );
   }
@@ -8058,6 +8260,8 @@ function classifyInitialRoute(
     parsed.kind === "thread" ||
     parsed.kind === "fork" ||
     parsed.kind === "activate" ||
+    parsed.kind === "pair" ||
+    parsed.kind === "reload" ||
     parsed.kind === "deactivate" ||
     parsed.kind === "queue" ||
     parsed.kind === "logo" ||
@@ -9339,7 +9543,7 @@ function conversationNameForMessage(config: TwinnyConfig, role: RoleName, messag
   if (message.chatType === "group" || message.chatType === "topic_group") {
     return message.chatName?.trim() || message.chatId;
   }
-  if (role === "owner") {
+  if (role === "host") {
     return config.owner.displayName.trim() || message.senderName?.trim() || message.senderOpenId;
   }
   return message.senderName?.trim() || message.senderOpenId;

@@ -12,6 +12,7 @@ import type {
   IncomingLarkBotMenuAction,
   IncomingLarkMessage,
   LarkMessageRecord,
+  ProfileName,
   TwinnyConfig
 } from "../types.js";
 import {
@@ -27,11 +28,8 @@ import {
 
 const config: TwinnyConfig = {
   home: "/tmp/twinny",
-  codex: { binary: "codex", appServerListen: "stdio://" },
+  codex: { binary: "codex" },
   lark: {
-    appId: "cli_xxx",
-    appSecretRef: "keychain:twinny/lark/app_secret",
-    identity: "bot",
     workingReaction: "Typing",
     completedReaction: "DONE",
     queuedReaction: "OneSecond",
@@ -41,10 +39,19 @@ const config: TwinnyConfig = {
       chinesePhoneNumber: "mask"
     }
   },
+  auth: { larkAppId: "cli_xxx", ownerOpenId: "ou_owner", displayName: "Owner" },
+  homeIdentity: {
+    random: "0123456789abcdef0123456789abcdef",
+    telemetryHashSalt: "0123456789abcdef0123456789abcdef",
+    keychainAccounts: {
+      larkAppSecret: "twinny.home.0123456789abcdef0123456789abcdef.lark.app_secret"
+    }
+  },
+  permissions: { p2pDefaultProfile: "guest" },
   owner: { openId: "ou_owner", displayName: "Owner" },
-  roles: {
-    owner: { codexHome: "/tmp/twinny/roles/owner/codex" },
-    guest: { codexHome: "/tmp/twinny/roles/guest/codex" }
+  profiles: {
+    host: { codexHome: "/tmp/twinny/profiles/host/codex", defaultModel: "gpt-5.5", defaultEffort: "medium" },
+    guest: { codexHome: "/tmp/twinny/profiles/guest/codex", defaultModel: "gpt-5.5", defaultEffort: "medium" }
   }
 };
 
@@ -456,7 +463,7 @@ describe("ConversationManager", () => {
   });
 
   it("applies a Codex thread name update that arrives before the thread card is stored", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
     const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_pending_name" })) });
     const lark = createLarkResponder();
@@ -486,7 +493,7 @@ describe("ConversationManager", () => {
     expect(repository.updateCodexThreadCard).toHaveBeenCalledWith({
       conversationKey: "group_oc_group",
       codexThreadId: "thread_pending_name",
-      role: "owner",
+      role: "host",
       name: "Codex 生成标题",
       creatorOpenId: "ou_guest"
     });
@@ -496,7 +503,7 @@ describe("ConversationManager", () => {
     expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
       conversationKey: "group_oc_group",
       codexThreadId: "thread_pending_name",
-      role: "owner",
+      role: "host",
       larkThreadId: "topic_pending_name",
       creatorOpenId: "ou_guest",
       cardMessageId: "card_oc_group_1"
@@ -504,7 +511,7 @@ describe("ConversationManager", () => {
   });
 
   it("patches a thread card when Codex renames it before the card message id is stored", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
     const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_inflight_name" })) });
     const lark = createLarkResponder();
@@ -1521,7 +1528,7 @@ describe("ConversationManager", () => {
     ]) {
       expect(helpText).toContain(usage);
     }
-    expect(helpText).not.toContain("/activate");
+    expect(helpText).not.toContain("/activate all_at guest");
     expect(helpText).not.toContain("/deactivate");
     expect(codex.startTurn).not.toHaveBeenCalled();
   });
@@ -1718,7 +1725,7 @@ describe("ConversationManager", () => {
     const row = conversationRecord({
       conversationKey: "p2p_ou_owner",
       chatId: "ou_owner",
-      role: "owner",
+      role: "host",
       codexThreadId: "thread_owner"
     });
     const { repository } = createRepository(row);
@@ -1729,8 +1736,8 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m1", "/status", { senderOpenId: "ou_owner", senderName: "Owner" }));
 
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
-    expect(codex.readCodexVersion).toHaveBeenCalledWith({ role: "owner" });
-    expect(codex.readAccountRateLimits).toHaveBeenCalledWith({ role: "owner" });
+    expect(codex.readCodexVersion).toHaveBeenCalledWith({ role: "host" });
+    expect(codex.readAccountRateLimits).toHaveBeenCalledWith({ role: "host" });
     const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
     const serialized = JSON.stringify(card);
     expect(serialized).toContain("p2p_ou_owner");
@@ -2113,7 +2120,7 @@ describe("ConversationManager", () => {
   });
 
   it("creates a new topic card when the group new-session menu is clicked", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "all" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all" });
     const { repository } = createRepository(row);
     const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_new_session" })) });
     const lark = createLarkResponder();
@@ -2127,7 +2134,7 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
     expect(codex.startThread).toHaveBeenCalledWith({
-      role: "owner",
+      role: "host",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
       approvalPolicy: "never",
       developerInstructions: expect.stringContaining("Twinny Lark Context")
@@ -2156,7 +2163,7 @@ describe("ConversationManager", () => {
     expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
       conversationKey: "group_oc_group",
       codexThreadId: "thread_new_session",
-      role: "owner",
+      role: "host",
       larkThreadId: "card_oc_group_1",
       creatorOpenId: "ou_owner",
       cardMessageId: "card_oc_group_1"
@@ -2164,7 +2171,7 @@ describe("ConversationManager", () => {
   });
 
   it("keeps generated Lark uuid values within the OpenAPI limit for new-session cards", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "all" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all" });
     const { repository } = createRepository(row);
     const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_new_session" })) });
     const lark = createLarkResponder();
@@ -2183,7 +2190,7 @@ describe("ConversationManager", () => {
   });
 
   it("lets any group user create an empty thread card with /thread", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
     const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_empty" })) });
     const lark = createLarkResponder();
@@ -2197,7 +2204,7 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
     expect(codex.startThread).toHaveBeenCalledWith({
-      role: "owner",
+      role: "host",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
       approvalPolicy: "never",
       developerInstructions: expect.stringContaining("Twinny Lark Context")
@@ -2221,7 +2228,7 @@ describe("ConversationManager", () => {
     expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
       conversationKey: "group_oc_group",
       codexThreadId: "thread_empty",
-      role: "owner",
+      role: "host",
       larkThreadId: "topic_thread_empty",
       creatorOpenId: "ou_guest",
       cardMessageId: "card_oc_group_1"
@@ -2236,7 +2243,7 @@ describe("ConversationManager", () => {
   });
 
   it("starts /thread initial text from the bot in-thread reply without resuming an empty card thread", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
     const codex = createCodex({
       startThread: vi.fn(async () => ({ threadId: "thread_initial" })),
@@ -2283,7 +2290,7 @@ describe("ConversationManager", () => {
       expect(repository.updateCodexThreadCard).toHaveBeenCalledWith({
         conversationKey: "group_oc_group",
         codexThreadId: "thread_initial",
-        role: "owner",
+        role: "host",
         larkThreadId: cardThreadId,
         creatorOpenId: "ou_guest",
         cardMessageId: "card_oc_group_1"
@@ -2355,7 +2362,7 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
     expect(codex.resumeThread).toHaveBeenCalledWith({
-      role: "owner",
+      role: "host",
       threadId: "thread_initial",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
       approvalPolicy: "never"
@@ -2370,7 +2377,7 @@ describe("ConversationManager", () => {
   });
 
   it("unescapes normalized post markdown when proxying /thread initial text", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
     const codex = createCodex({
       startThread: vi.fn(async () => ({ threadId: "thread_post" }))
@@ -2422,7 +2429,7 @@ describe("ConversationManager", () => {
   });
 
   it("parses slash commands from /thread initial text before starting the topic turn", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
     const codex = createCodex({
       startThread: vi.fn(async () => ({ threadId: "thread_thread_plan" }))
@@ -2480,7 +2487,7 @@ describe("ConversationManager", () => {
   });
 
   it("forks the current group Codex thread into a new topic and proxies initial text", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
     const codex = createCodex({
       forkThread: vi.fn(async () => ({ threadId: "thread_forked" })),
@@ -2511,7 +2518,7 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     expect(codex.forkThread).toHaveBeenCalledWith({
-      role: "owner",
+      role: "host",
       threadId: "thread_group",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
       approvalPolicy: "never",
@@ -2521,7 +2528,7 @@ describe("ConversationManager", () => {
     });
     expect(codex.startThread).not.toHaveBeenCalled();
     expect(codex.resumeThread).toHaveBeenCalledWith({
-      role: "owner",
+      role: "host",
       threadId: "thread_forked",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
       approvalPolicy: "never"
@@ -2547,7 +2554,7 @@ describe("ConversationManager", () => {
       conversationKey: "group_oc_group",
       name: "try alternate path",
       larkThreadId: "topic_fork_1",
-      role: "owner",
+      role: "host",
       forkedFromCodexThreadId: "thread_group",
       codexThreadHasRollout: true
     });
@@ -2571,7 +2578,7 @@ describe("ConversationManager", () => {
   });
 
   it("uses the default branch title for an empty /fork topic", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
     const codex = createCodex({
       forkThread: vi.fn(async () => ({ threadId: "thread_forked_empty" }))
@@ -2612,7 +2619,7 @@ describe("ConversationManager", () => {
   });
 
   it("allows /fork inside a Lark thread and forks that topic's Codex thread", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all_at" });
     const { repository } = createRepository(row, {
       codexThreads: [
         codexThreadRecord({
@@ -2620,7 +2627,7 @@ describe("ConversationManager", () => {
           codexThreadId: "thread_topic_source",
           conversationKey: "group_oc_group",
           larkThreadId: "topic_source",
-          role: "owner",
+          role: "host",
           codexThreadHasRollout: true
         })
       ]
@@ -2656,7 +2663,7 @@ describe("ConversationManager", () => {
       "topic_source"
     );
     expect(codex.forkThread).toHaveBeenCalledWith({
-      role: "owner",
+      role: "host",
       threadId: "thread_topic_source",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
       approvalPolicy: "never",
@@ -2989,7 +2996,7 @@ describe("ConversationManager", () => {
   });
 
   it("rejects /side nested under /thread or /fork", async () => {
-    const { repository } = createRepository(groupConversationRecord({ role: "owner" }));
+    const { repository } = createRepository(groupConversationRecord({ role: "host" }));
     const codex = createCodex();
     const lark = createLarkResponder();
     const manager = createManager({ repository, codex, lark });
@@ -3009,7 +3016,7 @@ describe("ConversationManager", () => {
   });
 
   it("rebuilds /thread text replies with send-side at mentions", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
     const codex = createCodex({
       startThread: vi.fn(async () => ({ threadId: "thread_text_mention" })),
@@ -3055,7 +3062,7 @@ describe("ConversationManager", () => {
   });
 
   it("rebuilds /thread post replies as send-side post content", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
     const codex = createCodex({
       startThread: vi.fn(async () => ({ threadId: "thread_post" })),
@@ -3105,7 +3112,7 @@ describe("ConversationManager", () => {
   });
 
   it("preserves /thread post image resources in the proxy reply and Codex input", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
     const codex = createCodex({
       startThread: vi.fn(async () => ({ threadId: "thread_post_image" })),
@@ -3195,7 +3202,7 @@ describe("ConversationManager", () => {
   });
 
   it("rejects /thread forwarding from non-text and non-post messages", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
     const codex = createCodex();
     const lark = createLarkResponder();
@@ -3435,12 +3442,12 @@ describe("ConversationManager", () => {
     };
     const manager = createManager({ repository, codex, lark, larkChats, botOpenId: "ou_bot" });
 
-    manager.submitIncoming(groupMessage("g1", "/activate", { senderOpenId: "ou_owner", senderName: "Owner" }));
+    manager.submitIncoming(groupMessage("g1", "/activate all_at guest", { senderOpenId: "ou_owner", senderName: "Owner" }));
 
     await waitForExpect(() =>
       expect(lark.replyText).toHaveBeenCalledWith(
         "g1",
-        expect.stringContaining("已激活群聊：Team Room\n响应模式：at\nRole：guest")
+        expect.stringContaining("已激活群聊：Team Room\n响应模式：all_at\nProfile：guest")
       )
     );
     expect(row).toBeUndefined();
@@ -3463,7 +3470,7 @@ describe("ConversationManager", () => {
         larkGroupId: "oc_group",
         conversationKey: "group_oc_group",
         routeKind: "control_message",
-        text: "/activate"
+        text: "/activate all_at guest"
       })
     );
     expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
@@ -3471,7 +3478,7 @@ describe("ConversationManager", () => {
       type: "group",
       chatId: "oc_group",
       name: "Team Room",
-      responseMode: "at",
+      responseMode: "all_at",
       role: "guest",
       workspace: "/tmp/twinny/workspaces/group_oc_group"
     });
@@ -3487,30 +3494,30 @@ describe("ConversationManager", () => {
     };
     const manager = createManager({ repository, lark, larkChats, botOpenId: "ou_bot" });
 
-    manager.submitIncoming(groupMessage("g1", "/activate all owner", { senderOpenId: "ou_owner", senderName: "Owner" }));
+    manager.submitIncoming(groupMessage("g1", "/activate all host", { senderOpenId: "ou_owner", senderName: "Owner" }));
     await waitForExpect(() =>
       expect(lark.replyText).toHaveBeenCalledWith(
         "g1",
-        expect.stringContaining("已激活群聊：Owner Room\n响应模式：all\nRole：owner")
+        expect.stringContaining("已激活群聊：Owner Room\n响应模式：all\nProfile：host")
       )
     );
     expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
       name: "Owner Room",
       responseMode: "all",
-      role: "owner"
+      role: "host"
     });
 
-    manager.submitIncoming(groupMessage("g2", "/activate at", { senderOpenId: "ou_owner", senderName: "Owner" }));
+    manager.submitIncoming(groupMessage("g2", "/activate all_at", { senderOpenId: "ou_owner", senderName: "Owner" }));
     await waitForExpect(() =>
       expect(lark.replyText).toHaveBeenCalledWith(
         "g2",
-        expect.stringContaining("已激活群聊：Renamed Room\n响应模式：at\nRole：owner")
+        expect.stringContaining("已激活群聊：Renamed Room\n响应模式：all_at\nProfile：host")
       )
     );
     expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
       name: "Renamed Room",
-      responseMode: "at",
-      role: "owner"
+      responseMode: "all_at",
+      role: "host"
     });
 
     manager.submitIncoming(
@@ -3521,16 +3528,16 @@ describe("ConversationManager", () => {
       })
     );
     await waitForExpect(() =>
-      expect(lark.replyText).toHaveBeenCalledWith("g3", "该群已绑定 role=owner，本期不支持修改为 guest。")
+      expect(lark.replyText).toHaveBeenCalledWith("g3", "该群已绑定 profile=host，本期不支持修改为 guest。")
     );
     expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
-      responseMode: "at",
-      role: "owner"
+      responseMode: "all_at",
+      role: "host"
     });
   });
 
   it("requires bot mentions in at-mode groups and strips the mention before parsing commands", async () => {
-    const row = groupConversationRecord({ responseMode: "at" });
+    const row = groupConversationRecord({ responseMode: "all_at" });
     const { repository } = createRepository(row);
     const lark = createLarkResponder();
     const codex = createCodex();
@@ -3545,7 +3552,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() =>
       expect(lark.sendEphemeralCardToChatId).toHaveBeenCalledWith("oc_group", "ou_guest", expect.any(Object))
     );
-    expect(JSON.stringify(vi.mocked(lark.sendEphemeralCardToChatId).mock.calls[0]![2])).toContain("仅 at");
+    expect(JSON.stringify(vi.mocked(lark.sendEphemeralCardToChatId).mock.calls[0]![2])).toContain("全部用户，at 消息");
     expect(lark.replyCard).not.toHaveBeenCalled();
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -3581,12 +3588,12 @@ describe("ConversationManager", () => {
         mentions: [botMention()]
       })
     );
-    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g3", expect.stringContaining("/activate [all|at] [guest|owner]")));
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g3", expect.stringContaining("/activate <owner_at|owner|all_at|all> [profile]")));
     expect(lark.replyText).toHaveBeenCalledWith("g3", expect.stringContaining("/deactivate -"));
   });
 
   it("uses the shared group role and workspace for all-mode ordinary group messages", async () => {
-    const row = groupConversationRecord({ responseMode: "all", role: "owner", codexThreadId: "thread_group" });
+    const row = groupConversationRecord({ responseMode: "all", role: "host", codexThreadId: "thread_group" });
     const { repository } = createRepository(row);
     const codex = createCodex();
     const manager = createManager({ repository, codex, botOpenId: "ou_bot" });
@@ -3595,11 +3602,11 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     expect(codex.resumeThread).toHaveBeenCalledWith(
-      expect.objectContaining({ role: "owner", threadId: "thread_group", cwd: "/tmp/twinny/workspaces/group_oc_group" })
+      expect.objectContaining({ role: "host", threadId: "thread_group", cwd: "/tmp/twinny/workspaces/group_oc_group" })
     );
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        role: "owner",
+        role: "host",
         threadId: "thread_group",
         cwd: "/tmp/twinny/workspaces/group_oc_group",
         input: '<lark_message lark_message_id="g1" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\nhello group\n</lark_message>'
@@ -3608,13 +3615,13 @@ describe("ConversationManager", () => {
   });
 
   it("ignores unmentioned at-mode topic messages and still reuses thread on the next mention", async () => {
-    const row = groupConversationRecord({ role: "owner", responseMode: "at" });
+    const row = groupConversationRecord({ role: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
     const thread = codexThreadRecord({
       codexThreadId: "thread_topic_1",
       larkThreadId: "topic_thread_1",
       conversationKey: "group_oc_group",
-      role: "owner",
+      role: "host",
       creatorOpenId: "ou_owner"
     });
     const codex = createCodex({
@@ -3660,7 +3667,7 @@ describe("ConversationManager", () => {
     );
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     expect(codex.resumeThread).toHaveBeenCalledWith({
-      role: "owner",
+      role: "host",
       threadId: "thread_topic_1",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
       approvalPolicy: "never"
@@ -3692,7 +3699,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() =>
       expect(lark.replyText).toHaveBeenCalledWith(
         "g2",
-        expect.stringContaining("已激活群聊：Reenabled Room\n响应模式：all\nRole：guest")
+        expect.stringContaining("已激活群聊：Reenabled Room\n响应模式：all\nProfile：guest")
       )
     );
     expect(row).toMatchObject({ name: "Reenabled Room", responseMode: "all", role: "guest" });
@@ -4874,8 +4881,8 @@ describe("ConversationManager", () => {
     ].join("\n"));
     const managerConfig: TwinnyConfig = {
       ...cardModeConfig(),
-      roles: {
-        ...config.roles,
+      profiles: {
+        ...config.profiles,
         guest: { codexHome }
       }
     };
@@ -5022,7 +5029,12 @@ describe("ConversationManager", () => {
       })
     });
     const lark = createLarkResponder();
-    const manager = createManager({ codex, lark, config: cardModeConfig({ iconImageKey: "img_logo" }) });
+    const manager = createManager({
+      codex,
+      lark,
+      config: cardModeConfig(),
+      assetImageKeys: { logoImageKey: "img_logo" }
+    });
 
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalled());
@@ -5069,7 +5081,7 @@ describe("ConversationManager", () => {
     const manager = createManager({
       codex,
       lark,
-      config: cardModeConfig({ iconImageKey: "img_config_logo" }),
+      config: cardModeConfig(),
       assetImageKeys: { logoImageKey: "img_runtime_logo" }
     });
 
@@ -5087,7 +5099,7 @@ describe("ConversationManager", () => {
     const manager = createManager({
       codex,
       lark,
-      config: cardModeConfig({ iconImageKey: "img_config_logo" }),
+      config: cardModeConfig(),
       assetImageKeys: {}
     });
 
@@ -6743,21 +6755,21 @@ describe("ConversationManager", () => {
           id: 2,
           codexThreadId: "thread_owner",
           conversationKey: "p2p_ou_owner",
-          role: "owner"
+          role: "host"
         })
       ]
     });
     const codex = createCodex();
     const manager = createManager({ repository, codex });
 
-    await manager.recoverUnfinishedMessages({ role: "owner" });
+    await manager.recoverUnfinishedMessages({ role: "host" });
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
 
-    expect(codex.resumeThread).toHaveBeenCalledWith(expect.objectContaining({ role: "owner", threadId: "thread_owner" }));
+    expect(codex.resumeThread).toHaveBeenCalledWith(expect.objectContaining({ role: "host", threadId: "thread_owner" }));
     expect(codex.resumeThread).not.toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_guest" }));
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        role: "owner",
+        role: "host",
         threadId: "thread_owner",
         input: "Twinny daemon has beed reloaded, continue with the unfinished work."
       })
@@ -6843,7 +6855,7 @@ describe("ConversationManager", () => {
   });
 
   it("recovers processing thread replies from persisted DB fields when raw event JSON is missing", async () => {
-    const row = groupConversationRecord({ role: "owner", codexThreadId: "thread_recovered" });
+    const row = groupConversationRecord({ role: "host", codexThreadId: "thread_recovered" });
     const record = larkMessageRecord({
       larkMessageId: "m_thread_reply",
       eventId: "thread_reply:e_original",
@@ -6863,7 +6875,7 @@ describe("ConversationManager", () => {
           codexThreadId: "thread_recovered",
           conversationKey: "group_oc_group",
           larkThreadId: "omt_recovered",
-          role: "owner"
+          role: "host"
         })
       ]
     });
@@ -7077,7 +7089,7 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
 
-    await expect(manager.suspendActiveTurnsForCodexAppServerExit("owner")).resolves.toBe(0);
+    await expect(manager.suspendActiveTurnsForCodexAppServerExit("host")).resolves.toBe(0);
     await expect(manager.suspendActiveTurnsForCodexAppServerExit("guest")).resolves.toBe(1);
 
     expect(codex.interruptTurn).not.toHaveBeenCalled();
@@ -7148,7 +7160,7 @@ function createManager(options: {
       ensureWorkspace: (key) => path.join(workspaceRoot, key)
     },
     roles: {
-      codexHomeFor: (role) => managerConfig.roles[role].codexHome
+      codexHomeFor: (role) => managerConfig.profiles[role].codexHome
     },
     codex: options.codex ?? createCodex(),
     lark: options.lark ?? createLarkResponder(),
@@ -7371,7 +7383,7 @@ function createRepository(initial?: ConversationRecord, options: {
   const putCodexThread = (input: {
     codexThreadId: string;
     conversationKey: string;
-    role: "owner" | "guest";
+    role: ProfileName;
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
     forkedFromCodexThreadId?: string;
@@ -7399,7 +7411,7 @@ function createRepository(initial?: ConversationRecord, options: {
   const replaceCodexThreadForLarkThread = (
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; role: "owner" | "guest"; codexThreadHasRollout?: boolean }
+    update: { codexThreadId: string; role: ProfileName; codexThreadHasRollout?: boolean }
   ): CodexThreadRecord => {
     const existing = getCodexThreadByLarkThread(conversationKey, larkThreadId);
     if (existing) {
@@ -7465,11 +7477,17 @@ function createRepository(initial?: ConversationRecord, options: {
         message.status === "processing" || message.status === "queued"
       )),
       create: (record) => {
+        const profile = record.profile ?? record.role ?? "guest";
+        const profileCodexHome = record.profileCodexHome ?? record.roleCodexHome ?? config.profiles[profile].codexHome;
         row = {
           id: 1,
           createdAt: Date.now(),
           updatedAt: Date.now(),
           ...record,
+          profile,
+          role: profile,
+          profileCodexHome,
+          roleCodexHome: profileCodexHome,
           responseMode: record.responseMode ?? (record.type === "p2p" ? "all" : "none")
         };
         putCodexThread({
@@ -7820,7 +7838,7 @@ function createRepository(initial?: ConversationRecord, options: {
 }
 
 function conversationRecord(overrides: Partial<ConversationRecord> = {}): ConversationRecord {
-  return {
+  const record: ConversationRecord = {
     id: 1,
     conversationKey: "p2p_ou_guest",
     type: "p2p",
@@ -7828,13 +7846,21 @@ function conversationRecord(overrides: Partial<ConversationRecord> = {}): Conver
     name: "Guest User",
     responseMode: "all",
     role: "guest",
+    profile: "guest",
     codexThreadId: "thread_1",
     workspace: "/tmp/twinny/workspaces/p2p_ou_guest",
-    roleCodexHome: "/tmp/twinny/roles/guest/codex",
+    roleCodexHome: "/tmp/twinny/profiles/guest/codex",
+    profileCodexHome: "/tmp/twinny/profiles/guest/codex",
     createdAt: 100,
     updatedAt: 100,
     ...overrides
   };
+  const profile = overrides.profile ?? overrides.role ?? record.profile ?? record.role;
+  record.profile = profile;
+  record.role = profile;
+  record.profileCodexHome = record.profileCodexHome ?? record.roleCodexHome ?? `/tmp/twinny/profiles/${profile}/codex`;
+  record.roleCodexHome = record.profileCodexHome;
+  return record;
 }
 
 function groupConversationRecord(overrides: Partial<ConversationRecord> = {}): ConversationRecord {
@@ -7861,12 +7887,13 @@ function isUserMessageRouteKind(routeKind: LarkMessageRecord["routeKind"]): bool
 }
 
 function codexThreadRecord(overrides: Partial<CodexThreadRecord> = {}): CodexThreadRecord {
-  return {
+  const record: CodexThreadRecord = {
     id: 1,
     codexThreadId: "thread_1",
     conversationKey: "p2p_ou_guest",
     name: "新会话",
     role: "guest",
+    profile: "guest",
     mode: "default",
     status: "idle",
     goalStatus: "none",
@@ -7883,6 +7910,10 @@ function codexThreadRecord(overrides: Partial<CodexThreadRecord> = {}): CodexThr
     updatedAt: 100,
     ...overrides
   };
+  const profile = overrides.profile ?? overrides.role ?? record.profile ?? record.role;
+  record.profile = profile;
+  record.role = profile;
+  return record;
 }
 
 function larkMessageRecord(overrides: Partial<LarkMessageRecord> = {}): LarkMessageRecord {

@@ -28,16 +28,14 @@ export function resolveTwinnyHome(options: ResolveHomeOptions = {}): string {
 
 export function createRuntimePaths(home = resolveTwinnyHome()): RuntimePaths {
   const resolvedHome = path.resolve(expandHomePath(home));
-  const rolesDir = path.join(resolvedHome, "roles");
   const sqliteDir = path.join(resolvedHome, "sqlite");
   const runtimeDir = path.join(resolvedHome, "runtime");
 
   return {
     home: resolvedHome,
     configFile: path.join(resolvedHome, "config.toml"),
-    rolesDir,
-    ownerCodexHome: path.join(rolesDir, "owner", "codex"),
-    guestCodexHome: path.join(rolesDir, "guest", "codex"),
+    authFile: path.join(resolvedHome, "auth.json"),
+    homeRandomFile: path.join(runtimeDir, "home-random"),
     sqliteDir,
     sqliteFile: path.join(sqliteDir, "twinny.db"),
     workspacesDir: path.join(resolvedHome, "workspaces"),
