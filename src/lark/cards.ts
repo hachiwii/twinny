@@ -34,6 +34,12 @@ export interface TwinnyAgentCardActionValue {
   runId: number;
 }
 
+export interface TwinnyStatusCardActionValue {
+  twinny: true;
+  action: "status_hide";
+  stateKey: string;
+}
+
 export interface TwinnyAgentCardInputQuestion {
   id: string;
   header: string;
@@ -156,6 +162,7 @@ export interface RenderTwinnyStatusCardOptions {
     fiveHourLimit: string;
     sevenDayLimit: string;
   };
+  hideAction?: TwinnyStatusCardActionValue;
 }
 
 export interface RenderTwinnyBannerCardOptions {
@@ -273,6 +280,10 @@ export function renderTwinnyStatusCard(options: RenderTwinnyStatusCardOptions): 
       ["5h Limit", options.system.fiveHourLimit],
       ["7d Limit", options.system.sevenDayLimit]
     ]));
+  }
+
+  if (options.hideAction) {
+    elements.push(statusHideButtonElement(options.hideAction));
   }
 
   return {
@@ -806,6 +817,25 @@ function buttonsElement(options: RenderTwinnyAgentCardOptions): LarkCardElement 
   };
 }
 
+function statusHideButtonElement(action: TwinnyStatusCardActionValue): LarkCardElement {
+  const button = buttonElement("隐藏", "default", action);
+  return {
+    tag: "column_set",
+    horizontal_spacing: "8px",
+    horizontal_align: "left",
+    columns: [
+      {
+        tag: "column",
+        width: "auto",
+        elements: [button],
+        direction: "horizontal",
+        vertical_align: "top"
+      }
+    ],
+    margin: "0px 0px 0px 0px"
+  };
+}
+
 function waitingButtonsElement(
   options: RenderTwinnyAgentCardOptions,
   primaryLabel: string,
@@ -922,7 +952,7 @@ function queueModeHintElement(options: RenderTwinnyAgentCardOptions): LarkCardEl
 function buttonElement(
   label: string,
   type: string,
-  value: TwinnyAgentCardActionValue,
+  value: TwinnyAgentCardActionValue | TwinnyStatusCardActionValue,
   options: { formSubmit?: boolean; name?: string } = {}
 ): LarkCardElement {
   const element: LarkCardElement = {

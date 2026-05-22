@@ -1477,6 +1477,44 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_status"]);
   });
 
+  it("hides an ephemeral /status card when its hide button is clicked", async () => {
+    const row = groupConversationRecord({ responseMode: "all", codexThreadId: "thread_group" });
+    const { repository } = createRepository(row);
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("g_status", "/status"));
+
+    await waitForExpect(() => expect(lark.sendEphemeralCardToChatId).toHaveBeenCalledTimes(1));
+    const statusCard = vi.mocked(lark.sendEphemeralCardToChatId).mock.calls[0]![2] as Record<string, unknown>;
+    expect(JSON.stringify(statusCard)).toContain("隐藏");
+
+    manager.submitCardAction({
+      eventId: "event_status_hide",
+      operatorOpenId: "ou_guest",
+      openMessageId: "ephemeral_oc_group_1",
+      openChatId: "oc_group",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "status_hide",
+        stateKey: "group_oc_group"
+      },
+      raw: { event_id: "event_status_hide" }
+    });
+
+    await waitForExpect(() => expect(lark.recallMessage).toHaveBeenCalledWith("ephemeral_oc_group_1"));
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
+      eventId: "event_status_hide",
+      routeKind: "card_action",
+      status: "completed",
+      text: "/status hide",
+      conversationKey: "group_oc_group",
+      larkGroupId: "oc_group"
+    }));
+  });
+
   it("replies to /status with a default card in topic groups", async () => {
     const row = groupConversationRecord({ responseMode: "all", codexThreadId: "thread_group" });
     const { repository } = createRepository(row);

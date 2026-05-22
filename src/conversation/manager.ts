@@ -707,12 +707,29 @@ type ParsedCommand =
   | { kind: "deactivate" }
   | { kind: "help" };
 
-interface ParsedCardActionCommand {
-  action: "stop" | "next" | "queue" | "request_input_submit" | "request_input_interrupt" | "plan_implement" | "plan_interrupt";
+type ParsedActiveCardAction =
+  | "stop"
+  | "next"
+  | "queue"
+  | "request_input_submit"
+  | "request_input_interrupt"
+  | "plan_implement"
+  | "plan_interrupt";
+
+interface ParsedActiveCardActionCommand {
+  action: ParsedActiveCardAction;
   stateKey: string;
   runId: number;
   text: string;
 }
+
+interface ParsedStatusCardActionCommand {
+  action: "status_hide";
+  stateKey: string;
+  text: string;
+}
+
+type ParsedCardActionCommand = ParsedActiveCardActionCommand | ParsedStatusCardActionCommand;
 
 export class ConversationManager {
   private static readonly recoveryPrompt = "Twinny daemon has beed reloaded, continue with the unfinished work.";
@@ -785,6 +802,13 @@ export class ConversationManager {
     const command = parseTwinnyCardAction(action.actionValue);
     if (!command) {
       this.log.debug({ eventId: action.eventId }, "ignored non-twinny card action");
+      return;
+    }
+
+    if (command.action === "status_hide") {
+      void this.processStatusCardHideAction(action, command).catch((error) => {
+        this.log.error({ error, eventId: action.eventId }, "conversation status card hide action failed");
+      });
       return;
     }
 
@@ -2924,6 +2948,13 @@ export class ConversationManager {
         openId: actor.senderOpenId,
         role
       },
+      hideAction: context.type === "group"
+        ? {
+            twinny: true,
+            action: "status_hide",
+            stateKey: context.stateKey
+          }
+        : undefined,
       system
     });
   }
@@ -3063,10 +3094,35 @@ export class ConversationManager {
     };
   }
 
+  private async processStatusCardHideAction(
+    action: IncomingLarkCardAction,
+    command: ParsedStatusCardActionCommand
+  ): Promise<void> {
+    const existing = await this.options.repository.getLarkMessageByEventId(action.eventId);
+    if (existing) {
+      return;
+    }
+
+    let status: LarkMessageStatus = "completed";
+    try {
+      if (!action.openMessageId) {
+        status = "failed";
+        this.log.warn({ eventId: action.eventId }, "status card hide action missing message id");
+        return;
+      }
+      await this.options.lark.recallMessage(action.openMessageId);
+    } catch (error) {
+      status = "failed";
+      throw error;
+    } finally {
+      await this.recordCardActionBestEffort(action, command, status);
+    }
+  }
+
   private async processCardAction(
     state: ConversationState,
     action: IncomingLarkCardAction,
-    command: ParsedCardActionCommand
+    command: ParsedActiveCardActionCommand
   ): Promise<void> {
     const existing = await this.options.repository.getLarkMessageByEventId(action.eventId);
     if (existing) {
@@ -3125,7 +3181,7 @@ export class ConversationManager {
   private findActiveTurnForCardAction(
     state: ConversationState,
     action: IncomingLarkCardAction,
-    command: ParsedCardActionCommand
+    command: ParsedActiveCardActionCommand
   ): ActiveTurn | undefined {
     const candidates = [
       ...(state.active ? [state.active] : []),
@@ -6914,7 +6970,17 @@ function parseTwinnyCardAction(value: Record<string, unknown>): ParsedCardAction
   const action = value.action;
   const stateKey = typeof value.stateKey === "string" ? value.stateKey : undefined;
   const runId = typeof value.runId === "number" && Number.isInteger(value.runId) ? value.runId : undefined;
-  if (!isTwinnyCardAction(action) || !stateKey || runId === undefined) {
+  if (!isTwinnyCardAction(action) || !stateKey) {
+    return undefined;
+  }
+  if (action === "status_hide") {
+    return {
+      action,
+      stateKey,
+      text: twinnyCardActionText(action)
+    };
+  }
+  if (runId === undefined) {
     return undefined;
   }
   return {
@@ -6933,7 +6999,8 @@ function isTwinnyCardAction(value: unknown): value is ParsedCardActionCommand["a
     value === "request_input_submit" ||
     value === "request_input_interrupt" ||
     value === "plan_implement" ||
-    value === "plan_interrupt"
+    value === "plan_interrupt" ||
+    value === "status_hide"
   );
 }
 
@@ -6953,6 +7020,8 @@ function twinnyCardActionText(action: ParsedCardActionCommand["action"]): string
       return "/plan implement";
     case "plan_interrupt":
       return "/plan interrupt";
+    case "status_hide":
+      return "/status hide";
   }
 }
 

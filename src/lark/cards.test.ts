@@ -696,6 +696,61 @@ describe("renderTwinnyStatusCard", () => {
     expect(serialized).toContain("cli_xxx");
     expect(serialized).toContain("23% (重置于 23:59)");
   });
+
+  it("renders an optional bottom hide button", () => {
+    const card = renderTwinnyStatusCard({
+      topic: {
+        mode: "default",
+        model: "GPT-5.5 (xhigh)",
+        contextTokens: 0,
+        contextWindow: 0,
+        userMessageCount: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalWorkDurationMs: 0
+      },
+      workspace: {
+        id: "group_oc_group",
+        type: "group",
+        responseMode: "at",
+        topicCount: 0,
+        userMessageCount: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalWorkDurationMs: 0
+      },
+      user: {
+        openId: "ou_guest",
+        role: "guest"
+      },
+      hideAction: {
+        twinny: true,
+        action: "status_hide",
+        stateKey: "group_oc_group"
+      }
+    });
+
+    const button = findButton(card, "隐藏");
+    expect(button).toMatchObject({
+      tag: "button",
+      type: "default",
+      behaviors: [
+        {
+          type: "callback",
+          value: {
+            twinny: true,
+            action: "status_hide",
+            stateKey: "group_oc_group"
+          }
+        }
+      ]
+    });
+    expect(((card.body as { elements: unknown[] }).elements.at(-1) as Record<string, unknown>).tag).toBe("column_set");
+  });
 });
 
 describe("renderTwinnyBannerCard", () => {
