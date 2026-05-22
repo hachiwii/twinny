@@ -1277,25 +1277,21 @@ describe("ConversationManager", () => {
 
     manager.submitIncoming(message("m1", "/status"));
 
-    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledTimes(1));
-    expect(lark.replyText).toHaveBeenCalledWith(
-      "m1",
-      [
-        "OUID: ou_guest",
-        "Conversation Key: p2p_ou_guest",
-        "Codex Thread ID: thread_status",
-        "Thread Status: idle",
-        "Mode: default",
-        "Thread Token Usage:",
-        "- total: 100",
-        "- input: 80",
-        "- output: 20",
-        "- cached input: 40",
-        "- reasoning output: 5",
-        "- cache hit rate: 50.00%",
-        "- context: 0 / 0 (0.00%)"
-      ].join("\n")
-    );
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    expect(lark.replyCard).toHaveBeenCalledWith("m1", expect.objectContaining({ schema: "2.0" }));
+    const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain("话题");
+    expect(serialized).toContain("thread_status");
+    expect(serialized).toContain("GPT-5.5 (xhigh)");
+    expect(serialized).toContain("80 (50% Cached)");
+    expect(serialized).toContain("20 (25% Reasoning)");
+    expect(serialized).toContain("工作区");
+    expect(serialized).toContain("p2p_ou_guest");
+    expect(serialized).toContain("用户");
+    expect(serialized).toContain("ou_guest");
+    expect(serialized).not.toContain("系统");
+    expect(lark.replyText).not.toHaveBeenCalled();
     expect(codex.readAccountRateLimits).not.toHaveBeenCalled();
     expect(codex.startTurn).not.toHaveBeenCalled();
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m1"]);
@@ -1315,12 +1311,18 @@ describe("ConversationManager", () => {
 
     manager.submitIncoming(message("m1", "/status", { senderOpenId: "ou_owner", senderName: "Owner" }));
 
-    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
     expect(codex.readAccountRateLimits).toHaveBeenCalledWith({ role: "owner" });
-    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("Conversation Key: p2p_ou_owner"));
-    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("Codex Account Usage:"));
-    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("- 5h: 12.50% used"));
-    expect(lark.replyText).toHaveBeenCalledWith("m1", expect.stringContaining("- 7d: 34.00% used"));
+    const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain("p2p_ou_owner");
+    expect(serialized).toContain("系统");
+    expect(serialized).toContain("Twinny 版本");
+    expect(serialized).toContain("CodeX 版本");
+    expect(serialized).toContain("Lark App ID");
+    expect(serialized).toContain("cli_xxx");
+    expect(serialized).toContain("12.5%");
+    expect(serialized).toContain("34%");
   });
 
   it("interrupts active turns and clears pending messages on /stop", async () => {
@@ -3011,7 +3013,8 @@ describe("ConversationManager", () => {
     expect(lark.replyText).not.toHaveBeenCalled();
 
     manager.submitIncoming(groupMessage("g2", "@_bot /status", { mentions: [botMention()] }));
-    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("g2", expect.stringContaining("Response Mode: at")));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("g2", expect.any(Object)));
+    expect(JSON.stringify(vi.mocked(lark.replyCard).mock.calls[0]![1])).toContain("仅 at");
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         larkMessageId: "g2",
@@ -6663,6 +6666,67 @@ function createRepository(initial?: ConversationRecord, options: {
             sum + (turn.terminalAt && turn.terminalAt > turn.startedAt ? turn.terminalAt - turn.startedAt : 0), 0)
         };
       }),
+      getCodexThreadStatusStats: vi.fn((codexThreadId) => {
+        const turns = new Map<string, { startedAt: number; terminalAt?: number }>();
+        let userMessageCount = 0;
+        for (const message of larkMessages.values()) {
+          if (message.codexThreadId !== codexThreadId) {
+            continue;
+          }
+          if (isUserMessageRouteKind(message.routeKind)) {
+            userMessageCount += 1;
+          }
+          if (message.routeKind === "side_message" || !message.codexTurnId || !message.processingStartedAt) {
+            continue;
+          }
+          const existing = turns.get(message.codexTurnId);
+          const terminalAt = message.completedAt ?? message.failedAt ?? message.clearedAt;
+          turns.set(message.codexTurnId, {
+            startedAt: Math.min(existing?.startedAt ?? message.processingStartedAt, message.processingStartedAt),
+            terminalAt: Math.max(existing?.terminalAt ?? 0, terminalAt ?? 0) || existing?.terminalAt
+          });
+        }
+        return {
+          userMessageCount,
+          turnCount: turns.size,
+          totalWorkDurationMs: [...turns.values()].reduce((sum, turn) =>
+            sum + (turn.terminalAt && turn.terminalAt > turn.startedAt ? turn.terminalAt - turn.startedAt : 0), 0)
+        };
+      }),
+      getConversationStatusStats: vi.fn((conversationKey) => {
+        const threads = [...codexThreads.values()].filter((thread) => thread.conversationKey === conversationKey);
+        const turns = new Map<string, { startedAt: number; terminalAt?: number }>();
+        let userMessageCount = 0;
+        for (const message of larkMessages.values()) {
+          if (message.conversationKey !== conversationKey) {
+            continue;
+          }
+          if (isUserMessageRouteKind(message.routeKind)) {
+            userMessageCount += 1;
+          }
+          if (message.routeKind === "side_message" || !message.codexThreadId || !message.codexTurnId || !message.processingStartedAt) {
+            continue;
+          }
+          const turnKey = `${message.codexThreadId}:${message.codexTurnId}`;
+          const existing = turns.get(turnKey);
+          const terminalAt = message.completedAt ?? message.failedAt ?? message.clearedAt;
+          turns.set(turnKey, {
+            startedAt: Math.min(existing?.startedAt ?? message.processingStartedAt, message.processingStartedAt),
+            terminalAt: Math.max(existing?.terminalAt ?? 0, terminalAt ?? 0) || existing?.terminalAt
+          });
+        }
+        return {
+          topicCount: threads.length,
+          userMessageCount,
+          inputTokens: threads.reduce((sum, thread) => sum + thread.inputTokens, 0),
+          outputTokens: threads.reduce((sum, thread) => sum + thread.outputTokens, 0),
+          cachedInputTokens: threads.reduce((sum, thread) => sum + thread.cachedInputTokens, 0),
+          reasoningOutputTokens: threads.reduce((sum, thread) => sum + thread.reasoningOutputTokens, 0),
+          totalTokens: threads.reduce((sum, thread) => sum + thread.totalTokens, 0),
+          totalWorkDurationMs: [...turns.values()].reduce((sum, turn) =>
+            sum + (turn.terminalAt && turn.terminalAt > turn.startedAt ? turn.terminalAt - turn.startedAt : 0), 0)
+        };
+      }),
       insertLarkMessage: vi.fn((input) => {
         const existing = larkMessagesByEventId.get(input.eventId);
         if (existing) {
@@ -6815,6 +6879,16 @@ function groupConversationRecord(overrides: Partial<ConversationRecord> = {}): C
     workspace: "/tmp/twinny/workspaces/group_oc_group",
     ...overrides
   });
+}
+
+function isUserMessageRouteKind(routeKind: LarkMessageRecord["routeKind"]): boolean {
+  return (
+    routeKind === "message" ||
+    routeKind === "goal_message" ||
+    routeKind === "steered_message" ||
+    routeKind === "queued_message" ||
+    routeKind === "side_message"
+  );
 }
 
 function codexThreadRecord(overrides: Partial<CodexThreadRecord> = {}): CodexThreadRecord {

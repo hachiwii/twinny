@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   markdownElement,
   renderTwinnyAgentCard,
+  renderTwinnyStatusCard,
   renderTwinnyThreadSummaryCard,
   type RenderTwinnyAgentCardOptions
 } from "./cards.js";
@@ -581,5 +582,117 @@ describe("renderTwinnyThreadSummaryCard", () => {
     expect(renderTwinnyThreadSummaryCard({ ...base, status: "idle" }).header).toMatchObject({ template: "blue" });
     expect(renderTwinnyThreadSummaryCard({ ...base, status: "working" }).header).toMatchObject({ template: "purple" });
     expect(renderTwinnyThreadSummaryCard({ ...base, status: "waiting" }).header).toMatchObject({ template: "yellow" });
+  });
+});
+
+describe("renderTwinnyStatusCard", () => {
+  it("renders status sections and hides system details when omitted", () => {
+    const card = renderTwinnyStatusCard({
+      topic: {
+        id: "thread_status",
+        name: "部署检查",
+        mode: "plan",
+        model: "GPT-5.5 (xhigh)",
+        contextTokens: 23_200,
+        contextWindow: 258_000,
+        userMessageCount: 23,
+        inputTokens: 123_000_000,
+        cachedInputTokens: 98_400_000,
+        outputTokens: 123_000,
+        reasoningOutputTokens: 28_290,
+        totalWorkDurationMs: 84_623_000
+      },
+      workspace: {
+        id: "group_oc_group",
+        type: "group",
+        responseMode: "at",
+        role: "owner",
+        path: "/tmp/twinny/workspaces/group_oc_group",
+        topicCount: 39,
+        userMessageCount: 239,
+        inputTokens: 324_000_000,
+        cachedInputTokens: 291_600_000,
+        outputTokens: 1_230_000,
+        reasoningOutputTokens: 147_600,
+        totalWorkDurationMs: 84_623_000
+      },
+      user: {
+        openId: "ou_owner",
+        role: "owner"
+      }
+    });
+
+    const serialized = JSON.stringify(card);
+    expect(card).toMatchObject({
+      schema: "2.0",
+      config: {
+        update_multi: true
+      },
+      body: {
+        elements: [
+          expect.objectContaining({ tag: "div", text: expect.objectContaining({ content: "话题" }) }),
+          expect.objectContaining({ tag: "markdown" }),
+          expect.objectContaining({ tag: "div", text: expect.objectContaining({ content: "工作区" }) }),
+          expect.objectContaining({ tag: "markdown" }),
+          expect.objectContaining({ tag: "div", text: expect.objectContaining({ content: "用户" }) }),
+          expect.objectContaining({ tag: "markdown" })
+        ]
+      }
+    });
+    expect(serialized).toContain("GPT-5.5 (xhigh)");
+    expect(serialized).toContain("23.2 K / 258 K (9%)");
+    expect(serialized).toContain("123 M (80% Cached)");
+    expect(serialized).toContain("123 K (23% Reasoning)");
+    expect(serialized).toContain("群聊");
+    expect(serialized).toContain("仅 at");
+    expect(serialized).not.toContain("系统");
+  });
+
+  it("renders owner-only system details when provided", () => {
+    const card = renderTwinnyStatusCard({
+      topic: {
+        mode: "default",
+        model: "GPT-5.5 (xhigh)",
+        contextTokens: 0,
+        contextWindow: 0,
+        userMessageCount: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalWorkDurationMs: 0
+      },
+      workspace: {
+        id: "p2p_ou_owner",
+        type: "p2p",
+        responseMode: "all",
+        role: "owner",
+        topicCount: 1,
+        userMessageCount: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalWorkDurationMs: 0
+      },
+      user: {
+        openId: "ou_owner",
+        role: "owner"
+      },
+      system: {
+        twinnyVersion: "v0.1.0",
+        codexVersion: "codex-cli 0.132.0",
+        larkAppId: "cli_xxx",
+        fiveHourLimit: "23% (重置于 23:59)",
+        sevenDayLimit: "45% (重置于 05/23 21:23)"
+      }
+    });
+
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain("系统");
+    expect(serialized).toContain("Twinny 版本");
+    expect(serialized).toContain("CodeX 版本");
+    expect(serialized).toContain("cli_xxx");
+    expect(serialized).toContain("23% (重置于 23:59)");
   });
 });

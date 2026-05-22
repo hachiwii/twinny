@@ -392,6 +392,8 @@ export function adaptConversationRepository(repository: ConversationRepository) 
     updateCodexThreadMode: repository.updateCodexThreadMode.bind(repository),
     updateCodexThreadStatus: repository.updateCodexThreadStatus.bind(repository),
     getCodexThreadWorkStats: repository.getCodexThreadWorkStats.bind(repository),
+    getCodexThreadStatusStats: repository.getCodexThreadStatusStats.bind(repository),
+    getConversationStatusStats: repository.getConversationStatusStats.bind(repository),
     insertLarkMessage: repository.insertLarkMessage.bind(repository),
     markLarkMessageQueued: repository.markLarkMessageQueued.bind(repository),
     markLarkMessageRecalled: repository.markLarkMessageRecalled.bind(repository),

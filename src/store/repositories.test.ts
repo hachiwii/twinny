@@ -405,6 +405,21 @@ describe("ConversationRepository", () => {
       turnCount: 1,
       totalWorkDurationMs: 200
     });
+    expect(repo.getCodexThreadStatusStats("thread-1")).toEqual({
+      userMessageCount: 2,
+      turnCount: 1,
+      totalWorkDurationMs: 200
+    });
+    expect(repo.getConversationStatusStats("p2p_ou_456")).toEqual({
+      topicCount: 1,
+      userMessageCount: 5,
+      inputTokens: 80,
+      outputTokens: 40,
+      cachedInputTokens: 20,
+      reasoningOutputTokens: 10,
+      totalTokens: 123,
+      totalWorkDurationMs: 200
+    });
 
     now = 1750;
     expect(

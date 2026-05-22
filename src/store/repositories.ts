@@ -81,6 +81,21 @@ interface CodexThreadWorkStatsRow {
   total_work_duration_ms: number | null;
 }
 
+interface CodexThreadStatusStatsRow extends CodexThreadWorkStatsRow {
+  user_message_count: number;
+}
+
+interface ConversationStatusStatsRow {
+  topic_count: number;
+  user_message_count: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_input_tokens: number | null;
+  reasoning_output_tokens: number | null;
+  total_tokens: number | null;
+  total_work_duration_ms: number | null;
+}
+
 interface LarkMessageRow {
   id: number;
   lark_message_id: string | null;
@@ -170,6 +185,21 @@ export interface CodexThreadWorkStats {
   totalWorkDurationMs: number;
 }
 
+export interface CodexThreadStatusStats extends CodexThreadWorkStats {
+  userMessageCount: number;
+}
+
+export interface ConversationStatusStats {
+  topicCount: number;
+  userMessageCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+  totalWorkDurationMs: number;
+}
+
 export interface ReplaceCodexThreadForLarkThreadInput {
   conversationKey: string;
   larkThreadId: string;
@@ -225,6 +255,8 @@ export class ConversationRepository {
   private readonly updateCodexThreadStatusStatement: Database.Statement<[CodexThreadStatus, number, string, string]>;
   private readonly updateCodexThreadGoalStatusStatement: Database.Statement<[CodexThreadGoalStatus, number | null, number, string]>;
   private readonly selectCodexThreadWorkStats: Database.Statement<[string], CodexThreadWorkStatsRow>;
+  private readonly selectCodexThreadStatusStats: Database.Statement<[Record<string, unknown>], CodexThreadStatusStatsRow>;
+  private readonly selectConversationStatusStats: Database.Statement<[Record<string, unknown>], ConversationStatusStatsRow>;
   private readonly insertLarkMessageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly selectLarkMessageById: Database.Statement<[string], LarkMessageRow>;
   private readonly selectLarkMessageByEventId: Database.Statement<[string], LarkMessageRow>;
@@ -522,6 +554,91 @@ export class ConversationRepository {
           AND processing_started_at IS NOT NULL
           AND route_kind <> 'side_message'
         GROUP BY codex_turn_id
+      )
+    `);
+    this.selectCodexThreadStatusStats = this.db.prepare(`
+      SELECT
+        (
+          SELECT COUNT(*)
+          FROM lark_messages
+          WHERE thread_id = @codexThreadId
+            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'side_message')
+        ) AS user_message_count,
+        COUNT(*) AS turn_count,
+        COALESCE(SUM(CASE
+          WHEN terminal_at IS NOT NULL AND started_at IS NOT NULL AND terminal_at > started_at
+          THEN terminal_at - started_at
+          ELSE 0
+        END), 0) AS total_work_duration_ms
+      FROM (
+        SELECT
+          codex_turn_id,
+          MIN(processing_started_at) AS started_at,
+          MAX(COALESCE(completed_at, failed_at, cleared_at)) AS terminal_at
+        FROM lark_messages
+        WHERE thread_id = @codexThreadId
+          AND codex_turn_id IS NOT NULL
+          AND processing_started_at IS NOT NULL
+          AND route_kind <> 'side_message'
+        GROUP BY codex_turn_id
+      )
+    `);
+    this.selectConversationStatusStats = this.db.prepare(`
+      SELECT
+        (
+          SELECT COUNT(*)
+          FROM threads
+          WHERE conversation_key = @conversationKey
+        ) AS topic_count,
+        (
+          SELECT COUNT(*)
+          FROM lark_messages
+          WHERE conversation_key = @conversationKey
+            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'side_message')
+        ) AS user_message_count,
+        (
+          SELECT COALESCE(SUM(input_tokens), 0)
+          FROM threads
+          WHERE conversation_key = @conversationKey
+        ) AS input_tokens,
+        (
+          SELECT COALESCE(SUM(output_tokens), 0)
+          FROM threads
+          WHERE conversation_key = @conversationKey
+        ) AS output_tokens,
+        (
+          SELECT COALESCE(SUM(cached_input_tokens), 0)
+          FROM threads
+          WHERE conversation_key = @conversationKey
+        ) AS cached_input_tokens,
+        (
+          SELECT COALESCE(SUM(reasoning_output_tokens), 0)
+          FROM threads
+          WHERE conversation_key = @conversationKey
+        ) AS reasoning_output_tokens,
+        (
+          SELECT COALESCE(SUM(total_tokens), 0)
+          FROM threads
+          WHERE conversation_key = @conversationKey
+        ) AS total_tokens,
+        COALESCE(SUM(CASE
+          WHEN terminal_at IS NOT NULL AND started_at IS NOT NULL AND terminal_at > started_at
+          THEN terminal_at - started_at
+          ELSE 0
+        END), 0) AS total_work_duration_ms
+      FROM (
+        SELECT
+          thread_id,
+          codex_turn_id,
+          MIN(processing_started_at) AS started_at,
+          MAX(COALESCE(completed_at, failed_at, cleared_at)) AS terminal_at
+        FROM lark_messages
+        WHERE conversation_key = @conversationKey
+          AND thread_id IS NOT NULL
+          AND codex_turn_id IS NOT NULL
+          AND processing_started_at IS NOT NULL
+          AND route_kind <> 'side_message'
+        GROUP BY thread_id, codex_turn_id
       )
     `);
     this.insertLarkMessageStatement = this.db.prepare(`
@@ -972,6 +1089,31 @@ export class ConversationRepository {
     const row = this.selectCodexThreadWorkStats.get(codexThreadId);
     return {
       turnCount: Math.trunc(row?.turn_count ?? 0),
+      totalWorkDurationMs: Math.trunc(row?.total_work_duration_ms ?? 0)
+    };
+  }
+
+  getCodexThreadStatusStats(codexThreadId: string): CodexThreadStatusStats {
+    assertNonEmpty(codexThreadId, "codexThreadId");
+    const row = this.selectCodexThreadStatusStats.get({ codexThreadId });
+    return {
+      userMessageCount: Math.trunc(row?.user_message_count ?? 0),
+      turnCount: Math.trunc(row?.turn_count ?? 0),
+      totalWorkDurationMs: Math.trunc(row?.total_work_duration_ms ?? 0)
+    };
+  }
+
+  getConversationStatusStats(conversationKey: string): ConversationStatusStats {
+    assertValidConversationKey(conversationKey);
+    const row = this.selectConversationStatusStats.get({ conversationKey });
+    return {
+      topicCount: Math.trunc(row?.topic_count ?? 0),
+      userMessageCount: Math.trunc(row?.user_message_count ?? 0),
+      inputTokens: Math.trunc(row?.input_tokens ?? 0),
+      outputTokens: Math.trunc(row?.output_tokens ?? 0),
+      cachedInputTokens: Math.trunc(row?.cached_input_tokens ?? 0),
+      reasoningOutputTokens: Math.trunc(row?.reasoning_output_tokens ?? 0),
+      totalTokens: Math.trunc(row?.total_tokens ?? 0),
       totalWorkDurationMs: Math.trunc(row?.total_work_duration_ms ?? 0)
     };
   }

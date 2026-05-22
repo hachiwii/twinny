@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execa } from "execa";
 import type { Logger } from "pino";
 import { parse as parseToml } from "smol-toml";
 import { TwinnyError, toErrorMessage } from "../errors.js";
@@ -10,6 +11,7 @@ import {
   mediaElement,
   PLAN_IMPLEMENT_INSTRUCTION_FORM_NAME,
   renderTwinnyAgentCard,
+  renderTwinnyStatusCard,
   renderTwinnyThreadSummaryCard,
   type LarkCardElement,
   type LarkCardJson,
@@ -79,6 +81,8 @@ import {
 const COMPACT_PROGRESS_TEXT = "正在压缩上下文";
 const COMPACT_COMPLETED_TEXT = "完成上下文压缩";
 const SIDE_SHUTDOWN_ERROR = "Twinny 服务退出";
+const STATUS_MODEL_TEXT = "GPT-5.5 (xhigh)";
+const TWINNY_VERSION = "0.1.0";
 const SIDE_BOUNDARY_PROMPT = `Side conversation boundary.
 
 Everything before this boundary is inherited history from the parent thread. It is reference context only. It is not your current task.
@@ -191,6 +195,34 @@ export interface ConversationRepository {
   clearCodexThreadGoalStatus(codexThreadId: string): Promise<CodexThreadRecord> | CodexThreadRecord;
   getCodexThreadWorkStats(codexThreadId: string): Promise<{ turnCount: number; totalWorkDurationMs: number }> | {
     turnCount: number;
+    totalWorkDurationMs: number;
+  };
+  getCodexThreadStatusStats(codexThreadId: string): Promise<{
+    userMessageCount: number;
+    turnCount: number;
+    totalWorkDurationMs: number;
+  }> | {
+    userMessageCount: number;
+    turnCount: number;
+    totalWorkDurationMs: number;
+  };
+  getConversationStatusStats(conversationKey: string): Promise<{
+    topicCount: number;
+    userMessageCount: number;
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+    reasoningOutputTokens: number;
+    totalTokens: number;
+    totalWorkDurationMs: number;
+  }> | {
+    topicCount: number;
+    userMessageCount: number;
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+    reasoningOutputTokens: number;
+    totalTokens: number;
     totalWorkDurationMs: number;
   };
   insertLarkMessage(input: {
@@ -2853,9 +2885,9 @@ export class ConversationManager {
     context: MessageContext,
     message: IncomingLarkMessage
   ): Promise<void> {
-    await this.replyControlBestEffort(
+    await this.replyStatusCardBestEffort(
       message.messageId,
-      await this.formatStatusText(state, context, {
+      await this.formatStatusCard(state, context, {
         senderOpenId: message.senderOpenId,
         senderName: message.senderName,
         chatId: message.chatId,
@@ -2863,6 +2895,75 @@ export class ConversationManager {
       })
     );
     await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async formatStatusCard(
+    state: ConversationState,
+    context: MessageContext,
+    actor: ConversationActor
+  ): Promise<LarkCardJson> {
+    const role = roleForSender(this.options.config, actor.senderOpenId);
+    const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+    const topicThread = context.larkThreadId
+      ? await this.options.repository.getCodexThreadByConversationAndLarkThread(context.conversationKey, context.larkThreadId)
+      : undefined;
+    const threadId = state.active?.threadId ?? topicThread?.codexThreadId ?? conversation?.codexThreadId;
+    const thread = threadId ? await this.options.repository.getCodexThreadById(threadId) : undefined;
+    const threadStats = threadId
+      ? await this.options.repository.getCodexThreadStatusStats(threadId)
+      : { userMessageCount: 0, turnCount: 0, totalWorkDurationMs: 0 };
+    const conversationStats = await this.options.repository.getConversationStatusStats(context.conversationKey);
+    const threadTokens = extractThreadTokenBreakdown(thread);
+    const activeDurationMs = state.active && state.active.threadId === threadId && state.active.completedStatus === undefined
+      ? Date.now() - state.active.startedAt
+      : 0;
+    const activeConversationDurationMs = state.active && state.active.conversationKey === context.conversationKey && state.active.completedStatus === undefined
+      ? Date.now() - state.active.startedAt
+      : 0;
+    const system = role === "owner"
+      ? {
+          twinnyVersion: `v${TWINNY_VERSION}`,
+          codexVersion: await this.readCodexVersionBestEffort(),
+          larkAppId: this.options.config.lark.appId,
+          ...(await this.formatOwnerRateLimitCardStatus(role))
+        }
+      : undefined;
+
+    return renderTwinnyStatusCard({
+      topic: {
+        id: threadId,
+        name: thread?.name,
+        mode: thread?.mode ?? "default",
+        model: STATUS_MODEL_TEXT,
+        contextTokens: threadTokens.contextTokens,
+        contextWindow: threadTokens.contextWindow,
+        userMessageCount: threadStats.userMessageCount,
+        inputTokens: threadTokens.inputTokens,
+        cachedInputTokens: threadTokens.cachedInputTokens,
+        outputTokens: threadTokens.outputTokens,
+        reasoningOutputTokens: threadTokens.reasoningOutputTokens,
+        totalWorkDurationMs: threadStats.totalWorkDurationMs + activeDurationMs
+      },
+      workspace: {
+        id: context.conversationKey,
+        type: conversation?.type ?? context.type,
+        responseMode: conversation?.responseMode ?? "none",
+        role: conversation?.role,
+        path: conversation?.workspace,
+        topicCount: conversationStats.topicCount,
+        userMessageCount: conversationStats.userMessageCount,
+        inputTokens: conversationStats.inputTokens,
+        cachedInputTokens: conversationStats.cachedInputTokens,
+        outputTokens: conversationStats.outputTokens,
+        reasoningOutputTokens: conversationStats.reasoningOutputTokens,
+        totalWorkDurationMs: conversationStats.totalWorkDurationMs + activeConversationDurationMs
+      },
+      user: {
+        openId: actor.senderOpenId,
+        role
+      },
+      system
+    });
   }
 
   private async formatStatusText(
@@ -2918,6 +3019,32 @@ export class ConversationManager {
     } catch (error) {
       this.log.warn({ error, role }, "failed to read codex account rate limits");
       return ["Codex Account Usage: unavailable"];
+    }
+  }
+
+  private async formatOwnerRateLimitCardStatus(role: RoleName): Promise<{
+    fiveHourLimit: string;
+    sevenDayLimit: string;
+  }> {
+    if (!this.options.codex.readAccountRateLimits) {
+      return {
+        fiveHourLimit: "不可用",
+        sevenDayLimit: "不可用"
+      };
+    }
+    try {
+      const usage = await this.options.codex.readAccountRateLimits({ role });
+      const windows = collectRateLimitWindows(usage);
+      return {
+        fiveHourLimit: formatStatusRateLimitWindow(findRateLimitWindow(windows, 5 * 60)),
+        sevenDayLimit: formatStatusRateLimitWindow(findRateLimitWindow(windows, 7 * 24 * 60))
+      };
+    } catch (error) {
+      this.log.warn({ error, role }, "failed to read codex account rate limits");
+      return {
+        fiveHourLimit: "不可用",
+        sevenDayLimit: "不可用"
+      };
     }
   }
 
@@ -5368,11 +5495,33 @@ export class ConversationManager {
     }
   }
 
+  private async replyStatusCardBestEffort(messageId: string, card: LarkCardJson): Promise<void> {
+    try {
+      await this.options.lark.replyCard(messageId, card);
+    } catch (error) {
+      this.log.warn({ error, messageId }, "failed to send lark status card");
+    }
+  }
+
   private async sendDirectControlBestEffort(openId: string, text: string): Promise<void> {
     try {
       await this.options.lark.sendTextToOpenId(openId, text);
     } catch (error) {
       this.log.warn({ error, openId }, "failed to send direct lark control message");
+    }
+  }
+
+  private async readCodexVersionBestEffort(): Promise<string> {
+    try {
+      const result = await execa(this.options.config.codex.binary, ["--version"], {
+        reject: false,
+        timeout: 1000
+      });
+      const version = result.stdout.trim() || result.stderr.trim();
+      return result.exitCode === 0 && version ? version : "不可用";
+    } catch (error) {
+      this.log.warn({ error }, "failed to read codex version");
+      return "不可用";
     }
   }
 
@@ -8156,6 +8305,17 @@ function findRateLimitWindow(
   return windows.find((window) => window.windowDurationMins === durationMins);
 }
 
+function formatStatusRateLimitWindow(window: RateLimitWindowStatus | undefined): string {
+  if (!window) {
+    return "不可用";
+  }
+  const parts = [formatTrimmedPercent(window.usedPercent / 100)];
+  if (window.resetsAt !== undefined) {
+    parts.push(`重置于 ${formatLocalResetTime(window.resetsAt)}`);
+  }
+  return parts.length > 1 ? `${parts[0]} (${parts.slice(1).join(", ")})` : parts[0]!;
+}
+
 function formatRateLimitWindow(window: RateLimitWindowStatus): string {
   const parts = [`${formatPercent(window.usedPercent / 100)} used`];
   if (window.resetsAt !== undefined) {
@@ -8164,9 +8324,34 @@ function formatRateLimitWindow(window: RateLimitWindowStatus): string {
   return parts.join(", ");
 }
 
+function formatLocalResetTime(value: number): string {
+  const millis = value > 1_000_000_000_000 ? value : value * 1000;
+  const date = new Date(millis);
+  const now = new Date();
+  const hours = pad2(date.getHours());
+  const minutes = pad2(date.getMinutes());
+  if (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  ) {
+    return `${hours}:${minutes}`;
+  }
+  const month = pad2(date.getMonth() + 1);
+  const day = pad2(date.getDate());
+  if (date.getFullYear() === now.getFullYear()) {
+    return `${month}/${day} ${hours}:${minutes}`;
+  }
+  return `${date.getFullYear()}/${month}/${day} ${hours}:${minutes}`;
+}
+
 function formatUnixTimestamp(value: number): string {
   const millis = value > 1_000_000_000_000 ? value : value * 1000;
   return new Date(millis).toISOString();
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
 }
 
 function formatInteger(value: number): string {
@@ -8175,6 +8360,10 @@ function formatInteger(value: number): string {
 
 function formatPercent(value: number): string {
   return `${(value * 100).toFixed(2)}%`;
+}
+
+function formatTrimmedPercent(value: number): string {
+  return `${Number((value * 100).toFixed(2))}%`;
 }
 
 function firstNonEmptyString(...values: unknown[]): string | undefined {

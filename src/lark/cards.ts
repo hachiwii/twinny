@@ -1,4 +1,10 @@
-import type { CodexThreadMode, CodexThreadStatus } from "../types.js";
+import type {
+  CodexThreadMode,
+  CodexThreadStatus,
+  ConversationResponseMode,
+  ConversationType,
+  RoleName
+} from "../types.js";
 
 export type LarkCardJson = Record<string, unknown>;
 export type LarkCardElement = Record<string, unknown>;
@@ -110,6 +116,48 @@ export interface RenderTwinnyThreadSummaryCardOptions {
   iconImageKey?: string;
 }
 
+export interface RenderTwinnyStatusCardOptions {
+  topic: {
+    id?: string;
+    name?: string;
+    mode: CodexThreadMode;
+    model: string;
+    contextTokens: number;
+    contextWindow: number;
+    userMessageCount: number;
+    inputTokens: number;
+    cachedInputTokens: number;
+    outputTokens: number;
+    reasoningOutputTokens: number;
+    totalWorkDurationMs: number;
+  };
+  workspace: {
+    id: string;
+    type: ConversationType;
+    responseMode: ConversationResponseMode;
+    role?: RoleName;
+    path?: string;
+    topicCount: number;
+    userMessageCount: number;
+    inputTokens: number;
+    cachedInputTokens: number;
+    outputTokens: number;
+    reasoningOutputTokens: number;
+    totalWorkDurationMs: number;
+  };
+  user: {
+    openId: string;
+    role: RoleName;
+  };
+  system?: {
+    twinnyVersion: string;
+    codexVersion: string;
+    larkAppId: string;
+    fiveHourLimit: string;
+    sevenDayLimit: string;
+  };
+}
+
 const STATUS_HEADER: Record<TwinnyAgentCardStatus, { title: string; subtitle?: string; template: string }> = {
   working: { title: "工作中...", template: "purple" },
   finished: { title: "已完成", template: "green" },
@@ -178,6 +226,73 @@ export function renderTwinnyAgentCard(options: RenderTwinnyAgentCardOptions): La
           }
         : {}),
       padding: "12px 12px 12px 12px"
+    }
+  };
+}
+
+export function renderTwinnyStatusCard(options: RenderTwinnyStatusCardOptions): LarkCardJson {
+  const elements: LarkCardElement[] = [
+    ...statusSection("话题", "command_outlined", [
+      ["ID", options.topic.id ?? "未创建"],
+      ["名称", options.topic.name ?? "未创建"],
+      ["模式", options.topic.mode],
+      ["模型", options.topic.model],
+      ["上下文窗口", formatStatusContext(options.topic.contextTokens, options.topic.contextWindow)],
+      ["用户消息数", formatInteger(options.topic.userMessageCount)],
+      ["输入 Tokens", formatStatusInputTokens(options.topic.inputTokens, options.topic.cachedInputTokens)],
+      ["输出 Tokens", formatStatusOutputTokens(options.topic.outputTokens, options.topic.reasoningOutputTokens)],
+      ["总工作时长", formatElapsed(options.topic.totalWorkDurationMs)]
+    ]),
+    ...statusSection("工作区", "home_outlined", [
+      ["ID", options.workspace.id],
+      ["类型", formatConversationType(options.workspace.type)],
+      ["响应模式", formatResponseMode(options.workspace.responseMode)],
+      ["配置", options.workspace.role ?? "未创建"],
+      ["路径", options.workspace.path ?? "未创建"],
+      ["话题数", formatInteger(options.workspace.topicCount)],
+      ["用户消息数", formatInteger(options.workspace.userMessageCount)],
+      ["总输入 Token", formatStatusInputTokens(options.workspace.inputTokens, options.workspace.cachedInputTokens)],
+      ["总输出 Token", formatStatusOutputTokens(options.workspace.outputTokens, options.workspace.reasoningOutputTokens)],
+      ["总工作时长", formatElapsed(options.workspace.totalWorkDurationMs)]
+    ]),
+    ...statusSection("用户", "member_outlined", [
+      ["ID", options.user.openId],
+      ["身份", options.user.role]
+    ])
+  ];
+
+  if (options.system) {
+    elements.push(...statusSection("系统", "setting_outlined", [
+      ["Twinny 版本", options.system.twinnyVersion],
+      ["CodeX 版本", options.system.codexVersion],
+      ["Lark App ID", options.system.larkAppId],
+      ["5h Limit", options.system.fiveHourLimit],
+      ["7d Limit", options.system.sevenDayLimit]
+    ]));
+  }
+
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      style: {
+        text_size: {
+          normal_v2: {
+            default: "normal",
+            pc: "normal",
+            mobile: "heading"
+          }
+        }
+      }
+    },
+    body: {
+      direction: "vertical",
+      horizontal_spacing: "8px",
+      vertical_spacing: "8px",
+      horizontal_align: "left",
+      vertical_align: "top",
+      padding: "12px 12px 12px 12px",
+      elements
     }
   };
 }
@@ -283,6 +398,98 @@ function threadSummaryHeaderIcon(iconImageKey: string | undefined): Record<strin
         tag: "standard_icon",
         token: "table-group_outlined"
       };
+}
+
+function statusSection(title: string, iconToken: string, rows: Array<[string, string]>): LarkCardElement[] {
+  return [
+    {
+      tag: "div",
+      text: {
+        tag: "plain_text",
+        content: title,
+        text_size: "heading",
+        text_align: "left",
+        text_color: "default"
+      },
+      icon: {
+        tag: "standard_icon",
+        token: iconToken,
+        color: "grey"
+      },
+      margin: "0px 0px 0px 0px"
+    },
+    markdownElement(statusMarkdownTable(rows))
+  ];
+}
+
+function statusMarkdownTable(rows: Array<[string, string]>): string {
+  return [
+    "| 字段 | 值 |",
+    "| -------- | -------- |",
+    ...rows.map(([field, value]) => `| ${escapeTableCell(field)} | ${escapeTableCell(value)} |`)
+  ].join("\n");
+}
+
+function escapeTableCell(value: string): string {
+  return value.replace(/\r?\n/g, " ").replace(/\|/g, "\\|").trim();
+}
+
+function formatConversationType(type: ConversationType): string {
+  switch (type) {
+    case "p2p":
+      return "单聊";
+    case "group":
+      return "群聊";
+    case "topic_group":
+      return "话题群";
+  }
+}
+
+function formatResponseMode(mode: ConversationResponseMode): string {
+  switch (mode) {
+    case "all":
+      return "全部";
+    case "at":
+      return "仅 at";
+    case "none":
+      return "未激活";
+  }
+}
+
+function formatStatusContext(contextTokens: number, contextWindow: number): string {
+  const context = Math.max(0, Math.trunc(contextTokens));
+  const window = Math.max(0, Math.trunc(contextWindow));
+  const percentage = window > 0 ? Math.min(100, Math.max(0, (context / window) * 100)) : 0;
+  return `${formatCompactTokenCount(context)} / ${formatCompactTokenCount(window)} (${Math.round(percentage)}%)`;
+}
+
+function formatStatusInputTokens(inputTokens: number, cachedInputTokens: number): string {
+  const input = Math.max(0, Math.trunc(inputTokens));
+  const cacheRatio = formatCachedInputRatio(input, cachedInputTokens);
+  return cacheRatio
+    ? `${formatCompactTokenCount(input)} (${cacheRatio} Cached)`
+    : formatCompactTokenCount(input);
+}
+
+function formatStatusOutputTokens(outputTokens: number, reasoningOutputTokens: number): string {
+  const output = Math.max(0, Math.trunc(outputTokens));
+  const reasoningRatio = formatReasoningOutputRatio(output, reasoningOutputTokens);
+  return reasoningRatio
+    ? `${formatCompactTokenCount(output)} (${reasoningRatio} Reasoning)`
+    : formatCompactTokenCount(output);
+}
+
+function formatReasoningOutputRatio(outputTokens: number, reasoningOutputTokens: number): string | undefined {
+  if (outputTokens <= 0) {
+    return undefined;
+  }
+  const reasoning = Math.max(0, Math.trunc(reasoningOutputTokens));
+  const percentage = Math.min(100, Math.max(0, (reasoning / outputTokens) * 100));
+  return `${Math.round(percentage)}%`;
+}
+
+function formatInteger(value: number): string {
+  return Math.max(0, Math.trunc(value)).toLocaleString("en-US");
 }
 
 export function markdownElement(content: string, extra: Record<string, unknown> = {}): LarkCardElement {
