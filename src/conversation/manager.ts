@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { execa } from "execa";
 import type { Logger } from "pino";
 import { parse as parseToml } from "smol-toml";
 import { TwinnyError, toErrorMessage } from "../errors.js";
@@ -404,6 +403,7 @@ export interface CodexBridge {
     threadId: string;
     turnId: string;
   }): Promise<void>;
+  readCodexVersion?(params: { role: RoleName }): Promise<string> | string;
   readAccountRateLimits?(params: { role: RoleName }): Promise<unknown>;
   setThreadGoal?(params: {
     role: RoleName;
@@ -2909,7 +2909,7 @@ export class ConversationManager {
     const system = role === "owner"
       ? {
           twinnyVersion: `v${TWINNY_VERSION}`,
-          codexVersion: await this.readCodexVersionBestEffort(),
+          codexVersion: await this.readCodexVersionBestEffort(role),
           larkAppId: this.options.config.lark.appId,
           ...(await this.formatOwnerRateLimitCardStatus(role))
         }
@@ -5738,18 +5738,9 @@ export class ConversationManager {
     }
   }
 
-  private async readCodexVersionBestEffort(): Promise<string> {
-    try {
-      const result = await execa(this.options.config.codex.binary, ["--version"], {
-        reject: false,
-        timeout: 1000
-      });
-      const version = result.stdout.trim() || result.stderr.trim();
-      return result.exitCode === 0 && version ? version : "不可用";
-    } catch (error) {
-      this.log.warn({ error }, "failed to read codex version");
-      return "不可用";
-    }
+  private async readCodexVersionBestEffort(role: RoleName): Promise<string> {
+    const version = await this.options.codex.readCodexVersion?.({ role });
+    return version || "不可用";
   }
 
   private async recallMessageBestEffort(messageId: string, failureMessage: string): Promise<void> {

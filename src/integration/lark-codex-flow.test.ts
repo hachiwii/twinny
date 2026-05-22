@@ -2262,6 +2262,7 @@ function adaptCodexPool(pool: RoleCodexAppServerPool): CodexBridge {
     interruptTurn: async ({ role, threadId, turnId }) => {
       await pool.get(role).interruptTurn({ threadId, turnId });
     },
+    readCodexVersion: ({ role }) => pool.get(role).readCodexVersion(),
     readAccountRateLimits: async ({ role }) => pool.get(role).readAccountRateLimits()
   };
 }
@@ -2329,6 +2330,11 @@ import readline from "node:readline";
 
 const traceFile = ${JSON.stringify(traceFile)};
 const scriptFile = ${JSON.stringify(scriptFile)};
+if (process.argv.includes("--version")) {
+  process.stdout.write("fake-codex 1.2.3\\n");
+  process.exit(0);
+}
+
 const script = fs.readFileSync(scriptFile, "utf8")
   .split(/\\r?\\n/)
   .filter(Boolean)

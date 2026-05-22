@@ -586,6 +586,9 @@ function adaptCodexPool(pool: RoleCodexAppServerPool) {
     }): Promise<void> => {
       await pool.get(role).interruptTurn({ threadId, turnId });
     },
+    readCodexVersion: ({ role }: { role: RoleName }): string => {
+      return pool.get(role).readCodexVersion();
+    },
     readAccountRateLimits: async ({ role }: { role: RoleName }): Promise<unknown> => {
       return pool.get(role).readAccountRateLimits();
     }

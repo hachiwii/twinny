@@ -1465,6 +1465,7 @@ describe("ConversationManager", () => {
     expect(serialized).toContain("用户");
     expect(serialized).toContain("ou_guest");
     expect(serialized).not.toContain("系统");
+    expect(codex.readCodexVersion).not.toHaveBeenCalled();
     expect(lark.sendEphemeralCardToChatId).not.toHaveBeenCalled();
     expect(lark.replyText).not.toHaveBeenCalled();
     expect(codex.readAccountRateLimits).not.toHaveBeenCalled();
@@ -1564,6 +1565,7 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m1", "/status", { senderOpenId: "ou_owner", senderName: "Owner" }));
 
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    expect(codex.readCodexVersion).toHaveBeenCalledWith({ role: "owner" });
     expect(codex.readAccountRateLimits).toHaveBeenCalledWith({ role: "owner" });
     const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
     const serialized = JSON.stringify(card);
@@ -1571,6 +1573,7 @@ describe("ConversationManager", () => {
     expect(serialized).toContain("系统");
     expect(serialized).toContain("Twinny 版本");
     expect(serialized).toContain("CodeX 版本");
+    expect(serialized).toContain("fake-codex 1.2.3");
     expect(serialized).toContain("Lark App ID");
     expect(serialized).toContain("cli_xxx");
     expect(serialized).toContain("12.5%");
@@ -6845,6 +6848,7 @@ function createCodex(overrides: Partial<CodexBridge> = {}): CodexBridge {
     }),
     steerTurn: vi.fn(async () => undefined),
     interruptTurn: vi.fn(async () => undefined),
+    readCodexVersion: vi.fn(() => "fake-codex 1.2.3"),
     setThreadGoal: vi.fn(async ({ threadId, objective }) => ({
       threadId,
       objective,

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import path from "node:path";
+import { execa } from "execa";
 import { ensureGuestWorkspaceProjectTrusted } from "../roles/index.js";
 import type { CodexThreadNameUpdate, RoleName } from "../types.js";
 import { CodexProtocolClient, createInitializeParams, type CodexNotificationMessage, type InitializeResponse } from "./protocol.js";
@@ -88,6 +89,7 @@ export class CodexAppServer extends EventEmitter {
   private protocolClient: CodexProtocolClient | undefined;
   private initializeResponse: InitializeResponse | undefined;
   private startPromise: Promise<InitializeResponse> | undefined;
+  private codexVersion: string | undefined;
 
   constructor(private readonly options: CodexAppServerOptions) {
     super();
@@ -102,6 +104,10 @@ export class CodexAppServer extends EventEmitter {
 
   get initialized(): InitializeResponse | undefined {
     return this.initializeResponse;
+  }
+
+  readCodexVersion(): string {
+    return this.codexVersion ?? "不可用";
   }
 
   async start(): Promise<InitializeResponse> {
@@ -121,8 +127,11 @@ export class CodexAppServer extends EventEmitter {
   }
 
   private async startFresh(): Promise<InitializeResponse> {
+    const codexVersion = await this.readCodexBinaryVersionBestEffort();
+
     if (this.protocolClient) {
       this.initializeResponse = await this.protocolClient.initialize(createInitializeParams(this.options.clientVersion));
+      this.codexVersion = codexVersion;
       return this.initializeResponse;
     }
 
@@ -156,6 +165,7 @@ export class CodexAppServer extends EventEmitter {
     protocol.start();
 
     this.initializeResponse = await protocol.initialize(createInitializeParams(this.options.clientVersion));
+    this.codexVersion = codexVersion;
     return this.initializeResponse;
   }
 
@@ -276,6 +286,20 @@ export class CodexAppServer extends EventEmitter {
       return;
     }
     await ensureGuestWorkspaceProjectTrusted(this.options.codexHome, cwd);
+  }
+
+  private async readCodexBinaryVersionBestEffort(): Promise<string> {
+    try {
+      const result = await execa(this.options.binary, ["--version"], {
+        env: buildCodexAppServerEnv(this.options.codexHome, this.options.env ?? process.env),
+        reject: false,
+        timeout: 1000
+      });
+      const version = result.stdout.trim() || result.stderr.trim();
+      return result.exitCode === 0 && version ? version : "不可用";
+    } catch {
+      return "不可用";
+    }
   }
 }
 

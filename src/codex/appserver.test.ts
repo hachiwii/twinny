@@ -67,6 +67,7 @@ describe("CodexAppServer", () => {
         platformOs: "macos",
         hasLarkSecret: false
       });
+      expect(server.readCodexVersion()).toBe("fake-codex 1.2.3");
 
       await expect(server.startThread(workspace)).resolves.toMatchObject({
         thread: { id: "thread-start" }
@@ -349,6 +350,11 @@ import fs from "node:fs";
 import readline from "node:readline";
 
 const captureFile = ${JSON.stringify(captureFile)};
+if (process.argv.includes("--version")) {
+  process.stdout.write("fake-codex 1.2.3\\n");
+  process.exit(0);
+}
+
 const rl = readline.createInterface({ input: process.stdin });
 const goals = new Map();
 
@@ -533,6 +539,11 @@ import readline from "node:readline";
 
 const captureFile = ${JSON.stringify(captureFile)};
 const runFile = ${JSON.stringify(runFile)};
+if (process.argv.includes("--version")) {
+  process.stdout.write("fake-codex 1.2.3\\n");
+  process.exit(0);
+}
+
 const previousRuns = fs.existsSync(runFile) ? Number(fs.readFileSync(runFile, "utf8")) : 0;
 const run = previousRuns + 1;
 fs.writeFileSync(runFile, String(run));
