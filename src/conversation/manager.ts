@@ -59,6 +59,7 @@ import type {
   ProfileName,
   CodexThreadRecord,
   TwinnyConfig,
+  UserIdentity,
   LarkChatMode,
   LarkGroupMessageType
 } from "../types.js";
@@ -3172,7 +3173,7 @@ export class ConversationManager {
       },
       user: {
         openId: actor.senderOpenId,
-        profile
+        identity: userIdentityForSender(this.options.config, actor.senderOpenId)
       },
       hideAction: context.type === "group"
         ? {
@@ -9507,6 +9508,10 @@ function isCodexProtocolClosedError(error: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function userIdentityForSender(config: TwinnyConfig, senderOpenId: string): UserIdentity {
+  return senderOpenId === config.owner.openId ? "owner" : "guest";
 }
 
 function conversationNameForMessage(config: TwinnyConfig, profile: ProfileName, message: IncomingLarkMessage): string {

@@ -1,4 +1,5 @@
 export type ProfileName = string;
+export type UserIdentity = "owner" | "guest";
 
 export const HOST_PROFILE_NAME = "host";
 export const GUEST_PROFILE_NAME = "guest";

@@ -1634,6 +1634,7 @@ describe("ConversationManager", () => {
     expect(serialized).toContain("p2p_ou_guest");
     expect(serialized).toContain("用户");
     expect(serialized).toContain("ou_guest");
+    expect(serialized).toContain("| 身份 | guest |");
     expect(serialized).not.toContain("系统");
     expect(codex.readCodexVersion).not.toHaveBeenCalled();
     expect(lark.sendEphemeralCardToChatId).not.toHaveBeenCalled();
@@ -1768,6 +1769,8 @@ describe("ConversationManager", () => {
     const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
     const serialized = JSON.stringify(card);
     expect(serialized).toContain("p2p_ou_owner");
+    expect(serialized).toContain("| 身份 | owner |");
+    expect(serialized).not.toContain("| 身份 | host |");
     expect(serialized).toContain("系统");
     expect(serialized).toContain("Twinny 版本");
     expect(serialized).toContain("CodeX 版本");

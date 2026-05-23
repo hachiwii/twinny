@@ -3,7 +3,8 @@ import type {
   CodexThreadStatus,
   ConversationResponseMode,
   ConversationType,
-  ProfileName
+  ProfileName,
+  UserIdentity
 } from "../types.js";
 import { isPositionInTextRanges, markdownCodeRanges, markdownLines } from "../markdown.js";
 
@@ -154,7 +155,7 @@ export interface RenderTwinnyStatusCardOptions {
   };
   user: {
     openId: string;
-    profile: ProfileName;
+    identity: UserIdentity;
   };
   system?: {
     twinnyVersion: string;
@@ -270,7 +271,7 @@ export function renderTwinnyStatusCard(options: RenderTwinnyStatusCardOptions): 
     ]),
     ...statusSection("用户", "member_outlined", [
       ["ID", options.user.openId],
-      ["身份", options.user.profile]
+      ["身份", options.user.identity]
     ])
   ];
 

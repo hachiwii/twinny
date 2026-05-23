@@ -639,7 +639,7 @@ describe("renderTwinnyStatusCard", () => {
       },
       user: {
         openId: "ou_owner",
-        profile: "owner"
+        identity: "owner"
       }
     });
 
@@ -666,6 +666,7 @@ describe("renderTwinnyStatusCard", () => {
     expect(serialized).toContain("123 K (23% Reasoning)");
     expect(serialized).toContain("群聊");
     expect(serialized).toContain("全部用户，at 消息");
+    expect(serialized).toContain("| 身份 | owner |");
     expect(serialized).not.toContain("系统");
   });
 
@@ -698,7 +699,7 @@ describe("renderTwinnyStatusCard", () => {
       },
       user: {
         openId: "ou_owner",
-        profile: "owner"
+        identity: "owner"
       },
       system: {
         twinnyVersion: "v0.1.0",
@@ -747,7 +748,7 @@ describe("renderTwinnyStatusCard", () => {
       },
       user: {
         openId: "ou_guest",
-        profile: "guest"
+        identity: "guest"
       },
       hideAction: {
         twinny: true,
