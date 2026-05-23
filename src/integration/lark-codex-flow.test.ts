@@ -488,6 +488,137 @@ describe("Lark to Codex integration flow", () => {
     );
   });
 
+  it("keeps a late final answer as the completed goal card body when goal completion arrives before turn completion", async () => {
+    const harness = await IntegrationHarness.create(jsonl(
+      {
+        profile: "guest",
+        on: { method: "thread/goal/set", nth: 1 },
+        reply: {
+          goal: {
+            threadId: "guest_thread_1",
+            objective: "finish after terminal goal update",
+            status: "active",
+            tokenBudget: null,
+            tokensUsed: 0,
+            timeUsedSeconds: 0,
+            createdAt: 1,
+            updatedAt: 1
+          }
+        }
+      },
+      {
+        profile: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        notify: {
+          method: "turn/started",
+          params: { threadId: "guest_thread_1", turn: { id: "late_goal_turn" } }
+        }
+      },
+      {
+        profile: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        notify: {
+          method: "item/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turnId: "late_goal_turn",
+            item: {
+              type: "agentMessage",
+              id: "goal_process_before_terminal",
+              text: "process before terminal goal update",
+              phase: "commentary"
+            }
+          }
+        }
+      },
+      {
+        profile: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        delayMs: 20,
+        notify: {
+          method: "thread/goal/updated",
+          params: {
+            threadId: "guest_thread_1",
+            turnId: "late_goal_turn",
+            goal: {
+              threadId: "guest_thread_1",
+              objective: "finish after terminal goal update",
+              status: "complete",
+              tokenBudget: null,
+              tokensUsed: 0,
+              timeUsedSeconds: 0,
+              createdAt: 1,
+              updatedAt: 2
+            }
+          }
+        }
+      },
+      {
+        profile: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        delayMs: 2_300,
+        notify: {
+          method: "item/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turnId: "late_goal_turn",
+            item: {
+              type: "agentMessage",
+              id: "late_goal_final",
+              text: "late final goal answer",
+              phase: "final_answer"
+            }
+          }
+        }
+      },
+      {
+        profile: "guest",
+        after: { method: "thread/goal/set", nth: 1 },
+        delayMs: 2_320,
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "late_goal_turn",
+              status: "completed",
+              durationMs: 100,
+              items: [{ type: "agentMessage", id: "late_goal_final", text: "late final goal answer", phase: "final_answer" }]
+            }
+          }
+        }
+      }
+    ));
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({
+        eventId: "e_goal_terminal_first",
+        messageId: "m_goal_terminal_first",
+        text: "/goal finish after terminal goal update"
+      })
+    }));
+
+    await harness.waitForTrace(
+      (trace) => larkOut(trace).some((entry) => entry.method === "PATCH" && traceText(entry).includes("已实现目标")),
+      "goal completed card before late turn completion",
+      3_000
+    );
+
+    const completedCards = larkOut(harness.readTrace()).filter((entry) =>
+      entry.method === "PATCH" &&
+      traceText(entry).includes("已实现目标")
+    );
+    expect(completedCards.length).toBeGreaterThan(0);
+    const completedCard = completedCards.at(-1)!;
+    const completedCardText = traceText(completedCard);
+    expect(completedCardText).toContain("late final goal answer");
+    expect(completedCard.bodyContentJson).toMatchObject({
+      config: { summary: { content: "late final goal answer" } }
+    });
+    expect(harness.repository.getLarkMessageById("m_goal_terminal_first")).toMatchObject({ status: "completed" });
+  });
+
   it("switches an ordinary turn card to a goal card after a passive Codex goal update", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {

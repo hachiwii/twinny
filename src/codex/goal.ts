@@ -154,7 +154,6 @@ export async function runCodexThreadGoal(
   } finally {
     protocol.off("notification", onNotification);
     protocol.off("serverRequest", onServerRequest);
-    accumulator.dispose();
   }
 }
 
@@ -188,7 +187,6 @@ export async function resumeCodexThreadGoal(
   } finally {
     protocol.off("notification", onNotification);
     protocol.off("serverRequest", onServerRequest);
-    accumulator.dispose();
   }
 }
 
@@ -203,7 +201,6 @@ class GoalOutputAccumulator {
   private finalAnswerText: string | undefined;
   private terminalGoal: ThreadGoal | undefined;
   private terminalTurnId: string | null | undefined;
-  private terminalFallbackTimer: NodeJS.Timeout | undefined;
   private completionError: Error | undefined;
   private resolved = false;
   private resolveWait: ((result: CodexTurnResult) => void) | undefined;
@@ -297,13 +294,6 @@ class GoalOutputAccumulator {
       }
       this.resolveTerminalIfReady();
     });
-  }
-
-  dispose(): void {
-    if (this.terminalFallbackTimer) {
-      clearTimeout(this.terminalFallbackTimer);
-      this.terminalFallbackTimer = undefined;
-    }
   }
 
   private recordTurnStarted(params: unknown): void {
@@ -458,13 +448,6 @@ class GoalOutputAccumulator {
       void this.resolveTerminal().then((result) => this.resolveWait?.(result), (error) => this.rejectWait?.(error));
       return;
     }
-    if (!this.terminalFallbackTimer) {
-      this.terminalFallbackTimer = setTimeout(() => {
-        this.terminalFallbackTimer = undefined;
-        void this.resolveTerminal().then((result) => this.resolveWait?.(result), (error) => this.rejectWait?.(error));
-      }, 2_000);
-      this.terminalFallbackTimer.unref?.();
-    }
   }
 
   private async resolveTerminal(): Promise<CodexTurnResult> {
@@ -472,7 +455,6 @@ class GoalOutputAccumulator {
       return this.toResult("interrupted", "Goal already resolved");
     }
     this.resolved = true;
-    this.dispose();
     await Promise.all(this.pendingAgentMessageCallbacks);
     if (this.completionError) {
       throw this.completionError;
@@ -491,7 +473,6 @@ class GoalOutputAccumulator {
       return;
     }
     this.resolved = true;
-    this.dispose();
     void Promise.all(this.pendingAgentMessageCallbacks).then(() => {
       this.resolveWait?.(this.toResult("interrupted", error));
     }, (callbackError) => {
