@@ -1703,7 +1703,30 @@ describe("ConversationManager", () => {
     }));
   });
 
-  it("replies to /status with a default card in topic groups", async () => {
+  it("replies to /status with a default card inside topic groups", async () => {
+    const row = groupConversationRecord({ responseMode: "all", codexThreadId: "thread_group" });
+    const { repository } = createRepository(row);
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("topic_status", "/status", {
+      chatType: "topic_group",
+      larkThreadId: "topic_thread",
+      larkRootMessageId: "topic_root"
+    }));
+
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    expect(lark.replyCard).toHaveBeenCalledWith(
+      "topic_root",
+      expect.objectContaining({ schema: "2.0" }),
+      { replyInThread: true }
+    );
+    expect(lark.sendEphemeralCardToChatId).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["topic_status"]);
+  });
+
+  it("falls back to the command message when /status topic root metadata is missing", async () => {
     const row = groupConversationRecord({ responseMode: "all", codexThreadId: "thread_group" });
     const { repository } = createRepository(row);
     const codex = createCodex();
@@ -1716,7 +1739,11 @@ describe("ConversationManager", () => {
     }));
 
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
-    expect(lark.replyCard).toHaveBeenCalledWith("topic_status", expect.objectContaining({ schema: "2.0" }));
+    expect(lark.replyCard).toHaveBeenCalledWith(
+      "topic_status",
+      expect.objectContaining({ schema: "2.0" }),
+      { replyInThread: true }
+    );
     expect(lark.sendEphemeralCardToChatId).not.toHaveBeenCalled();
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["topic_status"]);
   });

@@ -3100,6 +3100,9 @@ export class ConversationManager {
     });
     if (context.type === "group") {
       await this.sendEphemeralStatusCardBestEffort(message.chatId, message.senderOpenId, card);
+    } else if (context.type === "topic_group") {
+      const anchorMessageId = topicReplyAnchorMessageId(message);
+      await this.replyStatusCardBestEffort(anchorMessageId, card, { replyInThread: true });
     } else {
       await this.replyStatusCardBestEffort(message.messageId, card);
     }
@@ -5969,9 +5972,17 @@ export class ConversationManager {
     }
   }
 
-  private async replyStatusCardBestEffort(messageId: string, card: LarkCardJson): Promise<void> {
+  private async replyStatusCardBestEffort(
+    messageId: string,
+    card: LarkCardJson,
+    options?: LarkReplyOptions
+  ): Promise<void> {
     try {
-      await this.options.lark.replyCard(messageId, card);
+      if (options) {
+        await this.options.lark.replyCard(messageId, card, options);
+      } else {
+        await this.options.lark.replyCard(messageId, card);
+      }
     } catch (error) {
       this.log.warn({ error, messageId }, "failed to send lark status card");
     }
@@ -7731,6 +7742,14 @@ function bannerThreadAnchorMessageId(message: IncomingLarkMessage): string | und
     nonEmptyString(message.larkParentMessageId) ??
     nonEmptyString(message.larkThreadId);
   return anchorMessageId && anchorMessageId !== message.messageId ? anchorMessageId : undefined;
+}
+
+function topicReplyAnchorMessageId(message: IncomingLarkMessage): string {
+  return (
+    nonEmptyString(message.larkRootMessageId) ??
+    nonEmptyString(message.larkParentMessageId) ??
+    message.messageId
+  );
 }
 
 function createThreadReplyContext(context: MessageContext, larkThreadId: string): MessageContext {
