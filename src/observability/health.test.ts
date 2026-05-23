@@ -51,7 +51,7 @@ describe("doctor health checks", () => {
     const config = createTwinnyConfig({
       home: fs.mkdtempSync(path.join(os.tmpdir(), "twinny-bot-check-")),
       homeRandom: "0123456789abcdef0123456789abcdef",
-      auth: { larkAppId: "cli_app", ownerOpenId: "ou_owner", displayName: "Owner User" }
+      auth: { larkAppId: "cli_app", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner User" }
     });
     tempDirs.push(config.home);
     const getBotOpenId = vi.fn(async () => "ou_bot");
@@ -64,7 +64,7 @@ describe("doctor health checks", () => {
     const config = createTwinnyConfig({
       home: fs.mkdtempSync(path.join(os.tmpdir(), "twinny-bot-check-empty-")),
       homeRandom: "0123456789abcdef0123456789abcdef",
-      auth: { larkAppId: "cli_app", ownerOpenId: "ou_owner", displayName: "Owner User" }
+      auth: { larkAppId: "cli_app", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner User" }
     });
     tempDirs.push(config.home);
 

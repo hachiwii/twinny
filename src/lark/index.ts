@@ -1,4 +1,5 @@
 export * from "./auth.js";
+export * from "./browser-auth.js";
 export * from "./cards.js";
 export * from "./contact.js";
 export * from "./events.js";

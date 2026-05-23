@@ -18,9 +18,9 @@ export async function runCli(argv: string[]): Promise<void> {
     await runDoctorCommand();
   });
 
-  program.command("install").description("Install the macOS LaunchAgent.").action(async () => {
-    const { installLaunchAgent } = await import("../launchd/install.js");
-    await installLaunchAgent();
+  program.command("install").description("Run the Twinny install wizard.").action(async () => {
+    const { runInstallWizard } = await import("./install-wizard.js");
+    await runInstallWizard();
   });
 
   program.command("uninstall").description("Uninstall the macOS LaunchAgent.").action(async () => {

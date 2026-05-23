@@ -2439,6 +2439,7 @@ function createIntegrationConfig(tempDir: string, fakeCodexBinary: string): Twin
     homeRandom: "0123456789abcdef0123456789abcdef",
     auth: {
       larkAppId: "cli_integration",
+      larkBrand: "feishu",
       ownerOpenId: "ou_owner",
       displayName: "Owner User"
     },

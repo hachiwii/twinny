@@ -1,5 +1,5 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
-import { DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS } from "../types.js";
+import { DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS, type LarkBrand } from "../types.js";
 import { TenantAccessTokenManager } from "./auth.js";
 import {
   normalizeLarkBotMenuWithReason,
@@ -295,4 +295,8 @@ function createDefaultWsClient(options: LarkEventConsumerWsFactoryOptions): WsCl
     onReconnecting: options.onReconnecting,
     onReconnected: options.onReconnected
   }) as WsClientLike;
+}
+
+export function resolveLarkEventDomain(brand: LarkBrand): Lark.Domain {
+  return brand === "lark" ? Lark.Domain.Lark : Lark.Domain.Feishu;
 }

@@ -11,6 +11,8 @@ export type LarkChatMode = "group" | "topic";
 
 export type LarkGroupMessageType = "chat" | "thread";
 
+export type LarkBrand = "feishu" | "lark";
+
 export type ConversationResponseMode = "all" | "all_at" | "owner" | "owner_at" | "none";
 
 export type AgentMessagePhase = "commentary" | "final_answer";
@@ -88,6 +90,7 @@ export interface OwnerConfig {
 
 export interface TwinnyAuthFile {
   larkAppId: string;
+  larkBrand: LarkBrand;
   ownerOpenId: string;
   displayName: string;
 }

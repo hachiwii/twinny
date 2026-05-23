@@ -33,6 +33,7 @@ describe("Twinny config loading and bootstrap", () => {
       homeRandom,
       auth: {
         larkAppId: "cli_test",
+        larkBrand: "feishu",
         ownerOpenId: "ou_owner",
         displayName: "Owner"
       },
@@ -55,7 +56,7 @@ describe("Twinny config loading and bootstrap", () => {
     const rawRandom = await fs.readFile(path.join(home, "runtime", "home-random"), "utf8");
 
     expect(result).toMatchObject({ wroteConfig: true, wroteAuth: true, wroteHomeRandom: true });
-    expect(loaded.auth).toEqual({ larkAppId: "cli_test", ownerOpenId: "ou_owner", displayName: "Owner" });
+    expect(loaded.auth).toEqual({ larkAppId: "cli_test", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner" });
     expect(loaded.owner).toEqual({ openId: "ou_owner", displayName: "Owner" });
     expect(loaded.homeIdentity.random).toBe(homeRandom);
     expect(loaded.homeIdentity.keychainAccounts.larkAppSecret).toBe(`twinny.home.${homeRandom}.lark.app_secret`);
@@ -68,6 +69,7 @@ describe("Twinny config loading and bootstrap", () => {
     expect(rawRandom.trim()).toBe(homeRandom);
     expect(JSON.parse(rawAuth)).toEqual({
       lark_app_id: "cli_test",
+      lark_brand: "feishu",
       owner_open_id: "ou_owner",
       displayName: "Owner"
     });
@@ -82,7 +84,7 @@ describe("Twinny config loading and bootstrap", () => {
     const config = createTwinnyConfig({
       home: "/tmp/twinny",
       homeRandom,
-      auth: { larkAppId: "cli_test", ownerOpenId: "ou_owner", displayName: "Owner" },
+      auth: { larkAppId: "cli_test", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner" },
       profiles: {
         host: { codexHome: "/Users/tester/.codex" },
         guest: {}

@@ -4,7 +4,7 @@ import { execa } from "execa";
 import { DEFAULT_CAFFEINATE_COMMAND } from "../app/caffeinate.js";
 import { formatStartupInitializationProbeDetail, runStartupInitializationProbe } from "../app/startup-probe.js";
 import { readConfigStatus, resolveLarkAppSecret, SecurityCliSecretStore, type SecretStore } from "../config/index.js";
-import { LarkBotDirectory, LarkOpenApiClient, TenantAccessTokenManager } from "../lark/index.js";
+import { LarkBotDirectory, LarkOpenApiClient, resolveLarkEndpoints, TenantAccessTokenManager } from "../lark/index.js";
 import { isTwinnyLockHeld, readTwinnyLockMetadata } from "../lock/index.js";
 import { openRuntimeDatabase } from "../store/index.js";
 import type { HealthCheck, HealthSnapshot, TwinnyConfig } from "../types.js";
@@ -84,7 +84,8 @@ export async function runDoctorChecks(): Promise<HealthSnapshot> {
     await checkAsync(checks, "lark tenant token", async () => {
       const manager = new TenantAccessTokenManager({
         appId: config.auth.larkAppId,
-        appSecret: resolvedAppSecret
+        appSecret: resolvedAppSecret,
+        baseUrl: resolveLarkEndpoints(config.auth.larkBrand).openApi
       });
       await manager.getTenantAccessToken();
       return "reachable";
@@ -127,9 +128,13 @@ export async function checkLarkBotOpenId(
   const botDirectory = options.botDirectory ?? (() => {
     const tokenManager = options.tokenManager ?? new TenantAccessTokenManager({
       appId: config.auth.larkAppId,
-      appSecret
+      appSecret,
+      baseUrl: resolveLarkEndpoints(config.auth.larkBrand).openApi
     });
-    const openApiClient = options.openApiClient ?? new LarkOpenApiClient({ tokenManager });
+    const openApiClient = options.openApiClient ?? new LarkOpenApiClient({
+      tokenManager,
+      baseUrl: resolveLarkEndpoints(config.auth.larkBrand).openApi
+    });
     return new LarkBotDirectory({ openApiClient });
   })();
   const botOpenId = await botDirectory.getBotOpenId();

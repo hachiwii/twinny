@@ -138,7 +138,7 @@ describe("startup initialization probe", () => {
     const config = createTwinnyConfig({
       home,
       homeRandom: "0123456789abcdef0123456789abcdef",
-      auth: { larkAppId: "cli_app", ownerOpenId: "ou_owner", displayName: "Owner User" }
+      auth: { larkAppId: "cli_app", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner User" }
     });
     return {
       config,

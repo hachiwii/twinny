@@ -1,10 +1,21 @@
 import { TwinnyError } from "../errors.js";
+import type { LarkBrand } from "../types.js";
 import type { FetchLike, LarkCredentialOptions } from "./types.js";
 
 export const DEFAULT_LARK_OPENAPI_BASE_URL = "https://open.feishu.cn/open-apis";
 export const DEFAULT_LARK_ACCOUNTS_BASE_URL = "https://accounts.feishu.cn";
+export const DEFAULT_LARK_OPEN_BASE_URL = "https://open.feishu.cn";
+export const DEFAULT_LARKSUITE_OPEN_BASE_URL = "https://open.larksuite.com";
+export const DEFAULT_LARKSUITE_OPENAPI_BASE_URL = "https://open.larksuite.com/open-apis";
+export const DEFAULT_LARKSUITE_ACCOUNTS_BASE_URL = "https://accounts.larksuite.com";
 const DEFAULT_TENANT_TOKEN_EXPIRE_SECONDS = 7200;
 const DEFAULT_REFRESH_SKEW_MS = 5 * 60 * 1000;
+
+export interface LarkEndpointSet {
+  open: string;
+  openApi: string;
+  accounts: string;
+}
 
 export interface TenantAccessTokenManagerOptions extends LarkCredentialOptions {
   refreshSkewMs?: number;
@@ -106,6 +117,25 @@ export class TenantAccessTokenManager {
 
 export function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
+}
+
+export function normalizeLarkBrand(value: string | undefined): LarkBrand {
+  return value === "lark" ? "lark" : "feishu";
+}
+
+export function resolveLarkEndpoints(brand: LarkBrand = "feishu"): LarkEndpointSet {
+  if (brand === "lark") {
+    return {
+      open: DEFAULT_LARKSUITE_OPEN_BASE_URL,
+      openApi: DEFAULT_LARKSUITE_OPENAPI_BASE_URL,
+      accounts: DEFAULT_LARKSUITE_ACCOUNTS_BASE_URL
+    };
+  }
+  return {
+    open: DEFAULT_LARK_OPEN_BASE_URL,
+    openApi: DEFAULT_LARK_OPENAPI_BASE_URL,
+    accounts: DEFAULT_LARK_ACCOUNTS_BASE_URL
+  };
 }
 
 async function readJsonBody(response: { json(): Promise<unknown>; text?: () => Promise<string> }): Promise<unknown> {

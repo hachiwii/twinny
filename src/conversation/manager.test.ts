@@ -39,7 +39,7 @@ const config: TwinnyConfig = {
       chinesePhoneNumber: "mask"
     }
   },
-  auth: { larkAppId: "cli_xxx", ownerOpenId: "ou_owner", displayName: "Owner" },
+  auth: { larkAppId: "cli_xxx", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner" },
   homeIdentity: {
     random: "0123456789abcdef0123456789abcdef",
     telemetryHashSalt: "0123456789abcdef0123456789abcdef",

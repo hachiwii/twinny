@@ -19,6 +19,8 @@ import {
   LarkChatDirectory,
   LarkUserDirectory,
   LarkOpenApiClient,
+  resolveLarkEndpoints,
+  resolveLarkEventDomain,
   type LarkSdkLogger,
   TenantAccessTokenManager
 } from "../lark/index.js";
@@ -116,9 +118,13 @@ export class TwinnyRuntime {
 
       const tokenManager = new TenantAccessTokenManager({
         appId: this.config.auth.larkAppId,
-        appSecret
+        appSecret,
+        baseUrl: resolveLarkEndpoints(this.config.auth.larkBrand).openApi
       });
-      const openApiClient = new LarkOpenApiClient({ tokenManager });
+      const openApiClient = new LarkOpenApiClient({
+        tokenManager,
+        baseUrl: resolveLarkEndpoints(this.config.auth.larkBrand).openApi
+      });
       const larkSender = new LarkMessageSender({
         openApiClient,
         logger: this.log,
@@ -169,6 +175,8 @@ export class TwinnyRuntime {
       this.larkConsumer = new LarkEventConsumer({
         appId: this.config.auth.larkAppId,
         appSecret,
+        tokenManager,
+        domain: resolveLarkEventDomain(this.config.auth.larkBrand),
         botOpenId,
         logger: this.log,
         sdkLogger: this.larkSdkLogger,

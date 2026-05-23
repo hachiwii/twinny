@@ -13,6 +13,7 @@ import {
   NONE_PROFILE_NAME,
   type LarkMessageRedactionConfig,
   type LarkMessageRedactionStrategy,
+  type LarkBrand,
   type PermissionsConfig,
   type ProfileConfig,
   type ProfileName,
@@ -77,6 +78,7 @@ const rawConfigSchema = z
 const rawAuthSchema = z
   .object({
     lark_app_id: z.string(),
+    lark_brand: z.enum(["feishu", "lark"]).optional(),
     owner_open_id: z.string(),
     displayName: z.string()
   })
@@ -86,7 +88,7 @@ type RawProfileConfig = z.infer<typeof rawProfileSchema>;
 
 export interface CreateTwinnyConfigInput {
   home: string;
-  auth: TwinnyAuthFile;
+  auth: TwinnyAuthFileInput;
   homeRandom: string;
   codex?: {
     binary?: string;
@@ -101,6 +103,8 @@ export interface CreateTwinnyConfigInput {
   permissions?: Partial<PermissionsConfig>;
   profiles?: Record<ProfileName, Partial<ProfileConfig>>;
 }
+
+type TwinnyAuthFileInput = Omit<TwinnyAuthFile, "larkBrand"> & Partial<Pick<TwinnyAuthFile, "larkBrand">>;
 
 export interface ConfigStatus {
   paths: RuntimePaths;
@@ -237,6 +241,7 @@ export async function readTwinnyAuthFile(authFile: string): Promise<TwinnyAuthFi
   const parsed = rawAuthSchema.parse(JSON.parse(await fs.readFile(authFile, "utf8")));
   return normalizeAuthFile({
     larkAppId: parsed.lark_app_id,
+    larkBrand: parsed.lark_brand,
     ownerOpenId: parsed.owner_open_id,
     displayName: parsed.displayName
   });
@@ -252,6 +257,7 @@ export function serializeTwinnyAuthFile(auth: TwinnyAuthFile): string {
   return JSON.stringify(
     {
       lark_app_id: normalized.larkAppId,
+      lark_brand: normalized.larkBrand,
       owner_open_id: normalized.ownerOpenId,
       displayName: normalized.displayName
     },
@@ -450,9 +456,10 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
   };
 }
 
-function normalizeAuthFile(input: TwinnyAuthFile): TwinnyAuthFile {
+function normalizeAuthFile(input: TwinnyAuthFileInput): TwinnyAuthFile {
   return {
     larkAppId: input.larkAppId.trim(),
+    larkBrand: normalizeLarkBrand(input.larkBrand),
     ownerOpenId: input.ownerOpenId.trim(),
     displayName: input.displayName.trim()
   };
@@ -461,9 +468,14 @@ function normalizeAuthFile(input: TwinnyAuthFile): TwinnyAuthFile {
 function emptyAuthFile(): TwinnyAuthFile {
   return {
     larkAppId: "",
+    larkBrand: "feishu",
     ownerOpenId: "",
     displayName: ""
   };
+}
+
+function normalizeLarkBrand(value: LarkBrand | undefined): LarkBrand {
+  return value === "lark" ? "lark" : "feishu";
 }
 
 function resolveConfigPath(value: string, home: string): string {
