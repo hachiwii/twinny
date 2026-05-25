@@ -1,11 +1,36 @@
 {
   "name": "twinny",
-  "version": "0.1.0",
-  "description": "Bridge Lark p2p messages to per-profile Codex app-server threads.",
+  "version": "0.0.1",
+  "description": "Local Feishu/Lark-to-Codex bridge with per-profile Codex agent threads.",
   "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "bin": {
     "twinny": "dist/main.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/hachiwii/twinny.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hachiwii/twinny/issues"
+  },
+  "homepage": "https://github.com/hachiwii/twinny#readme",
+  "keywords": [
+    "codex",
+    "feishu",
+    "lark",
+    "agent",
+    "bridge",
+    "cli"
+  ],
   "files": [
     "dist",
     "migrations",
@@ -14,10 +39,17 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "tsx src/main.ts",
+    "prepack": "node scripts/build.mjs --version $npm_package_version",
+    "prepublishOnly": "pnpm typecheck && pnpm test",
+    "release:dry-run": "npm pack --dry-run --registry https://registry.npmjs.org",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org"
+  },
+  "packageManager": "pnpm@10.17.1",
   "engines": {
     "node": ">=22"
   },

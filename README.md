@@ -258,3 +258,70 @@ Or disable it for a process with an environment variable:
 ```sh
 TWINNY_TELEMETRY_ENABLED=false npx twinny@latest start
 ```
+## Publishing
+
+This package is configured to publish to the public npm registry. Configure npm Trusted Publishing for:
+
+- Owner: `hachiwii`
+- Repository: `twinny`
+- Workflow filename: `npm-publish.yml`
+
+Dev releases are published automatically from `master`. Each push to `master` publishes a SemVer prerelease:
+
+```text
+0.0.0-dev.YYMMDDHHmmSS
+```
+
+The package is published with the `dev` dist-tag:
+
+```sh
+npm install -g twinny@dev
+```
+
+Beta releases are published automatically from `release/a.b.c` branches. Each push to `release/a.b.c` publishes:
+
+```text
+a.b.c-beta.YYMMDDHHmmSS
+```
+
+The timestamp is the latest commit's committer time formatted in UTC. The package is published with the `beta` dist-tag:
+
+```sh
+npm install -g twinny@beta
+```
+
+Stable releases are published from `vA.B.C` git tags. The workflow publishes tag `vA.B.C` as `A.B.C` with the `latest` dist-tag.
+
+From a clean `release/a.b.c` branch, the helper script triggers the same workflow:
+
+```sh
+scripts/twinny-publish-latest.sh a.b.c
+```
+
+The helper pushes the release branch, rebases `master` onto the current release branch so `master` contains the release code, commits `package.json` at version `A.B.C`, tags `master` as `vA.B.C`, then pushes `master` and the tag.
+
+Manual local publishing is only needed before Trusted Publishing is configured. Before publishing locally, log in to the public registry:
+
+```sh
+npm adduser --registry https://registry.npmjs.org
+```
+
+Run the release checks and inspect the package contents:
+
+```sh
+pnpm typecheck
+pnpm test
+pnpm release:dry-run
+```
+
+Publish:
+
+```sh
+npm publish --registry https://registry.npmjs.org
+```
+
+Public npm publishing requires either npm account 2FA or a granular access token with publish permission and bypass 2FA enabled.
+
+## License
+
+MIT
