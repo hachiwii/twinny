@@ -127,7 +127,7 @@ export interface PermissionsConfig {
 
 export interface TelemetryConfig {
   enabled: boolean;
-  posthogApiKey?: string;
+  posthogProjectToken: string;
   posthogHost: string;
 }
 

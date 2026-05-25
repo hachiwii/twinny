@@ -74,6 +74,7 @@ describe("Twinny config loading and bootstrap", () => {
       displayName: "Owner"
     });
     expect(rawConfig).not.toContain("[roles");
+    expect(rawConfig).not.toContain("[telemetry]");
     expect(rawConfig).not.toContain("app_id");
     expect(rawConfig).not.toContain("owner_open_id");
     expect(rawConfig).not.toContain("secret_ref");
@@ -96,6 +97,7 @@ describe("Twinny config loading and bootstrap", () => {
     expect(serialized).toContain("[profiles.host]");
     expect(serialized).toContain("[profiles.guest]");
     expect(serialized).toContain("[permissions]");
+    expect(serialized).not.toContain("[telemetry]");
     expect(serialized).not.toContain("[owner]");
     expect(serialized).not.toContain("[roles");
     expect(serialized).not.toContain("secret_ref");
@@ -108,7 +110,7 @@ describe("Twinny config loading and bootstrap", () => {
       auth: { larkAppId: "cli_test", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner" },
       telemetry: {
         enabled: true,
-        posthogApiKey: "ph_test",
+        posthogProjectToken: "ph_test",
         posthogHost: "https://posthog.example"
       },
       profiles: {
@@ -122,12 +124,31 @@ describe("Twinny config loading and bootstrap", () => {
 
     expect(serialized).toContain("[telemetry]");
     expect(serialized).toContain('enabled = true');
-    expect(serialized).toContain('posthog_api_key = "ph_test"');
+    expect(serialized).toContain('posthog_project_token = "ph_test"');
     expect(parsed.telemetry).toEqual({
       enabled: true,
-      posthogApiKey: "ph_test",
+      posthogProjectToken: "ph_test",
       posthogHost: "https://posthog.example"
     });
+  });
+
+  it("serializes telemetry only when disabled or overridden", () => {
+    const disabled = createTwinnyConfig({
+      home: "/tmp/twinny",
+      homeRandom,
+      auth: { larkAppId: "cli_test", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner" },
+      telemetry: { enabled: false },
+      profiles: { host: {}, guest: {} }
+    });
+
+    const serialized = serializeTwinnyConfig(disabled);
+    const parsed = parseTwinnyConfig(serialized, { home: "/tmp/twinny" });
+
+    expect(serialized).toContain("[telemetry]");
+    expect(serialized).toContain("enabled = false");
+    expect(serialized).not.toContain("posthog_project_token");
+    expect(serialized).not.toContain("posthog_host");
+    expect(parsed.telemetry?.enabled).toBe(false);
   });
 
   it("rejects old config fields instead of keeping compatibility", () => {

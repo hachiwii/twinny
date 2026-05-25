@@ -28,7 +28,8 @@ import { larkAppSecretAccountForHomeRandom } from "./secrets.js";
 
 export const DEFAULT_PROFILE_MODEL = "gpt-5.5";
 export const DEFAULT_PROFILE_EFFORT = "medium";
-export const DEFAULT_POSTHOG_HOST = "https://app.posthog.com";
+export const DEFAULT_POSTHOG_PROJECT_TOKEN = "phc_yXXd2mi9J33Awy7vs8VY8UbEoYdtXPnKs87YWxnRAnN8";
+export const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com";
 
 const redactionSchema = z.enum(["mask", "whitespace", "none"]);
 
@@ -76,6 +77,7 @@ const rawConfigSchema = z
     telemetry: z
       .object({
         enabled: z.boolean().optional(),
+        posthog_project_token: z.string().optional(),
         posthog_api_key: z.string().optional(),
         posthog_host: z.string().optional()
       })
@@ -376,7 +378,7 @@ function createRuntimeConfig(
     },
     telemetry: normalizeTelemetryConfig({
       enabled: parsed.telemetry?.enabled,
-      posthogApiKey: parsed.telemetry?.posthog_api_key,
+      posthogProjectToken: parsed.telemetry?.posthog_project_token ?? parsed.telemetry?.posthog_api_key,
       posthogHost: parsed.telemetry?.posthog_host
     }),
     owner: {
@@ -471,17 +473,18 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
     },
     profiles
   };
-  if (
-    config.telemetry?.enabled ||
-    config.telemetry?.posthogApiKey ||
-    (config.telemetry?.posthogHost && config.telemetry.posthogHost !== DEFAULT_POSTHOG_HOST)
-  ) {
+  const telemetry = config.telemetry ?? normalizeTelemetryConfig(undefined);
+  const hasCustomPostHogProjectToken = telemetry.posthogProjectToken !== DEFAULT_POSTHOG_PROJECT_TOKEN;
+  const hasCustomPostHogHost = telemetry.posthogHost !== DEFAULT_POSTHOG_HOST;
+  if (telemetry.enabled === false || hasCustomPostHogProjectToken || hasCustomPostHogHost) {
     document.telemetry = {
-      enabled: config.telemetry.enabled,
-      posthog_host: config.telemetry.posthogHost
+      enabled: telemetry.enabled
     };
-    if (config.telemetry.posthogApiKey) {
-      (document.telemetry as TomlTable).posthog_api_key = config.telemetry.posthogApiKey;
+    if (hasCustomPostHogProjectToken) {
+      (document.telemetry as TomlTable).posthog_project_token = telemetry.posthogProjectToken;
+    }
+    if (hasCustomPostHogHost) {
+      (document.telemetry as TomlTable).posthog_host = telemetry.posthogHost;
     }
   }
   return document;
@@ -546,11 +549,11 @@ function normalizeMessageRedactionStrategy(
 }
 
 function normalizeTelemetryConfig(input: Partial<TelemetryConfig> | undefined): TelemetryConfig {
-  const posthogApiKey = normalizeOptionalString(input?.posthogApiKey);
+  const posthogProjectToken = normalizeOptionalString(input?.posthogProjectToken) ?? DEFAULT_POSTHOG_PROJECT_TOKEN;
   const posthogHost = normalizeOptionalString(input?.posthogHost) ?? DEFAULT_POSTHOG_HOST;
   return {
-    enabled: input?.enabled ?? Boolean(posthogApiKey),
-    ...(posthogApiKey ? { posthogApiKey } : {}),
+    enabled: input?.enabled ?? true,
+    posthogProjectToken,
     posthogHost
   };
 }

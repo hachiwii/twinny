@@ -152,11 +152,11 @@ function createTelemetryReporter(
   options: { runtimeId: string; fetch?: typeof fetch }
 ): TelemetryReporter {
   const telemetry = config.telemetry;
-  if (!telemetry?.enabled || !telemetry.posthogApiKey) {
+  if (!telemetry?.enabled || !telemetry.posthogProjectToken) {
     return new NullTelemetryReporter();
   }
   return new PostHogTelemetryReporter({
-    apiKey: telemetry.posthogApiKey,
+    apiKey: telemetry.posthogProjectToken,
     host: telemetry.posthogHost,
     distinctId: telemetryHashId(config.homeIdentity.telemetryHashSalt, "install", config.homeIdentity.random),
     fetch: options.fetch
