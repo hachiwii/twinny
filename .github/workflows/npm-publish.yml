@@ -77,8 +77,6 @@ jobs:
 
       - name: Publish dev to npm
         if: steps.published.outputs.exists == 'false'
-        env:
-          TWINNY_ALLOW_DIRTY_RELEASE_BUILD: "1"
         run: npm publish --tag dev
 
   beta:
@@ -153,8 +151,6 @@ jobs:
 
       - name: Publish beta to npm
         if: steps.published.outputs.exists == 'false'
-        env:
-          TWINNY_ALLOW_DIRTY_RELEASE_BUILD: "1"
         run: npm publish --tag beta
 
   latest:
@@ -207,6 +203,4 @@ jobs:
         run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
 
       - name: Publish latest to npm
-        env:
-          TWINNY_ALLOW_DIRTY_RELEASE_BUILD: "1"
         run: npm publish --tag latest

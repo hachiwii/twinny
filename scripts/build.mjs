@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -15,11 +15,8 @@ try {
 
 function main() {
   const cliVersion = parseVersionArg(process.argv.slice(2));
-  const buildVersion = cliVersion ?? process.env.TWINNY_BUILD_VERSION ?? buildDevelopmentVersion(repoRoot, new Date());
+  const buildVersion = cliVersion ?? process.env.TWINNY_BUILD_VERSION ?? readPackageVersion(repoRoot);
 
-  if (!allowDirtyBuild()) {
-    assertCleanWorktree(repoRoot);
-  }
   validateBuildVersion(buildVersion);
   cleanDist();
   run("tsc", ["-p", "tsconfig.build.json"]);
@@ -48,40 +45,18 @@ function parseVersionArg(args) {
   return undefined;
 }
 
-function buildDevelopmentVersion(cwd, date) {
-  const commitHash = execFileSync("git", ["rev-parse", "--short=9", "HEAD"], {
-    cwd,
-    encoding: "utf8"
-  }).trim();
-  return `${formatBuildDate(date)}-${commitHash}`;
-}
-
-function formatBuildDate(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}${month}${day}`;
+function readPackageVersion(cwd) {
+  const packageJson = JSON.parse(readFileSync(path.join(cwd, "package.json"), "utf8"));
+  if (typeof packageJson.version !== "string") {
+    throw new Error("Missing package.json version");
+  }
+  return packageJson.version;
 }
 
 function validateBuildVersion(version) {
   if (!/^[A-Za-z0-9._+-]+$/.test(version)) {
     throw new Error(`Invalid Twinny version "${version}". Use letters, numbers, dots, underscores, plus signs, or hyphens.`);
   }
-}
-
-function assertCleanWorktree(cwd) {
-  execFileSync("git", ["update-index", "-q", "--refresh"], { cwd, stdio: "ignore" });
-  const status = execFileSync("git", ["status", "--porcelain"], {
-    cwd,
-    encoding: "utf8"
-  }).trim();
-  if (status) {
-    throw new Error(`Refusing to build with a dirty git worktree:\n${status}`);
-  }
-}
-
-function allowDirtyBuild() {
-  return process.env.TWINNY_ALLOW_DIRTY_RELEASE_BUILD === "1";
 }
 
 function run(command, args) {

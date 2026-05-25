@@ -1,6 +1,6 @@
 {
   "name": "twinny",
-  "version": "0.0.1",
+  "version": "0.0.0-dev.0",
   "description": "Local Feishu/Lark-to-Codex bridge with per-profile Codex agent threads.",
   "type": "module",
   "license": "MIT",
