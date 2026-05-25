@@ -8,7 +8,7 @@ Usage: scripts/twinny-publish-latest.sh [a.b.c]
 Run from release/<a.b.c>. The script:
 
 1. Pushes the current release branch.
-2. Rebases master onto the current release branch so master contains the release code.
+2. Verifies the release branch tree is already represented on master.
 3. Commits package metadata for version <a.b.c> on master.
 4. Tags master as v<a.b.c>.
 5. Pushes master and the tag. GitHub Actions publishes the tag to npm with the latest dist-tag.
@@ -65,7 +65,12 @@ if [[ "$(git rev-parse master)" != "$(git rev-parse origin/master)" ]]; then
   exit 1
 fi
 
-git rebase "${release_branch}"
+if ! git diff --quiet "master..${release_branch}" -- .; then
+  echo "Release branch ${release_branch} differs from master." >&2
+  echo "Sync the release branch changes into master first, then rerun this script." >&2
+  exit 1
+fi
+
 npm version "${version}" --no-git-tag-version --allow-same-version
 
 files_to_stage=()
