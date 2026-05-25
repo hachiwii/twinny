@@ -38,6 +38,7 @@ describe("TwinnyTelemetryClient", () => {
       runtimeId: "runtime_1",
       now: () => 123,
       osVersion: "14.7",
+      timezoneOffsetMinutes: () => 480,
       codexVersion: () => "codex 1.2.3"
     });
 
@@ -53,6 +54,8 @@ describe("TwinnyTelemetryClient", () => {
       os_platform: expect.any(String),
       os_arch: expect.any(String),
       os_version: "14.7",
+      timezone_offset: "+08:00",
+      timezone_offset_minutes: 480,
       node_version: process.versions.node,
       lark_brand: "feishu",
       profile_count: 2,
@@ -67,7 +70,8 @@ describe("TwinnyTelemetryClient", () => {
       reporter,
       runtimeId: "runtime_1",
       now: () => 123,
-      osVersion: "14.7"
+      osVersion: "14.7",
+      timezoneOffsetMinutes: () => 330
     });
 
     client.captureError(new Error("contains ou_secret"), {
@@ -85,6 +89,8 @@ describe("TwinnyTelemetryClient", () => {
     expect(exception).toBeInstanceOf(Error);
     expect((exception as Error).message).toBe("conversation:conversation.test");
     expect(exceptionPayload.telemetry_error_event).toBe("twinny_error");
+    expect(exceptionPayload.timezone_offset).toBe("+05:30");
+    expect(exceptionPayload.timezone_offset_minutes).toBe(330);
     expect(exceptionPayload.error_message_hash).toEqual(expect.any(String));
     expect(JSON.stringify(exceptionPayload)).not.toContain("ou_secret");
   });

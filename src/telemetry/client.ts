@@ -50,6 +50,7 @@ export interface TwinnyTelemetryClientOptions {
   logger?: Pick<Logger, "warn">;
   codexVersion?: () => string | null | undefined;
   osVersion?: string;
+  timezoneOffsetMinutes?: (timestampMs: number) => number;
   fetch?: typeof fetch;
 }
 
@@ -60,6 +61,7 @@ export class TwinnyTelemetryClient implements TelemetryClient {
   private readonly logger?: Pick<Logger, "warn">;
   private readonly codexVersion?: () => string | null | undefined;
   private readonly osVersion: string;
+  private readonly timezoneOffsetMinutes: (timestampMs: number) => number;
   private nextInsertId = 0;
 
   constructor(
@@ -75,6 +77,7 @@ export class TwinnyTelemetryClient implements TelemetryClient {
     this.logger = options.logger;
     this.codexVersion = options.codexVersion;
     this.osVersion = options.osVersion ?? readOsVersion();
+    this.timezoneOffsetMinutes = options.timezoneOffsetMinutes ?? readTimezoneOffsetMinutes;
   }
 
   capture(event: string, properties: TelemetryProperties = {}, options: TelemetryCaptureOptions = {}): void {
@@ -147,16 +150,20 @@ export class TwinnyTelemetryClient implements TelemetryClient {
   }
 
   private commonProperties(event: string, options: TelemetryCaptureOptions): TelemetryProperties {
+    const eventTsMs = this.now();
+    const timezoneOffsetMinutes = this.timezoneOffsetMinutes(eventTsMs);
     return {
       schema_version: 1,
       install_id: this.hashId("install", this.config.homeIdentity.random),
       runtime_id: this.runtimeId,
-      event_ts_ms: this.now(),
+      event_ts_ms: eventTsMs,
       twinny_version: TWINNY_VERSION,
       codex_version: options.codexVersion ?? this.codexVersion?.() ?? null,
       os_platform: os.platform(),
       os_arch: os.arch(),
       os_version: this.osVersion,
+      timezone_offset: formatTimezoneOffset(timezoneOffsetMinutes),
+      timezone_offset_minutes: timezoneOffsetMinutes,
       node_version: process.versions.node,
       lark_brand: this.config.auth.larkBrand,
       profile_count: Object.keys(this.config.profiles).length,
@@ -214,6 +221,18 @@ function readOsVersion(): string {
     }
   }
   return typeof os.version === "function" ? os.version() : os.release();
+}
+
+function readTimezoneOffsetMinutes(timestampMs: number): number {
+  return -new Date(timestampMs).getTimezoneOffset();
+}
+
+function formatTimezoneOffset(offsetMinutes: number): string {
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absoluteMinutes = Math.abs(offsetMinutes);
+  const hours = Math.floor(absoluteMinutes / 60);
+  const minutes = absoluteMinutes % 60;
+  return `${sign}${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
 function errorName(error: unknown): string {
