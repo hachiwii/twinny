@@ -1754,7 +1754,7 @@ describe("ConversationManager", () => {
     expect(lark.sendCardToChatId).toHaveBeenNthCalledWith(2, "oc_ignored", expect.any(Object), { uuid: expect.any(String) });
     expect(JSON.stringify(vi.mocked(lark.sendCardToChatId).mock.calls[0]![1])).toContain("img_banner");
     expect(JSON.stringify(vi.mocked(lark.sendCardToChatId).mock.calls[1]![1])).toContain(
-      "Twinny - Turn chats into action"
+      "Twinny - Command Codex in Feishu"
     );
   });
 

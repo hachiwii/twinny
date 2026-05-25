@@ -788,7 +788,7 @@ describe("renderTwinnyBannerCard", () => {
       img_key: "img_banner",
       scale_type: "fit_horizontal"
     });
-    expect(JSON.stringify(card)).toContain("Twinny - Turn chats into action");
+    expect(JSON.stringify(card)).toContain("Twinny - Command Codex in Feishu");
     expect(JSON.stringify(card)).toContain("20260523-d786ff949 |");
     expect(cardSummary(card)).toBe("🐰 Twinny 20260523-d786ff949");
   });

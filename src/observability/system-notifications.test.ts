@@ -18,7 +18,7 @@ describe("TwinnySystemNotifier", () => {
     );
     expect(JSON.stringify(sender.sendInteractiveCardToOpenId.mock.calls[0]![1])).toContain("img_banner");
     expect(JSON.stringify(sender.sendInteractiveCardToOpenId.mock.calls[0]![1])).toContain(
-      "Twinny - Turn chats into action"
+      "Twinny - Command Codex in Feishu"
     );
     expect(JSON.stringify(sender.sendInteractiveCardToOpenId.mock.calls[0]![1])).toContain("dev |");
     expect(
