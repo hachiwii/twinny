@@ -37,6 +37,7 @@ import { TWINNY_VERSION } from "../version.js";
 import type { LarkBrand, TelemetryConfig, TwinnyConfig } from "../types.js";
 
 const minimumCodexVersion = "0.130.0";
+export const installWizardIntro = "🐰 Twinny install";
 export const installWizardLarkBrand: LarkBrand = "feishu";
 
 const sensitiveEnvPattern = /(?:SECRET|TOKEN|PASSWORD|PASS|PWD|API_KEY|ACCESS_KEY|PRIVATE_KEY|COOKIE|SESSION|CREDENTIAL|AUTH)/i;
@@ -141,7 +142,7 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
       throw new Error("Twinny install wizard requires an interactive terminal. Run `twinny install` from a terminal.");
     }
 
-    p.intro("Twinny install");
+    p.intro(installWizardIntro);
     const home = resolveInstallHome(env);
     await assertInstallHomeIsEmpty(home);
     const homeRandom = generateTwinnyHomeRandom();

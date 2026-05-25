@@ -9,6 +9,7 @@ import {
   buildLaunchEnvironmentStats,
   compareSemver,
   defaultIncludeEnvKey,
+  installWizardIntro,
   installWizardLarkBrand,
   isNpxEntrypoint,
   parseCodexVersion,
@@ -25,6 +26,10 @@ afterEach(async () => {
 describe("install wizard helpers", () => {
   it("keeps the installer scoped to Feishu", () => {
     expect(installWizardLarkBrand).toBe("feishu");
+  });
+
+  it("shows the Twinny rabbit in the install intro", () => {
+    expect(installWizardIntro).toBe("🐰 Twinny install");
   });
 
   it("parses and compares Codex versions", () => {
