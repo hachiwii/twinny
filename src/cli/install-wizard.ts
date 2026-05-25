@@ -154,7 +154,6 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
     const owner = ownerSetup.identity;
     launchEnvironment = await promptLaunchEnvironment(home, env);
     codexDefaults = await readCodexDefaults();
-    p.log.info(`Host profile defaults: ${codexDefaults.model} / ${codexDefaults.effort}`);
 
     config = createTwinnyConfig({
       home,
