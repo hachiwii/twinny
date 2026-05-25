@@ -7,6 +7,7 @@ import {
   buildEnvSelection,
   compareSemver,
   defaultIncludeEnvKey,
+  installWizardLarkBrand,
   isNpxEntrypoint,
   parseCodexVersion,
   readCodexDefaults
@@ -19,6 +20,10 @@ afterEach(async () => {
 });
 
 describe("install wizard helpers", () => {
+  it("keeps the installer scoped to Feishu", () => {
+    expect(installWizardLarkBrand).toBe("feishu");
+  });
+
   it("parses and compares Codex versions", () => {
     expect(parseCodexVersion("codex 0.130.0")).toBe("0.130.0");
     expect(parseCodexVersion("codex-cli 0.131.2+build.4")).toBe("0.131.2+build.4");

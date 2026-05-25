@@ -36,6 +36,7 @@ import { TWINNY_VERSION } from "../version.js";
 import type { LarkBrand, TwinnyConfig } from "../types.js";
 
 const minimumCodexVersion = "0.130.0";
+export const installWizardLarkBrand: LarkBrand = "feishu";
 
 const sensitiveEnvPattern = /(?:SECRET|TOKEN|PASSWORD|PASS|PWD|API_KEY|ACCESS_KEY|PRIVATE_KEY|COOKIE|SESSION|CREDENTIAL|AUTH)/i;
 const terminalEnvKeys = new Set([
@@ -250,13 +251,12 @@ async function promptBotCredentials(): Promise<BotCredentials> {
 }
 
 async function createBotWithBrowser(): Promise<BotCredentials> {
-  const brand = await promptLarkBrand();
-  const begin = await requestLarkAppRegistration(brand);
+  const begin = await requestLarkAppRegistration(installWizardLarkBrand);
   const verificationUrl = buildLarkVerificationUrl(begin.verificationUriComplete, TWINNY_VERSION);
   p.note(verificationUrl, "在浏览器中完成机器人创建/选择");
   await openBrowserBestEffort(verificationUrl);
   const result = await pollWithEscape("等待浏览器内操作完成，按 Esc 返回上一步", (signal) =>
-    pollLarkAppRegistration(brand, begin.deviceCode, {
+    pollLarkAppRegistration(installWizardLarkBrand, begin.deviceCode, {
       interval: begin.interval,
       expiresIn: begin.expiresIn,
       signal
@@ -265,15 +265,17 @@ async function createBotWithBrowser(): Promise<BotCredentials> {
   if (!result) {
     throw new Error("已返回机器人选择");
   }
+  if (result.brand !== installWizardLarkBrand) {
+    throw new Error("Twinny install wizard currently only supports Feishu apps.");
+  }
   return {
     appId: result.appId,
     appSecret: result.appSecret,
-    brand: result.brand
+    brand: installWizardLarkBrand
   };
 }
 
 async function promptManualBotCredentials(): Promise<BotCredentials> {
-  const brand = await promptLarkBrand();
   const appId = await cancelable(
     p.text({
       message: "App ID",
@@ -289,21 +291,8 @@ async function promptManualBotCredentials(): Promise<BotCredentials> {
   return {
     appId: appId.trim(),
     appSecret: appSecret.trim(),
-    brand
+    brand: installWizardLarkBrand
   };
-}
-
-async function promptLarkBrand(): Promise<LarkBrand> {
-  return cancelable(
-    p.select<LarkBrand>({
-      message: "选择平台",
-      options: [
-        { value: "feishu", label: "飞书", hint: "推荐" },
-        { value: "lark", label: "Lark" }
-      ],
-      initialValue: "feishu"
-    })
-  );
 }
 
 async function validateBotCredentials(credentials: BotCredentials): Promise<void> {
