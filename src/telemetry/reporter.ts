@@ -4,7 +4,9 @@ export type TelemetryProperties = Record<string, unknown>;
 
 export interface TelemetryReporter {
   capture(event: string, properties: TelemetryProperties): Promise<void> | void;
+  captureException?(error: unknown, properties: TelemetryProperties): Promise<void> | void;
   flush?(): Promise<void> | void;
+  shutdown?(): Promise<void> | void;
 }
 
 export class NullTelemetryReporter implements TelemetryReporter {
@@ -25,5 +27,23 @@ export function captureTelemetryBestEffort(
     });
   } catch (error) {
     logger?.warn({ error, event }, "failed to capture telemetry event");
+  }
+}
+
+export function captureTelemetryExceptionBestEffort(
+  reporter: TelemetryReporter,
+  error: unknown,
+  properties: TelemetryProperties,
+  logger?: Pick<Logger, "warn">
+): void {
+  if (!reporter.captureException) {
+    return;
+  }
+  try {
+    void Promise.resolve(reporter.captureException(error, properties)).catch((captureError: unknown) => {
+      logger?.warn({ error: captureError }, "failed to capture telemetry exception");
+    });
+  } catch (captureError) {
+    logger?.warn({ error: captureError }, "failed to capture telemetry exception");
   }
 }

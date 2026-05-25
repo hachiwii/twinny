@@ -254,6 +254,8 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
       }
     });
     throw error;
+  } finally {
+    await telemetry?.shutdown?.();
   }
 }
 

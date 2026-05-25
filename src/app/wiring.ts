@@ -286,6 +286,7 @@ export class TwinnyRuntime {
     } finally {
       await this.releaseLock();
       await this.stopIdleSleepPreventer();
+      await this.shutdownTelemetry();
       this.resolveStopped();
     }
   }
@@ -305,6 +306,7 @@ export class TwinnyRuntime {
     } finally {
       await this.releaseLock();
       await this.stopIdleSleepPreventer(signal);
+      await this.shutdownTelemetry();
       this.resolveStopped();
     }
   }
@@ -578,6 +580,14 @@ export class TwinnyRuntime {
   private readRuntimeCodexVersion(): string | null {
     const profile = this.codexPool?.listProfiles()[0];
     return profile ? this.codexPool?.get(profile).readCodexVersion() ?? null : null;
+  }
+
+  private async shutdownTelemetry(): Promise<void> {
+    try {
+      await this.telemetry.shutdown?.();
+    } catch (error) {
+      this.log.warn({ error }, "failed to shutdown telemetry");
+    }
   }
 }
 

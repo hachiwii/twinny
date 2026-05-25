@@ -32,6 +32,9 @@ importers:
       pino-pretty:
         specifier: ^13.0.0
         version: 13.1.3
+      posthog-node:
+        specifier: ^5.13.0
+        version: 5.13.0
       proper-lockfile:
         specifier: ^4.1.2
         version: 4.1.2
@@ -444,6 +447,9 @@ packages:
   '@pkgjs/parseargs@0.11.0':
     resolution: {integrity: sha512-+1VkjdD0QBLPodGrJUeqarH8VAIvQODIbwh9XpP5Syisf7YoQgsJKPNFoqqLQlu+VQ/tVSshMR6loPMn8U+dPg==}
     engines: {node: '>=14'}
+
+  '@posthog/core@1.5.3':
+    resolution: {integrity: sha512-1cHCMR2uS/rAdBIFlBPJ4rPYaw1O42VkFy/LwQLtoy2hMQb2DdhCoSHfgA66R9TvcOybZsSANlbuihmGEZUKVQ==}
 
   '@protobufjs/aspromise@1.1.2':
     resolution: {integrity: sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ==}
@@ -1200,6 +1206,10 @@ packages:
     resolution: {integrity: sha512-SoSL4+OSEtR99LHFZQiJLkT59C5B1amGO1NzTwj7TT1qCUgUO6hxOvzkOYxD+vMrXBM3XJIKzokoERdqQq/Zmg==}
     engines: {node: ^10 || ^12 || >=14}
 
+  posthog-node@5.13.0:
+    resolution: {integrity: sha512-4zVTLnKAxhu6WQB4y/BFBAqtxPjt/oYlxGCfb31ebkrYwV6hnWtrj3mEd0/jmdOmSaCTzils1ApU09QgkhqxPQ==}
+    engines: {node: '>=20'}
+
   prebuild-install@7.1.3:
     resolution: {integrity: sha512-8Mf2cbV7x1cXPUILADGI3wuhfqWvtiLA1iclTDbFRZkgRQS0NqsPZphna9V+HyTEadheuPmjaJMsbzKQFOzLug==}
     engines: {node: '>=10'}
@@ -1780,6 +1790,10 @@ snapshots:
 
   '@pkgjs/parseargs@0.11.0':
     optional: true
+
+  '@posthog/core@1.5.3':
+    dependencies:
+      cross-spawn: 7.0.6
 
   '@protobufjs/aspromise@1.1.2': {}
 
@@ -2501,6 +2515,10 @@ snapshots:
       nanoid: 3.3.12
       picocolors: 1.1.1
       source-map-js: 1.2.1
+
+  posthog-node@5.13.0:
+    dependencies:
+      '@posthog/core': 1.5.3
 
   prebuild-install@7.1.3:
     dependencies:

@@ -9,6 +9,7 @@ import { telemetryHashId } from "./hash.js";
 import { PostHogTelemetryReporter } from "./posthog.js";
 import {
   captureTelemetryBestEffort,
+  captureTelemetryExceptionBestEffort,
   NullTelemetryReporter,
   type TelemetryProperties,
   type TelemetryReporter
@@ -18,6 +19,8 @@ export interface TelemetryClient {
   readonly runtimeId: string;
   capture(event: string, properties?: TelemetryProperties, options?: TelemetryCaptureOptions): void;
   captureError(error: unknown, context: TelemetryErrorContext): void;
+  flush?(): Promise<void> | void;
+  shutdown?(): Promise<void> | void;
   hashId(kind: string, raw: string | null | undefined): string | null;
 }
 
@@ -87,33 +90,60 @@ export class TwinnyTelemetryClient implements TelemetryClient {
   }
 
   captureError(error: unknown, context: TelemetryErrorContext): void {
+    const errorProperties = this.errorTelemetryProperties(error, context);
     this.capture(
       "twinny_error",
-      {
-        error_name: errorName(error),
-        error_code: errorCode(error),
-        error_type: context.errorType,
-        error_site: context.errorSite,
-        code_location: codeLocation(error),
-        fatal: context.fatal ?? false,
-        operation: context.operation ?? null,
-        conversation_id: this.hashId("conversation", context.conversationKey),
-        thread_id: this.hashId("codex_thread", context.codexThreadId),
-        turn_id: this.hashId("codex_turn", context.codexTurnId),
-        sender_id: this.hashId("lark_open_id", context.larkSenderOpenId),
-        message_event_id: this.hashId("lark_event", context.larkEventId),
-        message_id: this.hashId("lark_message", context.larkMessageId),
-        error_message_hash: this.hashId("error_message", toErrorMessage(error)),
-        error_message_redacted: null,
-        stack_hash: normalizedStack(error) ? this.hashId("error_stack", normalizedStack(error)) : null,
-        ...(context.properties ?? {})
-      },
+      errorProperties,
       context
     );
+    captureTelemetryExceptionBestEffort(
+      this.reporter,
+      errorForExceptionTracking(error, context),
+      {
+        ...this.commonProperties("$exception", {
+          ...context,
+          insertId: context.insertId ? `${context.insertId}:exception` : undefined
+        }),
+        ...errorProperties,
+        telemetry_error_event: "twinny_error"
+      },
+      this.logger
+    );
+  }
+
+  async flush(): Promise<void> {
+    await this.drainTelemetry("flush");
+  }
+
+  async shutdown(): Promise<void> {
+    await this.drainTelemetry("shutdown");
   }
 
   hashId(kind: string, raw: string | null | undefined): string | null {
     return raw ? telemetryHashId(this.config.homeIdentity.telemetryHashSalt, kind, raw) : null;
+  }
+
+  private errorTelemetryProperties(error: unknown, context: TelemetryErrorContext): TelemetryProperties {
+    const stack = normalizedStack(error);
+    return {
+      error_name: errorName(error),
+      error_code: errorCode(error),
+      error_type: context.errorType,
+      error_site: context.errorSite,
+      code_location: codeLocation(error),
+      fatal: context.fatal ?? false,
+      operation: context.operation ?? null,
+      conversation_id: this.hashId("conversation", context.conversationKey),
+      thread_id: this.hashId("codex_thread", context.codexThreadId),
+      turn_id: this.hashId("codex_turn", context.codexTurnId),
+      sender_id: this.hashId("lark_open_id", context.larkSenderOpenId),
+      message_event_id: this.hashId("lark_event", context.larkEventId),
+      message_id: this.hashId("lark_message", context.larkMessageId),
+      error_message_hash: this.hashId("error_message", toErrorMessage(error)),
+      error_message_redacted: null,
+      stack_hash: stack ? this.hashId("error_stack", stack) : null,
+      ...(context.properties ?? {})
+    };
   }
 
   private commonProperties(event: string, options: TelemetryCaptureOptions): TelemetryProperties {
@@ -132,6 +162,18 @@ export class TwinnyTelemetryClient implements TelemetryClient {
       profile_count: Object.keys(this.config.profiles).length,
       $insert_id: options.insertId ?? `${event}:${this.runtimeId}:${this.nextInsertId++}`
     };
+  }
+
+  private async drainTelemetry(method: "flush" | "shutdown"): Promise<void> {
+    const drain = this.reporter[method] ?? this.reporter.flush;
+    if (!drain) {
+      return;
+    }
+    try {
+      await drain.call(this.reporter);
+    } catch (error) {
+      this.logger?.warn({ error }, `failed to ${method} telemetry`);
+    }
   }
 }
 
@@ -206,4 +248,22 @@ function codeLocation(error: unknown): string | null {
     }
   }
   return null;
+}
+
+function errorForExceptionTracking(error: unknown, context: TelemetryErrorContext): Error {
+  const message = sanitizedExceptionMessage(error, context);
+  const exception = new Error(message);
+  exception.name = errorName(error);
+  const stack = normalizedStack(error);
+  if (stack) {
+    const lines = stack.split("\n");
+    lines[0] = `${exception.name}: ${message}`;
+    exception.stack = lines.join("\n");
+  }
+  return exception;
+}
+
+function sanitizedExceptionMessage(error: unknown, context: TelemetryErrorContext): string {
+  const parts = [context.errorType, context.errorSite, errorCode(error)].filter((part): part is string => Boolean(part));
+  return parts.join(":");
 }

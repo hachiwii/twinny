@@ -80,11 +80,31 @@ describe("TwinnyTelemetryClient", () => {
     expect(payload.error_message_hash).toEqual(expect.any(String));
     expect(payload.error_message_redacted).toBeNull();
     expect(JSON.stringify(payload)).not.toContain("ou_secret");
+
+    const [exception, exceptionPayload] = vi.mocked(reporter.captureException!).mock.calls[0]!;
+    expect(exception).toBeInstanceOf(Error);
+    expect((exception as Error).message).toBe("conversation:conversation.test");
+    expect(exceptionPayload.telemetry_error_event).toBe("twinny_error");
+    expect(exceptionPayload.error_message_hash).toEqual(expect.any(String));
+    expect(JSON.stringify(exceptionPayload)).not.toContain("ou_secret");
+  });
+
+  it("drains telemetry reporters on shutdown", async () => {
+    const reporter = createReporter();
+    const client = new TwinnyTelemetryClient(config, { reporter });
+
+    await client.shutdown();
+
+    expect(reporter.shutdown).toHaveBeenCalled();
+    expect(reporter.flush).not.toHaveBeenCalled();
   });
 });
 
 function createReporter(): TelemetryReporter {
   return {
-    capture: vi.fn()
+    capture: vi.fn(),
+    captureException: vi.fn(),
+    flush: vi.fn(),
+    shutdown: vi.fn()
   };
 }
