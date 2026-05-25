@@ -15,6 +15,18 @@
 
 ## Installation
 
+Before running the installer, check the local prerequisites:
+
+```sh
+codex --version || brew install codex
+
+node --version
+npm --version
+node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' || brew install node
+```
+
+Twinny requires Codex CLI 0.130.0 or newer and Node.js 22 or newer with npm. If `codex` is missing, install it with `brew install codex`. If `node` or `npm` is missing, or if Node.js is older than 22, install a current Node.js release with `brew install node`.
+
 Run the interactive installer with `npx`:
 
 ```sh
