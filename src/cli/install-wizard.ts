@@ -34,6 +34,7 @@ import {
   TenantAccessTokenManager
 } from "../lark/index.js";
 import { TWINNY_VERSION } from "../version.js";
+import { openInstallGuidePageBestEffort } from "./install-guide.js";
 import type { LarkBrand, TelemetryConfig, TwinnyConfig } from "../types.js";
 
 const minimumCodexVersion = "0.130.0";
@@ -186,13 +187,23 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
       })
     );
     startedAfterInstall = shouldStart;
-    if (shouldStart) {
-      const s = p.spinner();
-      s.start("启动 Twinny");
-      await startLaunchAgent({ home });
-      s.stop("Twinny 已启动");
-    } else {
-      p.log.info(`稍后可执行：TWINNY_HOME=${shellQuote(home)} twinny start`);
+    try {
+      if (shouldStart) {
+        const s = p.spinner();
+        s.start("启动 Twinny");
+        try {
+          await startLaunchAgent({ home });
+          s.stop("Twinny 已启动");
+          p.log.success("🐰 安装完成，现在在飞书里愉快使用 CodeX 吧 🎉");
+        } catch (error) {
+          s.error("Twinny 启动失败");
+          throw error;
+        }
+      } else {
+        p.log.info(`稍后可执行：TWINNY_HOME=${shellQuote(home)} twinny start`);
+      }
+    } finally {
+      await openInstallGuidePageBestEffort(bot.appId);
     }
     telemetry.capture(
       "twinny_install",

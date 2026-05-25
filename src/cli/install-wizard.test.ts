@@ -3,6 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TelemetryClient } from "../telemetry/index.js";
+import { LARK_REQUIRED_SCOPES } from "../lark/index.js";
+import {
+  buildInstallGuideHtml,
+  buildInstallGuideScopeImportJson,
+  installGuideBotMenuActions,
+  installGuideRequiredEvents,
+  writeInstallGuidePage
+} from "./install-guide.js";
 import {
   assertInstallHomeIsEmpty,
   buildEnvSelection,
@@ -116,6 +124,42 @@ describe("install wizard helpers", () => {
   it("detects npx entrypoints", () => {
     expect(isNpxEntrypoint(path.join(os.tmpdir(), "_npx", "abc", "node_modules", ".bin", "twinny"))).toBe(true);
     expect(isNpxEntrypoint("/usr/local/bin/twinny")).toBe(false);
+  });
+
+  it("builds the install guide permission import JSON from doctor scopes", () => {
+    expect(JSON.parse(buildInstallGuideScopeImportJson())).toEqual({
+      scopes: {
+        tenant: [...LARK_REQUIRED_SCOPES]
+      }
+    });
+  });
+
+  it("renders install guide links, events, and menu actions", () => {
+    const html = buildInstallGuideHtml("cli_test/app", { logoDataUri: "data:image/png;base64,abc" });
+
+    expect(html).toContain("data:image/png;base64,abc");
+    expect(html).toContain("https://open.larkoffice.com/app/cli_test%2Fapp/auth");
+    expect(html).toContain("https://open.larkoffice.com/app/cli_test%2Fapp/event");
+    expect(html).toContain("https://open.larkoffice.com/app/cli_test%2Fapp/bot");
+    for (const item of installGuideRequiredEvents) {
+      expect(html).toContain(item.event);
+    }
+    for (const item of installGuideBotMenuActions) {
+      expect(html).toContain(item.eventKey);
+    }
+    expect(installGuideBotMenuActions.map((item) => item.eventKey)).not.toContain("new_session");
+  });
+
+  it("writes the install guide page as a local file", async () => {
+    const outputDir = await tempHome();
+
+    const page = await writeInstallGuidePage("cli_test", { outputDir });
+
+    expect(page.filePath).toBe(path.join(outputDir, "index.html"));
+    expect(page.fileUrl).toMatch(/^file:\/\//);
+    const html = await fs.readFile(page.filePath, "utf8");
+    expect(html).toContain("data:image/png;base64");
+    expect(html).toContain("https://open.larkoffice.com/app/cli_test/auth");
   });
 });
 
