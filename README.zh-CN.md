@@ -1,6 +1,6 @@
 # Twinny
 
-[banner](./configs/banner.png)
+![Twinny banner](./configs/banner.png)
 
 **连接你的飞书与 CodeX**
 

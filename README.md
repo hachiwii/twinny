@@ -1,6 +1,6 @@
 # Twinny
 
-[banner](./configs/banner.png)
+![Twinny banner](./configs/banner.png)
 
 **Bridge your Feishu to CodeX**
 
