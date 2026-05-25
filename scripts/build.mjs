@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,6 +20,7 @@ function main() {
   validateBuildVersion(buildVersion);
   cleanDist();
   run("tsc", ["-p", "tsconfig.build.json"]);
+  ensureBinExecutable();
   writeDistVersion(buildVersion);
   console.log(`Injected Twinny version ${buildVersion} into dist/version.js`);
 }
@@ -75,6 +76,10 @@ function run(command, args) {
 
 function cleanDist() {
   rmSync(path.join(repoRoot, "dist"), { recursive: true, force: true });
+}
+
+function ensureBinExecutable() {
+  chmodSync(path.join(repoRoot, "dist", "main.js"), 0o755);
 }
 
 function writeDistVersion(version) {

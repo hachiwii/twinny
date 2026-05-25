@@ -16,7 +16,9 @@ export { defaultOwnerCodexTarget } from "./owner.js";
 export {
   createGuestCodexConfigDocument,
   DEFAULT_GUEST_CODEX_MODEL,
+  ensureProjectTrust,
   ensureWorkspaceTrust,
+  ensureWorkspaceTrust as ensureGuestWorkspaceTrust,
   ensureWorkspaceTrust as ensureGuestWorkspaceProjectTrusted,
   renderGuestAgents,
   serializeGuestCodexConfig,

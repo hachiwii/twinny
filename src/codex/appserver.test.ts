@@ -78,6 +78,8 @@ describe("CodexAppServer", () => {
       });
       const guestCodexConfig = parse(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")) as TomlTable;
       expect((guestCodexConfig.projects as TomlTable)[workspace]).toEqual({ trust_level: "trusted" });
+      expect(guestCodexConfig.default_permissions).toBeUndefined();
+      expect(guestCodexConfig.permissions).toBeUndefined();
       await expect(server.resumeThread("thread-existing", workspace)).resolves.toMatchObject({
         thread: { id: "thread-existing" }
       });
@@ -330,6 +332,10 @@ describe("ProfileCodexAppServerPool", () => {
       await expect(host.startThread(workspace)).resolves.toMatchObject({
         thread: { id: "thread-start" }
       });
+      const hostConfig = parse(fs.readFileSync(path.join(tempDir, "host-codex-home", "config.toml"), "utf8")) as TomlTable;
+      expect((hostConfig.projects as TomlTable)[workspace]).toEqual({ trust_level: "trusted" });
+      expect(hostConfig.default_permissions).toBeUndefined();
+      expect(hostConfig.permissions).toBeUndefined();
     } finally {
       await pool.stopAll();
     }

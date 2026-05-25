@@ -2,8 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { execa } from "execa";
-import { ensureWorkspaceTrust } from "../profiles/index.js";
-import type { CodexThreadNameUpdate, ProfileName } from "../types.js";
+import { ensureGuestWorkspaceTrust, ensureProjectTrust } from "../profiles/index.js";
+import { GUEST_PROFILE_NAME, type CodexThreadNameUpdate, type ProfileName } from "../types.js";
 import { CodexProtocolClient, createInitializeParams, type CodexNotificationMessage, type InitializeResponse } from "./protocol.js";
 import { parseCodexThreadNameUpdatedNotification } from "./thread-name.js";
 import {
@@ -282,7 +282,11 @@ export class CodexAppServer extends EventEmitter {
   }
 
   private async prepareThreadWorkspace(cwd: string): Promise<void> {
-    await ensureWorkspaceTrust(this.options.codexHome, cwd);
+    if (this.options.profile === GUEST_PROFILE_NAME) {
+      await ensureGuestWorkspaceTrust(this.options.codexHome, cwd);
+      return;
+    }
+    await ensureProjectTrust(this.options.codexHome, cwd);
   }
 
   private profileName(): ProfileName {

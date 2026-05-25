@@ -71,24 +71,17 @@ export function serializeGuestCodexConfig(options: GuestCodexConfigOptions = {})
   return stringify(createGuestCodexConfigDocument(options)) + "\n";
 }
 
-export async function ensureWorkspaceTrust(codexHome: string, cwd: string): Promise<boolean> {
+export async function ensureProjectTrust(codexHome: string, cwd: string): Promise<boolean> {
   const configPath = path.join(codexHome, "config.toml");
-  return withGuestConfigWriteLock(configPath, async () => {
-    const document = await readGuestCodexConfigDocument(configPath);
-    let changed = ensureGuestPermissions(document);
-    const projects = ensureTomlTable(document, "projects");
-    const cwdPath = path.resolve(cwd);
-    const existingProject = projects[cwdPath];
-    const project = isTomlTable(existingProject) ? existingProject : {};
-    if (project.trust_level === "trusted") {
-      return changed ? writeGuestCodexConfigIfChanged(configPath, document) : false;
-    }
-
-    project.trust_level = "trusted";
-    projects[cwdPath] = project;
-    changed = true;
-    return writeGuestCodexConfigIfChanged(configPath, document);
+  return withCodexConfigWriteLock(configPath, async () => {
+    const document = await readCodexConfigDocument(configPath);
+    const changed = ensureProjectTrusted(document, cwd);
+    return changed ? writeCodexConfigIfChanged(configPath, document) : false;
   });
+}
+
+export async function ensureWorkspaceTrust(codexHome: string, cwd: string): Promise<boolean> {
+  return ensureProjectTrust(codexHome, cwd);
 }
 
 export function renderGuestAgents(owner: Pick<OwnerConfig, "openId" | "userId" | "displayName">): string {
@@ -170,52 +163,18 @@ export function validateGuestCodexConfigDocument(document: TomlTable): GuestSafe
   return { ok: issues.length === 0, issues };
 }
 
-function ensureGuestPermissions(document: TomlTable): boolean {
-  let changed = false;
-  if (document.default_permissions !== "twinny_guest") {
-    document.default_permissions = "twinny_guest";
-    changed = true;
+function ensureProjectTrusted(document: TomlTable, cwd: string): boolean {
+  const projects = ensureTomlTable(document, "projects");
+  const cwdPath = path.resolve(cwd);
+  const existingProject = projects[cwdPath];
+  const project = isTomlTable(existingProject) ? existingProject : {};
+  if (project.trust_level === "trusted") {
+    return false;
   }
 
-  const permissions = ensureTomlTable(document, "permissions");
-  const profile = ensureTomlTable(permissions, "twinny_guest");
-  const filesystem = ensureTomlTable(profile, "filesystem");
-  if (filesystem[":tmpdir"] !== "write") {
-    filesystem[":tmpdir"] = "write";
-    changed = true;
-  }
-  const network = ensureTomlTable(profile, "network");
-  if (network.enabled !== true) {
-    network.enabled = true;
-    changed = true;
-  }
-  if (network.mode !== "full") {
-    network.mode = "full";
-    changed = true;
-  }
-  if (network.allow_local_binding !== true) {
-    network.allow_local_binding = true;
-    changed = true;
-  }
-  const existingDomains = network.domains;
-  if (!isTomlTable(existingDomains)) {
-    network.domains = { ...requiredGuestNetworkDomains };
-    changed = true;
-  } else {
-    for (const domain of Object.keys(existingDomains)) {
-      if (!(domain in requiredGuestNetworkDomains)) {
-        delete existingDomains[domain];
-        changed = true;
-      }
-    }
-    for (const [domain, access] of Object.entries(requiredGuestNetworkDomains)) {
-      if (existingDomains[domain] !== access) {
-        existingDomains[domain] = access;
-        changed = true;
-      }
-    }
-  }
-  return changed;
+  project.trust_level = "trusted";
+  projects[cwdPath] = project;
+  return true;
 }
 
 function getGuestNetworkPermissions(document: TomlTable): TomlTable | undefined {
@@ -244,18 +203,18 @@ function getGuestFilesystemPermissions(document: TomlTable): TomlTable | undefin
   return isTomlTable(filesystem) ? filesystem : undefined;
 }
 
-async function readGuestCodexConfigDocument(configPath: string): Promise<TomlTable> {
+async function readCodexConfigDocument(configPath: string): Promise<TomlTable> {
   try {
     return parse(await fs.readFile(configPath, "utf8")) as TomlTable;
   } catch (error) {
     if (isNodeError(error, "ENOENT")) {
-      return createGuestCodexConfigDocument();
+      return {};
     }
     throw error;
   }
 }
 
-async function writeGuestCodexConfigIfChanged(configPath: string, document: TomlTable): Promise<boolean> {
+async function writeCodexConfigIfChanged(configPath: string, document: TomlTable): Promise<boolean> {
   const content = stringify(document) + "\n";
   try {
     if ((await fs.readFile(configPath, "utf8")) === content) {
@@ -286,7 +245,7 @@ function isTomlTable(value: unknown): value is TomlTable {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function withGuestConfigWriteLock<T>(configPath: string, operation: () => Promise<T>): Promise<T> {
+async function withCodexConfigWriteLock<T>(configPath: string, operation: () => Promise<T>): Promise<T> {
   const previous = guestConfigWriteLocks.get(configPath) ?? Promise.resolve();
   let releaseCurrent!: () => void;
   const current = new Promise<void>((resolve) => {
