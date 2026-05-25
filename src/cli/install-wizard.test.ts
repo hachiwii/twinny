@@ -22,10 +22,13 @@ import {
   isNpxEntrypoint,
   parseCodexVersion,
   readCodexDefaults,
+  resolveLaunchAgentEntrypoint,
   runInstallWizard
 } from "./install-wizard.js";
 
 const tempDirs: string[] = [];
+type ResolveLaunchAgentEntrypointOptions = NonNullable<Parameters<typeof resolveLaunchAgentEntrypoint>[1]>;
+type NpmInstallRunner = NonNullable<ResolveLaunchAgentEntrypointOptions["runNpmInstall"]>;
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
@@ -124,6 +127,24 @@ describe("install wizard helpers", () => {
   it("detects npx entrypoints", () => {
     expect(isNpxEntrypoint(path.join(os.tmpdir(), "_npx", "abc", "node_modules", ".bin", "twinny"))).toBe(true);
     expect(isNpxEntrypoint("/usr/local/bin/twinny")).toBe(false);
+  });
+
+  it("installs npx runner without writing through the active spinner", async () => {
+    const home = await tempHome();
+    const entrypoint = path.join(os.tmpdir(), "_npx", "abc", "node_modules", ".bin", "twinny");
+    const runNpmInstallMock = vi.fn(async () => undefined);
+
+    const result = await resolveLaunchAgentEntrypoint(home, {
+      entrypoint,
+      runNpmInstall: runNpmInstallMock as unknown as NpmInstallRunner
+    });
+
+    expect(result).toBe(path.join(home, "runner", "node_modules", ".bin", "twinny"));
+    expect(runNpmInstallMock).toHaveBeenCalledWith(
+      "npm",
+      ["install", "--prefix", path.join(home, "runner"), "--omit=dev", "--no-audit", "--no-fund", "twinny@0.0.0-dev.0"],
+      expect.objectContaining({ stdio: "pipe" })
+    );
   });
 
   it("builds the install guide permission import JSON from doctor scopes", () => {
