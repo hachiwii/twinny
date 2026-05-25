@@ -1,0 +1,212 @@
+name: Publish npm package
+
+on:
+  push:
+    branches:
+      - master
+      - "release/**"
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  dev:
+    name: Publish dev
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Compute dev version
+        id: version
+        run: |
+          set -euo pipefail
+          commit_epoch="$(git show -s --format=%ct HEAD)"
+          suffix="$(node -e '
+            const date = new Date(Number(process.argv[1]) * 1000);
+            const pad = (value) => String(value).padStart(2, "0");
+            const stamp = [
+              String(date.getUTCFullYear()).slice(-2),
+              pad(date.getUTCMonth() + 1),
+              pad(date.getUTCDate()),
+              pad(date.getUTCHours()),
+              pad(date.getUTCMinutes()),
+              pad(date.getUTCSeconds())
+            ].join("");
+            process.stdout.write(stamp);
+          ' "${commit_epoch}")"
+          dev_version="0.0.0-dev.${suffix}"
+
+          echo "version=${dev_version}" >> "${GITHUB_OUTPUT}"
+          echo "Publishing ${dev_version} from master"
+
+      - name: Skip if dev already exists
+        id: published
+        run: |
+          set -euo pipefail
+          if npm view "twinny@${{ steps.version.outputs.version }}" version --registry https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+            echo "twinny@${{ steps.version.outputs.version }} is already published; skipping."
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - run: pnpm install --frozen-lockfile
+        if: steps.published.outputs.exists == 'false'
+
+      - name: Set package version
+        if: steps.published.outputs.exists == 'false'
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Publish dev to npm
+        if: steps.published.outputs.exists == 'false'
+        env:
+          TWINNY_ALLOW_DIRTY_RELEASE_BUILD: "1"
+        run: npm publish --tag dev
+
+  beta:
+    name: Publish beta
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Compute beta version
+        id: version
+        run: |
+          set -euo pipefail
+          branch="${GITHUB_REF_NAME}"
+          if [[ ! "${branch}" =~ ^release/([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::Release branch must be named release/a.b.c, got ${branch}"
+            exit 1
+          fi
+
+          base_version="${BASH_REMATCH[1]}"
+          commit_epoch="$(git show -s --format=%ct HEAD)"
+          suffix="$(node -e '
+            const date = new Date(Number(process.argv[1]) * 1000);
+            const pad = (value) => String(value).padStart(2, "0");
+            const stamp = [
+              String(date.getUTCFullYear()).slice(-2),
+              pad(date.getUTCMonth() + 1),
+              pad(date.getUTCDate()),
+              pad(date.getUTCHours()),
+              pad(date.getUTCMinutes()),
+              pad(date.getUTCSeconds())
+            ].join("");
+            process.stdout.write(stamp);
+          ' "${commit_epoch}")"
+          beta_version="${base_version}-beta.${suffix}"
+
+          echo "base_version=${base_version}" >> "${GITHUB_OUTPUT}"
+          echo "version=${beta_version}" >> "${GITHUB_OUTPUT}"
+          echo "Publishing ${beta_version} from ${branch}"
+
+      - name: Skip if beta already exists
+        id: published
+        run: |
+          set -euo pipefail
+          if npm view "twinny@${{ steps.version.outputs.version }}" version --registry https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+            echo "twinny@${{ steps.version.outputs.version }} is already published; skipping."
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - run: pnpm install --frozen-lockfile
+        if: steps.published.outputs.exists == 'false'
+
+      - name: Set package version
+        if: steps.published.outputs.exists == 'false'
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Publish beta to npm
+        if: steps.published.outputs.exists == 'false'
+        env:
+          TWINNY_ALLOW_DIRTY_RELEASE_BUILD: "1"
+        run: npm publish --tag beta
+
+  latest:
+    name: Publish latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Compute stable version
+        id: version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Stable release tag must be vA.B.C, got ${tag}"
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "Publishing ${version} from ${tag}"
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Skip if stable version already exists
+        id: published
+        run: |
+          set -euo pipefail
+          if npm view "twinny@${{ steps.version.outputs.version }}" version --registry https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "::error::twinny@${{ steps.version.outputs.version }} is already published."
+            exit 1
+          fi
+          echo "exists=false" >> "${GITHUB_OUTPUT}"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Set package version
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Publish latest to npm
+        env:
+          TWINNY_ALLOW_DIRTY_RELEASE_BUILD: "1"
+        run: npm publish --tag latest

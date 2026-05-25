@@ -17,7 +17,9 @@ function main() {
   const cliVersion = parseVersionArg(process.argv.slice(2));
   const buildVersion = cliVersion ?? process.env.TWINNY_BUILD_VERSION ?? buildDevelopmentVersion(repoRoot, new Date());
 
-  assertCleanWorktree(repoRoot);
+  if (!allowDirtyBuild()) {
+    assertCleanWorktree(repoRoot);
+  }
   validateBuildVersion(buildVersion);
   cleanDist();
   run("tsc", ["-p", "tsconfig.build.json"]);
@@ -76,6 +78,10 @@ function assertCleanWorktree(cwd) {
   if (status) {
     throw new Error(`Refusing to build with a dirty git worktree:\n${status}`);
   }
+}
+
+function allowDirtyBuild() {
+  return process.env.TWINNY_ALLOW_DIRTY_RELEASE_BUILD === "1";
 }
 
 function run(command, args) {
