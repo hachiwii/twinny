@@ -74,6 +74,7 @@ import {
 } from "../codex/turn.js";
 import type { ThreadGoal } from "../codex/goal.js";
 import type { LarkSendMessageResult } from "../lark/types.js";
+import type { TelemetryClient } from "../telemetry/index.js";
 import { TWINNY_VERSION } from "../version.js";
 import { SerialQueue } from "./queue.js";
 import {
@@ -566,6 +567,7 @@ export interface ConversationManagerOptions {
   };
   profiles: ProfileHomeResolver;
   runtime?: RuntimeControlBridge;
+  telemetry?: TelemetryClient;
   logger?: Logger;
   nameLookupFailureTtlMs?: number;
 }
@@ -588,6 +590,13 @@ export interface ConversationRecoveryProbeSnapshot {
   compactMessages: number;
   profiles: Record<ProfileName, number>;
   failures: ConversationRecoveryProbeFailure[];
+}
+
+export interface ConversationRuntimeStats {
+  activeTurnCount: number;
+  sideTurnCount: number;
+  queuedMessageCount: number;
+  suspendedTurnCount: number;
 }
 
 interface ActiveThreadResolution {
@@ -653,6 +662,12 @@ interface PendingMessage {
   queuedReaction?: LarkReactionHandle | null;
 }
 
+interface ClassifiedMessageRoute {
+  routeKind: LarkMessageRouteKind;
+  status: "queued" | "processing";
+  text: string;
+}
+
 type ActiveTurnWaiting =
   | {
       kind: "request_user_input";
@@ -688,6 +703,8 @@ interface ActiveTurn {
   model?: string;
   modelReasoningEffort?: string;
   mode: CodexThreadMode;
+  initialMessageCount: number;
+  steerMessageCount: number;
   threadTokenUsage: ThreadTokenUsageSnapshot;
   turnStartThreadTokenUsage: ThreadTokenUsageSnapshot;
   turnTokenUsage: ThreadTokenUsageSnapshot;
@@ -700,6 +717,7 @@ interface ActiveTurn {
   completedStatus?: CodexTurnResult["status"];
   resultText?: string;
   resultError?: string;
+  resultErrorCode?: string | null;
   generatedImagePaths: string[];
   finalAgentMessageText?: string;
   sawAgentMessagePhase?: boolean;
@@ -712,6 +730,7 @@ interface ActiveTurn {
   messageIds: Set<string>;
   processingMessageIds: Set<string>;
   steeredMessageIds: Set<string>;
+  telemetryTurnEndCaptured?: boolean;
   cancelRequested: boolean;
 }
 
@@ -826,6 +845,16 @@ export class ConversationManager {
     void state.controlQueue
       .enqueue(() => this.processSubmittedMessage(state, context, message))
       .catch((error) => {
+        this.options.telemetry?.captureError(error, {
+          errorType: "conversation",
+          errorSite: "conversation.submitIncoming",
+          operation: "submit_incoming",
+          fatal: false,
+          conversationKey: context.conversationKey,
+          larkSenderOpenId: message.senderOpenId,
+          larkEventId: message.eventId,
+          larkMessageId: message.messageId
+        });
         void this.handleSubmittedMessageFailure(message, error);
       });
   }
@@ -854,6 +883,15 @@ export class ConversationManager {
     void state.controlQueue
       .enqueue(() => this.processBotMenuAction(state, context, action))
       .catch((error) => {
+        this.options.telemetry?.captureError(error, {
+          errorType: "conversation",
+          errorSite: "conversation.submitBotMenuAction",
+          operation: "submit_bot_menu",
+          fatal: false,
+          conversationKey: context.conversationKey,
+          larkSenderOpenId: action.operatorOpenId,
+          larkEventId: action.eventId
+        });
         this.log.error(
           { error, eventId: action.eventId, eventKey: action.eventKey, operatorOpenId: action.operatorOpenId },
           "conversation bot menu action failed"
@@ -887,6 +925,16 @@ export class ConversationManager {
     }
 
     void state.controlQueue.enqueue(() => this.processCardAction(state, action, command)).catch((error) => {
+      this.options.telemetry?.captureError(error, {
+        errorType: "conversation",
+        errorSite: "conversation.submitCardAction",
+        operation: "submit_card_action",
+        fatal: false,
+        conversationKey: conversationKeyFromStateKey(command.stateKey),
+        larkSenderOpenId: action.operatorOpenId,
+        larkEventId: action.eventId,
+        larkMessageId: action.openMessageId
+      });
       this.log.error({ error, eventId: action.eventId }, "conversation card action failed");
     });
   }
@@ -1303,6 +1351,24 @@ export class ConversationManager {
     );
   }
 
+  getRuntimeStats(): ConversationRuntimeStats {
+    const stats: ConversationRuntimeStats = {
+      activeTurnCount: 0,
+      sideTurnCount: 0,
+      queuedMessageCount: 0,
+      suspendedTurnCount: 0
+    };
+    for (const state of this.states.values()) {
+      if (state.active) {
+        stats.activeTurnCount += 1;
+      }
+      stats.sideTurnCount += state.sideTurns.size;
+      stats.queuedMessageCount += state.pendingBatch.length + (state.waitingInterruptBatch?.messages.length ?? 0);
+      stats.suspendedTurnCount += state.suspendedActiveTurns.length;
+    }
+    return stats;
+  }
+
   private async processBotMenuAction(
     state: ConversationState,
     context: MessageContext,
@@ -1314,6 +1380,7 @@ export class ConversationManager {
     }
 
     const active = state.active;
+    const queueDepthBefore = state.pendingBatch.length;
     let status: LarkMessageStatus = "completed";
     try {
       switch (action.action) {
@@ -1367,9 +1434,21 @@ export class ConversationManager {
       }
     } catch (error) {
       status = "failed";
+      this.options.telemetry?.captureError(error, {
+        errorType: "conversation",
+        errorSite: "conversation.processBotMenuAction",
+        operation: "bot_menu",
+        fatal: false,
+        conversationKey: context.conversationKey,
+        codexThreadId: active?.threadId,
+        codexTurnId: active?.turnId,
+        larkSenderOpenId: action.operatorOpenId,
+        larkEventId: action.eventId
+      });
       throw error;
     } finally {
       await this.recordMenuActionBestEffort(action, context, status, active);
+      this.captureMenuActionReceived(state, context, action, status, active, queueDepthBefore);
     }
   }
 
@@ -1494,8 +1573,13 @@ export class ConversationManager {
 
     await this.prepareIncomingMessageForCodex(context, message);
     const preparedParsed: ParsedCommand = parsed.kind === "message" ? { kind: "message", text: message.text } : parsed;
-    await this.recordIncomingMessage(state, context, message, preparedParsed);
-    await this.handleRecordedParsedCommand(state, context, message, preparedParsed);
+    const queueDepthBefore = state.pendingBatch.length;
+    const route = await this.recordIncomingMessage(state, context, message, preparedParsed);
+    try {
+      await this.handleRecordedParsedCommand(state, context, message, preparedParsed);
+    } finally {
+      this.captureMessageReceived(state, context, message, route, queueDepthBefore);
+    }
   }
 
   private async prepareIncomingMessageForCodex(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
@@ -1824,7 +1908,7 @@ export class ConversationManager {
     context: MessageContext,
     message: IncomingLarkMessage,
     parsed: ParsedCommand
-  ): Promise<void> {
+  ): Promise<ClassifiedMessageRoute> {
     const profile = profileForSender(this.options.config, message.senderOpenId);
     const route = classifyInitialRoute(state, parsed, message);
     const senderName = await this.resolveSenderName(context, message, profile);
@@ -1842,6 +1926,7 @@ export class ConversationManager {
       larkCreateTime: message.createTime,
       rawEventJson: safeJsonStringify(message.raw)
     });
+    return route;
   }
 
   private async prepareMessageResources(conversationKey: string, message: IncomingLarkMessage): Promise<void> {
@@ -2954,6 +3039,8 @@ export class ConversationManager {
       model: modelSettings.model,
       modelReasoningEffort: modelSettings.effort,
       mode: "default",
+      initialMessageCount: 1,
+      steerMessageCount: 0,
       threadTokenUsage: emptyThreadTokenUsageSnapshot(),
       turnStartThreadTokenUsage: emptyThreadTokenUsageSnapshot(),
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
@@ -3014,6 +3101,19 @@ export class ConversationManager {
         );
       } catch (error) {
         if (isSideTurnCurrent(state, active) && !active.cancelRequested) {
+          active.resultError = toErrorMessage(error);
+          active.resultErrorCode = errorCodeForTelemetry(error);
+          this.options.telemetry?.captureError(error, {
+            errorType: "turn",
+            errorSite: "conversation.beginSideTurn",
+            operation: "side_turn",
+            fatal: false,
+            conversationKey: context.conversationKey,
+            codexThreadId: active.threadId,
+            codexTurnId: active.turnId,
+            larkSenderOpenId: active.triggerOpenId,
+            larkMessageId: active.replyMessageId
+          });
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
           this.log.error({ error, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation side turn failed");
           await this.failAgentCardBestEffort(state, active, toErrorMessage(error));
@@ -3463,6 +3563,7 @@ export class ConversationManager {
       return;
     }
 
+    const queueDepthBefore = state.pendingBatch.length;
     let status: LarkMessageStatus = "completed";
     try {
       switch (command.action) {
@@ -3498,9 +3599,22 @@ export class ConversationManager {
       }
     } catch (error) {
       status = "failed";
+      this.options.telemetry?.captureError(error, {
+        errorType: "conversation",
+        errorSite: "conversation.processCardAction",
+        operation: "card_action",
+        fatal: false,
+        conversationKey: active.conversationKey,
+        codexThreadId: active.threadId,
+        codexTurnId: active.turnId,
+        larkSenderOpenId: action.operatorOpenId,
+        larkEventId: action.eventId,
+        larkMessageId: action.openMessageId
+      });
       throw error;
     } finally {
       await this.recordCardActionBestEffort(action, command, status, active);
+      this.captureCardActionReceived(state, action, command, status, active, queueDepthBefore);
     }
   }
 
@@ -3674,6 +3788,120 @@ export class ConversationManager {
     }
   }
 
+  private captureMessageReceived(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    route: ClassifiedMessageRoute,
+    queueDepthBefore: number
+  ): void {
+    const telemetry = this.options.telemetry;
+    if (!telemetry) {
+      return;
+    }
+    const active = state.active;
+    telemetry.capture(
+      "twinny_message_received",
+      {
+        conversation_id: telemetry.hashId("conversation", context.conversationKey),
+        thread_id: telemetry.hashId("codex_thread", active?.threadId),
+        sender_id: telemetry.hashId("lark_open_id", message.senderOpenId),
+        message_event_id: telemetry.hashId("lark_event", message.eventId),
+        message_id: telemetry.hashId("lark_message", message.messageId),
+        message_ts_ms: message.createTime ?? null,
+        received_at_ms: Date.now(),
+        message_type: message.messageType,
+        action_type: null,
+        conversation_type: context.type,
+        route_kind: route.routeKind,
+        status_at_receive: route.status,
+        queue_depth_before: queueDepthBefore,
+        queue_depth_after: state.pendingBatch.length,
+        has_resources: (message.resources?.length ?? 0) > 0,
+        resource_count: message.resources?.length ?? 0
+      },
+      {
+        insertId: `twinny_message_received:${telemetry.hashId("lark_event", message.eventId)}`
+      }
+    );
+  }
+
+  private captureMenuActionReceived(
+    state: ConversationState,
+    context: MessageContext,
+    action: IncomingLarkBotMenuAction,
+    status: LarkMessageStatus,
+    active: ActiveTurn | undefined,
+    queueDepthBefore: number
+  ): void {
+    const telemetry = this.options.telemetry;
+    if (!telemetry) {
+      return;
+    }
+    telemetry.capture(
+      "twinny_message_received",
+      {
+        conversation_id: telemetry.hashId("conversation", context.conversationKey),
+        thread_id: telemetry.hashId("codex_thread", active?.threadId ?? state.active?.threadId),
+        sender_id: telemetry.hashId("lark_open_id", action.operatorOpenId),
+        message_event_id: telemetry.hashId("lark_event", action.eventId),
+        message_id: null,
+        message_ts_ms: action.timestamp ?? null,
+        received_at_ms: Date.now(),
+        message_type: "bot_menu",
+        action_type: action.action,
+        conversation_type: context.type,
+        route_kind: "menu_action",
+        status_at_receive: status,
+        queue_depth_before: queueDepthBefore,
+        queue_depth_after: state.pendingBatch.length,
+        has_resources: false,
+        resource_count: 0
+      },
+      {
+        insertId: `twinny_message_received:${telemetry.hashId("lark_event", action.eventId)}`
+      }
+    );
+  }
+
+  private captureCardActionReceived(
+    state: ConversationState,
+    action: IncomingLarkCardAction,
+    command: ParsedCardActionCommand,
+    status: LarkMessageStatus,
+    active: ActiveTurn,
+    queueDepthBefore: number
+  ): void {
+    const telemetry = this.options.telemetry;
+    if (!telemetry) {
+      return;
+    }
+    telemetry.capture(
+      "twinny_message_received",
+      {
+        conversation_id: telemetry.hashId("conversation", active.conversationKey),
+        thread_id: telemetry.hashId("codex_thread", active.threadId),
+        sender_id: telemetry.hashId("lark_open_id", action.operatorOpenId),
+        message_event_id: telemetry.hashId("lark_event", action.eventId),
+        message_id: telemetry.hashId("lark_message", action.openMessageId),
+        message_ts_ms: larkActionTimestamp(action.raw),
+        received_at_ms: Date.now(),
+        message_type: "card_button",
+        action_type: command.action,
+        conversation_type: active.context.type,
+        route_kind: "card_action",
+        status_at_receive: status,
+        queue_depth_before: queueDepthBefore,
+        queue_depth_after: state.pendingBatch.length,
+        has_resources: false,
+        resource_count: 0
+      },
+      {
+        insertId: `twinny_message_received:${telemetry.hashId("lark_event", action.eventId)}`
+      }
+    );
+  }
+
   private async handleNextCommand(
     state: ConversationState,
     context: MessageContext,
@@ -3746,6 +3974,7 @@ export class ConversationManager {
     state.pendingBatch.splice(0, nextBatchSize);
     await this.clearQueuedReactionsBestEffort(batch);
     await this.markActiveProcessingMessagesSteered(active);
+    active.steerMessageCount += batch.length;
     const messageIds = batch.map((queued) => queued.messageId);
     for (const queued of batch) {
       active.messagesById.set(queued.messageId, queued);
@@ -3854,6 +4083,7 @@ export class ConversationManager {
       active.messagesById.set(message.messageId, message);
       active.messageIds.add(message.messageId);
       active.processingMessageIds.add(message.messageId);
+      active.steerMessageCount += 1;
       await this.markMessagesProcessingBestEffort([message.messageId], {
         conversationKey: active.conversationKey,
         codexThreadId: active.threadId
@@ -4154,6 +4384,8 @@ export class ConversationManager {
       model: modelSettings.model,
       modelReasoningEffort: modelSettings.effort,
       mode,
+      initialMessageCount: 1,
+      steerMessageCount: 0,
       threadTokenUsage,
       turnStartThreadTokenUsage: threadTokenUsage,
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
@@ -4206,6 +4438,19 @@ export class ConversationManager {
       })
       .catch(async (error) => {
         if (state.active === active && !active.cancelRequested) {
+          active.resultError = toErrorMessage(error);
+          active.resultErrorCode = errorCodeForTelemetry(error);
+          this.options.telemetry?.captureError(error, {
+            errorType: "turn",
+            errorSite: "conversation.beginCompactTurn",
+            operation: "compact_turn",
+            fatal: false,
+            conversationKey: context.conversationKey,
+            codexThreadId: active.threadId,
+            codexTurnId: active.turnId,
+            larkSenderOpenId: active.triggerOpenId,
+            larkMessageId: active.replyMessageId
+          });
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
           this.log.error(
             { error, messageId: active.replyMessageId, conversationKey: context.conversationKey },
@@ -4374,6 +4619,8 @@ export class ConversationManager {
       model: modelSettings.model,
       modelReasoningEffort: modelSettings.effort,
       mode: "default",
+      initialMessageCount: params.messages.length,
+      steerMessageCount: 0,
       threadTokenUsage,
       turnStartThreadTokenUsage: threadTokenUsage,
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
@@ -4456,6 +4703,19 @@ export class ConversationManager {
             );
             return;
           }
+          active.resultError = toErrorMessage(error);
+          active.resultErrorCode = errorCodeForTelemetry(error);
+          this.options.telemetry?.captureError(error, {
+            errorType: "turn",
+            errorSite: "conversation.beginGoalTurn",
+            operation: "goal_turn",
+            fatal: false,
+            conversationKey: context.conversationKey,
+            codexThreadId: active.threadId,
+            codexTurnId: active.turnId,
+            larkSenderOpenId: active.triggerOpenId,
+            larkMessageId: active.replyMessageId
+          });
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
           this.log.error({ error, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation goal failed");
           await this.failAgentCardBestEffort(state, active, toErrorMessage(error));
@@ -4574,6 +4834,8 @@ export class ConversationManager {
       model: modelSettings.model,
       modelReasoningEffort: modelSettings.effort,
       mode,
+      initialMessageCount: params.messages.length,
+      steerMessageCount: 0,
       threadTokenUsage,
       turnStartThreadTokenUsage: threadTokenUsage,
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
@@ -4662,6 +4924,19 @@ export class ConversationManager {
             );
             return;
           }
+          active.resultError = toErrorMessage(failure);
+          active.resultErrorCode = errorCodeForTelemetry(failure);
+          this.options.telemetry?.captureError(failure, {
+            errorType: "turn",
+            errorSite: "conversation.beginActiveTurn",
+            operation: "start_turn",
+            fatal: false,
+            conversationKey: context.conversationKey,
+            codexThreadId: active.threadId,
+            codexTurnId: active.turnId,
+            larkSenderOpenId: active.triggerOpenId,
+            larkMessageId: active.replyMessageId
+          });
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
           this.log.error({ error: failure, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation turn failed");
           await this.failAgentCardBestEffort(state, active, toErrorMessage(failure));
@@ -4821,6 +5096,7 @@ export class ConversationManager {
         } else {
           await this.markMessagesSteeredBestEffort([message.messageId], update);
         }
+        active.steerMessageCount += 1;
       } catch (error) {
         this.log.warn(
           { error, threadId: active.threadId, turnId: active.turnId, messageId: message.messageId },
@@ -4944,6 +5220,7 @@ export class ConversationManager {
       this.stopAgentCardTimer(active);
       return;
     }
+    this.captureTurnEnd(state, active);
     state.active = undefined;
     await this.clearReactionBestEffort(active);
     if (active.cancelRequested) {
@@ -4986,6 +5263,7 @@ export class ConversationManager {
     if (active.sideId !== undefined) {
       state.sideTurns.delete(active.sideId);
     }
+    this.captureTurnEnd(state, active);
     await this.clearReactionBestEffort(active);
     if (!active.cancelRequested && active.completedStatus === "completed") {
       await this.markMessagesCompletedBestEffort([...active.processingMessageIds]);
@@ -4999,6 +5277,46 @@ export class ConversationManager {
     }
     this.stopAgentCardTimer(active);
     await this.unsubscribeSideThreadBestEffort(active);
+  }
+
+  private captureTurnEnd(state: ConversationState, active: ActiveTurn): void {
+    const telemetry = this.options.telemetry;
+    if (!telemetry || active.telemetryTurnEndCaptured) {
+      return;
+    }
+    active.telemetryTurnEndCaptured = true;
+    const status = active.cancelRequested ? "interrupted" : active.completedStatus ?? "failed";
+    telemetry.capture(
+      "twinny_turn_end",
+      {
+        conversation_id: telemetry.hashId("conversation", active.conversationKey),
+        thread_id: telemetry.hashId("codex_thread", active.threadId),
+        turn_id: telemetry.hashId("codex_turn", active.turnId),
+        status,
+        turn_type: active.kind === "goal" ? "goal" : active.mode === "plan" ? "plan" : "default",
+        turn_operation: active.kind,
+        message_count: active.messageIds.size,
+        initial_message_count: active.initialMessageCount,
+        steer_message_count: active.steerMessageCount,
+        model: active.model ?? null,
+        effort: active.modelReasoningEffort ?? null,
+        input_tokens: active.turnTokenUsage.inputTokens,
+        output_tokens: active.turnTokenUsage.outputTokens,
+        cached_input_tokens: active.turnTokenUsage.cachedInputTokens,
+        reasoning_tokens: active.turnTokenUsage.reasoningOutputTokens,
+        total_tokens: active.turnTokenUsage.totalTokens,
+        context_tokens: active.turnTokenUsage.contextTokens,
+        context_window: active.turnTokenUsage.contextWindow,
+        duration_ms: activeTurnElapsedMs(active),
+        generated_image_count: active.generatedImagePaths.length,
+        queue_depth_after: state.pendingBatch.length,
+        error_type: status === "failed" ? active.resultError ? "turn_error" : "unknown" : null,
+        error_code: status === "failed" ? active.resultErrorCode ?? null : null
+      },
+      {
+        insertId: `twinny_turn_end:${telemetry.hashId("codex_turn_instance", `${active.threadId}:${active.turnId ?? active.runId}`)}`
+      }
+    );
   }
 
   private clearPendingMessages(state: ConversationState): PendingMessage[] {
@@ -7537,6 +7855,11 @@ function activeTurnWorkDurationMs(codexThreadId: string, active: ActiveTurn | un
   return Number.isFinite(durationMs) && durationMs > 0 ? Math.trunc(durationMs) : 0;
 }
 
+function activeTurnElapsedMs(active: ActiveTurn, now = Date.now()): number {
+  const durationMs = now - active.startedAt;
+  return Number.isFinite(durationMs) && durationMs > 0 ? Math.trunc(durationMs) : 0;
+}
+
 function isRecoverableGoalStatus(status: ThreadGoal["status"] | CodexThreadGoalStatus | undefined): boolean {
   return status === "active" || status === "paused";
 }
@@ -7619,6 +7942,27 @@ function activeTurnRuntimeStats(active: ActiveTurn): TwinnyAgentCardRuntimeStats
     contextTokens: active.threadTokenUsage.contextTokens,
     contextWindow: active.threadTokenUsage.contextWindow
   };
+}
+
+function larkActionTimestamp(raw: unknown): number | null {
+  return finiteNumber(
+    nestedValue(raw, ["header", "create_time"]),
+    nestedValue(raw, ["event", "timestamp"]),
+    nestedValue(raw, ["event", "create_time"]),
+    nestedValue(raw, ["timestamp"]),
+    nestedValue(raw, ["create_time"])
+  ) ?? null;
+}
+
+function errorCodeForTelemetry(error: unknown): string | null {
+  if (error instanceof TwinnyError) {
+    return error.code;
+  }
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === "string" || typeof code === "number" ? String(code) : null;
+  }
+  return null;
 }
 
 function formatModelAndEffort(model: string, effort: string): string {
@@ -8406,7 +8750,7 @@ function classifyInitialRoute(
   state: ConversationState,
   parsed: ParsedCommand,
   message: IncomingLarkMessage
-): { routeKind: LarkMessageRouteKind; status: "queued" | "processing"; text: string } {
+): ClassifiedMessageRoute {
   const originalText = message.text;
   const active = state.active;
   if (state.waitingInterruptBatch && isSchedulableParsedCommand(parsed)) {

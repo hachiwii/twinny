@@ -18,6 +18,7 @@ import {
   type ProfileConfig,
   type ProfileName,
   type RuntimePaths,
+  type TelemetryConfig,
   type TwinnyAuthFile,
   type TwinnyConfig,
   type TwinnyHomeIdentity
@@ -27,6 +28,7 @@ import { larkAppSecretAccountForHomeRandom } from "./secrets.js";
 
 export const DEFAULT_PROFILE_MODEL = "gpt-5.5";
 export const DEFAULT_PROFILE_EFFORT = "medium";
+export const DEFAULT_POSTHOG_HOST = "https://app.posthog.com";
 
 const redactionSchema = z.enum(["mask", "whitespace", "none"]);
 
@@ -71,6 +73,14 @@ const rawConfigSchema = z
       })
       .strict()
       .optional(),
+    telemetry: z
+      .object({
+        enabled: z.boolean().optional(),
+        posthog_api_key: z.string().optional(),
+        posthog_host: z.string().optional()
+      })
+      .strict()
+      .optional(),
     profiles: z.record(rawProfileSchema).optional()
   })
   .strict();
@@ -101,6 +111,7 @@ export interface CreateTwinnyConfigInput {
     messageRedaction?: Partial<LarkMessageRedactionConfig>;
   };
   permissions?: Partial<PermissionsConfig>;
+  telemetry?: Partial<TelemetryConfig>;
   profiles?: Record<ProfileName, Partial<ProfileConfig>>;
 }
 
@@ -139,6 +150,7 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
     permissions: {
       p2pDefaultProfile: normalizeProfileName(input.permissions?.p2pDefaultProfile) ?? NONE_PROFILE_NAME
     },
+    telemetry: normalizeTelemetryConfig(input.telemetry),
     owner: {
       openId: input.auth.ownerOpenId,
       displayName: input.auth.displayName
@@ -362,6 +374,11 @@ function createRuntimeConfig(
     permissions: {
       p2pDefaultProfile: normalizeProfileName(parsed.permissions?.p2p_default_profile) ?? NONE_PROFILE_NAME
     },
+    telemetry: normalizeTelemetryConfig({
+      enabled: parsed.telemetry?.enabled,
+      posthogApiKey: parsed.telemetry?.posthog_api_key,
+      posthogHost: parsed.telemetry?.posthog_host
+    }),
     owner: {
       openId: auth.ownerOpenId,
       displayName: auth.displayName
@@ -435,7 +452,7 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
   }
   profiles[GUEST_PROFILE_NAME] ??= {};
 
-  return {
+  const document: TomlTable = {
     codex: {
       binary: config.codex.binary
     },
@@ -454,6 +471,20 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
     },
     profiles
   };
+  if (
+    config.telemetry?.enabled ||
+    config.telemetry?.posthogApiKey ||
+    (config.telemetry?.posthogHost && config.telemetry.posthogHost !== DEFAULT_POSTHOG_HOST)
+  ) {
+    document.telemetry = {
+      enabled: config.telemetry.enabled,
+      posthog_host: config.telemetry.posthogHost
+    };
+    if (config.telemetry.posthogApiKey) {
+      (document.telemetry as TomlTable).posthog_api_key = config.telemetry.posthogApiKey;
+    }
+  }
+  return document;
 }
 
 function normalizeAuthFile(input: TwinnyAuthFileInput): TwinnyAuthFile {
@@ -512,6 +543,16 @@ function normalizeMessageRedactionStrategy(
   strategy: LarkMessageRedactionStrategy | undefined
 ): LarkMessageRedactionStrategy {
   return strategy ?? DEFAULT_LARK_MESSAGE_REDACTION_STRATEGY;
+}
+
+function normalizeTelemetryConfig(input: Partial<TelemetryConfig> | undefined): TelemetryConfig {
+  const posthogApiKey = normalizeOptionalString(input?.posthogApiKey);
+  const posthogHost = normalizeOptionalString(input?.posthogHost) ?? DEFAULT_POSTHOG_HOST;
+  return {
+    enabled: input?.enabled ?? Boolean(posthogApiKey),
+    ...(posthogApiKey ? { posthogApiKey } : {}),
+    posthogHost
+  };
 }
 
 function isMessageRedactionStrategy(value: unknown): value is LarkMessageRedactionStrategy {

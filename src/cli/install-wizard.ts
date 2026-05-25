@@ -19,6 +19,7 @@ import {
 } from "../config/index.js";
 import { provisionLarkAssetImageKeys } from "../app/lark-assets.js";
 import { installLaunchAgent, startLaunchAgent } from "../launchd/install.js";
+import { createTwinnyTelemetryClient, type TelemetryClient } from "../telemetry/index.js";
 import {
   buildLarkVerificationUrl,
   getLarkBrowserUserInfo,
@@ -33,7 +34,7 @@ import {
   TenantAccessTokenManager
 } from "../lark/index.js";
 import { TWINNY_VERSION } from "../version.js";
-import type { LarkBrand, TwinnyConfig } from "../types.js";
+import type { LarkBrand, TelemetryConfig, TwinnyConfig } from "../types.js";
 
 const minimumCodexVersion = "0.130.0";
 export const installWizardLarkBrand: LarkBrand = "feishu";
@@ -63,9 +64,19 @@ interface BotCredentials {
   brand: LarkBrand;
 }
 
+interface BotSetupResult {
+  credentials: BotCredentials;
+  method: BotChoice;
+}
+
 interface OwnerIdentity {
   openId: string;
   displayName: string;
+}
+
+interface OwnerSetupResult {
+  identity: OwnerIdentity;
+  method: OwnerChoice;
 }
 
 interface CodexDetection {
@@ -78,64 +89,219 @@ interface CodexDefaults {
   effort: string;
 }
 
-export async function runInstallWizard(): Promise<void> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error("Twinny install wizard requires an interactive terminal. Run `twinny install` from a terminal.");
-  }
+export interface LaunchEnvironmentStats {
+  importedEnvKeyCount: number;
+  candidateEnvKeyCount: number;
+  defaultIncludedEnvKeyCount: number;
+}
 
-  p.intro("Twinny install");
-  const home = resolveInstallHome(process.env);
-  await assertInstallHomeIsEmpty(home);
-  const homeRandom = generateTwinnyHomeRandom();
-  const codex = await detectCodexBinary();
-  p.log.success(`Codex ${codex.version} (${codex.binary})`);
+interface LaunchEnvironmentSelection {
+  environment: Record<string, string>;
+  stats: LaunchEnvironmentStats;
+}
 
-  const bot = await promptBotCredentials();
-  const owner = await promptOwnerIdentity(bot);
-  const environment = await promptLaunchEnvironment(home, process.env);
-  const codexDefaults = await readCodexDefaults();
-  p.log.info(`Host profile defaults: ${codexDefaults.model} / ${codexDefaults.effort}`);
+interface FinalizeInstallResult {
+  homeCreated: boolean;
+  wroteHomeRandom: boolean;
+  wroteConfig: boolean;
+  wroteAuth: boolean;
+  launchAgentInstalled: boolean;
+  assetUploadAttempted: boolean;
+}
 
-  const config = createTwinnyConfig({
-    home,
-    homeRandom,
-    codex: { binary: codex.binary },
-    auth: {
-      larkAppId: bot.appId,
-      larkBrand: bot.brand,
-      ownerOpenId: owner.openId,
-      displayName: owner.displayName
-    },
-    profiles: {
-      host: {
-        defaultModel: codexDefaults.model,
-        defaultEffort: codexDefaults.effort
-      },
-      guest: {}
+interface InstallTerminalSnapshot {
+  stdinIsTty: boolean;
+  stdoutIsTty: boolean;
+  ttyMode: "tty" | "non_tty";
+}
+
+export interface RunInstallWizardOptions {
+  env?: NodeJS.ProcessEnv;
+  telemetry?: TelemetryClient;
+  stdinIsTTY?: boolean;
+  stdoutIsTTY?: boolean;
+}
+
+export async function runInstallWizard(options: RunInstallWizardOptions = {}): Promise<void> {
+  const startedAt = Date.now();
+  const env = options.env ?? process.env;
+  const terminal = installTerminalSnapshot(options);
+  let telemetry = options.telemetry;
+  let config: TwinnyConfig | undefined;
+  let codex: CodexDetection | undefined;
+  let botSetup: BotSetupResult | undefined;
+  let ownerSetup: OwnerSetupResult | undefined;
+  let launchEnvironment: LaunchEnvironmentSelection | undefined;
+  let codexDefaults: CodexDefaults | undefined;
+  let finalizeResult: FinalizeInstallResult | undefined;
+  let startedAfterInstall = false;
+
+  try {
+    if (!terminal.stdinIsTty || !terminal.stdoutIsTty) {
+      throw new Error("Twinny install wizard requires an interactive terminal. Run `twinny install` from a terminal.");
     }
-  });
 
-  await finalizeInstall({ config, appSecret: bot.appSecret, environment });
+    p.intro("Twinny install");
+    const home = resolveInstallHome(env);
+    await assertInstallHomeIsEmpty(home);
+    const homeRandom = generateTwinnyHomeRandom();
+    codex = await detectCodexBinary(env);
+    p.log.success(`Codex ${codex.version} (${codex.binary})`);
 
-  const shouldStart = await cancelable(
-    p.confirm({
-      message: "安装完成。现在启动 Twinny？",
-      initialValue: true
-    })
-  );
-  if (shouldStart) {
-    const s = p.spinner();
-    s.start("启动 Twinny");
-    await startLaunchAgent({ home });
-    s.stop("Twinny 已启动");
-  } else {
-    p.log.info(`稍后可执行：TWINNY_HOME=${shellQuote(home)} twinny start`);
+    botSetup = await promptBotCredentials();
+    const bot = botSetup.credentials;
+    ownerSetup = await promptOwnerIdentity(bot);
+    const owner = ownerSetup.identity;
+    launchEnvironment = await promptLaunchEnvironment(home, env);
+    codexDefaults = await readCodexDefaults();
+    p.log.info(`Host profile defaults: ${codexDefaults.model} / ${codexDefaults.effort}`);
+
+    config = createTwinnyConfig({
+      home,
+      homeRandom,
+      codex: { binary: codex.binary },
+      auth: {
+        larkAppId: bot.appId,
+        larkBrand: bot.brand,
+        ownerOpenId: owner.openId,
+        displayName: owner.displayName
+      },
+      telemetry: installTelemetryConfigFromEnv(env),
+      profiles: {
+        host: {
+          defaultModel: codexDefaults.model,
+          defaultEffort: codexDefaults.effort
+        },
+        guest: {}
+      }
+    });
+    telemetry ??= createTwinnyTelemetryClient(config, { codexVersion: () => codex?.version });
+
+    finalizeResult = await finalizeInstall({ config, appSecret: bot.appSecret, environment: launchEnvironment.environment });
+
+    const shouldStart = await cancelable(
+      p.confirm({
+        message: "安装完成。现在启动 Twinny？",
+        initialValue: true
+      })
+    );
+    startedAfterInstall = shouldStart;
+    if (shouldStart) {
+      const s = p.spinner();
+      s.start("启动 Twinny");
+      await startLaunchAgent({ home });
+      s.stop("Twinny 已启动");
+    } else {
+      p.log.info(`稍后可执行：TWINNY_HOME=${shellQuote(home)} twinny start`);
+    }
+    telemetry.capture(
+      "twinny_install",
+      {
+        install_status: "completed",
+        install_duration_ms: Date.now() - startedAt,
+        stdin_is_tty: terminal.stdinIsTty,
+        stdout_is_tty: terminal.stdoutIsTty,
+        tty_mode: terminal.ttyMode,
+        imported_env_key_count: launchEnvironment.stats.importedEnvKeyCount,
+        candidate_env_key_count: launchEnvironment.stats.candidateEnvKeyCount,
+        default_included_env_key_count: launchEnvironment.stats.defaultIncludedEnvKeyCount,
+        started_after_install: startedAfterInstall,
+        home_created: finalizeResult.homeCreated,
+        wrote_home_random: finalizeResult.wroteHomeRandom,
+        wrote_config: finalizeResult.wroteConfig,
+        wrote_auth: finalizeResult.wroteAuth,
+        launch_agent_installed: finalizeResult.launchAgentInstalled,
+        asset_upload_attempted: finalizeResult.assetUploadAttempted,
+        codex_binary_id: telemetry.hashId("codex_binary", codex.binary),
+        default_model: codexDefaults.model,
+        default_effort: codexDefaults.effort,
+        bot_setup_method: botSetup.method,
+        owner_setup_method: ownerSetup.method
+      },
+      {
+        insertId: `twinny_install:${telemetry.hashId("install_event", config.homeIdentity.random)}`,
+        codexVersion: codex.version
+      }
+    );
+    p.outro("Twinny 安装完成");
+  } catch (error) {
+    telemetry?.captureError(error, {
+      errorType: "install",
+      errorSite: "cli.runInstallWizard",
+      operation: "install",
+      fatal: true,
+      codexVersion: codex?.version,
+      properties: {
+        install_duration_ms: Date.now() - startedAt,
+        stdin_is_tty: terminal.stdinIsTty,
+        stdout_is_tty: terminal.stdoutIsTty,
+        tty_mode: terminal.ttyMode,
+        imported_env_key_count: launchEnvironment?.stats.importedEnvKeyCount ?? null,
+        candidate_env_key_count: launchEnvironment?.stats.candidateEnvKeyCount ?? null,
+        default_included_env_key_count: launchEnvironment?.stats.defaultIncludedEnvKeyCount ?? null,
+        started_after_install: startedAfterInstall,
+        home_created: finalizeResult?.homeCreated ?? false,
+        wrote_home_random: finalizeResult?.wroteHomeRandom ?? false,
+        wrote_config: finalizeResult?.wroteConfig ?? false,
+        wrote_auth: finalizeResult?.wroteAuth ?? false,
+        launch_agent_installed: finalizeResult?.launchAgentInstalled ?? false,
+        asset_upload_attempted: finalizeResult?.assetUploadAttempted ?? false,
+        codex_binary_id: codex ? telemetry.hashId("codex_binary", codex.binary) : null,
+        default_model: codexDefaults?.model ?? null,
+        default_effort: codexDefaults?.effort ?? null,
+        bot_setup_method: botSetup?.method ?? null,
+        owner_setup_method: ownerSetup?.method ?? null
+      }
+    });
+    throw error;
   }
-  p.outro("Twinny 安装完成");
 }
 
 export function resolveInstallHome(env: NodeJS.ProcessEnv = process.env): string {
   return resolveTwinnyHome({ env });
+}
+
+function installTerminalSnapshot(options: RunInstallWizardOptions): InstallTerminalSnapshot {
+  const stdinIsTty = options.stdinIsTTY ?? Boolean(process.stdin.isTTY);
+  const stdoutIsTty = options.stdoutIsTTY ?? Boolean(process.stdout.isTTY);
+  return {
+    stdinIsTty,
+    stdoutIsTty,
+    ttyMode: stdinIsTty && stdoutIsTty ? "tty" : "non_tty"
+  };
+}
+
+function installTelemetryConfigFromEnv(env: NodeJS.ProcessEnv): Partial<TelemetryConfig> | undefined {
+  const posthogApiKey = optionalEnv(env.TWINNY_TELEMETRY_POSTHOG_API_KEY) ?? optionalEnv(env.TWINNY_POSTHOG_API_KEY);
+  const posthogHost = optionalEnv(env.TWINNY_TELEMETRY_POSTHOG_HOST) ?? optionalEnv(env.TWINNY_POSTHOG_HOST);
+  const enabled = booleanEnv(env.TWINNY_TELEMETRY_ENABLED);
+  if (posthogApiKey === undefined && posthogHost === undefined && enabled === undefined) {
+    return undefined;
+  }
+  return {
+    enabled: enabled ?? Boolean(posthogApiKey),
+    ...(posthogApiKey ? { posthogApiKey } : {}),
+    ...(posthogHost ? { posthogHost } : {})
+  };
+}
+
+function optionalEnv(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function booleanEnv(value: string | undefined): boolean | undefined {
+  const normalized = optionalEnv(value)?.toLowerCase();
+  if (normalized === undefined) {
+    return undefined;
+  }
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return undefined;
 }
 
 export async function assertInstallHomeIsEmpty(home: string): Promise<void> {
@@ -205,6 +371,18 @@ export function buildEnvSelection(env: NodeJS.ProcessEnv): { options: { value: s
   };
 }
 
+export function buildLaunchEnvironmentStats(
+  env: NodeJS.ProcessEnv,
+  environment: Record<string, string | undefined>
+): LaunchEnvironmentStats {
+  const selection = buildEnvSelection(env);
+  return {
+    importedEnvKeyCount: Object.keys(environment).filter((key) => environment[key] !== undefined).length,
+    candidateEnvKeyCount: selection.options.length,
+    defaultIncludedEnvKeyCount: selection.initialValues.length
+  };
+}
+
 export function defaultIncludeEnvKey(key: string): boolean {
   return !sensitiveEnvPattern.test(key) && !terminalEnvKeys.has(key);
 }
@@ -228,7 +406,7 @@ export async function readCodexDefaults(homeDir = os.homedir()): Promise<CodexDe
   };
 }
 
-async function promptBotCredentials(): Promise<BotCredentials> {
+async function promptBotCredentials(): Promise<BotSetupResult> {
   for (;;) {
     const choice = await cancelable(
       p.select<BotChoice>({
@@ -243,7 +421,7 @@ async function promptBotCredentials(): Promise<BotCredentials> {
     try {
       const credentials = choice === "auto" ? await createBotWithBrowser() : await promptManualBotCredentials();
       await validateBotCredentials(credentials);
-      return credentials;
+      return { credentials, method: choice };
     } catch (error) {
       p.log.error(error instanceof Error ? error.message : String(error));
     }
@@ -308,7 +486,7 @@ async function validateBotCredentials(credentials: BotCredentials): Promise<void
   }
 }
 
-async function promptOwnerIdentity(bot: BotCredentials): Promise<OwnerIdentity> {
+async function promptOwnerIdentity(bot: BotCredentials): Promise<OwnerSetupResult> {
   for (;;) {
     const choice = await cancelable(
       p.select<OwnerChoice>({
@@ -321,7 +499,8 @@ async function promptOwnerIdentity(bot: BotCredentials): Promise<OwnerIdentity> 
       })
     );
     try {
-      return choice === "browser" ? await authorizeOwnerInBrowser(bot) : await promptManualOwner(bot);
+      const identity = choice === "browser" ? await authorizeOwnerInBrowser(bot) : await promptManualOwner(bot);
+      return { identity, method: choice };
     } catch (error) {
       p.log.error(error instanceof Error ? error.message : String(error));
     }
@@ -382,7 +561,7 @@ async function lookupOwnerName(bot: BotCredentials, openId: string): Promise<str
   return new LarkUserDirectory({ openApiClient }).getUserNameByOpenId(openId);
 }
 
-async function promptLaunchEnvironment(home: string, env: NodeJS.ProcessEnv): Promise<Record<string, string>> {
+async function promptLaunchEnvironment(home: string, env: NodeJS.ProcessEnv): Promise<LaunchEnvironmentSelection> {
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     if (key.startsWith("TWINNY_") && value !== undefined) {
@@ -398,12 +577,12 @@ async function promptLaunchEnvironment(home: string, env: NodeJS.ProcessEnv): Pr
     })
   );
   if (!includeOther) {
-    return result;
+    return { environment: result, stats: buildLaunchEnvironmentStats(env, result) };
   }
 
   const selection = buildEnvSelection(env);
   if (selection.options.length === 0) {
-    return result;
+    return { environment: result, stats: buildLaunchEnvironmentStats(env, result) };
   }
   const selected = await cancelable(
     p.multiselect<string>({
@@ -421,7 +600,7 @@ async function promptLaunchEnvironment(home: string, env: NodeJS.ProcessEnv): Pr
     }
   }
   result.TWINNY_HOME = home;
-  return result;
+  return { environment: result, stats: buildLaunchEnvironmentStats(env, result) };
 }
 
 async function finalizeInstall(input: {
@@ -429,18 +608,29 @@ async function finalizeInstall(input: {
   appSecret: string;
   environment: Record<string, string | undefined>;
   secretStore?: SecretStore;
-}): Promise<void> {
+}): Promise<FinalizeInstallResult> {
   const s = p.spinner();
   s.start("初始化 Twinny home");
+  let homeCreated = false;
+  let wroteHomeRandom = false;
+  let wroteConfig = false;
+  let wroteAuth = false;
+  let launchAgentInstalled = false;
+  let assetUploadAttempted = false;
   try {
     const entrypoint = await resolveLaunchAgentEntrypoint(input.config.home);
-    await bootstrapTwinnyHome(input.config);
+    const bootstrap = await bootstrapTwinnyHome(input.config);
+    homeCreated = true;
+    wroteHomeRandom = bootstrap.wroteHomeRandom;
+    wroteConfig = bootstrap.wroteConfig;
+    wroteAuth = bootstrap.wroteAuth;
     await (input.secretStore ?? new SecurityCliSecretStore()).set(input.config.homeIdentity.keychainAccounts.larkAppSecret, input.appSecret);
     await installLaunchAgent({
       config: input.config,
       entrypoint,
       environment: input.environment
     });
+    launchAgentInstalled = true;
     s.stop("Twinny home 和 LaunchAgent 已创建");
   } catch (error) {
     s.error("初始化失败");
@@ -449,8 +639,17 @@ async function finalizeInstall(input: {
 
   const assetSpinner = p.spinner();
   assetSpinner.start("上传 Twinny 资源");
+  assetUploadAttempted = true;
   await uploadBundledAssets(input.config, input.appSecret);
   assetSpinner.stop("资源上传步骤完成");
+  return {
+    homeCreated,
+    wroteHomeRandom,
+    wroteConfig,
+    wroteAuth,
+    launchAgentInstalled,
+    assetUploadAttempted
+  };
 }
 
 async function uploadBundledAssets(config: TwinnyConfig, appSecret: string): Promise<void> {

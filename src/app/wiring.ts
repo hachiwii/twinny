@@ -29,6 +29,11 @@ import { createLarkSdkLogger, createLogger, logger as defaultLogger } from "../o
 import { TwinnySystemNotifier } from "../observability/system-notifications.js";
 import { getProfileCodexHome } from "../profiles/index.js";
 import { createConversationRepository, openRuntimeDatabase, type ConversationRepository, type TwinnyDatabase } from "../store/index.js";
+import {
+  createTwinnyTelemetryClient,
+  memoryUsageTelemetryProperties,
+  type TelemetryClient
+} from "../telemetry/index.js";
 import type {
   CodexAgentMessage,
   CodexImageGeneration,
@@ -60,6 +65,9 @@ export interface TwinnyRuntimeOptions {
   logoFilePath?: string;
   bannerFilePath?: string;
   idleSleepPreventer?: IdleSleepPreventer;
+  telemetry?: TelemetryClient;
+  heartbeatIntervalMs?: number;
+  disableHeartbeat?: boolean;
 }
 
 export class TwinnyRuntime {
@@ -76,6 +84,9 @@ export class TwinnyRuntime {
   private systemNotifier?: TwinnySystemNotifier;
   private readonly codexRecoveryByProfile = new Map<ProfileName, Promise<void>>();
   private readonly codexIntentionalStopByProfile = new Set<ProfileName>();
+  private readonly telemetry: TelemetryClient;
+  private heartbeatTimer?: NodeJS.Timeout;
+  private runtimeStartedAt = 0;
   private stopped = false;
   private stopPromise: Promise<void>;
   private resolveStopped!: () => void;
@@ -89,17 +100,31 @@ export class TwinnyRuntime {
     this.larkSdkLogger =
       options.larkSdkLogger ??
       createLarkSdkLogger(createLogger({ logFile: path.join(this.paths.logsDir, "lark-sdk.log") }));
+    this.telemetry =
+      options.telemetry ??
+      createTwinnyTelemetryClient(config, {
+        logger: this.log,
+        codexVersion: () => this.readRuntimeCodexVersion()
+      });
     this.stopPromise = new Promise((resolve) => {
       this.resolveStopped = resolve;
     });
   }
 
   async start(): Promise<void> {
+    const launchStartedAt = Date.now();
+    this.runtimeStartedAt = launchStartedAt;
+    let lockAcquired = false;
+    let dbOpened = false;
+    let recoveryAttempted = false;
+    let larkConsumerStarted = false;
     try {
       this.lock = await acquireTwinnyLock(this.paths, { stale: 30_000, update: 10_000 });
+      lockAcquired = true;
       this.idleSleepPreventer = this.options.idleSleepPreventer ?? new MacIdleSleepPreventer({ logger: this.log });
       this.idleSleepPreventer.start();
       this.db = openRuntimeDatabase(this.paths);
+      dbOpened = true;
 
       const appSecretAccount = this.config.homeIdentity.keychainAccounts.larkAppSecret;
       const appSecret = await resolveLarkAppSecret(appSecretAccount, this.secretStore);
@@ -167,9 +192,11 @@ export class TwinnyRuntime {
         assetImageKeys,
         profiles: { codexHomeFor: (profile) => getProfileCodexHome(this.config, profile) },
         runtime: { reloadProfile: (profile) => this.reloadProfile(profile) },
+        telemetry: this.telemetry,
         logger: this.log
       });
       this.conversation = conversation;
+      recoveryAttempted = true;
       await conversation.recoverUnfinishedMessages();
 
       this.larkConsumer = new LarkEventConsumer({
@@ -193,12 +220,53 @@ export class TwinnyRuntime {
         onCardAction: (action) => {
           conversation.submitCardAction(action);
         },
+        onConnectionError: (error) => {
+          this.telemetry.captureError(error, {
+            errorType: "lark_event",
+            errorSite: "lark.eventConsumer.connection",
+            operation: "connection_error",
+            fatal: false
+          });
+        },
         onIgnored: (reason) => this.log.debug({ reason }, "lark event ignored")
       });
       await this.larkConsumer.start();
+      larkConsumerStarted = true;
       await this.systemNotifier.notifyInitialized({ bannerImageKey: assetImageKeys.bannerImageKey });
+      this.telemetry.capture(
+        "twinny_launch",
+        {
+          launch_duration_ms: Date.now() - launchStartedAt,
+          codex_profile_count: this.codexPool.listProfiles().length,
+          lark_consumer_started: larkConsumerStarted,
+          lark_ready: this.larkConsumer.isReady,
+          has_bot_open_id: botOpenId !== undefined,
+          db_opened: dbOpened,
+          lock_acquired: lockAcquired,
+          recovery_attempted: recoveryAttempted,
+          ...memoryUsageTelemetryProperties()
+        },
+        {
+          insertId: `twinny_launch:${this.telemetry.runtimeId}`,
+          codexVersion: this.readRuntimeCodexVersion()
+        }
+      );
+      this.startHeartbeat();
       this.log.info({ home: this.config.home }, "twinny daemon started");
     } catch (error) {
+      this.telemetry.captureError(error, {
+        errorType: "runtime_start",
+        errorSite: "runtime.start",
+        operation: "start",
+        fatal: true,
+        properties: {
+          launch_duration_ms: Date.now() - launchStartedAt,
+          lark_consumer_started: larkConsumerStarted,
+          db_opened: dbOpened,
+          lock_acquired: lockAcquired,
+          recovery_attempted: recoveryAttempted
+        }
+      });
       await this.cleanupAfterStartFailure(error);
       throw error;
     }
@@ -229,6 +297,7 @@ export class TwinnyRuntime {
     this.stopped = true;
     this.log.info({ signal }, "stopping twinny daemon");
     try {
+      this.stopHeartbeat();
       await this.shutdownConversation();
       await this.stopLarkConsumer();
       await this.stopCodexPool(signal);
@@ -268,12 +337,23 @@ export class TwinnyRuntime {
     }
     const suspended = (await this.conversation?.suspendActiveTurnsForCodexAppServerExit(profile)) ?? 0;
     this.log.warn({ profile, suspended }, "recovering codex app-server after exit");
-    await pool.restart(profile);
-    if (this.stopped) {
-      return;
+    try {
+      await pool.restart(profile);
+      if (this.stopped) {
+        return;
+      }
+      const recovered = (await this.conversation?.recoverSuspendedActiveTurnsForCodexAppServerExit(profile)) ?? 0;
+      this.log.info({ profile, suspended, recovered }, "codex app-server recovered after exit");
+    } catch (error) {
+      this.telemetry.captureError(error, {
+        errorType: "codex_app_server",
+        errorSite: "runtime.recoverCodexAppServer",
+        operation: "recover_codex_app_server",
+        fatal: false,
+        properties: { profile, suspended }
+      });
+      throw error;
     }
-    const recovered = (await this.conversation?.recoverSuspendedActiveTurnsForCodexAppServerExit(profile)) ?? 0;
-    this.log.info({ profile, suspended, recovered }, "codex app-server recovered after exit");
   }
 
   private attachCodexAppServerListeners(profile: ProfileName, server: CodexAppServer): void {
@@ -289,6 +369,13 @@ export class TwinnyRuntime {
         return;
       }
       this.log.error({ profile, code, signal }, "codex app-server exited");
+      this.telemetry.captureError(new Error("Codex app-server exited"), {
+        errorType: "codex_app_server",
+        errorSite: "runtime.codexAppServer.exit",
+        operation: "codex_app_server_exit",
+        fatal: false,
+        properties: { profile, code, signal }
+      });
       void this.handleCodexAppServerExit(profile).catch((error) => {
         this.log.error({ error, profile }, "failed to recover codex app-server after exit");
       });
@@ -442,6 +529,56 @@ export class TwinnyRuntime {
       logger: this.log
     });
   }
+
+  private startHeartbeat(): void {
+    if (this.options.disableHeartbeat) {
+      return;
+    }
+    const intervalMs = this.options.heartbeatIntervalMs ?? 60 * 60 * 1000;
+    this.heartbeatTimer = setInterval(() => this.captureHeartbeat(intervalMs), intervalMs);
+    this.heartbeatTimer.unref?.();
+  }
+
+  private stopHeartbeat(): void {
+    if (!this.heartbeatTimer) {
+      return;
+    }
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
+  }
+
+  private captureHeartbeat(intervalMs: number): void {
+    const stats = this.conversation?.getRuntimeStats() ?? {
+      activeTurnCount: 0,
+      sideTurnCount: 0,
+      queuedMessageCount: 0,
+      suspendedTurnCount: 0
+    };
+    this.telemetry.capture(
+      "twinny_heartbeat",
+      {
+        uptime_ms: Date.now() - this.runtimeStartedAt,
+        lark_consumer_running: this.larkConsumer?.isRunning ?? false,
+        lark_ready: this.larkConsumer?.isReady ?? false,
+        lark_connection_status: safeConnectionStatus(this.larkConsumer?.getConnectionStatus()),
+        codex_profile_count: this.codexPool?.listProfiles().length ?? 0,
+        active_turn_count: stats.activeTurnCount,
+        side_turn_count: stats.sideTurnCount,
+        queued_message_count: stats.queuedMessageCount,
+        suspended_turn_count: stats.suspendedTurnCount,
+        ...memoryUsageTelemetryProperties()
+      },
+      {
+        insertId: `twinny_heartbeat:${this.telemetry.runtimeId}:${Math.floor(Date.now() / intervalMs)}`,
+        codexVersion: this.readRuntimeCodexVersion()
+      }
+    );
+  }
+
+  private readRuntimeCodexVersion(): string | null {
+    const profile = this.codexPool?.listProfiles()[0];
+    return profile ? this.codexPool?.get(profile).readCodexVersion() ?? null : null;
+  }
 }
 
 export async function createRuntime(config: TwinnyConfig, options: TwinnyRuntimeOptions = {}): Promise<TwinnyRuntime> {
@@ -450,6 +587,20 @@ export async function createRuntime(config: TwinnyConfig, options: TwinnyRuntime
 
 function replaceTwinnyConfigContents(target: TwinnyConfig, source: TwinnyConfig): void {
   Object.assign(target, source);
+}
+
+function safeConnectionStatus(status: unknown): string | null {
+  if (status === undefined || status === null) {
+    return null;
+  }
+  if (typeof status === "string" || typeof status === "number" || typeof status === "boolean") {
+    return String(status);
+  }
+  try {
+    return JSON.stringify(status).slice(0, 256);
+  } catch {
+    return String(status).slice(0, 256);
+  }
 }
 
 export function adaptConversationRepository(repository: ConversationRepository) {

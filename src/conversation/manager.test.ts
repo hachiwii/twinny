@@ -5,6 +5,7 @@ import type { Logger } from "pino";
 import { describe, expect, it, vi, type Mock } from "vitest";
 import { TwinnyError } from "../errors.js";
 import { LarkMessageUnavailableError } from "../lark/messages.js";
+import type { TelemetryCaptureOptions, TelemetryClient, TelemetryErrorContext, TelemetryProperties } from "../telemetry/index.js";
 import type {
   CodexThreadRecord,
   CodexTurnResult,
@@ -58,6 +59,101 @@ const config: TwinnyConfig = {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 describe("ConversationManager", () => {
+  it("emits message telemetry with internal route kinds and hashed insert ids", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const telemetry = createTelemetry();
+    const manager = createManager({ codex, telemetry });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "second"));
+
+    await waitForExpect(() => {
+      expect(capturedTelemetryEvents(telemetry, "twinny_message_received")).toHaveLength(2);
+    });
+    const events = capturedTelemetryEvents(telemetry, "twinny_message_received");
+
+    expect(events.map((event) => event.properties.route_kind)).toEqual(["message", "steered_message"]);
+    expect(events[0]!.properties).toMatchObject({
+      conversation_id: "hashed:conversation:12",
+      sender_id: "hashed:lark_open_id:8",
+      message_event_id: "hashed:lark_event:4",
+      message_id: "hashed:lark_message:2",
+      message_type: "text",
+      status_at_receive: "processing"
+    });
+    expect(events[0]!.options.insertId).toBe("twinny_message_received:hashed:lark_event:4");
+    expect(JSON.stringify(events)).not.toContain("ou_guest");
+    expect(JSON.stringify(events)).not.toContain("p2p_ou_guest");
+    expect(JSON.stringify(events)).not.toContain("e_m1");
+    expect(JSON.stringify(events)).not.toContain("m1");
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForDelay();
+  });
+
+  it("emits turn-end telemetry with model, effort, token deltas, and message counts", async () => {
+    const telemetry = createTelemetry();
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onTokenUsage }) => {
+        await onTurnStarted?.("turn_1");
+        await onTokenUsage?.({
+          threadId,
+          turnId: "turn_1",
+          totalTokens: 16,
+          raw: {
+            threadId,
+            turnId: "turn_1",
+            usage: {
+              total: {
+                total_tokens: 16,
+                input_tokens: 10,
+                cached_input_tokens: 3,
+                output_tokens: 4,
+                reasoning_tokens: 2
+              },
+              last: { total_tokens: 96 },
+              context_window: 128_000
+            }
+          }
+        });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const manager = createManager({ codex, telemetry });
+
+    manager.submitIncoming(message("m1", "hello"));
+
+    await waitForExpect(() => expect(capturedTelemetryEvents(telemetry, "twinny_turn_end")).toHaveLength(1));
+    const event = capturedTelemetryEvents(telemetry, "twinny_turn_end")[0]!;
+    expect(event.properties).toMatchObject({
+      conversation_id: "hashed:conversation:12",
+      thread_id: "hashed:codex_thread:8",
+      turn_id: "hashed:codex_turn:6",
+      status: "completed",
+      turn_type: "default",
+      turn_operation: "normal",
+      message_count: 1,
+      initial_message_count: 1,
+      steer_message_count: 0,
+      model: "gpt-5.5",
+      effort: "medium",
+      input_tokens: 10,
+      output_tokens: 4,
+      cached_input_tokens: 3,
+      reasoning_tokens: 2,
+      total_tokens: 16,
+      context_tokens: 96,
+      context_window: 128_000,
+      error_type: null,
+      error_code: null
+    });
+    expect(typeof event.properties.duration_ms).toBe("number");
+    expect(event.options.insertId).toBe("twinny_turn_end:hashed:codex_turn_instance:15");
+    expect(JSON.stringify(event)).not.toContain("thread_1");
+    expect(JSON.stringify(event)).not.toContain("turn_1");
+  });
+
   it("steers ordinary messages into the active turn and moves the typing reaction", async () => {
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();
@@ -7270,6 +7366,7 @@ function createManager(options: {
   workspaceRoot?: string;
   logger?: ConstructorParameters<typeof ConversationManager>[0]["logger"];
   config?: TwinnyConfig;
+  telemetry?: TelemetryClient;
 } = {}): ConversationManager {
   const workspaceRoot = options.workspaceRoot ?? "/tmp/twinny/workspaces";
   const managerConfig = options.config ?? config;
@@ -7290,6 +7387,7 @@ function createManager(options: {
     larkMessages: options.larkMessages,
     botOpenId: options.botOpenId,
     assetImageKeys: options.assetImageKeys,
+    telemetry: options.telemetry,
     logger: options.logger,
     nameLookupFailureTtlMs: 60_000
   });
@@ -7337,6 +7435,31 @@ function createLogger() {
     error: vi.fn()
   };
   return logger as typeof logger & Logger;
+}
+
+interface CapturedTelemetryEvent {
+  event: string;
+  properties: TelemetryProperties;
+  options: TelemetryCaptureOptions;
+}
+
+function createTelemetry(): TelemetryClient & { captured: CapturedTelemetryEvent[] } {
+  const captured: CapturedTelemetryEvent[] = [];
+  return {
+    runtimeId: "runtime_test",
+    captured,
+    capture: vi.fn((event: string, properties: TelemetryProperties = {}, options: TelemetryCaptureOptions = {}) => {
+      captured.push({ event, properties, options });
+    }),
+    captureError: vi.fn((_error: unknown, context: TelemetryErrorContext) => {
+      captured.push({ event: "twinny_error", properties: context.properties ?? {}, options: context });
+    }),
+    hashId: vi.fn((kind: string, raw: string | null | undefined) => raw ? `hashed:${kind}:${raw.length}` : null)
+  };
+}
+
+function capturedTelemetryEvents(telemetry: TelemetryClient, event: string): CapturedTelemetryEvent[] {
+  return ((telemetry as TelemetryClient & { captured?: CapturedTelemetryEvent[] }).captured ?? []).filter((item) => item.event === event);
 }
 
 function createCodex(overrides: Partial<CodexBridge> = {}): CodexBridge {

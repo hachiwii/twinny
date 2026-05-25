@@ -1,16 +1,19 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { TelemetryClient } from "../telemetry/index.js";
 import {
   assertInstallHomeIsEmpty,
   buildEnvSelection,
+  buildLaunchEnvironmentStats,
   compareSemver,
   defaultIncludeEnvKey,
   installWizardLarkBrand,
   isNpxEntrypoint,
   parseCodexVersion,
-  readCodexDefaults
+  readCodexDefaults,
+  runInstallWizard
 } from "./install-wizard.js";
 
 const tempDirs: string[] = [];
@@ -60,6 +63,42 @@ describe("install wizard helpers", () => {
     expect(defaultIncludeEnvKey("TERM")).toBe(false);
   });
 
+  it("counts LaunchAgent environment keys for install telemetry", () => {
+    const env = {
+      FOO: "bar",
+      PATH: "/usr/bin",
+      OPENAI_API_KEY: "secret",
+      TWINNY_HOME: "/old"
+    };
+
+    expect(buildLaunchEnvironmentStats(env, {
+      FOO: "bar",
+      TWINNY_HOME: "/new",
+      TWINNY_PROFILE: "host"
+    })).toEqual({
+      importedEnvKeyCount: 3,
+      candidateEnvKeyCount: 3,
+      defaultIncludedEnvKeyCount: 2
+    });
+  });
+
+  it("reports non-TTY install attempts to telemetry when a reporter is available", async () => {
+    const telemetry = createTelemetry();
+
+    await expect(runInstallWizard({ telemetry, stdinIsTTY: false, stdoutIsTTY: true })).rejects.toThrow(/interactive terminal/);
+
+    expect(telemetry.captureError).toHaveBeenCalledWith(expect.any(Error), expect.objectContaining({
+      errorType: "install",
+      errorSite: "cli.runInstallWizard",
+      fatal: true,
+      properties: expect.objectContaining({
+        stdin_is_tty: false,
+        stdout_is_tty: true,
+        tty_mode: "non_tty"
+      })
+    }));
+  });
+
   it("reads Codex model defaults from ~/.codex/config.toml", async () => {
     const home = await tempHome();
     await fs.mkdir(path.join(home, ".codex"));
@@ -79,4 +118,13 @@ async function tempHome(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "twinny-install-wizard-"));
   tempDirs.push(dir);
   return dir;
+}
+
+function createTelemetry(): TelemetryClient {
+  return {
+    runtimeId: "runtime_test",
+    capture: vi.fn(),
+    captureError: vi.fn(),
+    hashId: vi.fn((kind, raw) => raw ? `hashed:${kind}:${raw.length}` : null)
+  };
 }

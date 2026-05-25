@@ -125,6 +125,12 @@ export interface PermissionsConfig {
   p2pDefaultProfile: ProfileName;
 }
 
+export interface TelemetryConfig {
+  enabled: boolean;
+  posthogApiKey?: string;
+  posthogHost: string;
+}
+
 export interface TwinnyConfig {
   home: string;
   codex: CodexConfig;
@@ -132,6 +138,7 @@ export interface TwinnyConfig {
   auth: TwinnyAuthFile;
   homeIdentity: TwinnyHomeIdentity;
   permissions: PermissionsConfig;
+  telemetry?: TelemetryConfig;
   owner: OwnerConfig;
   profiles: Record<ProfileName, ProfileConfig>;
 }

@@ -101,6 +101,35 @@ describe("Twinny config loading and bootstrap", () => {
     expect(serialized).not.toContain("secret_ref");
   });
 
+  it("round-trips telemetry configuration", () => {
+    const config = createTwinnyConfig({
+      home: "/tmp/twinny",
+      homeRandom,
+      auth: { larkAppId: "cli_test", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner" },
+      telemetry: {
+        enabled: true,
+        posthogApiKey: "ph_test",
+        posthogHost: "https://posthog.example"
+      },
+      profiles: {
+        host: {},
+        guest: {}
+      }
+    });
+
+    const serialized = serializeTwinnyConfig(config);
+    const parsed = parseTwinnyConfig(serialized, { home: "/tmp/twinny" });
+
+    expect(serialized).toContain("[telemetry]");
+    expect(serialized).toContain('enabled = true');
+    expect(serialized).toContain('posthog_api_key = "ph_test"');
+    expect(parsed.telemetry).toEqual({
+      enabled: true,
+      posthogApiKey: "ph_test",
+      posthogHost: "https://posthog.example"
+    });
+  });
+
   it("rejects old config fields instead of keeping compatibility", () => {
     expect(() =>
       parseTwinnyConfig(

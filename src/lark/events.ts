@@ -45,6 +45,7 @@ export interface LarkEventConsumerOptions {
   onMessageRecall?: (recall: IncomingLarkMessageRecall) => Promise<void> | void;
   onBotMenu?: (action: IncomingLarkBotMenuAction) => Promise<void> | void;
   onCardAction?: (action: IncomingLarkCardAction) => Promise<void> | void;
+  onConnectionError?: (error: Error) => void;
   onIgnored?: (reason: string, raw: unknown) => void;
   wsClientFactory?: (options: LarkEventConsumerWsFactoryOptions) => WsClientLike;
   eventDispatcherFactory?: () => EventDispatcherLike;
@@ -167,6 +168,7 @@ export class LarkEventConsumer {
       onError: (error) => {
         this.ready = false;
         this.options.logger?.error?.({ error: error.message }, "Lark event long connection failed");
+        this.options.onConnectionError?.(error);
       },
       onReconnecting: () => {
         this.ready = false;
