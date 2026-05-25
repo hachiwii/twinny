@@ -97,6 +97,7 @@ describe("Twinny config loading and bootstrap", () => {
     expect(serialized).toContain("[profiles.host]");
     expect(serialized).toContain("[profiles.guest]");
     expect(serialized).toContain("[permissions]");
+    expect(serialized).toContain('working = "JubilantRabbit"');
     expect(serialized).not.toContain("[telemetry]");
     expect(serialized).not.toContain("[owner]");
     expect(serialized).not.toContain("[roles");

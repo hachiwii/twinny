@@ -623,7 +623,7 @@ describe("LarkMessageSender", () => {
     });
   });
 
-  it("creates and deletes Typing reactions", async () => {
+  it("creates and deletes default working reactions", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
       { code: 0, data: { reaction_id: "reaction-1" } },
@@ -643,7 +643,7 @@ describe("LarkMessageSender", () => {
       },
       body: JSON.stringify({
         reaction_type: {
-          emoji_type: "Typing"
+          emoji_type: "JubilantRabbit"
         }
       }),
       signal: undefined
@@ -688,7 +688,7 @@ describe("LarkMessageSender", () => {
     });
   });
 
-  it("treats Typing reaction failures as non-fatal", async () => {
+  it("treats working reaction failures as non-fatal", async () => {
     const logger = { warn: vi.fn() } satisfies LarkLogger;
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },

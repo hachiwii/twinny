@@ -164,7 +164,7 @@ Twinny 从 `TWINNY_HOME` 读取 `config.toml`。
 | 字段 | 含义和取值 |
 | --- | --- |
 | `[codex].binary` | Codex CLI 可执行文件路径或命令名。默认是 `codex`。如果 LaunchAgent 不能通过 `PATH` 找到 Codex，建议使用绝对路径。 |
-| `[lark.reaction].working` | Twinny 工作中给 Lark 消息添加的 emoji type。默认是 `Typing`。 |
+| `[lark.reaction].working` | Twinny 工作中给 Lark 消息添加的 emoji type。默认是 `JubilantRabbit`。 |
 | `[lark.reaction].queued` | 消息进入队列时添加的 Lark emoji type。默认是 `OneSecond`。 |
 | `[lark.redaction].email` | 发往 Lark 的 payload 中邮箱地址的脱敏策略。`mask` 保留域名并遮蔽邮箱用户名，例如 `alice@example.com` 会变成 `a***e@example.com`；`whitespace` 插入空格，例如 `alice @ example.com`；`none` 发送明文邮箱。飞书可能会拦截包含明文邮箱或手机号的 bot message。默认是 `mask`。 |
 | `[lark.redaction].chinese_phone_number` | 发往 Lark 的 payload 中中国手机号的脱敏策略。`mask` 保留前 3 位和后 4 位，例如 `138****5678`；`whitespace` 插入空格，例如 `138 1234 5678`；`none` 发送明文手机号。飞书可能会拦截包含明文邮箱或手机号的 bot message。默认是 `mask`。 |
@@ -183,7 +183,7 @@ Telemetry 的数据范围和关闭方式见文末的 [Telemetry](#telemetry)。
 binary = "/opt/homebrew/bin/codex"
 
 [lark.reaction]
-working = "Typing"
+working = "JubilantRabbit"
 queued = "OneSecond"
 
 [lark.redaction]

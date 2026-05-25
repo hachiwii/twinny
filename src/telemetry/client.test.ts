@@ -7,7 +7,7 @@ const config: TwinnyConfig = {
   home: "/tmp/twinny",
   codex: { binary: "codex" },
   lark: {
-    workingReaction: "Typing",
+    workingReaction: "JubilantRabbit",
     completedReaction: "DONE",
     queuedReaction: "OneSecond",
     maxMessageAgeSeconds: 60,
