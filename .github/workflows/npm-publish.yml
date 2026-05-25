@@ -41,15 +41,18 @@ jobs:
           commit_epoch="$(git show -s --format=%ct HEAD)"
           suffix="$(node -e '
             const date = new Date(Number(process.argv[1]) * 1000);
-            const pad = (value) => String(value).padStart(2, "0");
-            const stamp = [
-              String(date.getUTCFullYear()).slice(-2),
-              pad(date.getUTCMonth() + 1),
-              pad(date.getUTCDate()),
-              pad(date.getUTCHours()),
-              pad(date.getUTCMinutes()),
-              pad(date.getUTCSeconds())
-            ].join("");
+            const parts = new Intl.DateTimeFormat("en-GB", {
+              timeZone: "Asia/Shanghai",
+              year: "2-digit",
+              month: "2-digit",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+              hourCycle: "h23"
+            }).formatToParts(date);
+            const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+            const stamp = `${values.year}${values.month}${values.day}${values.hour}${values.minute}${values.second}`;
             process.stdout.write(stamp);
           ' "${commit_epoch}")"
           dev_version="0.0.0-dev.${suffix}"
@@ -114,15 +117,18 @@ jobs:
           commit_epoch="$(git show -s --format=%ct HEAD)"
           suffix="$(node -e '
             const date = new Date(Number(process.argv[1]) * 1000);
-            const pad = (value) => String(value).padStart(2, "0");
-            const stamp = [
-              String(date.getUTCFullYear()).slice(-2),
-              pad(date.getUTCMonth() + 1),
-              pad(date.getUTCDate()),
-              pad(date.getUTCHours()),
-              pad(date.getUTCMinutes()),
-              pad(date.getUTCSeconds())
-            ].join("");
+            const parts = new Intl.DateTimeFormat("en-GB", {
+              timeZone: "Asia/Shanghai",
+              year: "2-digit",
+              month: "2-digit",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+              hourCycle: "h23"
+            }).formatToParts(date);
+            const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+            const stamp = `${values.year}${values.month}${values.day}${values.hour}${values.minute}${values.second}`;
             process.stdout.write(stamp);
           ' "${commit_epoch}")"
           beta_version="${base_version}-beta.${suffix}"
