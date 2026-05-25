@@ -2962,7 +2962,7 @@ describe("ConversationManager", () => {
       items: [
         expect.objectContaining({
           type: "message",
-          profile: "user",
+          role: "user",
           content: [
             expect.objectContaining({
               type: "input_text",

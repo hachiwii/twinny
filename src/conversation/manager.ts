@@ -7922,7 +7922,7 @@ function sideCardSubtitle(status: TwinnyAgentCardStatus, sideId: number | undefi
 function sideBoundaryResponseItem(): Record<string, unknown> {
   return {
     type: "message",
-    profile: "user",
+    role: "user",
     content: [
       {
         type: "input_text",
