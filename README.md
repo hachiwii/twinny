@@ -82,25 +82,25 @@ Send normal messages to the bot to start or continue a Codex turn. In groups, th
 ### Conversation Commands
 
 
-| Command                               | Usage                                                                                                        |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `/help`                               | Show available commands.                                                                                     |
-| `/status`                             | Show conversation, Codex thread, model, token, and queue status.                                             |
-| `/new`                                | Stop the current task, clear queued messages, and open a new Codex thread.                                   |
-| `/stop [all\|<side_id>]`              | Stop the active task and clear queued messages. Use `all` to stop side turns too, or a side id to stop one side turn. |
-| `/next`                               | Interrupt the current task and start the next queued message.                                                |
-| `/steer`                              | Inject the next queued batch into the currently running Codex turn.                                          |
-| `/queue [message]`                    | Without a message, queue your next message. With a message, add that message to the next turn.               |
-| `/goal <objective>`                   | Set and run a Codex goal. A later `/goal` while the goal is active updates the objective.                    |
-| `/plan [message]`                     | Enter plan mode. If a message is provided, process it in plan mode immediately.                              |
-| `/exit`                               | Exit plan mode in the next queued control step.                                                              |
-| `/side <message>` or `/btw <message>` | Start an ephemeral side conversation forked from the current Codex thread.                                   |
-| `/compact`                            | Compact the current Codex thread context in the next queued control step.                                    |
-| `/thread [message]`                   | Create a new Lark topic backed by a new Codex thread. If `message` is present, proxy it into that new topic. |
-| `/fork [message]`                     | Fork the current Codex thread into a new Lark topic. If `message` is present, proxy it into that new topic.  |
-| `/model <model> <effort>`             | Set the model and reasoning effort for future turns in the current thread.                                   |
-| `/logo`                               | Send the Twinny logo image.                                                                                  |
-| `/twinny` or `/banner`                | Send the Twinny banner card.                                                                                 |
+| Command                               | Usage                                                                                                                 |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `/help`                               | Show available commands.                                                                                              |
+| `/status`                             | Show conversation, Codex thread, model, token, and queue status.                                                      |
+| `/new`                                | Stop the current task, clear queued messages, and open a new Codex thread.                                            |
+| `/stop [all|<side_id>]`               | Stop the active task and clear queued messages. Use `all` to stop side turns too, or a side id to stop one side turn. |
+| `/next`                               | Interrupt the current task and start the next queued message.                                                         |
+| `/steer`                              | Inject the next queued batch into the currently running Codex turn.                                                   |
+| `/queue [message]`                    | Without a message, queue your next message. With a message, add that message to the next turn.                        |
+| `/goal <objective>`                   | Set and run a Codex goal. A later `/goal` while the goal is active updates the objective.                             |
+| `/plan [message]`                     | Enter plan mode. If a message is provided, process it in plan mode immediately.                                       |
+| `/exit`                               | Exit plan mode in the next queued control step.                                                                       |
+| `/side <message>` or `/btw <message>` | Start an ephemeral side conversation forked from the current Codex thread.                                            |
+| `/compact`                            | Compact the current Codex thread context in the next queued control step.                                             |
+| `/thread [message]`                   | Create a new Lark topic backed by a new Codex thread. If `message` is present, proxy it into that new topic.          |
+| `/fork [message]`                     | Fork the current Codex thread into a new Lark topic. If `message` is present, proxy it into that new topic.           |
+| `/model <model> <effort>`             | Set the model and reasoning effort for future turns in the current thread.                                            |
+| `/logo`                               | Send the Twinny logo image.                                                                                           |
+| `/twinny` or `/banner`                | Send the Twinny banner card.                                                                                          |
 
 
 ### Group Administration
@@ -108,12 +108,12 @@ Send normal messages to the bot to start or continue a Codex turn. In groups, th
 Only the configured owner can run these commands:
 
 
-| Command                                           | Usage                                                                  |
-| ------------------------------------------------- | ---------------------------------------------------------------------- |
-| `/activate <owner_at\|owner\|all_at\|all> [profile]` | Activate a group, set who can route messages to Codex, refresh the group name, and optionally bind the group to a profile. |
-| `/deactivate`                                     | Disable Twinny in the current group and clear pending work.            |
-| `/pair {guest_ou_id} <profile>`                   | Authorize a non-owner P2P user and bind that user to a profile.        |
-| `/reload [profile]`                               | Reload all Codex profiles, or one named profile, after editing config. |
+| Command                                           | Usage                                                                                                                      |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `/activate <owner_at|owner|all_at|all> [profile]` | Activate a group, set who can route messages to Codex, refresh the group name, and optionally bind the group to a profile. |
+| `/deactivate`                                     | Disable Twinny in the current group and clear pending work.                                                                |
+| `/pair {guest_ou_id} <profile>`                   | Authorize a non-owner P2P user and bind that user to a profile.                                                            |
+| `/reload [profile]`                               | Reload all Codex profiles, or one named profile, after editing config.                                                     |
 
 
 Response modes:
@@ -167,24 +167,22 @@ Twinny reads `config.toml` from `TWINNY_HOME`.
 
 Recognized fields:
 
-| Field | Meaning and values |
-| --- | --- |
-| `[codex].binary` | Codex CLI executable path or command name. Defaults to `codex`. Use an absolute path when the LaunchAgent cannot find Codex through `PATH`. |
-| `[lark.reaction].working` | Lark emoji type added while Twinny is working. Defaults to `Typing`. |
-| `[lark.reaction].queued` | Lark emoji type added to queued messages. Defaults to `OneSecond`. |
-| `[lark.redaction].email` | Redaction strategy for email addresses in outgoing Lark payloads: `mask`, `whitespace`, or `none`. Defaults to `mask`. |
-| `[lark.redaction].chinese_phone_number` | Redaction strategy for Chinese phone numbers in outgoing Lark payloads: `mask`, `whitespace`, or `none`. Defaults to `mask`. |
-| `[permissions].p2p_default_profile` | Profile used when an unpaired P2P user first messages Twinny. Use `none` to deny by default, or a configured profile name to auto-authorize. Defaults to `none`. |
-| `[profiles.<name>].codex_home` | `CODEX_HOME` for that profile. Absolute paths are used as-is; relative paths are resolved under `TWINNY_HOME`. `host` defaults to `~/.codex`; other profiles inherit `host` unless set. |
-| `[profiles.<name>].default_model` | Default model for new threads in that profile. `host` defaults to `gpt-5.5`; other profiles inherit `host` unless set. |
-| `[profiles.<name>].default_effort` | Default reasoning effort for new threads in that profile. Common values are `minimal`, `low`, `medium`, and `high`; `host` defaults to `medium`; other profiles inherit `host` unless set. |
 
-Telemetry-capable builds can also support this opt-out switch, intentionally omitted from the example config:
+| Field                                   | Meaning and values                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[codex].binary`                        | Codex CLI executable path or command name. Defaults to `codex`. Use an absolute path when the LaunchAgent cannot find Codex through `PATH`.                                                                                                                                                                                                                                              |
+| `[lark.reaction].working`               | Lark emoji type added while Twinny is working. Defaults to `Typing`.                                                                                                                                                                                                                                                                                                                     |
+| `[lark.reaction].queued`                | Lark emoji type added to queued messages. Defaults to `OneSecond`.                                                                                                                                                                                                                                                                                                                       |
+| `[lark.redaction].email`                | Redaction strategy for email addresses in outgoing Lark payloads. `mask` keeps the domain and masks the local part, for example `alice@example.com` becomes `a***e@example.com`; `whitespace` inserts spaces, for example `alice @ example.com`; `none` sends raw email addresses. Feishu may reject bot messages that contain raw email addresses or phone numbers. Defaults to `mask`. |
+| `[lark.redaction].chinese_phone_number` | Redaction strategy for Chinese phone numbers in outgoing Lark payloads. `mask` keeps the first 3 and last 4 digits, for example `138****5678`; `whitespace` inserts spaces, for example `138 1234 5678`; `none` sends raw phone numbers. Feishu may reject bot messages that contain raw email addresses or phone numbers. Defaults to `mask`.                                           |
+| `[permissions].p2p_default_profile`     | Profile used when an unpaired P2P user first messages Twinny. Use `none` to deny by default, or a configured profile name to auto-authorize. Defaults to `none`.                                                                                                                                                                                                                         |
+| `[profiles.<name>].codex_home`          | `CODEX_HOME` for that profile. Absolute paths are used as-is; relative paths are resolved under `TWINNY_HOME`. `host` defaults to `~/.codex`; other profiles inherit `host` unless set.                                                                                                                                                                                                  |
+| `[profiles.<name>].default_model`       | Default model for new threads in that profile. `host` defaults to `gpt-5.5`; other profiles inherit `host` unless set.                                                                                                                                                                                                                                                                   |
+| `[profiles.<name>].default_effort`      | Default reasoning effort for new threads in that profile. Common values are `minimal`, `low`, `medium`, `high`, and `xhigh`; `host` defaults to `medium`; other profiles inherit `host` unless set.                                                                                                                                                                                      |
+| `[telemetry].enabled`                   | Boolean opt-out for telemetry-capable builds. Set to `false` to disable event capture. See [Telemetry](#telemetry).                                                                                                                                                                                                                                                                      |
 
-```toml
-[telemetry]
-enabled = false
-```
+
+Telemetry data scope and opt-out settings are covered in [Telemetry](#telemetry).
 
 Example `config.toml`:
 
@@ -231,3 +229,32 @@ TWINNY_HOME="$HOME/.twinny-personal" npx twinny@latest logs
 ```
 
 Each home gets separate config and needs a separate Feishu bot app.
+
+## Telemetry
+
+Twinny builds with telemetry enabled may send anonymous, best-effort usage and reliability events. The data is used to monitor product quality, understand failure patterns, and support the maintainer's personal research interests around local-agent workflows.
+
+Twinny does not send Lark message text, prompts, Codex answers, chat names, sender names, raw Lark or Codex IDs, raw local paths, environment variable values, API keys, or secrets. Identifiers such as install, conversation, thread, turn, sender, message, and Codex binary are salted and hashed locally before upload.
+
+Telemetry may include:
+
+- install and launch lifecycle status, startup duration, and LaunchAgent setup state;
+- runtime health signals such as heartbeat, uptime, queue and active-turn counts, memory usage, and Lark/Codex readiness;
+- message routing metadata such as conversation type, message or action type, route kind, queue depth, and resource counts;
+- turn metadata such as status, type, model, reasoning effort, token counts, duration, generated image count, and error code/category when a turn fails;
+- environment metadata such as Twinny, Codex, Node, OS version/platform/arch, Lark brand, and profile count.
+
+Telemetry failures are ignored by the product path and should not affect install, launch, message handling, or Codex turns.
+
+Disable telemetry in `config.toml`:
+
+```toml
+[telemetry]
+enabled = false
+```
+
+Or disable it for a process with an environment variable:
+
+```sh
+TWINNY_TELEMETRY_ENABLED=false npx twinny@latest start
+```

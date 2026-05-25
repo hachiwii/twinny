@@ -166,19 +166,15 @@ Twinny 从 `TWINNY_HOME` 读取 `config.toml`。
 | `[codex].binary` | Codex CLI 可执行文件路径或命令名。默认是 `codex`。如果 LaunchAgent 不能通过 `PATH` 找到 Codex，建议使用绝对路径。 |
 | `[lark.reaction].working` | Twinny 工作中给 Lark 消息添加的 emoji type。默认是 `Typing`。 |
 | `[lark.reaction].queued` | 消息进入队列时添加的 Lark emoji type。默认是 `OneSecond`。 |
-| `[lark.redaction].email` | 发往 Lark 的 payload 中邮箱地址的脱敏策略：`mask`、`whitespace` 或 `none`。默认是 `mask`。 |
-| `[lark.redaction].chinese_phone_number` | 发往 Lark 的 payload 中中国手机号的脱敏策略：`mask`、`whitespace` 或 `none`。默认是 `mask`。 |
+| `[lark.redaction].email` | 发往 Lark 的 payload 中邮箱地址的脱敏策略。`mask` 保留域名并遮蔽邮箱用户名，例如 `alice@example.com` 会变成 `a***e@example.com`；`whitespace` 插入空格，例如 `alice @ example.com`；`none` 发送明文邮箱。飞书可能会拦截包含明文邮箱或手机号的 bot message。默认是 `mask`。 |
+| `[lark.redaction].chinese_phone_number` | 发往 Lark 的 payload 中中国手机号的脱敏策略。`mask` 保留前 3 位和后 4 位，例如 `138****5678`；`whitespace` 插入空格，例如 `138 1234 5678`；`none` 发送明文手机号。飞书可能会拦截包含明文邮箱或手机号的 bot message。默认是 `mask`。 |
 | `[permissions].p2p_default_profile` | 未配对 P2P 用户第一次给 Twinny 发消息时使用的 profile。用 `none` 表示默认拒绝，也可以填已配置的 profile 名称来自动授权。默认是 `none`。 |
 | `[profiles.<name>].codex_home` | 该 profile 使用的 `CODEX_HOME`。绝对路径会直接使用；相对路径会以 `TWINNY_HOME` 为基准解析。`host` 默认是 `~/.codex`；其他 profile 未设置时继承 `host`。 |
 | `[profiles.<name>].default_model` | 该 profile 新 thread 的默认模型。`host` 默认是 `gpt-5.5`；其他 profile 未设置时继承 `host`。 |
-| `[profiles.<name>].default_effort` | 该 profile 新 thread 的默认推理强度。常见取值是 `minimal`、`low`、`medium`、`high`；`host` 默认是 `medium`；其他 profile 未设置时继承 `host`。 |
+| `[profiles.<name>].default_effort` | 该 profile 新 thread 的默认推理强度。常见取值是 `minimal`、`low`、`medium`、`high` 和 `xhigh`；`host` 默认是 `medium`；其他 profile 未设置时继承 `host`。 |
+| `[telemetry].enabled` | 支持 telemetry 的构建使用的布尔关闭开关。设置为 `false` 会关闭事件采集。详见 [Telemetry](#telemetry)。 |
 
-支持 telemetry 的构建还可以使用下面的关闭开关；它故意不放进示例配置：
-
-```toml
-[telemetry]
-enabled = false
-```
+Telemetry 的数据范围和关闭方式见文末的 [Telemetry](#telemetry)。
 
 示例 `config.toml`：
 
@@ -225,3 +221,32 @@ TWINNY_HOME="$HOME/.twinny-personal" npx twinny@latest logs
 ```
 
 每个 home 都有独立的 config，并且需要一个独立的飞书机器人应用。
+
+## Telemetry
+
+启用 telemetry 的 Twinny 构建可能会发送匿名、best-effort 的使用和可靠性事件。这些数据用于监测产品质量、理解失败模式，并支持维护者围绕本地 agent 工作流的个人研究兴趣。
+
+Twinny 不会发送 Lark 消息正文、prompt、Codex 回答、群名、发送者名称、原始 Lark 或 Codex ID、本地路径、环境变量值、API key 或 secret。install、conversation、thread、turn、sender、message、Codex binary 等标识会先在本地加 salt 并 hash，再上传 hash 后的值。
+
+Telemetry 可能包含：
+
+- 安装和启动生命周期状态、启动耗时、LaunchAgent 配置状态；
+- 运行时健康信号，例如 heartbeat、uptime、队列和 active turn 数量、内存使用量、Lark/Codex ready 状态；
+- 消息路由元数据，例如 conversation type、message 或 action type、route kind、queue depth、resource count；
+- turn 元数据，例如状态、类型、模型、reasoning effort、token 数、耗时、生成图片数量，以及失败时的 error code/category；
+- 环境元数据，例如 Twinny、Codex、Node、OS version/platform/arch、Lark brand、profile count。
+
+Telemetry 上报失败不会影响主流程，不应阻断安装、启动、消息处理或 Codex turn。
+
+可以在 `config.toml` 中关闭 telemetry：
+
+```toml
+[telemetry]
+enabled = false
+```
+
+也可以用环境变量关闭当前进程：
+
+```sh
+TWINNY_TELEMETRY_ENABLED=false npx twinny@latest start
+```
