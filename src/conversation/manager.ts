@@ -3135,6 +3135,7 @@ export class ConversationManager {
       : 0;
     const system = profile === "host"
       ? {
+          twinnyHome: this.options.config.home,
           twinnyVersion: TWINNY_VERSION,
           codexVersion: await this.readCodexVersionBestEffort(profile),
           larkAppId: this.options.config.auth.larkAppId,

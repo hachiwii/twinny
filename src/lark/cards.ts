@@ -158,6 +158,7 @@ export interface RenderTwinnyStatusCardOptions {
     identity: UserIdentity;
   };
   system?: {
+    twinnyHome: string;
     twinnyVersion: string;
     codexVersion: string;
     larkAppId: string;
@@ -277,6 +278,7 @@ export function renderTwinnyStatusCard(options: RenderTwinnyStatusCardOptions): 
 
   if (options.system) {
     elements.push(...statusSection("系统", "setting_outlined", [
+      ["Twinny Home", options.system.twinnyHome],
       ["Twinny 版本", options.system.twinnyVersion],
       ["CodeX 版本", options.system.codexVersion],
       ["Lark App ID", options.system.larkAppId],

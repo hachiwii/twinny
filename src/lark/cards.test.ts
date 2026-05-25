@@ -702,6 +702,7 @@ describe("renderTwinnyStatusCard", () => {
         identity: "owner"
       },
       system: {
+        twinnyHome: "/tmp/twinny",
         twinnyVersion: "v0.1.0",
         codexVersion: "codex-cli 0.132.0",
         larkAppId: "cli_xxx",
@@ -712,6 +713,8 @@ describe("renderTwinnyStatusCard", () => {
 
     const serialized = JSON.stringify(card);
     expect(serialized).toContain("系统");
+    expect(serialized).toContain("Twinny Home");
+    expect(serialized).toContain("/tmp/twinny");
     expect(serialized).toContain("Twinny 版本");
     expect(serialized).toContain("CodeX 版本");
     expect(serialized).toContain("cli_xxx");

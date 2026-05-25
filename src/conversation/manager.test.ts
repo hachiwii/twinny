@@ -1772,6 +1772,8 @@ describe("ConversationManager", () => {
     expect(serialized).toContain("| 身份 | owner |");
     expect(serialized).not.toContain("| 身份 | host |");
     expect(serialized).toContain("系统");
+    expect(serialized).toContain("Twinny Home");
+    expect(serialized).toContain("/tmp/twinny");
     expect(serialized).toContain("Twinny 版本");
     expect(serialized).toContain("CodeX 版本");
     expect(serialized).toContain("fake-codex 1.2.3");
