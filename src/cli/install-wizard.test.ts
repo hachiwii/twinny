@@ -133,6 +133,10 @@ describe("install wizard helpers", () => {
     const home = await tempHome();
     const entrypoint = path.join(os.tmpdir(), "_npx", "abc", "node_modules", ".bin", "twinny");
     const runNpmInstallMock = vi.fn(async () => undefined);
+    const packageJson = JSON.parse(await fs.readFile(new URL("../../package.json", import.meta.url), "utf8")) as {
+      name: string;
+      version: string;
+    };
 
     const result = await resolveLaunchAgentEntrypoint(home, {
       entrypoint,
@@ -142,7 +146,7 @@ describe("install wizard helpers", () => {
     expect(result).toBe(path.join(home, "runner", "node_modules", ".bin", "twinny"));
     expect(runNpmInstallMock).toHaveBeenCalledWith(
       "npm",
-      ["install", "--prefix", path.join(home, "runner"), "--omit=dev", "--no-audit", "--no-fund", "twinny@0.0.0-dev.0"],
+      ["install", "--prefix", path.join(home, "runner"), "--omit=dev", "--no-audit", "--no-fund", `${packageJson.name}@${packageJson.version}`],
       expect.objectContaining({ stdio: "pipe" })
     );
   });
