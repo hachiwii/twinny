@@ -226,7 +226,7 @@ TWINNY_HOME="$HOME/.twinny-personal" npx twinny@latest logs
 
 启用 telemetry 的 Twinny 构建可能会发送匿名、best-effort 的使用和可靠性事件。这些数据用于监测产品质量、理解失败模式，并支持维护者围绕本地 agent 工作流的个人研究兴趣。
 
-Twinny 不会发送 Lark 消息正文、prompt、Codex 回答、群名、发送者名称、原始 Lark 或 Codex ID、本地路径、环境变量值、API key 或 secret。install、conversation、thread、turn、sender、message、Codex binary 等标识会先在本地加 salt 并 hash，再上传 hash 后的值。
+Twinny 不会收集或上传对话内容和凭据。这包括 Lark 消息正文、prompt、Codex 回答、飞书/Lark app secret 或 token、Codex 凭据或 session token、群名、发送者名称、原始 Lark 或 Codex ID、本地路径、环境变量值、API key 以及其他 secret。install、conversation、thread、turn、sender、message、Codex binary 等标识会先在本地加 salt 并 hash，再上传 hash 后的值。
 
 Telemetry 可能包含：
 

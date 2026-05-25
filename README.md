@@ -82,25 +82,25 @@ Send normal messages to the bot to start or continue a Codex turn. In groups, th
 ### Conversation Commands
 
 
-| Command                               | Usage                                                                                                                 |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `/help`                               | Show available commands.                                                                                              |
-| `/status`                             | Show conversation, Codex thread, model, token, and queue status.                                                      |
-| `/new`                                | Stop the current task, clear queued messages, and open a new Codex thread.                                            |
-| `/stop [all|<side_id>]`               | Stop the active task and clear queued messages. Use `all` to stop side turns too, or a side id to stop one side turn. |
-| `/next`                               | Interrupt the current task and start the next queued message.                                                         |
-| `/steer`                              | Inject the next queued batch into the currently running Codex turn.                                                   |
-| `/queue [message]`                    | Without a message, queue your next message. With a message, add that message to the next turn.                        |
-| `/goal <objective>`                   | Set and run a Codex goal. A later `/goal` while the goal is active updates the objective.                             |
-| `/plan [message]`                     | Enter plan mode. If a message is provided, process it in plan mode immediately.                                       |
-| `/exit`                               | Exit plan mode in the next queued control step.                                                                       |
-| `/side <message>` or `/btw <message>` | Start an ephemeral side conversation forked from the current Codex thread.                                            |
-| `/compact`                            | Compact the current Codex thread context in the next queued control step.                                             |
-| `/thread [message]`                   | Create a new Lark topic backed by a new Codex thread. If `message` is present, proxy it into that new topic.          |
-| `/fork [message]`                     | Fork the current Codex thread into a new Lark topic. If `message` is present, proxy it into that new topic.           |
-| `/model <model> <effort>`             | Set the model and reasoning effort for future turns in the current thread.                                            |
-| `/logo`                               | Send the Twinny logo image.                                                                                           |
-| `/twinny` or `/banner`                | Send the Twinny banner card.                                                                                          |
+| Command                               | Usage                                                                                                        |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `/help`                               | Show available commands.                                                                                     |
+| `/status`                             | Show conversation, Codex thread, model, token, and queue status.                                             |
+| `/new`                                | Stop the current task, clear queued messages, and open a new Codex thread.                                   |
+| `/stop [all\|<side_id>]`              | Stop the active task and clear queued messages. Use `all` to stop side turns too, or a side id to stop one side turn. |
+| `/next`                               | Interrupt the current task and start the next queued message.                                                |
+| `/steer`                              | Inject the next queued batch into the currently running Codex turn.                                          |
+| `/queue [message]`                    | Without a message, queue your next message. With a message, add that message to the next turn.               |
+| `/goal <objective>`                   | Set and run a Codex goal. A later `/goal` while the goal is active updates the objective.                    |
+| `/plan [message]`                     | Enter plan mode. If a message is provided, process it in plan mode immediately.                              |
+| `/exit`                               | Exit plan mode in the next queued control step.                                                              |
+| `/side <message>` or `/btw <message>` | Start an ephemeral side conversation forked from the current Codex thread.                                   |
+| `/compact`                            | Compact the current Codex thread context in the next queued control step.                                    |
+| `/thread [message]`                   | Create a new Lark topic backed by a new Codex thread. If `message` is present, proxy it into that new topic. |
+| `/fork [message]`                     | Fork the current Codex thread into a new Lark topic. If `message` is present, proxy it into that new topic.  |
+| `/model <model> <effort>`             | Set the model and reasoning effort for future turns in the current thread.                                   |
+| `/logo`                               | Send the Twinny logo image.                                                                                  |
+| `/twinny` or `/banner`                | Send the Twinny banner card.                                                                                 |
 
 
 ### Group Administration
@@ -108,12 +108,12 @@ Send normal messages to the bot to start or continue a Codex turn. In groups, th
 Only the configured owner can run these commands:
 
 
-| Command                                           | Usage                                                                                                                      |
-| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `/activate <owner_at|owner|all_at|all> [profile]` | Activate a group, set who can route messages to Codex, refresh the group name, and optionally bind the group to a profile. |
-| `/deactivate`                                     | Disable Twinny in the current group and clear pending work.                                                                |
-| `/pair {guest_ou_id} <profile>`                   | Authorize a non-owner P2P user and bind that user to a profile.                                                            |
-| `/reload [profile]`                               | Reload all Codex profiles, or one named profile, after editing config.                                                     |
+| Command                         | Usage                                                                  |
+| ------------------------------- | ---------------------------------------------------------------------- |
+| `/activate <owner_at\|owner\|all_at\|all> [profile]` | Activate a group, set who can route messages to Codex, refresh the group name, and optionally bind the group to a profile. |
+| `/deactivate`                   | Disable Twinny in the current group and clear pending work.            |
+| `/pair {guest_ou_id} <profile>` | Authorize a non-owner P2P user and bind that user to a profile.        |
+| `/reload [profile]`             | Reload all Codex profiles, or one named profile, after editing config. |
 
 
 Response modes:
@@ -234,7 +234,7 @@ Each home gets separate config and needs a separate Feishu bot app.
 
 Twinny builds with telemetry enabled may send anonymous, best-effort usage and reliability events. The data is used to monitor product quality, understand failure patterns, and support the maintainer's personal research interests around local-agent workflows.
 
-Twinny does not send Lark message text, prompts, Codex answers, chat names, sender names, raw Lark or Codex IDs, raw local paths, environment variable values, API keys, or secrets. Identifiers such as install, conversation, thread, turn, sender, message, and Codex binary are salted and hashed locally before upload.
+Twinny does not collect or upload conversation content or credentials. This includes Lark message text, prompts, Codex answers, Feishu/Lark app secrets or tokens, Codex credentials or session tokens, chat names, sender names, raw Lark or Codex IDs, raw local paths, environment variable values, API keys, and other secrets. Identifiers such as install, conversation, thread, turn, sender, message, and Codex binary are salted and hashed locally before upload.
 
 Telemetry may include:
 
