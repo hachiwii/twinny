@@ -624,8 +624,7 @@ async function finalizeInstall(input: {
   environment: Record<string, string | undefined>;
   secretStore?: SecretStore;
 }): Promise<FinalizeInstallResult> {
-  const s = p.spinner();
-  s.start("初始化 Twinny home");
+  p.log.info("初始化 Twinny home");
   let homeCreated = false;
   let wroteHomeRandom = false;
   let wroteConfig = false;
@@ -646,17 +645,16 @@ async function finalizeInstall(input: {
       environment: input.environment
     });
     launchAgentInstalled = true;
-    s.stop("Twinny home 和 LaunchAgent 已创建");
+    p.log.success("Twinny home 和 LaunchAgent 已创建");
   } catch (error) {
-    s.error("初始化失败");
+    p.log.error("初始化失败");
     throw error;
   }
 
-  const assetSpinner = p.spinner();
-  assetSpinner.start("上传 Twinny 资源");
+  p.log.info("上传 Twinny 资源");
   assetUploadAttempted = true;
   await uploadBundledAssets(input.config, input.appSecret);
-  assetSpinner.stop("资源上传步骤完成");
+  p.log.success("资源上传步骤完成");
   return {
     homeCreated,
     wroteHomeRandom,
