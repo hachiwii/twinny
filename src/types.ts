@@ -184,6 +184,8 @@ export interface CodexThreadRecord {
   name: string;
   larkThreadId?: string;
   profile: ProfileName;
+  model?: string;
+  effort?: string;
   mode: CodexThreadMode;
   status: CodexThreadStatus;
   goalStatus: CodexThreadGoalStatus;

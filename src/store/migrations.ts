@@ -15,7 +15,7 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 21;
+export const currentStoreSchemaVersion = 22;
 
 const initialMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const threadRolloutMigrationFile = fileURLToPath(new URL("../../migrations/0002_codex_thread_rollout.sql", import.meta.url));
@@ -38,6 +38,7 @@ const larkMessageUsageMigrationFile = fileURLToPath(new URL("../../migrations/00
 const statusUsageIndexesMigrationFile = fileURLToPath(new URL("../../migrations/0019_status_usage_indexes.sql", import.meta.url));
 const mainThreadNamesMigrationFile = fileURLToPath(new URL("../../migrations/0020_main_thread_names.sql", import.meta.url));
 const profilesMigrationFile = fileURLToPath(new URL("../../migrations/0021_profiles.sql", import.meta.url));
+const threadModelSettingsMigrationFile = fileURLToPath(new URL("../../migrations/0022_thread_model_settings.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -145,6 +146,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 21,
       name: "0021_profiles",
       sql: fs.readFileSync(profilesMigrationFile, "utf8")
+    },
+    {
+      version: 22,
+      name: "0022_thread_model_settings",
+      sql: fs.readFileSync(threadModelSettingsMigrationFile, "utf8")
     }
   ];
 }
@@ -340,6 +346,10 @@ function ensureThreadsSummarySchemaConsistency(db: Database.Database): void {
       "goal_status TEXT NOT NULL DEFAULT 'none' CHECK(goal_status IN ('none', 'active', 'paused', 'blocked', 'usageLimited', 'budgetLimited', 'complete'))"
     );
     ensureTableColumn(db, threadsTable, "goal_updated_at", "goal_updated_at INTEGER");
+  }
+  if (getStoreSchemaVersion(db) >= 22) {
+    ensureTableColumn(db, threadsTable, "model", "model TEXT");
+    ensureTableColumn(db, threadsTable, "effort", "effort TEXT");
   }
   ensureTableColumn(db, threadsTable, "input_tokens", "input_tokens INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(db, threadsTable, "output_tokens", "output_tokens INTEGER NOT NULL DEFAULT 0");

@@ -1,0 +1,5 @@
+ALTER TABLE threads
+ADD COLUMN model TEXT;
+
+ALTER TABLE threads
+ADD COLUMN effort TEXT;

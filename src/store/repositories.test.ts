@@ -183,9 +183,25 @@ describe("ConversationRepository", () => {
       conversationKey: "p2p_ou_456",
       name: "新会话",
       profile: "guest",
+      model: undefined,
+      effort: undefined,
       codexThreadHasRollout: false,
       totalTokens: 0,
       tokenUsageJson: "{}"
+    });
+
+    now = 1225;
+    expect(
+      repo.updateCodexThreadModelSettings({
+        codexThreadId: "thread-1",
+        model: "gpt-5.4",
+        effort: "high"
+      })
+    ).toMatchObject({
+      codexThreadId: "thread-1",
+      model: "gpt-5.4",
+      effort: "high",
+      updatedAt: 1225
     });
 
     now = 1250;
@@ -359,6 +375,8 @@ describe("ConversationRepository", () => {
       totalTokens: 123,
       contextTokens: 60,
       contextWindow: 200,
+      model: "gpt-5.4",
+      effort: "high",
       codexThreadHasRollout: true,
       goalStatus: "active",
       goalUpdatedAt: 1260,

@@ -55,6 +55,8 @@ interface CodexThreadRow {
   name: string;
   lark_thread_id: string | null;
   profile: ProfileName;
+  model: string | null;
+  effort: string | null;
   mode: CodexThreadMode;
   status: CodexThreadStatus;
   goal_status: CodexThreadGoalStatus;
@@ -131,6 +133,8 @@ export interface UpsertCodexThreadInput {
   conversationKey: string;
   profile: ProfileName;
   name?: string;
+  model?: string;
+  effort?: string;
   larkThreadId?: string;
   codexThreadHasRollout?: boolean;
   forkedFromCodexThreadId?: string;
@@ -188,6 +192,8 @@ export interface UpdateCodexThreadCardInput {
   codexThreadId: string;
   conversationKey: string;
   profile: ProfileName;
+  model?: string;
+  effort?: string;
   name?: string;
   larkThreadId?: string;
   creatorOpenId?: string;
@@ -219,7 +225,15 @@ export interface ReplaceCodexThreadForLarkThreadInput {
   larkThreadId: string;
   codexThreadId: string;
   profile: ProfileName;
+  model?: string;
+  effort?: string;
   codexThreadHasRollout?: boolean;
+}
+
+export interface UpdateCodexThreadModelSettingsInput {
+  codexThreadId: string;
+  model: string;
+  effort: string;
 }
 
 export interface UpdateConversationThreadBinding {
@@ -264,6 +278,7 @@ export class ConversationRepository {
   private readonly replaceCodexThreadForLarkThreadStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly updateCodexThreadUsageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly updateCodexThreadCardStatement: Database.Statement<[Record<string, unknown>]>;
+  private readonly updateCodexThreadModelSettingsStatement: Database.Statement<[string, string, number, string]>;
   private readonly updateCodexThreadNameStatement: Database.Statement<[string, number, string]>;
   private readonly updateCodexThreadModeStatement: Database.Statement<[CodexThreadMode, number, string, string]>;
   private readonly updateCodexThreadStatusStatement: Database.Statement<[CodexThreadStatus, number, string, string]>;
@@ -380,6 +395,8 @@ export class ConversationRepository {
         name,
         lark_thread_id,
         profile,
+        model,
+        effort,
         forked_from_thread_id,
         forked_at,
         thread_has_rollout,
@@ -393,6 +410,8 @@ export class ConversationRepository {
         COALESCE(@name, '新会话'),
         @larkThreadId,
         @profile,
+        @model,
+        @effort,
         @forkedFromCodexThreadId,
         @forkedAt,
         @codexThreadHasRollout,
@@ -406,6 +425,8 @@ export class ConversationRepository {
         name = COALESCE(@name, threads.name),
         lark_thread_id = COALESCE(excluded.lark_thread_id, threads.lark_thread_id),
         profile = excluded.profile,
+        model = COALESCE(excluded.model, threads.model),
+        effort = COALESCE(excluded.effort, threads.effort),
         forked_from_thread_id = COALESCE(excluded.forked_from_thread_id, threads.forked_from_thread_id),
         forked_at = COALESCE(excluded.forked_at, threads.forked_at),
         thread_has_rollout = CASE
@@ -426,6 +447,8 @@ export class ConversationRepository {
       UPDATE threads
       SET thread_id = @codexThreadId,
           profile = @profile,
+          model = @model,
+          effort = @effort,
           input_tokens = 0,
           output_tokens = 0,
           cached_input_tokens = 0,
@@ -448,6 +471,8 @@ export class ConversationRepository {
         name,
         lark_thread_id,
         profile,
+        model,
+        effort,
         input_tokens,
         output_tokens,
         cached_input_tokens,
@@ -465,6 +490,8 @@ export class ConversationRepository {
         COALESCE(@name, '新会话'),
         NULL,
         @profile,
+        @model,
+        @effort,
         @inputTokens,
         @outputTokens,
         @cachedInputTokens,
@@ -481,6 +508,8 @@ export class ConversationRepository {
         conversation_key = excluded.conversation_key,
         name = COALESCE(@name, threads.name),
         profile = excluded.profile,
+        model = COALESCE(excluded.model, threads.model),
+        effort = COALESCE(excluded.effort, threads.effort),
         input_tokens = excluded.input_tokens,
         output_tokens = excluded.output_tokens,
         cached_input_tokens = excluded.cached_input_tokens,
@@ -499,6 +528,8 @@ export class ConversationRepository {
         name,
         lark_thread_id,
         profile,
+        model,
+        effort,
         creator_open_id,
         card_message_id,
         thread_has_rollout,
@@ -510,6 +541,8 @@ export class ConversationRepository {
         COALESCE(@name, '新会话'),
         @larkThreadId,
         @profile,
+        @model,
+        @effort,
         @creatorOpenId,
         @cardMessageId,
         0,
@@ -521,9 +554,18 @@ export class ConversationRepository {
         name = COALESCE(@name, threads.name),
         lark_thread_id = COALESCE(excluded.lark_thread_id, threads.lark_thread_id),
         profile = excluded.profile,
+        model = COALESCE(excluded.model, threads.model),
+        effort = COALESCE(excluded.effort, threads.effort),
         creator_open_id = COALESCE(excluded.creator_open_id, threads.creator_open_id),
         card_message_id = COALESCE(excluded.card_message_id, threads.card_message_id),
         updated_at = excluded.updated_at
+    `);
+    this.updateCodexThreadModelSettingsStatement = this.db.prepare(`
+      UPDATE threads
+      SET model = ?,
+          effort = ?,
+          updated_at = ?
+      WHERE thread_id = ?
     `);
     this.updateCodexThreadNameStatement = this.db.prepare(`
       UPDATE threads
@@ -944,6 +986,8 @@ export class ConversationRepository {
       name: input.name ?? null,
       larkThreadId: input.larkThreadId ?? null,
       profile,
+      model: input.model ?? null,
+      effort: input.effort ?? null,
       forkedFromCodexThreadId: input.forkedFromCodexThreadId ?? null,
       forkedAt: input.forkedAt ?? null,
       codexThreadHasRollout: input.codexThreadHasRollout === true ? 1 : 0,
@@ -972,13 +1016,15 @@ export class ConversationRepository {
   replaceCodexThreadForLarkThread(
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; profile: ProfileName; codexThreadHasRollout?: boolean }
+    update: { codexThreadId: string; profile: ProfileName; model?: string; effort?: string; codexThreadHasRollout?: boolean }
   ): CodexThreadRecord {
     const input = {
       conversationKey,
       larkThreadId,
       codexThreadId: update.codexThreadId,
       profile: update.profile,
+      model: update.model,
+      effort: update.effort,
       codexThreadHasRollout: update.codexThreadHasRollout
     };
     validateReplaceCodexThreadForLarkThread(input);
@@ -999,6 +1045,8 @@ export class ConversationRepository {
           name: null,
           larkThreadId: input.larkThreadId,
           profile,
+          model: input.model ?? null,
+          effort: input.effort ?? null,
           forkedFromCodexThreadId: null,
           forkedAt: null,
           codexThreadHasRollout,
@@ -1034,6 +1082,8 @@ export class ConversationRepository {
       conversationKey: input.conversationKey,
       name: null,
       profile,
+      model: null,
+      effort: null,
       inputTokens: Math.trunc(input.inputTokens),
       outputTokens: Math.trunc(input.outputTokens),
       cachedInputTokens: Math.trunc(input.cachedInputTokens),
@@ -1053,6 +1103,12 @@ export class ConversationRepository {
     assertValidConversationKey(input.conversationKey);
     const profile = resolveRequiredInputProfile(input);
     assertValidProfile(profile);
+    if (input.model !== undefined) {
+      assertNonEmpty(input.model, "model");
+    }
+    if (input.effort !== undefined) {
+      assertNonEmpty(input.effort, "effort");
+    }
     if (input.larkThreadId !== undefined) {
       assertNonEmpty(input.larkThreadId, "larkThreadId");
     }
@@ -1071,12 +1127,30 @@ export class ConversationRepository {
       conversationKey: input.conversationKey,
       name: input.name ?? null,
       profile,
+      model: input.model ?? null,
+      effort: input.effort ?? null,
       larkThreadId: input.larkThreadId ?? null,
       creatorOpenId: input.creatorOpenId ?? null,
       cardMessageId: input.cardMessageId ?? null,
       createdAt: now,
       updatedAt: now
     });
+    return this.requireCodexThreadById(input.codexThreadId);
+  }
+
+  updateCodexThreadModelSettings(input: UpdateCodexThreadModelSettingsInput): CodexThreadRecord {
+    assertNonEmpty(input.codexThreadId, "codexThreadId");
+    assertNonEmpty(input.model, "model");
+    assertNonEmpty(input.effort, "effort");
+    const result = this.updateCodexThreadModelSettingsStatement.run(
+      input.model,
+      input.effort,
+      this.now(),
+      input.codexThreadId
+    );
+    if (result.changes === 0) {
+      throw new TwinnyError(`Codex thread ${input.codexThreadId} was not found`, "CODEX_THREAD_NOT_FOUND");
+    }
     return this.requireCodexThreadById(input.codexThreadId);
   }
 
@@ -1447,6 +1521,8 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     name: row.name,
     larkThreadId: row.lark_thread_id ?? undefined,
     profile: row.profile,
+    model: row.model ?? undefined,
+    effort: row.effort ?? undefined,
     mode: validCodexThreadMode(row.mode) ? row.mode : "default",
     status: validCodexThreadStatus(row.status) ? row.status : "idle",
     goalStatus: validCodexThreadGoalStatus(row.goal_status) ? row.goal_status : "none",
@@ -1527,6 +1603,12 @@ function validateCodexThreadInput(input: UpsertCodexThreadInput): void {
   if (input.name !== undefined) {
     assertNonEmpty(input.name, "name");
   }
+  if (input.model !== undefined) {
+    assertNonEmpty(input.model, "model");
+  }
+  if (input.effort !== undefined) {
+    assertNonEmpty(input.effort, "effort");
+  }
   if (input.larkThreadId !== undefined) {
     assertNonEmpty(input.larkThreadId, "larkThreadId");
   }
@@ -1540,6 +1622,12 @@ function validateReplaceCodexThreadForLarkThread(input: ReplaceCodexThreadForLar
   assertNonEmpty(input.larkThreadId, "larkThreadId");
   assertNonEmpty(input.codexThreadId, "codexThreadId");
   assertValidProfile(resolveRequiredInputProfile(input));
+  if (input.model !== undefined) {
+    assertNonEmpty(input.model, "model");
+  }
+  if (input.effort !== undefined) {
+    assertNonEmpty(input.effort, "effort");
+  }
 }
 
 function validateLarkMessageInput(input: InsertLarkMessageInput): void {

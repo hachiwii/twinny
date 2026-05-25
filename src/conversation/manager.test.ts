@@ -121,13 +121,13 @@ describe("ConversationManager", () => {
         larkCreateTime: 1234
       })
     );
-    expect(repository.upsertCodexThread).toHaveBeenCalledWith({
+    expect(repository.upsertCodexThread).toHaveBeenCalledWith(expect.objectContaining({
       conversationKey: "p2p_ou_guest",
       codexThreadId: "thread_1",
       profile: "guest",
       name: "主会话",
       larkThreadId: undefined
-    });
+    }));
     expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m1"], {
       conversationKey: "p2p_ou_guest",
       codexThreadId: "thread_1"
@@ -166,6 +166,95 @@ describe("ConversationManager", () => {
         usage: { total: { totalTokens: 42 } }
       })
     });
+  });
+
+  it("uses stored thread model settings when starting a turn", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_1",
+          conversationKey: "p2p_ou_guest",
+          profile: "guest",
+          model: "gpt-5.4",
+          effort: "high"
+        })
+      ]
+    });
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "hello"));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(turns[0]!.params).toMatchObject({
+      threadId: "thread_1",
+      model: "gpt-5.4",
+      effort: "high"
+    });
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForDelay();
+  });
+
+  it("backfills missing thread model settings from the profile defaults before starting a turn", async () => {
+    const managerConfig: TwinnyConfig = {
+      ...config,
+      profiles: {
+        ...config.profiles,
+        guest: { ...config.profiles.guest, defaultModel: "gpt-5.4", defaultEffort: "xhigh" }
+      }
+    };
+    const { repository } = createRepository(conversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository, codex, config: managerConfig });
+
+    manager.submitIncoming(message("m1", "hello"));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(repository.updateCodexThreadModelSettings).toHaveBeenCalledWith({
+      codexThreadId: "thread_1",
+      model: "gpt-5.4",
+      effort: "xhigh"
+    });
+    expect(turns[0]!.params).toMatchObject({
+      model: "gpt-5.4",
+      effort: "xhigh"
+    });
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForDelay();
+  });
+
+  it("updates the current thread model settings with /model for later turns", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m_model", "/model gpt-5.4 high"));
+
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadModelSettings).toHaveBeenCalledWith({
+        codexThreadId: "thread_1",
+        model: "gpt-5.4",
+        effort: "high"
+      })
+    );
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "m_model",
+      "已设置当前 thread 后续 turn 模型：gpt-5.4 / high"
+    );
+
+    manager.submitIncoming(message("m1", "hello"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(turns[0]!.params).toMatchObject({
+      model: "gpt-5.4",
+      effort: "high"
+    });
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForDelay();
   });
 
   it("adds the active turn duration when token usage refreshes a bound thread card", async () => {
@@ -490,24 +579,24 @@ describe("ConversationManager", () => {
       }),
       { uuid: expect.stringMatching(UUID_PATTERN) }
     );
-    expect(repository.updateCodexThreadCard).toHaveBeenCalledWith({
+    expect(repository.updateCodexThreadCard).toHaveBeenCalledWith(expect.objectContaining({
       conversationKey: "group_oc_group",
       codexThreadId: "thread_pending_name",
       profile: "host",
       name: "Codex 生成标题",
       creatorOpenId: "ou_guest"
-    });
+    }));
     await expect(Promise.resolve(repository.getCodexThreadById("thread_pending_name"))).resolves.toMatchObject({
       name: "Codex 生成标题"
     });
-    expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
+    expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith(expect.objectContaining({
       conversationKey: "group_oc_group",
       codexThreadId: "thread_pending_name",
       profile: "host",
       larkThreadId: "topic_pending_name",
       creatorOpenId: "ou_guest",
       cardMessageId: "card_oc_group_1"
-    });
+    }));
   });
 
   it("patches a thread card when Codex renames it before the card message id is stored", async () => {
@@ -1600,6 +1689,8 @@ describe("ConversationManager", () => {
       codexThreadId: "thread_status",
       conversationKey: "p2p_ou_guest",
       profile: "guest",
+      model: "gpt-5.4",
+      effort: "high",
       totalTokens: 100,
       tokenUsageJson: JSON.stringify({
         tokenUsage: {
@@ -1627,7 +1718,7 @@ describe("ConversationManager", () => {
     const serialized = JSON.stringify(card);
     expect(serialized).toContain("话题");
     expect(serialized).toContain("thread_status");
-    expect(serialized).toContain("GPT-5.5 (xhigh)");
+    expect(serialized).toContain("gpt-5.4 high");
     expect(serialized).toContain("80 (50% Cached)");
     expect(serialized).toContain("20 (25% Reasoning)");
     expect(serialized).toContain("工作区");
@@ -2192,14 +2283,14 @@ describe("ConversationManager", () => {
     );
     const sentCard = vi.mocked(lark.sendCardToChatId).mock.calls[0]![1] as Record<string, unknown>;
     expect(JSON.stringify(sentCard)).toContain("thread_new_session");
-    expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
+    expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith(expect.objectContaining({
       conversationKey: "group_oc_group",
       codexThreadId: "thread_new_session",
       profile: "host",
       larkThreadId: "card_oc_group_1",
       creatorOpenId: "ou_owner",
       cardMessageId: "card_oc_group_1"
-    });
+    }));
   });
 
   it("keeps generated Lark uuid values within the OpenAPI limit for new-session cards", async () => {
@@ -2817,7 +2908,9 @@ describe("ConversationManager", () => {
     expect(repository.upsertCodexThread).toHaveBeenCalledWith({
       conversationKey: "p2p_ou_guest",
       codexThreadId: "thread_1_side_1",
-      profile: "guest"
+      profile: "guest",
+      model: "gpt-5.5",
+      effort: "medium"
     });
     const rawUsage = {
       threadId: "thread_1_side_1",
@@ -3347,7 +3440,7 @@ describe("ConversationManager", () => {
     expect(lark.replyText).toHaveBeenNthCalledWith(2, "card_dm_thread_1", "hello", { replyInThread: true });
     expect(lark.sendCardToChatId).not.toHaveBeenCalled();
     expect(lark.recallMessage).toHaveBeenCalledWith("card_reply_dm_thread_1_1");
-    expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
+    expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith(expect.objectContaining({
       conversationKey: "p2p_ou_guest",
       codexThreadId: "thread_dm_topic",
       profile: "guest",
@@ -3355,7 +3448,7 @@ describe("ConversationManager", () => {
       larkThreadId: "dm_thread_1",
       creatorOpenId: "ou_guest",
       cardMessageId: "card_dm_thread_1"
-    });
+    }));
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         larkMessageId: "reply_dm_thread_1",
@@ -7411,6 +7504,8 @@ function createRepository(initial?: ConversationRecord, options: {
     codexThreadId: string;
     conversationKey: string;
     profile: ProfileName;
+    model?: string;
+    effort?: string;
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
     forkedFromCodexThreadId?: string;
@@ -7426,6 +7521,8 @@ function createRepository(initial?: ConversationRecord, options: {
       name: input.name ?? existing?.name ?? "新会话",
       larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
       profile: input.profile,
+      model: input.model ?? existing?.model,
+      effort: input.effort ?? existing?.effort,
       forkedFromCodexThreadId: input.forkedFromCodexThreadId ?? existing?.forkedFromCodexThreadId,
       forkedAt: input.forkedAt ?? existing?.forkedAt,
       codexThreadHasRollout: existing?.codexThreadHasRollout === true || input.codexThreadHasRollout === true,
@@ -7438,7 +7535,7 @@ function createRepository(initial?: ConversationRecord, options: {
   const replaceCodexThreadForLarkThread = (
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; profile: ProfileName; codexThreadHasRollout?: boolean }
+    update: { codexThreadId: string; profile: ProfileName; model?: string; effort?: string; codexThreadHasRollout?: boolean }
   ): CodexThreadRecord => {
     const existing = getCodexThreadByLarkThread(conversationKey, larkThreadId);
     if (existing) {
@@ -7451,6 +7548,8 @@ function createRepository(initial?: ConversationRecord, options: {
       name: existing?.name ?? "新会话",
       larkThreadId,
       profile: update.profile,
+      model: update.model ?? existing?.model,
+      effort: update.effort ?? existing?.effort,
       codexThreadHasRollout: update.codexThreadHasRollout ?? false,
       totalTokens: 0,
       tokenUsageJson: "{}",
@@ -7576,6 +7675,8 @@ function createRepository(initial?: ConversationRecord, options: {
           name: input.name ?? existing?.name ?? "新会话",
           larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
           profile: input.profile,
+          model: input.model ?? existing?.model,
+          effort: input.effort ?? existing?.effort,
           creatorOpenId: input.creatorOpenId ?? existing?.creatorOpenId,
           cardMessageId: input.cardMessageId ?? existing?.cardMessageId,
           codexThreadHasRollout: existing?.codexThreadHasRollout ?? false,
@@ -7583,6 +7684,16 @@ function createRepository(initial?: ConversationRecord, options: {
         });
         codexThreads.set(record.codexThreadId, record);
         return record;
+      }),
+      updateCodexThreadModelSettings: vi.fn((input) => {
+        const existing = codexThreads.get(input.codexThreadId);
+        if (!existing) {
+          throw new Error("missing codex thread");
+        }
+        existing.model = input.model;
+        existing.effort = input.effort;
+        existing.updatedAt = Date.now();
+        return existing;
       }),
       updateCodexThreadName: vi.fn((codexThreadId, name) => {
         const existing = codexThreads.get(codexThreadId);

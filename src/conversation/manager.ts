@@ -32,6 +32,7 @@ import {
 } from "../lark/filters.js";
 import { isLarkMessageUnavailableError } from "../lark/messages.js";
 import { logger as defaultLogger } from "../observability/logs.js";
+import { DEFAULT_PROFILE_EFFORT, DEFAULT_PROFILE_MODEL } from "../config/loader.js";
 import type {
   CodexThreadTokenUsageUpdate,
   CodexTurnResult,
@@ -87,7 +88,6 @@ import {
 const COMPACT_PROGRESS_TEXT = "正在压缩上下文";
 const COMPACT_COMPLETED_TEXT = "完成上下文压缩";
 const SIDE_SHUTDOWN_ERROR = "Twinny 服务退出";
-const STATUS_MODEL_TEXT = "GPT-5.5 (xhigh)";
 const MAIN_THREAD_NAME = "主会话";
 const TWINNY_THREAD_DEVELOPER_INSTRUCTIONS = `# Twinny Lark Context
 
@@ -189,6 +189,8 @@ export interface ConversationRepository {
     codexThreadId: string;
     conversationKey: string;
     profile: ProfileName;
+    model?: string;
+    effort?: string;
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
     forkedFromCodexThreadId?: string;
@@ -198,7 +200,7 @@ export interface ConversationRepository {
   replaceCodexThreadForLarkThread?(
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; profile: ProfileName; codexThreadHasRollout?: boolean }
+    update: { codexThreadId: string; profile: ProfileName; model?: string; effort?: string; codexThreadHasRollout?: boolean }
   ): Promise<CodexThreadRecord> | CodexThreadRecord;
   updateCodexThreadTokenUsage(input: {
     codexThreadId: string;
@@ -217,10 +219,17 @@ export interface ConversationRepository {
     codexThreadId: string;
     conversationKey: string;
     profile: ProfileName;
+    model?: string;
+    effort?: string;
     larkThreadId?: string;
     creatorOpenId?: string;
     cardMessageId?: string;
     name?: string;
+  }): Promise<CodexThreadRecord> | CodexThreadRecord;
+  updateCodexThreadModelSettings(input: {
+    codexThreadId: string;
+    model: string;
+    effort: string;
   }): Promise<CodexThreadRecord> | CodexThreadRecord;
   updateCodexThreadName(
     codexThreadId: string,
@@ -719,8 +728,8 @@ interface ActiveTurnCardState {
 }
 
 interface CodexTurnModelSettings {
-  model?: string;
-  effort?: string;
+  model: string;
+  effort: string;
 }
 
 interface ConversationState {
@@ -754,6 +763,7 @@ type ParsedCommand =
   | { kind: "next" }
   | { kind: "steer" }
   | { kind: "status" }
+  | { kind: "model"; text: string }
   | { kind: "new" }
   | { kind: "thread"; text: string }
   | { kind: "fork"; text: string }
@@ -1742,6 +1752,10 @@ export class ConversationManager {
       await this.handleStatusCommand(state, context, message);
       return;
     }
+    if (parsed.kind === "model") {
+      await this.handleModelCommand(state, context, message, parsed.text);
+      return;
+    }
     if (parsed.kind === "stop") {
       await this.handleStopCommand(state, message, parsed.text);
       return;
@@ -2586,10 +2600,13 @@ export class ConversationManager {
           developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context)
         });
     const threadName = this.consumePendingThreadName(thread.threadId) ?? request.name;
+    const modelSettings = this.profileDefaultModelSettings(profile);
     await this.options.repository.upsertCodexThread({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
       profile,
+      model: modelSettings.model,
+      effort: modelSettings.effort,
       ...(threadName ? { name: threadName } : {}),
       codexThreadHasRollout: request.codexThread?.codexThreadHasRollout ?? false,
       forkedFromCodexThreadId: request.codexThread?.forkedFromCodexThreadId,
@@ -2599,6 +2616,8 @@ export class ConversationManager {
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
       profile,
+      model: modelSettings.model,
+      effort: modelSettings.effort,
       ...(threadName ? { name: threadName } : {}),
       creatorOpenId: request.operatorOpenId
     });
@@ -2624,6 +2643,8 @@ export class ConversationManager {
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
       profile,
+      model: modelSettings.model,
+      effort: modelSettings.effort,
       ...(finalThreadName ? { name: finalThreadName } : {}),
       larkThreadId: cardThreadId,
       creatorOpenId: request.operatorOpenId,
@@ -2879,7 +2900,7 @@ export class ConversationManager {
   ): Promise<void> {
     const message = params.message;
     const startedAt = Date.now();
-    const modelSettings = await this.readCodexTurnModelSettingsBestEffort(params.profile, params.workspace);
+    const modelSettings = await this.readCodexTurnModelSettingsBestEffort(params.profile, params.sourceThreadId);
     let forkedThreadId: string;
     try {
       const forked = await this.options.codex.forkThread({
@@ -2910,7 +2931,9 @@ export class ConversationManager {
     await this.recordCodexThreadBestEffort({
       conversationKey: context.conversationKey,
       codexThreadId: forkedThreadId,
-      profile: params.profile
+      profile: params.profile,
+      model: modelSettings.model,
+      effort: modelSettings.effort
     });
     await this.markPendingMessagesProcessingBestEffort([message], {
       conversationKey: context.conversationKey,
@@ -3110,6 +3133,83 @@ export class ConversationManager {
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
+  private async handleModelCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    const parsed = parseModelCommand(text);
+    if (parsed.kind === "invalid") {
+      await this.replyControlBestEffort(message.messageId, parsed.message);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const target = await this.resolveCurrentThreadForModelCommand(state, context);
+    if (!target) {
+      await this.replyControlBestEffort(message.messageId, "当前会话还没有 Codex thread，无法设置模型。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const existing = await this.options.repository.getCodexThreadById(target.threadId);
+    if (!existing) {
+      await this.recordCodexThreadBestEffort({
+        conversationKey: context.conversationKey,
+        codexThreadId: target.threadId,
+        profile: target.profile,
+        name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
+        larkThreadId: context.larkThreadId
+      });
+    }
+
+    try {
+      await this.options.repository.updateCodexThreadModelSettings({
+        codexThreadId: target.threadId,
+        model: parsed.model,
+        effort: parsed.effort
+      });
+    } catch (error) {
+      this.log.warn({ error, threadId: target.threadId }, "failed to update codex thread model settings");
+      await this.replyErrorBestEffort(message.messageId, error);
+      await this.markMessagesFailedBestEffort([message.messageId]);
+      return;
+    }
+
+    await this.replyControlBestEffort(
+      message.messageId,
+      `已设置当前 thread 后续 turn 模型：${parsed.model} / ${parsed.effort}`
+    );
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async resolveCurrentThreadForModelCommand(
+    state: ConversationState,
+    context: MessageContext
+  ): Promise<{ threadId: string; profile: ProfileName } | undefined> {
+    if (state.active) {
+      return { threadId: state.active.threadId, profile: state.active.profile };
+    }
+
+    const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+    if (context.larkThreadId) {
+      const topicThread = await this.options.repository.getCodexThreadByConversationAndLarkThread(
+        context.conversationKey,
+        context.larkThreadId
+      );
+      if (topicThread) {
+        return { threadId: topicThread.codexThreadId, profile: topicThread.profile };
+      }
+      return undefined;
+    }
+
+    if (!conversation) {
+      return undefined;
+    }
+    return { threadId: conversation.codexThreadId, profile: conversation.profile };
+  }
+
   private async formatStatusCard(
     state: ConversationState,
     context: MessageContext,
@@ -3127,6 +3227,7 @@ export class ConversationManager {
       : { userMessageCount: 0, turnCount: 0, totalWorkDurationMs: 0 };
     const conversationStats = await this.options.repository.getConversationStatusStats(context.conversationKey);
     const threadTokens = extractThreadTokenBreakdown(thread);
+    const topicModelSettings = this.threadModelSettings(thread, thread?.profile ?? conversation?.profile ?? profile);
     const activeDurationMs = state.active && state.active.threadId === threadId && state.active.completedStatus === undefined
       ? Date.now() - state.active.startedAt
       : 0;
@@ -3148,7 +3249,7 @@ export class ConversationManager {
         id: threadId,
         name: thread?.name,
         mode: thread?.mode ?? "default",
-        model: STATUS_MODEL_TEXT,
+        model: formatModelAndEffort(topicModelSettings.model, topicModelSettings.effort),
         contextTokens: threadTokens.contextTokens,
         contextWindow: threadTokens.contextWindow,
         userMessageCount: threadStats.userMessageCount,
@@ -4033,7 +4134,7 @@ export class ConversationManager {
       codexThreadId: params.threadId
     });
     const [modelSettings, threadTokenUsage] = await Promise.all([
-      this.readCodexTurnModelSettingsBestEffort(params.profile, params.workspace),
+      this.readCodexTurnModelSettingsBestEffort(params.profile, params.threadId),
       this.readThreadTokenUsageBestEffort(params.threadId)
     ]);
     const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
@@ -4255,7 +4356,7 @@ export class ConversationManager {
       codexThreadId: params.threadId
     });
     const [modelSettings, threadTokenUsage] = await Promise.all([
-      this.readCodexTurnModelSettingsBestEffort(params.profile, params.workspace),
+      this.readCodexTurnModelSettingsBestEffort(params.profile, params.threadId),
       this.readThreadTokenUsageBestEffort(params.threadId)
     ]);
     const startedAt = Date.now();
@@ -4452,7 +4553,7 @@ export class ConversationManager {
       codexThreadId: params.threadId
     });
     const [modelSettings, threadTokenUsage] = await Promise.all([
-      this.readCodexTurnModelSettingsBestEffort(params.profile, params.workspace),
+      this.readCodexTurnModelSettingsBestEffort(params.profile, params.threadId),
       this.readThreadTokenUsageBestEffort(params.threadId)
     ]);
     const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
@@ -4601,6 +4702,8 @@ export class ConversationManager {
       conversationKey: active.conversationKey,
       codexThreadId: replacement.threadId,
       profile: active.profile,
+      model: active.model,
+      effort: active.modelReasoningEffort,
       workspace: active.workspace,
       larkThreadId: active.context.larkThreadId,
       codexThreadHasRollout: false
@@ -5167,6 +5270,8 @@ export class ConversationManager {
     conversationKey: string;
     codexThreadId: string;
     profile: ProfileName;
+    model?: string;
+    effort?: string;
     name?: string;
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
@@ -5175,7 +5280,18 @@ export class ConversationManager {
       if (params.name === MAIN_THREAD_NAME) {
         this.pendingThreadNames.delete(params.codexThreadId);
       }
-      await this.options.repository.upsertCodexThread(params);
+      let existing: CodexThreadRecord | undefined;
+      try {
+        existing = await this.options.repository.getCodexThreadById(params.codexThreadId);
+      } catch (error) {
+        this.log.warn({ error, codexThreadId: params.codexThreadId }, "failed to read existing codex thread");
+      }
+      const defaults = this.profileDefaultModelSettings(params.profile);
+      await this.options.repository.upsertCodexThread({
+        ...params,
+        model: params.model ?? (existing ? undefined : defaults.model),
+        effort: params.effort ?? (existing ? undefined : defaults.effort)
+      });
     } catch (error) {
       this.log.warn({ error, codexThreadId: params.codexThreadId }, "failed to record codex thread");
     }
@@ -5219,20 +5335,35 @@ export class ConversationManager {
     conversationKey: string;
     codexThreadId: string;
     profile: ProfileName;
+    model?: string;
+    effort?: string;
     larkThreadId: string;
     codexThreadHasRollout?: boolean;
     replaceExistingLarkThread?: boolean;
   }): Promise<void> {
     try {
+      const defaults = this.profileDefaultModelSettings(params.profile);
+      let existing: CodexThreadRecord | undefined;
+      if (!params.replaceExistingLarkThread) {
+        try {
+          existing = await this.options.repository.getCodexThreadById(params.codexThreadId);
+        } catch (error) {
+          this.log.warn({ error, codexThreadId: params.codexThreadId }, "failed to read existing lark thread codex thread");
+        }
+      }
+      const model = params.model ?? (existing ? undefined : defaults.model);
+      const effort = params.effort ?? (existing ? undefined : defaults.effort);
       if (params.replaceExistingLarkThread && this.options.repository.replaceCodexThreadForLarkThread) {
         await this.options.repository.replaceCodexThreadForLarkThread(params.conversationKey, params.larkThreadId, {
           codexThreadId: params.codexThreadId,
           profile: params.profile,
+          model,
+          effort,
           codexThreadHasRollout: params.codexThreadHasRollout
         });
         return;
       }
-      await this.options.repository.upsertCodexThread(params);
+      await this.options.repository.upsertCodexThread({ ...params, model, effort });
     } catch (error) {
       this.log.warn(
         { error, codexThreadId: params.codexThreadId, larkThreadId: params.larkThreadId },
@@ -5369,12 +5500,48 @@ export class ConversationManager {
     }
   }
 
-  private async readCodexTurnModelSettingsBestEffort(profile: ProfileName, _workspace: string): Promise<CodexTurnModelSettings> {
+  private profileDefaultModelSettings(profile: ProfileName): CodexTurnModelSettings {
     const profileConfig = this.options.config.profiles[profile];
     return {
-      model: nonEmptyString(profileConfig?.defaultModel),
-      effort: nonEmptyString(profileConfig?.defaultEffort)
+      model: nonEmptyString(profileConfig?.defaultModel) ?? DEFAULT_PROFILE_MODEL,
+      effort: nonEmptyString(profileConfig?.defaultEffort) ?? DEFAULT_PROFILE_EFFORT
     };
+  }
+
+  private threadModelSettings(thread: CodexThreadRecord | undefined, profile: ProfileName): CodexTurnModelSettings {
+    const defaults = this.profileDefaultModelSettings(profile);
+    return {
+      model: nonEmptyString(thread?.model) ?? defaults.model,
+      effort: nonEmptyString(thread?.effort) ?? defaults.effort
+    };
+  }
+
+  private async readCodexTurnModelSettingsBestEffort(
+    profile: ProfileName,
+    codexThreadId: string,
+    threadRecord?: CodexThreadRecord
+  ): Promise<CodexTurnModelSettings> {
+    let thread = threadRecord;
+    if (!thread) {
+      try {
+        thread = await this.options.repository.getCodexThreadById(codexThreadId);
+      } catch (error) {
+        this.log.warn({ error, codexThreadId }, "failed to read codex thread model settings");
+      }
+    }
+    const settings = this.threadModelSettings(thread, thread?.profile ?? profile);
+    if (thread && (!nonEmptyString(thread.model) || !nonEmptyString(thread.effort))) {
+      try {
+        await this.options.repository.updateCodexThreadModelSettings({
+          codexThreadId,
+          model: settings.model,
+          effort: settings.effort
+        });
+      } catch (error) {
+        this.log.warn({ error, codexThreadId }, "failed to backfill codex thread model settings");
+      }
+    }
+    return settings;
   }
 
   private async readThreadTokenUsageBestEffort(codexThreadId: string): Promise<ThreadTokenUsageSnapshot> {
@@ -5771,10 +5938,13 @@ export class ConversationManager {
         approvalPolicy: "never"
       });
       if (resumed.threadId !== thread.codexThreadId) {
+        const settings = this.threadModelSettings(thread, params.profile);
         await this.replaceThreadBindingBestEffort({
           conversationKey: params.conversationKey,
           codexThreadId: resumed.threadId,
           profile: params.profile,
+          model: settings.model,
+          effort: settings.effort,
           workspace: params.workspace,
           larkThreadId: params.larkThreadId,
           codexThreadHasRollout: true
@@ -5801,10 +5971,13 @@ export class ConversationManager {
           mainThread: params.larkThreadId === undefined
         })
       });
+      const settings = this.threadModelSettings(thread, params.profile);
       await this.replaceThreadBindingBestEffort({
         conversationKey: params.conversationKey,
         codexThreadId: replacement.threadId,
         profile: params.profile,
+        model: settings.model,
+        effort: settings.effort,
         workspace: params.workspace,
         larkThreadId: params.larkThreadId,
         codexThreadHasRollout: false
@@ -5821,6 +5994,8 @@ export class ConversationManager {
     conversationKey: string;
     codexThreadId: string;
     profile: ProfileName;
+    model?: string;
+    effort?: string;
     workspace: string;
     larkThreadId?: string;
     codexThreadHasRollout: boolean;
@@ -5830,6 +6005,8 @@ export class ConversationManager {
         conversationKey: params.conversationKey,
         codexThreadId: params.codexThreadId,
         profile: params.profile,
+        model: params.model,
+        effort: params.effort,
         larkThreadId: params.larkThreadId,
         codexThreadHasRollout: params.codexThreadHasRollout,
         replaceExistingLarkThread: true
@@ -5846,6 +6023,8 @@ export class ConversationManager {
       conversationKey: params.conversationKey,
       codexThreadId: params.codexThreadId,
       profile: params.profile,
+      model: params.model,
+      effort: params.effort,
       name: MAIN_THREAD_NAME,
       codexThreadHasRollout: params.codexThreadHasRollout
     });
@@ -7216,6 +7395,9 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "status") {
     return { kind: "status" };
   }
+  if (command === "model") {
+    return { kind: "model", text: rest };
+  }
   if (command === "new") {
     return { kind: "new" };
   }
@@ -7274,6 +7456,15 @@ function parseQueuedAwareSlashCommand(text: string): ParsedCommand {
   }
   const nested = parseSlashCommand(parsed.text);
   return nested.kind === "goal" ? nested : parsed;
+}
+
+function parseModelCommand(text: string): { kind: "valid"; model: string; effort: string } | { kind: "invalid"; message: string } {
+  const parts = text.trim().split(/\s+/).filter(Boolean);
+  if (parts.length !== 2) {
+    return { kind: "invalid", message: "用法：/model <model> <effort>" };
+  }
+  const [model, effort] = parts as [string, string];
+  return { kind: "valid", model, effort };
 }
 
 function parseTwinnyCardAction(value: Record<string, unknown>): ParsedCardActionCommand | undefined {
@@ -7428,6 +7619,10 @@ function activeTurnRuntimeStats(active: ActiveTurn): TwinnyAgentCardRuntimeStats
     contextTokens: active.threadTokenUsage.contextTokens,
     contextWindow: active.threadTokenUsage.contextWindow
   };
+}
+
+function formatModelAndEffort(model: string, effort: string): string {
+  return `${model} ${effort}`;
 }
 
 function renderWaitingState(activeWaiting: ActiveTurnWaiting | undefined):
@@ -8268,6 +8463,7 @@ function classifyInitialRoute(
   if (
     parsed.kind === "help" ||
     parsed.kind === "status" ||
+    parsed.kind === "model" ||
     parsed.kind === "stop" ||
     parsed.kind === "next" ||
     parsed.kind === "steer" ||

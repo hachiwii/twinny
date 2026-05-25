@@ -2284,6 +2284,7 @@ function adaptConversationRepository(repository: StoreConversationRepository): M
     updateCodexThreadGoalStatus: repository.updateCodexThreadGoalStatus.bind(repository),
     clearCodexThreadGoalStatus: repository.clearCodexThreadGoalStatus.bind(repository),
     updateCodexThreadCard: repository.updateCodexThreadCard.bind(repository),
+    updateCodexThreadModelSettings: repository.updateCodexThreadModelSettings.bind(repository),
     updateCodexThreadName: repository.updateCodexThreadName.bind(repository),
     updateCodexThreadMode: repository.updateCodexThreadMode.bind(repository),
     updateCodexThreadStatus: repository.updateCodexThreadStatus.bind(repository),

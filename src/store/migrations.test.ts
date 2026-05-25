@@ -94,7 +94,9 @@ describe("store migrations", () => {
         { name: "status", type: "TEXT", notnull: 1, pk: 0 },
         { name: "name", type: "TEXT", notnull: 1, pk: 0 },
         { name: "goal_status", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "goal_updated_at", type: "INTEGER", notnull: 0, pk: 0 }
+        { name: "goal_updated_at", type: "INTEGER", notnull: 0, pk: 0 },
+        { name: "model", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "effort", type: "TEXT", notnull: 0, pk: 0 }
       ]);
       const threadIndexes = db
         .prepare<[], SqliteNameRow>(
