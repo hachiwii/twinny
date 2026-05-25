@@ -15,6 +15,18 @@
 
 ## 安装
 
+运行 installer 前，先检查本机依赖：
+
+```sh
+codex --version || brew install codex
+
+node --version
+npm --version
+node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' || brew install node
+```
+
+Twinny 需要 Codex CLI 0.130.0 或更新版本，以及带 npm 的 Node.js 22 或更新版本。如果缺少 `codex`，用 `brew install codex` 安装。如果缺少 `node` 或 `npm`，或者 Node.js 版本低于 22，用 `brew install node` 安装当前 Node.js 版本。
+
 通过 `npx` 运行交互式 installer：
 
 ```sh
@@ -250,3 +262,7 @@ enabled = false
 ```sh
 TWINNY_TELEMETRY_ENABLED=false npx twinny@latest start
 ```
+
+## License
+
+MIT
