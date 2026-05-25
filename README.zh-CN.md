@@ -1,19 +1,10 @@
-<p align="center">
-  <img src="./configs/banner.png" alt="Twinny banner" width="760" />
-</p>
+# Twinny
 
-<h1 align="center">Twinny</h1>
+[banner](./configs/banner.png)
 
-<p align="center">
-  <strong>把飞书/Lark 会话变成本地 Codex 工作区。</strong>
-</p>
+**连接你的飞书与 CodeX**
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/twinny"><img alt="npm" src="https://img.shields.io/npm/v/twinny.svg" /></a>
-  <a href="./README.md">English</a>
-</p>
-
-Twinny 是一个本地 Feishu/Lark-to-Codex 桥接工具。它通过应用事件长连接接收 Lark 消息，把每个会话映射到 `TWINNY_HOME` 下的本地工作区，以 profile 维度使用独立的 `CODEX_HOME` 运行 Codex app-server thread，并把 Codex 结果发回 Lark。
+[English](./README.md)
 
 ## 环境要求
 
@@ -30,21 +21,11 @@ Twinny 是一个本地 Feishu/Lark-to-Codex 桥接工具。它通过应用事件
 npx twinny@latest install
 ```
 
-installer 会：
-
-1. 检测 Codex binary 和默认 Codex 模型设置。
-2. 在浏览器中创建或选择飞书机器人应用，或接受手动配置的 App ID 和 App Secret。
-3. 授权 owner 账号并保存 owner `open_id`。
-4. 创建 `TWINNY_HOME`（默认 `~/.twinny`），包括 `config.toml`、`auth.json`、runtime 文件、SQLite 数据库和 workspaces。
-5. 把 Lark app secret 存入 macOS Keychain。
-6. 安装 macOS LaunchAgent，并可立即启动 Twinny。
-
 常用 daemon 命令：
 
 ```sh
 npx twinny@latest doctor
 npx twinny@latest status
-npx twinny@latest logs
 npx twinny@latest start
 npx twinny@latest stop
 npx twinny@latest restart
@@ -55,7 +36,7 @@ npx twinny@latest uninstall
 
 ## 飞书/Lark 应用配置
 
-installer 可以在浏览器中创建或选择飞书应用。如果你手动配置应用，请在飞书/Lark 开发者后台申请这些 API 权限：
+你需要在飞书/Lark 开发者后台申请这些 API 权限：
 
 ```text
 im:message.p2p_msg:readonly
@@ -90,7 +71,6 @@ card.action.trigger
 | `status` | 查看当前会话和 thread 状态。 |
 | `queue` | 切换下一条消息排队模式。 |
 | `new` | 在当前会话中新开 Codex thread。 |
-| `new_session` | 从群菜单创建新的任务话题/会话。 |
 | `stop` | 停止当前 turn 并清空队列。 |
 
 ## 用法
@@ -125,7 +105,7 @@ card.action.trigger
 
 | 指令 | 用法 |
 | --- | --- |
-| `/activate <owner_at\|owner\|all_at\|all> [profile]` | 激活群聊，设置响应范围，并可选绑定 profile。 |
+| `/activate <owner_at\|owner\|all_at\|all> [profile]` | 激活群聊，设置谁可以把消息路由给 Codex，刷新群名，并可选绑定 profile。 |
 | `/deactivate` | 停用当前群聊并清空待处理任务。 |
 | `/pair {guest_ou_id} <profile>` | 授权非 owner 的 P2P 用户，并绑定到某个 profile。 |
 | `/reload [profile]` | 修改配置后重载所有 Codex profiles，或只重载指定 profile。 |
@@ -139,10 +119,10 @@ card.action.trigger
 
 ## 推荐实践
 
-为项目或团队创建一个专用飞书/Lark 群。由 owner 用尽量小的可用权限激活群聊，然后为每个开发任务创建一个独立话题：
+为项目创建一个专用飞书/Lark 群。在该群的 workspace 中写一份 [AGENTS.md](http://AGENTS.md)。由 owner 用尽量小的可用权限激活群聊，然后为每个开发任务创建一个独立话题：
 
 ```text
-/activate all_at guest
+/activate all host
 /thread fix the login callback race
 /thread add the GitHub README
 ```
@@ -173,29 +153,38 @@ Twinny 运行在 owner 的本地机器上。请把它当作本地自动化桥接
 - 为该 profile 配置 Codex sandbox、filesystem、network 和 approval 相关安全设置。
 - 如果你的 Codex 设置支持项目级安全策略，在 workspace 的 `.codex` 中加入 override。
 - 除非你明确希望未配对 P2P 用户获得访问权限，否则保持 `permissions.p2p_default_profile = "none"`。
-- 除非群成员范围非常可控，否则优先使用 `owner_at`、`owner` 或 `all_at`，不要直接使用 `all`。
-
-Twinny 启动 Codex turn 时使用 `approvalPolicy = "never"`，因此 Codex 配置本身就是主要安全边界。
+- 除非群成员范围非常可控，否则优先使用 `owner_at` 或 `owner`，不要直接使用 `all` 或 `all_at`。
 
 ## 进阶配置
 
-Twinny home 默认是 `~/.twinny`。home 中包含：
+Twinny 从 `TWINNY_HOME` 读取 `config.toml`。
 
-| 路径 | 作用 |
+支持的字段：
+
+| 字段 | 含义和取值 |
 | --- | --- |
-| `config.toml` | 主运行配置。 |
-| `auth.json` | Lark app id、brand、owner open id 和 owner display name。 |
-| `runtime/home-random` | 每个 home 的身份标识，用于 LaunchAgent 和 Keychain 名称。 |
-| `runtime/lark-assets.json` | 已上传到 Lark 的 logo 和 banner 图片 key 缓存。 |
-| `sqlite/twinny.db` | 会话、thread、队列和用量状态。 |
-| `workspaces/` | 从 Lark 会话映射出来的本地工作区。 |
-| `~/Library/Logs/twinny/` | LaunchAgent 和 Lark SDK 日志。 |
+| `[codex].binary` | Codex CLI 可执行文件路径或命令名。默认是 `codex`。如果 LaunchAgent 不能通过 `PATH` 找到 Codex，建议使用绝对路径。 |
+| `[lark.reaction].working` | Twinny 工作中给 Lark 消息添加的 emoji type。默认是 `Typing`。 |
+| `[lark.reaction].queued` | 消息进入队列时添加的 Lark emoji type。默认是 `OneSecond`。 |
+| `[lark.redaction].email` | 发往 Lark 的 payload 中邮箱地址的脱敏策略：`mask`、`whitespace` 或 `none`。默认是 `mask`。 |
+| `[lark.redaction].chinese_phone_number` | 发往 Lark 的 payload 中中国手机号的脱敏策略：`mask`、`whitespace` 或 `none`。默认是 `mask`。 |
+| `[permissions].p2p_default_profile` | 未配对 P2P 用户第一次给 Twinny 发消息时使用的 profile。用 `none` 表示默认拒绝，也可以填已配置的 profile 名称来自动授权。默认是 `none`。 |
+| `[profiles.<name>].codex_home` | 该 profile 使用的 `CODEX_HOME`。绝对路径会直接使用；相对路径会以 `TWINNY_HOME` 为基准解析。`host` 默认是 `~/.codex`；其他 profile 未设置时继承 `host`。 |
+| `[profiles.<name>].default_model` | 该 profile 新 thread 的默认模型。`host` 默认是 `gpt-5.5`；其他 profile 未设置时继承 `host`。 |
+| `[profiles.<name>].default_effort` | 该 profile 新 thread 的默认推理强度。常见取值是 `minimal`、`low`、`medium`、`high`；`host` 默认是 `medium`；其他 profile 未设置时继承 `host`。 |
+
+支持 telemetry 的构建还可以使用下面的关闭开关；它故意不放进示例配置：
+
+```toml
+[telemetry]
+enabled = false
+```
 
 示例 `config.toml`：
 
 ```toml
 [codex]
-binary = "codex"
+binary = "/opt/homebrew/bin/codex"
 
 [lark.reaction]
 working = "Typing"
@@ -235,4 +224,4 @@ TWINNY_HOME="$HOME/.twinny-work" npx twinny@latest status
 TWINNY_HOME="$HOME/.twinny-personal" npx twinny@latest logs
 ```
 
-每个 home 都有独立的 config、auth 元数据、SQLite 状态、workspaces、runtime lock、Keychain account 和 LaunchAgent label。建议每个实例使用独立的 Feishu/Lark bot app，避免重复接收事件。
+每个 home 都有独立的 config，并且需要一个独立的飞书机器人应用。

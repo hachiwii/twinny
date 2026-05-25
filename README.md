@@ -1,19 +1,10 @@
-<p align="center">
-  <img src="./configs/banner.png" alt="Twinny banner" width="760" />
-</p>
+# Twinny
 
-<h1 align="center">Twinny</h1>
+[banner](./configs/banner.png)
 
-<p align="center">
-  <strong>Turn Lark conversations into local Codex workspaces.</strong>
-</p>
+**Bridge your Feishu to CodeX**
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/twinny"><img alt="npm" src="https://img.shields.io/npm/v/twinny.svg" /></a>
-  <a href="./README.zh-CN.md">简体中文</a>
-</p>
-
-Twinny is a local Feishu/Lark-to-Codex bridge. It receives Lark messages through the app event long connection, maps each conversation to a local workspace under `TWINNY_HOME`, runs Codex app-server threads with profile-specific `CODEX_HOME` directories, and sends Codex results back to Lark.
+[简体中文](./README.zh-CN.md)
 
 ## Requirements
 
@@ -30,21 +21,11 @@ Run the interactive installer with `npx`:
 npx twinny@latest install
 ```
 
-The installer:
-
-1. Detects your Codex binary and default Codex model settings.
-2. Creates or selects a Feishu bot app, or accepts a manually configured App ID and App Secret.
-3. Authorizes the owner account and stores the owner `open_id`.
-4. Creates `TWINNY_HOME` (default: `~/.twinny`) with `config.toml`, `auth.json`, runtime files, SQLite storage, and workspaces.
-5. Stores the Lark app secret in the macOS Keychain.
-6. Installs a macOS LaunchAgent and can start Twinny immediately.
-
 Useful daemon commands:
 
 ```sh
 npx twinny@latest doctor
 npx twinny@latest status
-npx twinny@latest logs
 npx twinny@latest start
 npx twinny@latest stop
 npx twinny@latest restart
@@ -55,7 +36,7 @@ Use `TWINNY_HOME=/path/to/home` with any command when you are not using the defa
 
 ## Feishu/Lark App Configuration
 
-The installer can create or select a Feishu app in the browser. If you configure an app manually, grant these API permissions in the Feishu/Lark developer console:
+You need to grant these API permissions in the Feishu/Lark developer console:
 
 ```text
 im:message.p2p_msg:readonly
@@ -84,14 +65,15 @@ Use the Feishu/Lark event long connection (WebSocket) mode. Twinny does not requ
 
 Optional bot shortcut menu entries can use these `event_key` values:
 
-| Event key | Action |
-| --- | --- |
-| `help` | Send command help. |
-| `status` | Show the current conversation and thread status. |
-| `queue` | Toggle queue-next-message mode. |
-| `new` | Open a new Codex thread in the current conversation. |
-| `new_session` | Create a new task topic/session from a group menu. |
-| `stop` | Stop the active turn and clear queued work. |
+
+| Event key | Action                                               |
+| --------- | ---------------------------------------------------- |
+| `help`    | Send command help.                                   |
+| `status`  | Show the current conversation and thread status.     |
+| `queue`   | Toggle queue-next-message mode.                      |
+| `new`     | Open a new Codex thread in the current conversation. |
+| `stop`    | Stop the active turn and clear queued work.          |
+
 
 ## Usage
 
@@ -99,36 +81,40 @@ Send normal messages to the bot to start or continue a Codex turn. In groups, th
 
 ### Conversation Commands
 
-| Command | Usage |
-| --- | --- |
-| `/help` | Show available commands. |
-| `/status` | Show conversation, Codex thread, model, token, and queue status. |
-| `/new` | Stop the current task, clear queued messages, and open a new Codex thread. |
-| `/stop [all\|<side_id>]` | Stop the active task and clear queued messages. Use `all` to stop side turns too, or a side id to stop one side turn. |
-| `/next` | Interrupt the current task and start the next queued message. |
-| `/steer` | Inject the next queued batch into the currently running Codex turn. |
-| `/queue [message]` | Without a message, queue your next message. With a message, add that message to the next turn. |
-| `/goal <objective>` | Set and run a Codex goal. A later `/goal` while the goal is active updates the objective. |
-| `/plan [message]` | Enter plan mode. If a message is provided, process it in plan mode immediately. |
-| `/exit` | Exit plan mode in the next queued control step. |
-| `/side <message>` or `/btw <message>` | Start an ephemeral side conversation forked from the current Codex thread. |
-| `/compact` | Compact the current Codex thread context in the next queued control step. |
-| `/thread [message]` | Create a new Lark topic backed by a new Codex thread. If `message` is present, proxy it into that new topic. |
-| `/fork [message]` | Fork the current Codex thread into a new Lark topic. If `message` is present, proxy it into that new topic. |
-| `/model <model> <effort>` | Set the model and reasoning effort for future turns in the current thread. |
-| `/logo` | Send the Twinny logo image. |
-| `/twinny` or `/banner` | Send the Twinny banner card. |
+
+| Command                               | Usage                                                                                                        |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `/help`                               | Show available commands.                                                                                     |
+| `/status`                             | Show conversation, Codex thread, model, token, and queue status.                                             |
+| `/new`                                | Stop the current task, clear queued messages, and open a new Codex thread.                                   |
+| `/stop [all\|<side_id>]`              | Stop the active task and clear queued messages. Use `all` to stop side turns too, or a side id to stop one side turn. |
+| `/next`                               | Interrupt the current task and start the next queued message.                                                |
+| `/steer`                              | Inject the next queued batch into the currently running Codex turn.                                          |
+| `/queue [message]`                    | Without a message, queue your next message. With a message, add that message to the next turn.               |
+| `/goal <objective>`                   | Set and run a Codex goal. A later `/goal` while the goal is active updates the objective.                    |
+| `/plan [message]`                     | Enter plan mode. If a message is provided, process it in plan mode immediately.                              |
+| `/exit`                               | Exit plan mode in the next queued control step.                                                              |
+| `/side <message>` or `/btw <message>` | Start an ephemeral side conversation forked from the current Codex thread.                                   |
+| `/compact`                            | Compact the current Codex thread context in the next queued control step.                                    |
+| `/thread [message]`                   | Create a new Lark topic backed by a new Codex thread. If `message` is present, proxy it into that new topic. |
+| `/fork [message]`                     | Fork the current Codex thread into a new Lark topic. If `message` is present, proxy it into that new topic.  |
+| `/model <model> <effort>`             | Set the model and reasoning effort for future turns in the current thread.                                   |
+| `/logo`                               | Send the Twinny logo image.                                                                                  |
+| `/twinny` or `/banner`                | Send the Twinny banner card.                                                                                 |
+
 
 ### Group Administration
 
 Only the configured owner can run these commands:
 
-| Command | Usage |
-| --- | --- |
-| `/activate <owner_at\|owner\|all_at\|all> [profile]` | Activate a group, set who Twinny responds to, and optionally bind the group to a profile. |
-| `/deactivate` | Disable Twinny in the current group and clear pending work. |
-| `/pair {guest_ou_id} <profile>` | Authorize a non-owner P2P user and bind that user to a profile. |
-| `/reload [profile]` | Reload all Codex profiles, or one named profile, after editing config. |
+
+| Command                                           | Usage                                                                  |
+| ------------------------------------------------- | ---------------------------------------------------------------------- |
+| `/activate <owner_at\|owner\|all_at\|all> [profile]` | Activate a group, set who can route messages to Codex, refresh the group name, and optionally bind the group to a profile. |
+| `/deactivate`                                     | Disable Twinny in the current group and clear pending work.            |
+| `/pair {guest_ou_id} <profile>`                   | Authorize a non-owner P2P user and bind that user to a profile.        |
+| `/reload [profile]`                               | Reload all Codex profiles, or one named profile, after editing config. |
+
 
 Response modes:
 
@@ -139,10 +125,10 @@ Response modes:
 
 ## Recommended Practice
 
-Create a dedicated Feishu/Lark group for a project or team. Let the owner activate the group with the least permissive useful mode, then create one topic per development task:
+Create a dedicated Feishu/Lark group for a project. Write an [AGENTS.md](http://AGENTS.md) inside the group's workspace. Let the owner activate the group with the least permissive useful mode, then create one topic per development task:
 
 ```text
-/activate all_at guest
+/activate all host
 /thread fix the login callback race
 /thread add the GitHub README
 ```
@@ -173,29 +159,38 @@ Before using Twinny in shared groups:
 - Configure Codex sandbox, filesystem, network, and approval-related settings for that profile.
 - Add workspace-level `.codex` overrides where your Codex setup supports project-local safety policy.
 - Keep `permissions.p2p_default_profile = "none"` unless you intentionally want unpaired P2P users to get access.
-- Use `owner_at`, `owner`, or `all_at` instead of `all` unless the group is tightly controlled.
-
-Twinny starts Codex turns with `approvalPolicy = "never"`, so the Codex configuration is the main safety boundary.
+- Use `owner_at` or `owner` instead of `all` or `all_at` unless the group is tightly controlled.
 
 ## Advanced Configuration
 
-Twinny home defaults to `~/.twinny`. The home contains:
+Twinny reads `config.toml` from `TWINNY_HOME`.
 
-| Path | Purpose |
+Recognized fields:
+
+| Field | Meaning and values |
 | --- | --- |
-| `config.toml` | Main runtime configuration. |
-| `auth.json` | Lark app id, brand, owner open id, and owner display name. |
-| `runtime/home-random` | Per-home identity used for LaunchAgent and Keychain names. |
-| `runtime/lark-assets.json` | Cached uploaded Lark image keys for logo and banner. |
-| `sqlite/twinny.db` | Conversation, thread, queue, and usage state. |
-| `workspaces/` | Local workspaces mapped from Lark conversations. |
-| `~/Library/Logs/twinny/` | LaunchAgent and Lark SDK logs. |
+| `[codex].binary` | Codex CLI executable path or command name. Defaults to `codex`. Use an absolute path when the LaunchAgent cannot find Codex through `PATH`. |
+| `[lark.reaction].working` | Lark emoji type added while Twinny is working. Defaults to `Typing`. |
+| `[lark.reaction].queued` | Lark emoji type added to queued messages. Defaults to `OneSecond`. |
+| `[lark.redaction].email` | Redaction strategy for email addresses in outgoing Lark payloads: `mask`, `whitespace`, or `none`. Defaults to `mask`. |
+| `[lark.redaction].chinese_phone_number` | Redaction strategy for Chinese phone numbers in outgoing Lark payloads: `mask`, `whitespace`, or `none`. Defaults to `mask`. |
+| `[permissions].p2p_default_profile` | Profile used when an unpaired P2P user first messages Twinny. Use `none` to deny by default, or a configured profile name to auto-authorize. Defaults to `none`. |
+| `[profiles.<name>].codex_home` | `CODEX_HOME` for that profile. Absolute paths are used as-is; relative paths are resolved under `TWINNY_HOME`. `host` defaults to `~/.codex`; other profiles inherit `host` unless set. |
+| `[profiles.<name>].default_model` | Default model for new threads in that profile. `host` defaults to `gpt-5.5`; other profiles inherit `host` unless set. |
+| `[profiles.<name>].default_effort` | Default reasoning effort for new threads in that profile. Common values are `minimal`, `low`, `medium`, and `high`; `host` defaults to `medium`; other profiles inherit `host` unless set. |
+
+Telemetry-capable builds can also support this opt-out switch, intentionally omitted from the example config:
+
+```toml
+[telemetry]
+enabled = false
+```
 
 Example `config.toml`:
 
 ```toml
 [codex]
-binary = "codex"
+binary = "/opt/homebrew/bin/codex"
 
 [lark.reaction]
 working = "Typing"
@@ -235,4 +230,4 @@ TWINNY_HOME="$HOME/.twinny-work" npx twinny@latest status
 TWINNY_HOME="$HOME/.twinny-personal" npx twinny@latest logs
 ```
 
-Each home gets separate config, auth metadata, SQLite state, workspaces, runtime lock, Keychain account, and LaunchAgent label. Prefer a separate Feishu/Lark bot app per instance to avoid duplicate event delivery.
+Each home gets separate config and needs a separate Feishu bot app.
