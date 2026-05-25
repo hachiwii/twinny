@@ -78,7 +78,6 @@ const rawConfigSchema = z
       .object({
         enabled: z.boolean().optional(),
         posthog_project_token: z.string().optional(),
-        posthog_api_key: z.string().optional(),
         posthog_host: z.string().optional()
       })
       .strict()
@@ -378,7 +377,7 @@ function createRuntimeConfig(
     },
     telemetry: normalizeTelemetryConfig({
       enabled: parsed.telemetry?.enabled,
-      posthogProjectToken: parsed.telemetry?.posthog_project_token ?? parsed.telemetry?.posthog_api_key,
+      posthogProjectToken: parsed.telemetry?.posthog_project_token,
       posthogHost: parsed.telemetry?.posthog_host
     }),
     owner: {

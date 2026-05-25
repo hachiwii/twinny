@@ -274,9 +274,7 @@ function installTerminalSnapshot(options: RunInstallWizardOptions): InstallTermi
 function installTelemetryConfigFromEnv(env: NodeJS.ProcessEnv): Partial<TelemetryConfig> | undefined {
   const posthogProjectToken =
     optionalEnv(env.TWINNY_TELEMETRY_POSTHOG_PROJECT_TOKEN) ??
-    optionalEnv(env.TWINNY_POSTHOG_PROJECT_TOKEN) ??
-    optionalEnv(env.TWINNY_TELEMETRY_POSTHOG_API_KEY) ??
-    optionalEnv(env.TWINNY_POSTHOG_API_KEY);
+    optionalEnv(env.TWINNY_POSTHOG_PROJECT_TOKEN);
   const posthogHost = optionalEnv(env.TWINNY_TELEMETRY_POSTHOG_HOST) ?? optionalEnv(env.TWINNY_POSTHOG_HOST);
   const enabled = booleanEnv(env.TWINNY_TELEMETRY_ENABLED);
   if (posthogProjectToken === undefined && posthogHost === undefined && enabled === undefined) {
