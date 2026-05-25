@@ -2,7 +2,7 @@
 
 ![Twinny banner](./configs/banner.png)
 
-**连接你的飞书与 CodeX**
+[![npm version](https://img.shields.io/npm/v/twinny.svg)](https://www.npmjs.com/package/twinny)
 
 [English](./README.md)
 
