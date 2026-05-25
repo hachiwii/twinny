@@ -698,16 +698,31 @@ function createOpenApiClient(credentials: BotCredentials): LarkOpenApiClient {
   });
 }
 
-async function resolveLaunchAgentEntrypoint(home: string): Promise<string> {
-  const entrypoint = process.argv[1] ? path.resolve(process.argv[1]) : process.execPath;
+interface ResolveLaunchAgentEntrypointOptions {
+  entrypoint?: string;
+  runNpmInstall?: typeof execa;
+}
+
+export async function resolveLaunchAgentEntrypoint(home: string, options: ResolveLaunchAgentEntrypointOptions = {}): Promise<string> {
+  const entrypoint = path.resolve(options.entrypoint ?? process.argv[1] ?? process.execPath);
   if (!isNpxEntrypoint(entrypoint)) {
     return entrypoint;
   }
   const identity = await readPackageIdentity();
   const runnerDir = path.join(home, "runner");
-  await execa("npm", ["install", "--prefix", runnerDir, "--omit=dev", "--no-audit", "--no-fund", `${identity.name}@${identity.version}`], {
-    stdio: "inherit"
-  });
+  try {
+    await (options.runNpmInstall ?? execa)("npm", ["install", "--prefix", runnerDir, "--omit=dev", "--no-audit", "--no-fund", `${identity.name}@${identity.version}`], {
+      stdio: "pipe"
+    });
+  } catch (error) {
+    const output = childProcessErrorOutput(error);
+    throw new Error(
+      output
+        ? `failed to install ${identity.name}@${identity.version} for LaunchAgent runner:\n${output}`
+        : `failed to install ${identity.name}@${identity.version} for LaunchAgent runner`,
+      { cause: error }
+    );
+  }
   return path.join(runnerDir, "node_modules", ".bin", "twinny");
 }
 
@@ -722,6 +737,18 @@ async function readPackageIdentity(): Promise<{ name: string; version: string }>
     throw new Error("package.json is missing name or version");
   }
   return { name: raw.name, version: raw.version };
+}
+
+function childProcessErrorOutput(error: unknown): string {
+  if (!error || typeof error !== "object") {
+    return "";
+  }
+  const record = error as { shortMessage?: unknown; stderr?: unknown; stdout?: unknown };
+  return [record.shortMessage, record.stderr, record.stdout]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map((value) => value.trim())
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .join("\n");
 }
 
 async function pollWithEscape<T>(message: string, run: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
