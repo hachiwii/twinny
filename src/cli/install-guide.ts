@@ -325,6 +325,49 @@ export function buildInstallGuideHtml(
       white-space: pre;
     }
 
+    .table-group {
+      margin-top: 18px;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      color: var(--ink);
+      font-size: 1rem;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    .config-table {
+      width: 100%;
+      min-width: 560px;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    .config-table th,
+    .config-table td {
+      padding: 12px 0;
+      border-top: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+
+    .config-table th {
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-weight: 700;
+    }
+
+    .config-table th:first-child,
+    .config-table td:first-child {
+      width: 300px;
+      padding-right: 18px;
+    }
+
     .list {
       display: grid;
       gap: 10px;
@@ -422,7 +465,7 @@ export function buildInstallGuideHtml(
           <span class="step-number">1</span>
           <h2>开通 API 权限</h2>
         </div>
-        <p>进入「权限管理」，导入下面的 JSON 后保存并发布应用。权限列表与 <code>twinny doctor</code> 检查项一致。</p>
+        <p>进入「权限管理」，导入下面的 JSON 后保存并发布应用。</p>
         <div class="actions">
           <a class="button" href="${escapeHtmlAttribute(authUrl)}" target="_blank" rel="noreferrer">打开权限管理</a>
         </div>
@@ -442,9 +485,38 @@ export function buildInstallGuideHtml(
         <div class="actions">
           <a class="button" href="${escapeHtmlAttribute(eventUrl)}" target="_blank" rel="noreferrer">打开事件与回调</a>
         </div>
-        <ul class="list">
-          ${installGuideRequiredEvents.map((item) => `<li><span><span class="kind">${escapeHtml(item.kind)}</span><span class="tag">${escapeHtml(item.event)}</span></span><span>${escapeHtml(item.description)}</span></li>`).join("\n          ")}
-        </ul>
+        <div class="table-group">
+          <h3>事件</h3>
+          <div class="table-wrap">
+            <table class="config-table">
+              <thead>
+                <tr>
+                  <th>事件名称</th>
+                  <th>用途</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${installGuideRequiredEvents.filter((item) => item.kind === "事件").map((item) => `<tr><td><span class="tag">${escapeHtml(item.event)}</span></td><td>${escapeHtml(item.description)}</td></tr>`).join("\n                ")}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="table-group">
+          <h3>回调</h3>
+          <div class="table-wrap">
+            <table class="config-table">
+              <thead>
+                <tr>
+                  <th>回调名称</th>
+                  <th>用途</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${installGuideRequiredEvents.filter((item) => item.kind === "回调").map((item) => `<tr><td><span class="tag">${escapeHtml(item.event)}</span></td><td>${escapeHtml(item.description)}</td></tr>`).join("\n                ")}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
       <section class="step">
@@ -459,7 +531,7 @@ export function buildInstallGuideHtml(
         <ul class="list">
           ${installGuideBotMenuActions.map((item) => `<li><span class="tag">${escapeHtml(item.eventKey)}</span><span><strong>${escapeHtml(item.label)}</strong>：${escapeHtml(item.description)}</span></li>`).join("\n          ")}
         </ul>
-        <p class="note">配置后，机器人单聊界面会显示一组悬浮在输入框上的快捷命令。<code>new_session</code> 是 Twinny 的兼容输入，不需要作为菜单项配置。</p>
+        <p class="note">配置后，机器人单聊界面会显示一组悬浮在输入框上的快捷命令。</p>
       </section>
     </article>
   </main>

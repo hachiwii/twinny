@@ -141,6 +141,11 @@ describe("install wizard helpers", () => {
     expect(html).toContain("https://open.larkoffice.com/app/cli_test%2Fapp/auth");
     expect(html).toContain("https://open.larkoffice.com/app/cli_test%2Fapp/event");
     expect(html).toContain("https://open.larkoffice.com/app/cli_test%2Fapp/bot");
+    expect(html).toContain("<h3>事件</h3>");
+    expect(html).toContain("<h3>回调</h3>");
+    expect(html.match(/<table class="config-table">/g)).toHaveLength(2);
+    expect(html).not.toContain("权限列表与");
+    expect(html).not.toContain("new_session");
     for (const item of installGuideRequiredEvents) {
       expect(html).toContain(item.event);
     }
