@@ -4,7 +4,13 @@ import { execa } from "execa";
 import { DEFAULT_CAFFEINATE_COMMAND } from "../app/caffeinate.js";
 import { formatStartupInitializationProbeDetail, runStartupInitializationProbe } from "../app/startup-probe.js";
 import { readConfigStatus, resolveLarkAppSecret, SecurityCliSecretStore, type SecretStore } from "../config/index.js";
-import { LarkBotDirectory, LarkOpenApiClient, resolveLarkEndpoints, TenantAccessTokenManager } from "../lark/index.js";
+import {
+  LARK_REQUIRED_SCOPES,
+  LarkBotDirectory,
+  LarkOpenApiClient,
+  resolveLarkEndpoints,
+  TenantAccessTokenManager
+} from "../lark/index.js";
 import { isTwinnyLockHeld, readTwinnyLockMetadata } from "../lock/index.js";
 import { openRuntimeDatabase } from "../store/index.js";
 import type { HealthCheck, HealthSnapshot, TwinnyConfig } from "../types.js";
@@ -94,6 +100,10 @@ export async function runDoctorChecks(): Promise<HealthSnapshot> {
     await checkAsync(checks, "lark bot open_id", async () => {
       return checkLarkBotOpenId(config, resolvedAppSecret);
     });
+
+    await checkAsync(checks, "lark required scopes", async () => {
+      return checkLarkRequiredScopes(config, resolvedAppSecret);
+    });
   }
 
   return {
@@ -144,6 +154,35 @@ export async function checkLarkBotOpenId(
   return botOpenId;
 }
 
+export async function checkLarkRequiredScopes(
+  config: Pick<TwinnyConfig, "auth">,
+  appSecret: string,
+  options: {
+    tokenManager?: TenantAccessTokenManager;
+    openApiClient?: Pick<LarkOpenApiClient, "request">;
+    requiredScopes?: readonly string[];
+  } = {}
+): Promise<string> {
+  const openApiClient = options.openApiClient ?? (() => {
+    const tokenManager = options.tokenManager ?? new TenantAccessTokenManager({
+      appId: config.auth.larkAppId,
+      appSecret,
+      baseUrl: resolveLarkEndpoints(config.auth.larkBrand).openApi
+    });
+    return new LarkOpenApiClient({
+      tokenManager,
+      baseUrl: resolveLarkEndpoints(config.auth.larkBrand).openApi
+    });
+  })();
+  const requiredScopes = options.requiredScopes ?? LARK_REQUIRED_SCOPES;
+  const grantedScopes = await getGrantedLarkScopes(openApiClient);
+  const missingScopes = requiredScopes.filter((scope) => !grantedScopes.has(scope));
+  if (missingScopes.length > 0) {
+    throw new Error(`missing: ${missingScopes.join(", ")}`);
+  }
+  return `${requiredScopes.length} required scopes granted`;
+}
+
 export async function resolveDoctorLarkAppSecret(
   account: string,
   secretStore: SecretStore
@@ -179,4 +218,24 @@ async function checkAsync<T>(
     });
     return undefined;
   }
+}
+
+async function getGrantedLarkScopes(openApiClient: Pick<LarkOpenApiClient, "request">): Promise<Set<string>> {
+  const raw = await openApiClient.request("/application/v6/scopes", { method: "GET" });
+  const scopes = asRecord(asRecord(raw).data).scopes;
+  if (!Array.isArray(scopes)) {
+    throw new Error("invalid Lark scope response");
+  }
+  const granted = new Set<string>();
+  for (const item of scopes) {
+    const scope = asRecord(item);
+    if (typeof scope.scope_name === "string" && scope.grant_status === 1) {
+      granted.add(scope.scope_name);
+    }
+  }
+  return granted;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }

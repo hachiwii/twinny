@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTwinnyConfig, MemorySecretStore } from "../config/index.js";
-import { checkCaffeinateBinary, checkLarkBotOpenId, resolveDoctorLarkAppSecret } from "./health.js";
+import { checkCaffeinateBinary, checkLarkBotOpenId, checkLarkRequiredScopes, resolveDoctorLarkAppSecret } from "./health.js";
 
 describe("doctor health checks", () => {
   const tempDirs: string[] = [];
@@ -71,5 +71,55 @@ describe("doctor health checks", () => {
     await expect(
       checkLarkBotOpenId(config, "secret", { botDirectory: { getBotOpenId: vi.fn(async () => undefined) } })
     ).rejects.toThrow("missing bot open_id");
+  });
+
+  it("checks Lark required scopes through the tenant scope API", async () => {
+    const config = createTwinnyConfig({
+      home: fs.mkdtempSync(path.join(os.tmpdir(), "twinny-scope-check-")),
+      homeRandom: "0123456789abcdef0123456789abcdef",
+      auth: { larkAppId: "cli_app", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner User" }
+    });
+    tempDirs.push(config.home);
+    const request = vi.fn(async () => ({
+      data: {
+        scopes: [
+          { scope_name: "im:message:readonly", grant_status: 1 },
+          { scope_name: "im:message:send_as_bot", grant_status: 1 },
+          { scope_name: "im:message:update", grant_status: 2 }
+        ]
+      }
+    }));
+
+    await expect(
+      checkLarkRequiredScopes(config, "secret", {
+        openApiClient: { request },
+        requiredScopes: ["im:message:readonly", "im:message:send_as_bot"]
+      })
+    ).resolves.toBe("2 required scopes granted");
+    expect(request).toHaveBeenCalledWith("/application/v6/scopes", { method: "GET" });
+  });
+
+  it("lists missing Lark required scopes", async () => {
+    const config = createTwinnyConfig({
+      home: fs.mkdtempSync(path.join(os.tmpdir(), "twinny-missing-scope-check-")),
+      homeRandom: "0123456789abcdef0123456789abcdef",
+      auth: { larkAppId: "cli_app", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner User" }
+    });
+    tempDirs.push(config.home);
+    const request = vi.fn(async () => ({
+      data: {
+        scopes: [
+          { scope_name: "im:message:readonly", grant_status: 1 },
+          { scope_name: "im:message:update", grant_status: 2 }
+        ]
+      }
+    }));
+
+    await expect(
+      checkLarkRequiredScopes(config, "secret", {
+        openApiClient: { request },
+        requiredScopes: ["im:message:readonly", "im:message:update", "im:message:recall"]
+      })
+    ).rejects.toThrow("missing: im:message:update, im:message:recall");
   });
 });
