@@ -18,6 +18,15 @@ export async function runCli(argv: string[]): Promise<void> {
     await runDoctorCommand();
   });
 
+  program
+    .command("update")
+    .description("Update the installed Twinny runner.")
+    .option("--no-restart", "Update without restarting Twinny.")
+    .action(async (options: { restart?: boolean }) => {
+      const { runUpdateCommand } = await import("./update.js");
+      await runUpdateCommand({ restart: options.restart !== false });
+    });
+
   const install = program.command("install").description("Run the Twinny install wizard.");
   install.action(async () => {
     const { runInstallWizard } = await import("./install-wizard.js");

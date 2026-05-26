@@ -56,6 +56,23 @@ export function launchAgentLabelForHomeRandom(homeRandom: string): string {
   return `${launchAgentLabelPrefix}.${homeId}`;
 }
 
+export function launchAgentPlistPathForLabel(label: string, homeDir = os.homedir()): string {
+  return path.join(homeDir, "Library", "LaunchAgents", `${label}.plist`);
+}
+
+export function launchAgentProgramArguments(plist: string): string[] {
+  const match = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(plist);
+  if (!match) {
+    return [];
+  }
+  return [...match[1].matchAll(/<string>([\s\S]*?)<\/string>/g)].map((item) => unescapeXml(item[1] ?? ""));
+}
+
+export function launchAgentUsesEntrypoint(plist: string, entrypoint: string): boolean {
+  const resolved = path.resolve(entrypoint);
+  return launchAgentProgramArguments(plist).some((arg) => path.resolve(arg) === resolved);
+}
+
 function escapeXml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -63,6 +80,15 @@ function escapeXml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
+}
+
+function unescapeXml(value: string): string {
+  return value
+    .replaceAll("&apos;", "'")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&gt;", ">")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&amp;", "&");
 }
 
 function normalizeEnvironment(environment: Record<string, string | undefined>): Record<string, string> {

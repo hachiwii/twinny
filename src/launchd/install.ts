@@ -5,7 +5,7 @@ import { execa } from "execa";
 import { createRuntimePaths, readConfigStatus } from "../config/index.js";
 import { waitForRuntimeLockRelease, type WaitForRuntimeLockReleaseOptions } from "../service/lock.js";
 import type { TwinnyConfig } from "../types.js";
-import { createLaunchAgentPlist, launchAgentLabelForHomeRandom } from "./plist.js";
+import { createLaunchAgentPlist, launchAgentLabelForHomeRandom, launchAgentPlistPathForLabel } from "./plist.js";
 
 export { waitForRuntimeLockRelease, type WaitForRuntimeLockReleaseOptions };
 
@@ -115,7 +115,7 @@ export async function tailLogs(options: LaunchAgentCommandOptions = {}): Promise
 }
 
 function getLaunchAgentPath(label: string): string {
-  return path.join(os.homedir(), "Library", "LaunchAgents", `${label}.plist`);
+  return launchAgentPlistPathForLabel(label);
 }
 
 async function resolveLaunchAgentRuntime(options: InstallLaunchAgentOptions = {}): Promise<LaunchAgentRuntime> {

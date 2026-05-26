@@ -6,7 +6,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { acquireTwinnyLock } from "../lock/index.js";
 import { waitForRuntimeLockRelease } from "./install.js";
-import { createLaunchAgentPlist, launchAgentLabelForHomeRandom } from "./plist.js";
+import {
+  createLaunchAgentPlist,
+  launchAgentLabelForHomeRandom,
+  launchAgentProgramArguments,
+  launchAgentUsesEntrypoint
+} from "./plist.js";
 
 describe("launchd install helpers", () => {
   let tempDir: string;
@@ -56,5 +61,14 @@ describe("launchd install helpers", () => {
     expect(launchAgentLabelForHomeRandom(firstRandom)).toBe(launchAgentLabelForHomeRandom(firstRandom));
     expect(launchAgentLabelForHomeRandom(firstRandom)).not.toBe(launchAgentLabelForHomeRandom(secondRandom));
     expect(launchAgentLabelForHomeRandom(firstRandom)).not.toContain(firstRandom);
+  });
+
+  it("reads launchd program arguments and detects the active entrypoint", () => {
+    const entrypoint = path.join(tempDir, "runner", "node_modules", ".bin", "twinny & cli");
+    const plist = createLaunchAgentPlist({ entrypoint });
+
+    expect(launchAgentProgramArguments(plist)).toEqual([process.execPath, entrypoint, "run"]);
+    expect(launchAgentUsesEntrypoint(plist, entrypoint)).toBe(true);
+    expect(launchAgentUsesEntrypoint(plist, path.join(tempDir, "other"))).toBe(false);
   });
 });
