@@ -163,9 +163,15 @@ export class LarkOpenApiClient {
     });
 
     if (!response.ok) {
+      const failure = await readDownloadFailure(response);
       throw new LarkOpenApiError(
-        `Lark OpenAPI download failed: ${await formatDownloadFailure(response)}`,
-        { status: response.status, retryable: response.status === 429 || response.status >= 500 }
+        `Lark OpenAPI download failed: ${failure.message}`,
+        {
+          status: response.status,
+          code: failure.code,
+          responseBody: failure.body,
+          retryable: response.status === 429 || response.status >= 500
+        }
       );
     }
     if (!response.arrayBuffer) {
@@ -246,9 +252,32 @@ function formatOpenApiFailure(response: { status: number; statusText: string }, 
   return `status=${response.status} code=${String(body.code ?? "unknown")} msg=${msg}`;
 }
 
-async function formatDownloadFailure(response: { status: number; statusText: string; text?: () => Promise<string> }): Promise<string> {
+async function readDownloadFailure(response: { status: number; statusText: string; text?: () => Promise<string> }): Promise<{
+  message: string;
+  code?: number;
+  body?: unknown;
+}> {
   const text = response.text ? await response.text().catch(() => "") : "";
-  return `status=${response.status} msg=${text || response.statusText}`;
+  const body = parseJsonBodyText(text);
+  const record = toRecord(body);
+  const code = typeof record.code === "number" ? record.code : undefined;
+  const msg = typeof record.msg === "string" && record.msg.length > 0 ? record.msg : text || response.statusText;
+  return {
+    message: `status=${response.status} code=${String(code ?? "unknown")} msg=${msg}`,
+    code,
+    body
+  };
+}
+
+function parseJsonBodyText(text: string): unknown {
+  if (!text) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { raw: text };
+  }
 }
 
 async function readJsonBody(response: { json(): Promise<unknown>; text?: () => Promise<string> }): Promise<unknown> {

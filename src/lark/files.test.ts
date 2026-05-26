@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TenantAccessTokenManager } from "./auth.js";
 import { LarkFileDownloader } from "./files.js";
-import { LarkOpenApiClient } from "./openapi.js";
+import { LarkOpenApiClient, LarkOpenApiError } from "./openapi.js";
 import type { FetchLike } from "./types.js";
 
 describe("LarkFileDownloader", () => {
@@ -131,20 +131,58 @@ describe("LarkFileDownloader", () => {
       signal: undefined
     });
   });
+
+  it("preserves JSON error details for failed binary downloads", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      jsonErrorResponse({
+        code: 99991672,
+        msg: "Permission denied",
+        error: {
+          permission_violations: [
+            { subject: "docs:document.media:download", type: "action_scope_required" }
+          ]
+        }
+      })
+    ]);
+    const openApiClient = createOpenApiClient(fetch);
+
+    await expect(
+      openApiClient.download("/drive/v1/medias/image_token/download")
+    ).rejects.toMatchObject({
+      name: "LarkOpenApiError",
+      detail: {
+        status: 400,
+        code: 99991672,
+        responseBody: {
+          code: 99991672,
+          error: {
+            permission_violations: [
+              { subject: "docs:document.media:download" }
+            ]
+          }
+        },
+        retryable: false
+      }
+    } satisfies Partial<LarkOpenApiError>);
+  });
 });
 
 function createDownloader(fetch: FetchLike) {
+  return new LarkFileDownloader({ openApiClient: createOpenApiClient(fetch) });
+}
+
+function createOpenApiClient(fetch: FetchLike) {
   const tokenManager = new TenantAccessTokenManager({
     appId: "cli_1234567890abcdef",
     appSecret: "secret",
     fetch
   });
-  const openApiClient = new LarkOpenApiClient({
+  return new LarkOpenApiClient({
     tokenManager,
     fetch,
     retryBaseDelayMs: 0
   });
-  return new LarkFileDownloader({ openApiClient });
 }
 
 function sequenceFetch(responses: unknown[]): FetchLike {
@@ -178,6 +216,20 @@ function binaryResponse(body: string, headers: Record<string, string>) {
     },
     json: async () => ({}),
     arrayBuffer: async () => buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+  };
+}
+
+function jsonErrorResponse(body: unknown) {
+  const text = JSON.stringify(body);
+  return {
+    ok: false,
+    status: 400,
+    statusText: "Bad Request",
+    headers: {
+      get: () => "application/json"
+    },
+    json: async () => body,
+    text: async () => text
   };
 }
 

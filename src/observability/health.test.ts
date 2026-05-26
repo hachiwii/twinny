@@ -105,6 +105,7 @@ describe("doctor health checks", () => {
       "docs:document.comment:read",
       "docs:document.comment:create",
       "docs:document.comment:write_only",
+      "docs:document.media:download",
       "drive:drive:readonly"
     ]));
 
