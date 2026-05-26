@@ -421,7 +421,7 @@ export function renderTwinnyBannerCard(options: RenderTwinnyBannerCardOptions = 
           : []),
         {
           tag: "markdown",
-          content: `### 🐰 Twinny - Command Codex in Feishu\n${version} | 🌟 me on [Github](https://github.com/hachiwii/twinny)`,
+          content: `### 🐰 Twinny - Command Codex in Feishu\n${version} | [What's New](https://github.com/hachiwii/twinny/blob/master/CHANGELOG.md) | 🌟 Me on [Github](https://github.com/hachiwii/twinny)`,
           text_align: "center",
           text_size: "normal_v2",
           margin: "0px 0px 0px 0px"

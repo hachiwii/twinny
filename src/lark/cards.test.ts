@@ -789,7 +789,7 @@ describe("renderTwinnyBannerCard", () => {
       scale_type: "fit_horizontal"
     });
     expect(JSON.stringify(card)).toContain("Twinny - Command Codex in Feishu");
-    expect(JSON.stringify(card)).toContain("20260523-d786ff949 |");
+    expect(JSON.stringify(card)).toContain("20260523-d786ff949 | [What's New](https://github.com/hachiwii/twinny/blob/master/CHANGELOG.md) | 🌟 Me");
     expect(cardSummary(card)).toBe("🐰 Twinny 20260523-d786ff949");
   });
 
