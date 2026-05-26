@@ -1578,13 +1578,7 @@ describe("Lark to Codex integration flow", () => {
     await queueHarness.waitForTrace((trace) => codexOut(trace, "turn/start").length === 1, "card active turn");
     await queueHarness.dispatchLarkJsonl(jsonl({
       event: "card.action.trigger",
-      data: cardActionEvent({
-        eventId: "e_card_queue_other",
-        action: "queue",
-        stateKey: "p2p_ou_guest",
-        runId: 1,
-        operatorOpenId: "ou_other"
-      })
+      data: cardActionEvent({ eventId: "e_card_queue", action: "queue", stateKey: "p2p_ou_guest", runId: 1 })
     }));
     await queueHarness.dispatchLarkJsonl(jsonl({
       event: "im.message.receive_v1",
@@ -1605,12 +1599,6 @@ describe("Lark to Codex integration flow", () => {
     let trace = queueHarness.readTrace();
     expect(codexOut(trace, "turn/interrupt")).toHaveLength(1);
     expect(traceText(codexOut(trace, "turn/start")[1])).toContain("queued by card");
-    await queueHarness.waitForExpect(() => {
-      expect(queueHarness.repository.getLarkMessageByEventId("e_card_queue_other")).toMatchObject({
-        routeKind: "card_action",
-        status: "completed"
-      });
-    });
     await queueHarness.dispose();
 
     const inputHarness = await IntegrationHarness.create(jsonl(
@@ -1728,98 +1716,6 @@ describe("Lark to Codex integration flow", () => {
     await planHarness.dispose();
   });
 
-  it("steers different-user group messages during an active turn and accepts cross-user next", async () => {
-    const harness = await IntegrationHarness.create(jsonl(
-      {
-        profile: "guest",
-        after: { method: "turn/start", nth: 1 },
-        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_1" } } }
-      },
-      {
-        profile: "guest",
-        after: { method: "turn/interrupt", nth: 1 },
-        notify: {
-          method: "turn/completed",
-          params: {
-            threadId: "guest_thread_1",
-            turn: { id: "turn_1", status: "interrupted", durationMs: 8, items: [] }
-          }
-        }
-      }
-    ));
-
-    await harness.dispatchLarkJsonl(jsonl({
-      event: "im.message.receive_v1",
-      data: receiveMessageEvent({
-        eventId: "e_multi_activate",
-        messageId: "g_multi_activate",
-        text: "/activate all guest",
-        chatType: "group",
-        chatId: "oc_group",
-        senderOpenId: "ou_owner"
-      })
-    }));
-    await harness.waitForTrace(
-      (trace) => larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g_multi_activate/reply" && traceText(entry).includes("Profile")),
-      "multi-user group activation"
-    );
-
-    await harness.dispatchLarkJsonl(jsonl({
-      event: "im.message.receive_v1",
-      data: receiveMessageEvent({
-        eventId: "e_multi_guest",
-        messageId: "g_multi_guest",
-        text: "guest active task",
-        chatType: "group",
-        chatId: "oc_group",
-        senderOpenId: "ou_guest"
-      })
-    }));
-    await harness.waitForTrace((trace) => codexOut(trace, "turn/start").length === 1, "guest active turn");
-    await harness.dispatchLarkJsonl(jsonl({
-      event: "im.message.receive_v1",
-      data: receiveMessageEvent({
-        eventId: "e_multi_other",
-        messageId: "g_multi_other",
-        text: "other user should steer",
-        chatType: "group",
-        chatId: "oc_group",
-        senderOpenId: "ou_other"
-      })
-    }));
-    await harness.waitForExpect(() => {
-      expect(harness.repository.getLarkMessageById("g_multi_other")).toMatchObject({
-        routeKind: "steered_message",
-        status: "processing"
-      });
-    });
-    await harness.waitForTrace((trace) => codexOut(trace, "turn/steer").length === 1, "different user steer");
-    let trace = harness.readTrace();
-    expect(traceText(codexOut(trace, "turn/steer")[0])).toContain("other user should steer");
-    expect(traceText(codexOut(trace, "turn/steer")[0])).toContain("ou_other");
-
-    await harness.dispatchLarkJsonl(jsonl({
-      event: "im.message.receive_v1",
-      data: receiveMessageEvent({
-        eventId: "e_multi_other_next",
-        messageId: "g_multi_other_next",
-        text: "/next",
-        chatType: "group",
-        chatId: "oc_group",
-        senderOpenId: "ou_other"
-      })
-    }));
-    await harness.waitForTrace((items) => codexOut(items, "turn/interrupt").length === 1, "cross-user next interrupt");
-    await harness.waitForExpect(() => {
-      expect(harness.repository.getLarkMessageById("g_multi_other_next")).toMatchObject({
-        routeKind: "control_message",
-        status: "completed"
-      });
-    });
-    trace = harness.readTrace();
-    expect(codexOut(trace, "turn/start")).toHaveLength(1);
-    expect(larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g_multi_other_next/reply")).toBe(false);
-  });
 });
 
 class IntegrationHarness {

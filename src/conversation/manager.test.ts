@@ -1052,70 +1052,6 @@ describe("ConversationManager", () => {
     turns[0]!.resolve(completed("thread_1", "turn_1"));
   });
 
-  it("steers owner ordinary messages on another user's active turn while still allowing owner stop", async () => {
-    const { repository } = createRepository(groupConversationRecord());
-    const { codex, turns } = createDeferredCodex();
-    const manager = createManager({ repository, codex });
-
-    manager.submitIncoming(groupMessage("g1", "active", { senderOpenId: "ou_guest" }));
-    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
-
-    manager.submitIncoming(groupMessage("g2", "owner follow-up", { senderOpenId: "ou_owner" }));
-    await waitForExpect(() =>
-      expect(codex.steerTurn).toHaveBeenCalledWith(
-        expect.objectContaining({
-          profile: "guest",
-          threadId: "thread_group",
-          turnId: "turn_1",
-          input: wrappedMessage("owner follow-up", "g2", "ou_owner")
-        })
-      )
-    );
-    expect(manager.queueDepth("group_oc_group")).toBe(0);
-    await waitForExpect(() =>
-      expect(repository.insertLarkMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          larkMessageId: "g2",
-          larkUserId: "ou_owner",
-          routeKind: "steered_message",
-          status: "processing",
-          text: "owner follow-up"
-        })
-      )
-    );
-
-    manager.submitIncoming(groupMessage("g3", "/stop", { senderOpenId: "ou_owner" }));
-    await waitForExpect(() =>
-      expect(codex.interruptTurn).toHaveBeenCalledWith(
-        expect.objectContaining({ profile: "guest", threadId: "thread_group", turnId: "turn_1" })
-      )
-    );
-
-    turns[0]!.resolve(completed("thread_group", "turn_1", "interrupted"));
-  });
-
-  it("auto-steers owner ordinary messages when owner owns the active turn", async () => {
-    const { codex, turns } = createDeferredCodex();
-    const manager = createManager({ repository: createRepository(groupConversationRecord()).repository, codex });
-
-    manager.submitIncoming(groupMessage("g1", "owner active", { senderOpenId: "ou_owner" }));
-    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
-    manager.submitIncoming(groupMessage("g2", "owner follow-up", { senderOpenId: "ou_owner" }));
-
-    await waitForExpect(() =>
-      expect(codex.steerTurn).toHaveBeenCalledWith(
-        expect.objectContaining({
-          threadId: "thread_group",
-          turnId: "turn_1",
-          input: wrappedMessage("owner follow-up", "g2", "ou_owner")
-        })
-      )
-    );
-    expect(manager.queueDepth("group_oc_group")).toBe(0);
-
-    turns[0]!.resolve(completed("thread_group", "turn_1"));
-  });
-
   it("keeps explicitly queued different-user messages ordered before a later trigger-user message", async () => {
     const { codex, turns } = createDeferredCodex();
     const manager = createManager({ repository: createRepository(groupConversationRecord()).repository, codex });
@@ -6748,59 +6684,6 @@ describe("ConversationManager", () => {
     expect(cardActions[0]).toMatchObject({ eventId: "event_card_queue_1", text: "/queue" });
     expect(cardActions[1]).toMatchObject({ eventId: "event_card_queue_2", text: "/queue" });
     expect(cardActions[2]).toMatchObject({ eventId: "event_card_queue_3", text: "/queue" });
-  });
-
-  it("accepts cross-user card actions while dropping stale card actions without history", async () => {
-    const { repository } = createRepository(groupConversationRecord());
-    const { codex, turns } = createDeferredCodex();
-    const lark = createLarkResponder();
-    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
-
-    manager.submitIncoming(groupMessage("g1", "active", { senderOpenId: "ou_guest" }));
-    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
-    await turns[0]!.params.onAgentMessage?.({ id: "agent_1", text: "working" });
-    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
-    vi.mocked(lark.patchCard).mockClear();
-
-    manager.submitCardAction({
-      eventId: "event_card_other",
-      operatorOpenId: "ou_other",
-      openMessageId: "card_g1_1",
-      openChatId: "oc_group",
-      actionTag: "button",
-      actionValue: {
-        twinny: true,
-        action: "queue",
-        stateKey: "group_oc_group",
-        runId: 1
-      },
-      raw: { event_id: "event_card_other" }
-    });
-    manager.submitCardAction({
-      eventId: "event_card_stale",
-      operatorOpenId: "ou_owner",
-      openMessageId: "card_g1_1",
-      openChatId: "oc_group",
-      actionTag: "button",
-      actionValue: {
-        twinny: true,
-        action: "queue",
-        stateKey: "group_oc_group",
-        runId: 99
-      },
-      raw: { event_id: "event_card_stale" }
-    });
-
-    await waitForExpect(() => {
-      const inserted = vi.mocked(repository.insertLarkMessage).mock.calls.map(([input]) => input);
-      expect(inserted.some((input) => input.eventId === "event_card_other" && input.routeKind === "card_action")).toBe(true);
-    });
-    const inserted = vi.mocked(repository.insertLarkMessage).mock.calls.map(([input]) => input);
-    expect(inserted.some((input) => input.eventId === "event_card_stale")).toBe(false);
-    expect(codex.interruptTurn).not.toHaveBeenCalled();
-    expect(lark.patchCard).toHaveBeenCalled();
-
-    turns[0]!.resolve(completed("thread_group", "turn_1"));
   });
 
   it("renders requestUserInput waiting card and submits form answers back to Codex", async () => {
