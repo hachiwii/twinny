@@ -220,6 +220,55 @@ describe("LarkDocClient", () => {
     );
   });
 
+  it("falls back to the last listed reply when reply id is missing and create times tie", async () => {
+    const request = vi.fn(async (path: string) => {
+      if (path.endsWith("/comments/batch_query")) {
+        return {
+          data: {
+            items: [
+              {
+                comment_id: "comment_1",
+                user_id: "ou_root",
+                is_done: false,
+                is_whole: false
+              }
+            ]
+          }
+        };
+      }
+      return {
+        data: {
+          items: [
+            {
+              reply_id: "reply_previous",
+              user_id: "ou_owner",
+              create_time: 2000,
+              content: { text: "把这句加醋" }
+            },
+            {
+              reply_id: "reply_latest",
+              user_id: "ou_owner",
+              create_time: 2000,
+              content: { text: "改回去" }
+            }
+          ]
+        }
+      };
+    });
+    const client = new LarkDocClient({ openApiClient: createOpenApiClient({ request }) });
+
+    await expect(
+      client.getCommentSnapshot({
+        fileType: "docx",
+        fileToken: "doc_token",
+        commentId: "comment_1"
+      })
+    ).resolves.toMatchObject({
+      replyId: "reply_latest",
+      text: "改回去"
+    });
+  });
+
   it("retries comment snapshot reads when Lark has not exposed a freshly mentioned comment yet", async () => {
     let batchQueryCalls = 0;
     const request = vi.fn(async (path: string) => {

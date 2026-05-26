@@ -429,7 +429,14 @@ function findReply(replies: Record<string, unknown>[], replyId: string | undefin
 }
 
 function newestReply(replies: Record<string, unknown>[]): Record<string, unknown> | undefined {
-  return [...replies].sort((left, right) => (numberValue(right.create_time) ?? 0) - (numberValue(left.create_time) ?? 0))[0];
+  return replies
+    .map((reply, index) => ({ reply, index, timestamp: replyTimestamp(reply) ?? 0 }))
+    .sort((left, right) => right.timestamp - left.timestamp || right.index - left.index)[0]
+    ?.reply;
+}
+
+function replyTimestamp(reply: Record<string, unknown>): number | undefined {
+  return numberValue(reply.create_time) ?? numberValue(reply.update_time);
 }
 
 function isRetryableCommentReadError(error: unknown): boolean {
