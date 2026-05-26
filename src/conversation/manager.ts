@@ -417,11 +417,20 @@ export interface LarkDocCommentSnapshot {
   text: string;
   quote?: string;
   imageKeys: string[];
+  imageRefs?: LarkDocCommentImageRef[];
   isDone: boolean;
   isSolved: boolean;
   createTime?: number;
   rawComment: unknown;
   rawReply?: unknown;
+}
+
+export interface LarkDocCommentImageRef {
+  fileToken: string;
+  source: "reply" | "doc_block";
+  blockId?: string;
+  driveRouteToken?: string;
+  fileName?: string;
 }
 
 export interface LarkDocCommentClient {
@@ -448,6 +457,8 @@ export interface LarkDocCommentClient {
   downloadCommentImage(params: {
     fileToken: string;
     outputDir: string;
+    driveRouteToken?: string;
+    fileName?: string;
   }): Promise<{
     path: string;
     resourceType: "image";
@@ -2269,24 +2280,27 @@ export class ConversationManager {
     comment: IncomingLarkDocCommentAdd,
     snapshot: LarkDocCommentSnapshot
   ): Promise<NonNullable<IncomingLarkMessage["downloadedFiles"]>> {
-    if (snapshot.imageKeys.length === 0 || !this.options.larkDocComments) {
+    const imageRefs = docCommentImageRefs(snapshot);
+    if (imageRefs.length === 0 || !this.options.larkDocComments) {
       return [];
     }
     const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
     const outputDir = path.join(workspace, ".twinny", "lark_files", "doc_comments", safePathSegment(comment.commentId));
     const files: NonNullable<IncomingLarkMessage["downloadedFiles"]> = [];
-    for (const imageKey of snapshot.imageKeys) {
+    for (const imageRef of imageRefs) {
       try {
         const downloaded = await this.options.larkDocComments.downloadCommentImage({
-          fileToken: imageKey,
-          outputDir
+          fileToken: imageRef.fileToken,
+          outputDir,
+          driveRouteToken: imageRef.driveRouteToken,
+          fileName: imageRef.fileName
         });
         files.push({
           ...downloaded,
           codexTag: "img"
         });
       } catch (error) {
-        this.log.warn({ error, commentId: comment.commentId, imageKey }, "failed to download doc comment image");
+        this.log.warn({ error, commentId: comment.commentId, imageKey: imageRef.fileToken }, "failed to download doc comment image");
       }
     }
     return files;
@@ -9133,6 +9147,16 @@ function docCommentRawContext(
     raw_comment: snapshot.rawComment,
     raw_reply: snapshot.rawReply
   };
+}
+
+function docCommentImageRefs(snapshot: LarkDocCommentSnapshot): LarkDocCommentImageRef[] {
+  if (snapshot.imageRefs && snapshot.imageRefs.length > 0) {
+    return snapshot.imageRefs;
+  }
+  return snapshot.imageKeys.map((fileToken) => ({
+    fileToken,
+    source: "reply" as const
+  }));
 }
 
 function docCommentFromPending(pending: PendingMessage, snapshot: LarkDocCommentSnapshot): IncomingLarkDocCommentAdd {

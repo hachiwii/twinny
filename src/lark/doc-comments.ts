@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type {
   LarkDocCommentClient,
+  LarkDocCommentImageRef,
   LarkDocCommentSnapshot,
   LarkDocResolver,
   ResolvedLarkDocTarget
@@ -91,6 +92,10 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
       return null;
     }
 
+    const replyImageRefs = imageRefsFromReply(reply);
+    const blockImageRefs = await this.findCommentImageBlockRefsBestEffort(params.fileType, params.fileToken, params.commentId, rawComment.quote);
+    const imageRefs = dedupeImageRefs([...replyImageRefs, ...blockImageRefs]);
+
     return {
       fileType: params.fileType,
       fileToken: params.fileToken,
@@ -100,7 +105,8 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
       authorOpenId: stringValue(reply.user_id) ?? stringValue(rawComment.user_id) ?? "",
       text: replyText(reply),
       quote: stringValue(rawComment.quote),
-      imageKeys: imageKeysFromReply(reply),
+      imageKeys: imageRefs.map((image) => image.fileToken),
+      imageRefs,
       isDone: booleanValue(rawComment.is_done),
       isSolved: booleanValue(rawComment.is_solved),
       createTime: numberValue(reply.create_time),
@@ -197,6 +203,8 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
   async downloadCommentImage(params: {
     fileToken: string;
     outputDir: string;
+    driveRouteToken?: string;
+    fileName?: string;
   }): Promise<{
     path: string;
     resourceType: "image";
@@ -205,12 +213,22 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
     size: number;
     contentType?: string;
   }> {
-    const response = await this.options.openApiClient.download(
-      `/drive/v1/files/${encodePathSegment(params.fileToken)}/download`,
-      { method: "GET" }
-    );
+    const response = params.driveRouteToken
+      ? await this.options.openApiClient.download(
+        `/drive/v1/medias/${encodePathSegment(params.fileToken)}/download`,
+        {
+          method: "GET",
+          query: {
+            extra: JSON.stringify({ drive_route_token: params.driveRouteToken })
+          }
+        }
+      )
+      : await this.options.openApiClient.download(
+        `/drive/v1/files/${encodePathSegment(params.fileToken)}/download`,
+        { method: "GET" }
+      );
     await fs.mkdir(params.outputDir, { recursive: true });
-    const fileName = uniqueSafeFileName(params.fileToken, response.contentType, response.contentDisposition);
+    const fileName = uniqueSafeFileName(params.fileName ?? params.fileToken, response.contentType, response.contentDisposition);
     const filePath = await uniqueFilePath(params.outputDir, fileName);
     await fs.writeFile(filePath, response.body);
     return {
@@ -264,6 +282,69 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
       pageToken = booleanValue(data.has_more) ? stringValue(data.page_token) : undefined;
     } while (pageToken);
     return replies;
+  }
+
+  private async findCommentImageBlockRefs(
+    fileType: string,
+    fileToken: string,
+    commentId: string
+  ): Promise<LarkDocCommentImageRef[]> {
+    if (fileType !== "docx") {
+      return [];
+    }
+
+    const refs: LarkDocCommentImageRef[] = [];
+    let pageToken: string | undefined;
+    do {
+      const raw = await this.options.openApiClient.request(
+        `/docx/v1/documents/${encodePathSegment(fileToken)}/blocks`,
+        {
+          method: "GET",
+          query: {
+            page_size: 500,
+            page_token: pageToken
+          }
+        }
+      );
+      const data = getRecord(raw, "data");
+      for (const block of getArray(data, "items")) {
+        const commentIds = getStringArray(block, "comment_ids");
+        if (numberValue(block.block_type) !== 27 || !commentIds.includes(commentId)) {
+          continue;
+        }
+        const image = getRecord(block, "image");
+        const imageToken = stringValue(image.token);
+        if (!imageToken) {
+          continue;
+        }
+        const blockId = stringValue(block.block_id);
+        refs.push({
+          fileToken: imageToken,
+          source: "doc_block",
+          blockId,
+          driveRouteToken: fileToken,
+          fileName: blockId ? `doc-image-${blockId}` : undefined
+        });
+      }
+      pageToken = booleanValue(data.has_more) ? stringValue(data.page_token) : undefined;
+    } while (pageToken);
+    return refs;
+  }
+
+  private async findCommentImageBlockRefsBestEffort(
+    fileType: string,
+    fileToken: string,
+    commentId: string,
+    quote: unknown
+  ): Promise<LarkDocCommentImageRef[]> {
+    if (!isImageQuote(quote)) {
+      return [];
+    }
+    try {
+      return await this.findCommentImageBlockRefs(fileType, fileToken, commentId);
+    } catch {
+      return [];
+    }
   }
 }
 
@@ -377,7 +458,7 @@ function textFromElement(element: Record<string, unknown>): string {
   return textContentValue(element.text) ?? "";
 }
 
-function imageKeysFromReply(reply: Record<string, unknown>): string[] {
+function imageRefsFromReply(reply: Record<string, unknown>): LarkDocCommentImageRef[] {
   const extra = getRecord(reply, "extra");
   return getUnknownArray(extra, "image_list")
     .map((item) => typeof item === "string"
@@ -385,7 +466,29 @@ function imageKeysFromReply(reply: Record<string, unknown>): string[] {
       : isRecord(item)
         ? stringValue(item.file_token) ?? stringValue(item.image_key) ?? stringValue(item.key) ?? stringValue(item.token)
         : undefined)
-    .filter((item): item is string => !!item);
+    .filter((item): item is string => !!item)
+    .map((fileToken) => ({
+      fileToken,
+      source: "reply" as const
+    }));
+}
+
+function isImageQuote(value: unknown): boolean {
+  return stringValue(value) === "[图片]";
+}
+
+function dedupeImageRefs(refs: LarkDocCommentImageRef[]): LarkDocCommentImageRef[] {
+  const seen = new Set<string>();
+  const result: LarkDocCommentImageRef[] = [];
+  for (const ref of refs) {
+    const key = `${ref.source}:${ref.fileToken}:${ref.driveRouteToken ?? ""}:${ref.blockId ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(ref);
+  }
+  return result;
 }
 
 function truncateCommentReplyText(text: string): string {
@@ -406,6 +509,11 @@ function getArray(value: unknown, key: string): Record<string, unknown>[] {
 function getUnknownArray(value: unknown, key: string): unknown[] {
   const target = isRecord(value) ? value[key] : undefined;
   return Array.isArray(target) ? target : [];
+}
+
+function getStringArray(value: unknown, key: string): string[] {
+  const target = isRecord(value) ? value[key] : undefined;
+  return Array.isArray(target) ? target.filter((item): item is string => typeof item === "string") : [];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

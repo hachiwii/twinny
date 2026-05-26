@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { LarkDocClient } from "./doc-comments.js";
@@ -128,6 +131,90 @@ describe("LarkDocClient", () => {
       expect.objectContaining({
         method: "GET",
         query: expect.objectContaining({ file_type: "docx", need_reaction: true })
+      })
+    );
+  });
+
+  it("adds image block tokens for docx comments anchored on images", async () => {
+    const request = vi.fn(async (apiPath: string) => {
+      if (apiPath.endsWith("/comments/batch_query")) {
+        return {
+          data: {
+            items: [
+              {
+                comment_id: "comment_1",
+                user_id: "ou_root",
+                quote: "[图片]",
+                is_done: false,
+                is_whole: false
+              }
+            ]
+          }
+        };
+      }
+      if (apiPath.endsWith("/comments/comment_1/replies")) {
+        return {
+          data: {
+            items: [
+              {
+                reply_id: "reply_1",
+                user_id: "ou_reply",
+                create_time: 2000,
+                content: { text: "@Twinny what is this image?" },
+                extra: { image_list: [] }
+              }
+            ]
+          }
+        };
+      }
+      if (apiPath === "/docx/v1/documents/doc_token/blocks") {
+        return {
+          data: {
+            has_more: false,
+            items: [
+              {
+                block_id: "text_block",
+                block_type: 2,
+                comment_ids: ["comment_1"]
+              },
+              {
+                block_id: "image_block",
+                block_type: 27,
+                comment_ids: ["comment_1"],
+                image: { token: "image_token", width: 1672, height: 941 }
+              }
+            ]
+          }
+        };
+      }
+      return { data: { items: [] } };
+    });
+    const client = new LarkDocClient({ openApiClient: createOpenApiClient({ request }) });
+
+    await expect(
+      client.getCommentSnapshot({
+        fileType: "docx",
+        fileToken: "doc_token",
+        commentId: "comment_1",
+        replyId: "reply_1"
+      })
+    ).resolves.toMatchObject({
+      imageKeys: ["image_token"],
+      imageRefs: [
+        {
+          fileToken: "image_token",
+          source: "doc_block",
+          blockId: "image_block",
+          driveRouteToken: "doc_token",
+          fileName: "doc-image-image_block"
+        }
+      ]
+    });
+    expect(request).toHaveBeenCalledWith(
+      "/docx/v1/documents/doc_token/blocks",
+      expect.objectContaining({
+        method: "GET",
+        query: expect.objectContaining({ page_size: 500 })
       })
     );
   });
@@ -313,6 +400,43 @@ describe("LarkDocClient", () => {
         }
       })
     );
+  });
+
+  it("downloads doc block images through the media endpoint with the source document token", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "twinny-doc-comment-image-"));
+    try {
+      const download = vi.fn(async () => ({
+        body: Buffer.from("image"),
+        contentType: "image/png",
+        contentDisposition: undefined
+      }));
+      const client = new LarkDocClient({ openApiClient: createOpenApiClient({ download }) });
+
+      await expect(
+        client.downloadCommentImage({
+          fileToken: "image_token",
+          driveRouteToken: "doc_token",
+          fileName: "doc-image-image_block",
+          outputDir
+        })
+      ).resolves.toMatchObject({
+        fileKey: "image_token",
+        fileName: "doc-image-image_block.png",
+        size: 5,
+        contentType: "image/png"
+      });
+      expect(download).toHaveBeenCalledWith(
+        "/drive/v1/medias/image_token/download",
+        {
+          method: "GET",
+          query: {
+            extra: JSON.stringify({ drive_route_token: "doc_token" })
+          }
+        }
+      );
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
   });
 });
 

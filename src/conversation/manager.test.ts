@@ -1602,6 +1602,53 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("downloads doc block images attached to watched doc comments", async () => {
+    const { repository } = createRepository(conversationRecord());
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_1",
+      watchMode: "all",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendTextToOpenId).mockResolvedValue({ messageId: "proxy_doc_comment", raw: {} });
+    const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
+      text: "@Twinny 图里是啥",
+      quote: "[图片]",
+      imageKeys: ["image_token"],
+      imageRefs: [
+        {
+          fileToken: "image_token",
+          source: "doc_block",
+          blockId: "image_block",
+          driveRouteToken: "doc_token",
+          fileName: "doc-image-image_block"
+        }
+      ]
+    }));
+    const codex = createCodex();
+    const manager = createManager({ repository, codex, lark, larkDocComments, botOpenId: "ou_bot" });
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment_image",
+      senderOpenId: "ou_owner",
+      senderName: "Owner",
+      isMentioned: true
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(larkDocComments.downloadCommentImage).toHaveBeenCalledWith({
+      fileToken: "image_token",
+      outputDir: expect.stringContaining(path.join("doc_comments", "comment_1")),
+      driveRouteToken: "doc_token",
+      fileName: "doc-image-image_block"
+    });
+    const input = vi.mocked(codex.startTurn).mock.calls[0]?.[0].input;
+    expect(JSON.stringify(input)).toContain("image_token.png");
+    expect(JSON.stringify(input)).toContain("localImage");
+  });
+
   it("ignores watched doc comments unless the comment mentions the bot", async () => {
     const { repository } = createRepository(conversationRecord());
     repository.upsertLarkDocWatcher({
