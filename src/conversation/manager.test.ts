@@ -92,6 +92,74 @@ describe("ConversationManager", () => {
     await waitForDelay();
   });
 
+  it("annotates message telemetry with command, menu, card, and queue context", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const telemetry = createTelemetry();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, telemetry, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_1", text: "working" });
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    manager.submitIncoming(message("m_help", "/help"));
+    manager.submitIncoming(message("m_queue", "/queue explicitly queued"));
+    manager.submitBotMenuAction(botMenuAction("menu-status", "status"));
+    manager.submitCardAction({
+      eventId: "event_card_queue",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m1_1",
+      openChatId: "oc_ignored",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "queue",
+        stateKey: "p2p_ou_guest",
+        runId: 1
+      },
+      raw: { event_id: "event_card_queue" }
+    });
+    await waitForExpect(() => expect(lark.patchCard).toHaveBeenCalled());
+    manager.submitIncoming(message("m_queue_toggle", "queued by queue toggle"));
+
+    await waitForExpect(() => {
+      const events = capturedTelemetryEvents(telemetry, "twinny_message_received");
+      expect(events.some((event) =>
+        event.properties.route_kind === "control_message" &&
+        event.properties.control_message_type === "help" &&
+        event.properties.queue_reason === null
+      )).toBe(true);
+      expect(events.some((event) =>
+        event.properties.route_kind === "queued_message" &&
+        event.properties.control_message_type === "queue" &&
+        event.properties.queue_reason === "explicit_queue_command"
+      )).toBe(true);
+      expect(events.some((event) =>
+        event.properties.route_kind === "menu_action" &&
+        event.properties.menu_button_type === "status" &&
+        event.properties.action_type === "status"
+      )).toBe(true);
+      expect(events.some((event) =>
+        event.properties.route_kind === "card_action" &&
+        event.properties.card_action_type === "queue" &&
+        event.properties.action_type === "queue"
+      )).toBe(true);
+      expect(events.some((event) =>
+        event.properties.route_kind === "queued_message" &&
+        event.properties.queue_reason === "queue_next_message" &&
+        event.properties.control_message_type === null
+      )).toBe(true);
+    });
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    turns[2]!.resolve(completed("thread_1", "turn_3"));
+    await waitForDelay();
+  });
+
   it("emits turn-end telemetry with model, effort, token deltas, and message counts", async () => {
     const telemetry = createTelemetry();
     const codex = createCodex({

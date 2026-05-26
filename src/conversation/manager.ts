@@ -666,6 +666,8 @@ interface ClassifiedMessageRoute {
   routeKind: LarkMessageRouteKind;
   status: "queued" | "processing";
   text: string;
+  controlMessageType?: ControlMessageType;
+  queueReason?: MessageQueueReason;
 }
 
 type ActiveTurnWaiting =
@@ -791,6 +793,23 @@ type ParsedCommand =
   | { kind: "reload"; text: string }
   | { kind: "deactivate" }
   | { kind: "help" };
+
+type ControlMessageType = Exclude<ParsedCommand["kind"], "message" | "side" | "goal">;
+
+type MessageQueueReason =
+  | "waiting_interrupt_batch"
+  | "active_waiting"
+  | "explicit_queue_command"
+  | "goal_command"
+  | "plan_command"
+  | "exit_command"
+  | "compact_command"
+  | "queue_next_message"
+  | "pending_batch"
+  | "suspended_active_turn"
+  | "active_cancel_requested"
+  | "active_compact"
+  | "active_turn";
 
 type ParsedActiveCardAction =
   | "stop"
@@ -3542,6 +3561,7 @@ export class ConversationManager {
       throw error;
     } finally {
       await this.recordCardActionBestEffort(action, command, status);
+      this.captureCardActionReceived(undefined, action, command, status, undefined, 0);
     }
   }
 
@@ -3812,9 +3832,13 @@ export class ConversationManager {
         received_at_ms: Date.now(),
         message_type: message.messageType,
         action_type: null,
+        control_message_type: route.controlMessageType ?? null,
+        menu_button_type: null,
+        card_action_type: null,
         conversation_type: context.type,
         route_kind: route.routeKind,
         status_at_receive: route.status,
+        queue_reason: route.queueReason ?? null,
         queue_depth_before: queueDepthBefore,
         queue_depth_after: state.pendingBatch.length,
         has_resources: (message.resources?.length ?? 0) > 0,
@@ -3850,9 +3874,13 @@ export class ConversationManager {
         received_at_ms: Date.now(),
         message_type: "bot_menu",
         action_type: action.action,
+        control_message_type: null,
+        menu_button_type: action.action,
+        card_action_type: null,
         conversation_type: context.type,
         route_kind: "menu_action",
         status_at_receive: status,
+        queue_reason: null,
         queue_depth_before: queueDepthBefore,
         queue_depth_after: state.pendingBatch.length,
         has_resources: false,
@@ -3865,22 +3893,23 @@ export class ConversationManager {
   }
 
   private captureCardActionReceived(
-    state: ConversationState,
+    state: ConversationState | undefined,
     action: IncomingLarkCardAction,
     command: ParsedCardActionCommand,
     status: LarkMessageStatus,
-    active: ActiveTurn,
+    active: ActiveTurn | undefined,
     queueDepthBefore: number
   ): void {
     const telemetry = this.options.telemetry;
     if (!telemetry) {
       return;
     }
+    const conversationKey = active?.conversationKey ?? conversationKeyFromStateKey(command.stateKey);
     telemetry.capture(
       "twinny_message_received",
       {
-        conversation_id: telemetry.hashId("conversation", active.conversationKey),
-        thread_id: telemetry.hashId("codex_thread", active.threadId),
+        conversation_id: telemetry.hashId("conversation", conversationKey),
+        thread_id: telemetry.hashId("codex_thread", active?.threadId),
         sender_id: telemetry.hashId("lark_open_id", action.operatorOpenId),
         message_event_id: telemetry.hashId("lark_event", action.eventId),
         message_id: telemetry.hashId("lark_message", action.openMessageId),
@@ -3888,11 +3917,15 @@ export class ConversationManager {
         received_at_ms: Date.now(),
         message_type: "card_button",
         action_type: command.action,
-        conversation_type: active.context.type,
+        control_message_type: null,
+        menu_button_type: null,
+        card_action_type: command.action,
+        conversation_type: active?.context.type ?? conversationTypeForConversationKey(conversationKey),
         route_kind: "card_action",
         status_at_receive: status,
+        queue_reason: null,
         queue_depth_before: queueDepthBefore,
-        queue_depth_after: state.pendingBatch.length,
+        queue_depth_after: state?.pendingBatch.length ?? 0,
         has_resources: false,
         resource_count: 0
       },
@@ -8647,13 +8680,17 @@ function messageForBotMenuAction(action: IncomingLarkBotMenuAction): IncomingLar
 
 function contextForRecoveredRecord(record: LarkMessageRecord): MessageContext {
   const conversationKey = record.conversationKey ?? conversationKeyForP2p(record.larkUserId);
-  const type: ConversationType = conversationKey.startsWith("group_") ? "group" : "p2p";
+  const type = conversationTypeForConversationKey(conversationKey);
   return {
     type,
     conversationKey,
     stateKey: record.larkThreadId ? `${conversationKey}_thread_${safePathSegment(record.larkThreadId)}` : conversationKey,
     larkThreadId: record.larkThreadId
   };
+}
+
+function conversationTypeForConversationKey(conversationKey: string): ConversationType {
+  return conversationKey.startsWith("group_") ? "group" : "p2p";
 }
 
 function conversationKeyFromStateKey(stateKey: string): string {
@@ -8746,6 +8783,21 @@ function formatTopicCreatedMessage(
   return `话题由 ${creator} 创建${forkSuffix}`;
 }
 
+function routeForParsedCommand(
+  parsed: ParsedCommand,
+  route: ClassifiedMessageRoute
+): ClassifiedMessageRoute {
+  const controlMessageType = controlMessageTypeForParsedCommand(parsed);
+  return controlMessageType ? { ...route, controlMessageType } : route;
+}
+
+function controlMessageTypeForParsedCommand(parsed: ParsedCommand): ControlMessageType | undefined {
+  if (parsed.kind === "message" || parsed.kind === "side" || parsed.kind === "goal") {
+    return undefined;
+  }
+  return parsed.kind;
+}
+
 function classifyInitialRoute(
   state: ConversationState,
   parsed: ParsedCommand,
@@ -8758,7 +8810,7 @@ function classifyInitialRoute(
     if (batchOwnerOpenId && message.senderOpenId === batchOwnerOpenId) {
       return directRouteForParsedCommand(parsed, message);
     }
-    return queuedRouteForParsedCommand(parsed, message);
+    return queuedRouteForParsedCommand(parsed, message, "waiting_interrupt_batch");
   }
   const canRunDirectlyFromPlanWaiting =
     active?.waiting?.kind === "plan" &&
@@ -8773,36 +8825,63 @@ function classifyInitialRoute(
     if (parsed.kind === "queue") {
       const nested = parseSlashCommand(parsed.text);
       if (nested.kind === "goal") {
-        return { routeKind: "goal_message", status: canRunDirectly ? "processing" : "queued", text: nested.text };
+        return canRunDirectly
+          ? routeForParsedCommand(parsed, { routeKind: "goal_message", status: "processing", text: nested.text })
+          : routeForParsedCommand(parsed, {
+            routeKind: "goal_message",
+            status: "queued",
+            text: nested.text,
+            queueReason: "active_waiting"
+          });
       }
     }
     return canRunDirectly
-      ? { routeKind: "message", status: "processing", text: parsed.text }
-      : { routeKind: "queued_message", status: "queued", text: parsed.text };
+      ? routeForParsedCommand(parsed, { routeKind: "message", status: "processing", text: parsed.text })
+      : queuedRouteForParsedCommand(parsed, message, "active_waiting");
   }
   if (parsed.kind === "queue" && parsed.text.length > 0) {
     const nested = parseSlashCommand(parsed.text);
     if (nested.kind === "goal") {
-      return { routeKind: "goal_message", status: "queued", text: nested.text };
+      return routeForParsedCommand(parsed, {
+        routeKind: "goal_message",
+        status: "queued",
+        text: nested.text,
+        queueReason: "explicit_queue_command"
+      });
     }
-    return { routeKind: "queued_message", status: "queued", text: parsed.text };
+    return queuedRouteForParsedCommand(parsed, message, "explicit_queue_command");
   }
   if (parsed.kind === "side") {
-    return { routeKind: "side_message", status: "processing", text: parsed.text };
+    return routeForParsedCommand(parsed, { routeKind: "side_message", status: "processing", text: parsed.text });
   }
   if (parsed.kind === "goal") {
     return canUpdateActiveGoalWithMessage(active, message)
-      ? { routeKind: "goal_message", status: "processing", text: parsed.text }
-      : { routeKind: "goal_message", status: "queued", text: parsed.text };
+      ? routeForParsedCommand(parsed, { routeKind: "goal_message", status: "processing", text: parsed.text })
+      : routeForParsedCommand(parsed, {
+        routeKind: "goal_message",
+        status: "queued",
+        text: parsed.text,
+        queueReason: "goal_command"
+      });
   }
   if (parsed.kind === "plan") {
-    return { routeKind: "queued_message", status: "queued", text: parsed.text };
+    return queuedRouteForParsedCommand(parsed, message, "plan_command");
   }
   if (parsed.kind === "exit") {
-    return { routeKind: "queued_message", status: "queued", text: originalText };
+    return routeForParsedCommand(parsed, {
+      routeKind: "queued_message",
+      status: "queued",
+      text: originalText,
+      queueReason: "exit_command"
+    });
   }
   if (parsed.kind === "compact") {
-    return { routeKind: "queued_message", status: "queued", text: originalText };
+    return routeForParsedCommand(parsed, {
+      routeKind: "queued_message",
+      status: "queued",
+      text: originalText,
+      queueReason: "compact_command"
+    });
   }
   if (
     parsed.kind === "help" ||
@@ -8822,26 +8901,32 @@ function classifyInitialRoute(
     parsed.kind === "logo" ||
     parsed.kind === "banner"
   ) {
-    return { routeKind: "control_message", status: "processing", text: originalText };
+    return routeForParsedCommand(parsed, { routeKind: "control_message", status: "processing", text: originalText });
   }
   if (state.queueNextMessage) {
-    return { routeKind: "queued_message", status: "queued", text: parsed.text };
+    return queuedRouteForParsedCommand(parsed, message, "queue_next_message");
   }
-  if (
-    state.pendingBatch.length > 0 ||
-    state.suspendedActiveTurns.length > 0 ||
-    state.active?.cancelRequested ||
-    state.active?.waiting ||
-    state.active?.kind === "compact"
-  ) {
-    return { routeKind: "queued_message", status: "queued", text: parsed.text };
+  if (state.pendingBatch.length > 0) {
+    return queuedRouteForParsedCommand(parsed, message, "pending_batch");
+  }
+  if (state.suspendedActiveTurns.length > 0) {
+    return queuedRouteForParsedCommand(parsed, message, "suspended_active_turn");
+  }
+  if (state.active?.cancelRequested) {
+    return queuedRouteForParsedCommand(parsed, message, "active_cancel_requested");
+  }
+  if (state.active?.waiting) {
+    return queuedRouteForParsedCommand(parsed, message, "active_waiting");
+  }
+  if (state.active?.kind === "compact") {
+    return queuedRouteForParsedCommand(parsed, message, "active_compact");
   }
   if (active) {
     return message.senderOpenId === active.triggerOpenId
-      ? { routeKind: "steered_message", status: "processing", text: parsed.text }
-      : { routeKind: "queued_message", status: "queued", text: parsed.text };
+      ? routeForParsedCommand(parsed, { routeKind: "steered_message", status: "processing", text: parsed.text })
+      : queuedRouteForParsedCommand(parsed, message, "active_turn");
   }
-  return { routeKind: "message", status: "processing", text: parsed.text };
+  return routeForParsedCommand(parsed, { routeKind: "message", status: "processing", text: parsed.text });
 }
 
 function canUpdateActiveGoalWithMessage(
@@ -8893,29 +8978,33 @@ function countNextPendingMessages(messages: PendingMessage[]): number {
 function directRouteForParsedCommand(
   parsed: ParsedCommand,
   message: IncomingLarkMessage
-): { routeKind: LarkMessageRouteKind; status: "processing"; text: string } {
+): ClassifiedMessageRoute {
   if (parsed.kind === "queue" && parsed.text.length > 0) {
     const nested = parseSlashCommand(parsed.text);
     if (nested.kind === "goal") {
-      return { routeKind: "goal_message", status: "processing", text: nested.text };
+      return routeForParsedCommand(parsed, { routeKind: "goal_message", status: "processing", text: nested.text });
     }
-    return { routeKind: "message", status: "processing", text: parsed.text };
+    return routeForParsedCommand(parsed, { routeKind: "message", status: "processing", text: parsed.text });
   }
   if (parsed.kind === "goal") {
-    return { routeKind: "goal_message", status: "processing", text: parsed.text };
+    return routeForParsedCommand(parsed, { routeKind: "goal_message", status: "processing", text: parsed.text });
   }
   if (parsed.kind === "plan") {
     return parsed.text.trim().length > 0
-      ? { routeKind: "message", status: "processing", text: parsed.text }
-      : { routeKind: "control_message", status: "processing", text: message.text };
+      ? routeForParsedCommand(parsed, { routeKind: "message", status: "processing", text: parsed.text })
+      : routeForParsedCommand(parsed, { routeKind: "control_message", status: "processing", text: message.text });
   }
   if (parsed.kind === "exit" || parsed.kind === "compact") {
-    return { routeKind: "control_message", status: "processing", text: message.text };
+    return routeForParsedCommand(parsed, { routeKind: "control_message", status: "processing", text: message.text });
   }
   if (parsed.kind === "side") {
-    return { routeKind: "side_message", status: "processing", text: parsed.text };
+    return routeForParsedCommand(parsed, { routeKind: "side_message", status: "processing", text: parsed.text });
   }
-  return { routeKind: "message", status: "processing", text: parsed.kind === "message" ? parsed.text : message.text };
+  return routeForParsedCommand(parsed, {
+    routeKind: "message",
+    status: "processing",
+    text: parsed.kind === "message" ? parsed.text : message.text
+  });
 }
 
 function isSchedulableParsedCommand(parsed: ParsedCommand): boolean {
@@ -8931,19 +9020,28 @@ function isSchedulableParsedCommand(parsed: ParsedCommand): boolean {
 
 function queuedRouteForParsedCommand(
   parsed: ParsedCommand,
-  message: IncomingLarkMessage
-): { routeKind: LarkMessageRouteKind; status: "queued"; text: string } {
+  message: IncomingLarkMessage,
+  queueReason: MessageQueueReason
+): ClassifiedMessageRoute {
   if (parsed.kind === "queue" && parsed.text.length > 0) {
     const nested = parseSlashCommand(parsed.text);
     if (nested.kind === "goal") {
-      return { routeKind: "goal_message", status: "queued", text: nested.text };
+      return routeForParsedCommand(parsed, { routeKind: "goal_message", status: "queued", text: nested.text, queueReason });
     }
-    return { routeKind: "queued_message", status: "queued", text: parsed.text };
+    return routeForParsedCommand(parsed, { routeKind: "queued_message", status: "queued", text: parsed.text, queueReason });
   }
   if (parsed.kind === "goal") {
-    return { routeKind: "goal_message", status: "queued", text: parsed.text };
+    return routeForParsedCommand(parsed, { routeKind: "goal_message", status: "queued", text: parsed.text, queueReason });
   }
-  return { routeKind: "queued_message", status: "queued", text: parsed.kind === "message" ? parsed.text : message.text };
+  if (parsed.kind === "plan") {
+    return routeForParsedCommand(parsed, { routeKind: "queued_message", status: "queued", text: parsed.text, queueReason });
+  }
+  return routeForParsedCommand(parsed, {
+    routeKind: "queued_message",
+    status: "queued",
+    text: parsed.kind === "message" ? parsed.text : message.text,
+    queueReason
+  });
 }
 
 function suspendedActiveTurnMessagesForRecovery(active: ActiveTurn): PendingMessage[] {
