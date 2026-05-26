@@ -786,6 +786,8 @@ interface PendingDocCommentContext {
   replyId?: string;
   isWhole?: boolean;
   watchUrl: string;
+  cardMessage?: TwinnyAgentCardMessage;
+  cardDelivery?: ActiveTurnCardDelivery;
 }
 
 interface LarkDocCommentReactionHandle {
@@ -875,6 +877,7 @@ type ActiveTurnInterruptResult = "interrupted" | "missing" | "failed";
 
 interface ActiveTurnCardState {
   anchorMessageId: string;
+  delivery?: ActiveTurnCardDelivery;
   messageId?: string;
   startedAt: number;
   messages: TwinnyAgentCardMessage[];
@@ -882,6 +885,10 @@ interface ActiveTurnCardState {
   fallbackPlain: boolean;
   lastRenderedJson?: string;
 }
+
+type ActiveTurnCardDelivery =
+  | { kind: "reply"; messageId: string; options?: LarkReplyOptions }
+  | { kind: "direct"; conversationType: ConversationType; chatId: string; uuid?: string };
 
 interface CodexTurnModelSettings {
   model: string;
@@ -1175,24 +1182,11 @@ export class ConversationManager {
     }
     const senderName = await this.resolveDocCommentSenderName(context, comment, snapshot);
     const prepared = await this.renderDocCommentMessage(context, watcher, comment, snapshot, senderName);
-    const proxy = await this.sendDocCommentProxyMessage(
-      conversation,
-      thread,
-      watcher,
-      comment,
-      senderName,
-      snapshot,
-      prepared.downloadedFiles
-    );
-    const proxyMessageId = nonEmptyString(proxy?.messageId);
-    if (!proxyMessageId) {
-      this.log.warn({ eventId: comment.eventId }, "failed to create doc comment proxy message; ignoring doc comment");
-      return;
-    }
+    const messageId = docCommentSyntheticMessageId(comment, snapshot);
     const raw = docCommentRawContext(watcher, comment, snapshot);
     const incoming: IncomingLarkMessage = {
       eventId: `doc_comment:${comment.eventId}:${watcher.fileType}:${watcher.fileToken}`,
-      messageId: proxyMessageId,
+      messageId,
       chatId: conversation.chatId,
       chatType: conversation.type,
       messageType: "doc_comment",
@@ -1215,7 +1209,9 @@ export class ConversationManager {
         commentId: comment.commentId,
         replyId: snapshot.replyId,
         isWhole: snapshot.isWhole,
-        watchUrl: watcher.watchUrl
+        watchUrl: watcher.watchUrl,
+        cardMessage: docCommentCardMessage(comment, watcher, snapshot, senderName, this.options.botOpenId),
+        cardDelivery: docCommentCardDelivery(conversation, thread, comment)
       }
     });
     const status = this.willProcessPendingMessageImmediately(state, pending) ? "processing" : "queued";
@@ -2356,78 +2352,6 @@ export class ConversationManager {
       }
     }
     return images;
-  }
-
-  private async sendDocCommentProxyMessage(
-    conversation: ConversationRecord,
-    thread: CodexThreadRecord,
-    watcher: LarkDocWatcherRecord,
-    comment: IncomingLarkDocCommentAdd,
-    senderName: string | undefined,
-    snapshot: LarkDocCommentSnapshot,
-    downloadedFiles: NonNullable<IncomingLarkMessage["downloadedFiles"]>
-  ): Promise<LarkReplyResult | LarkSendMessageResult | void> {
-    const text = textForDocCommentProxyMessage({
-      senderOpenId: comment.senderOpenId || snapshot.authorOpenId,
-      senderName,
-      watchUrl: watcher.watchUrl,
-      text: snapshot.text,
-      botOpenId: this.options.botOpenId
-    });
-    const imageKeys = await this.uploadDocCommentProxyImagesBestEffort(comment, downloadedFiles);
-    if (imageKeys.length > 0) {
-      const postContent = postContentForDocCommentProxyMessage({
-        senderOpenId: comment.senderOpenId || snapshot.authorOpenId,
-        senderName,
-        watchUrl: watcher.watchUrl,
-        text: snapshot.text,
-        botOpenId: this.options.botOpenId,
-        imageKeys
-      });
-      if (thread.cardMessageId) {
-        return this.options.lark.replyPost(thread.cardMessageId, postContent, { replyInThread: true });
-      }
-      if (conversation.type === "p2p") {
-        return this.options.lark.sendPostToOpenId(conversation.chatId, postContent);
-      }
-      return this.options.lark.sendPostToChatId(conversation.chatId, postContent);
-    }
-    if (thread.cardMessageId) {
-      return this.options.lark.replyText(thread.cardMessageId, text, { replyInThread: true });
-    }
-    if (conversation.type === "p2p") {
-      return this.options.lark.sendTextToOpenId(conversation.chatId, text);
-    }
-    return this.options.lark.sendTextToChatId(conversation.chatId, text);
-  }
-
-  private async uploadDocCommentProxyImagesBestEffort(
-    comment: IncomingLarkDocCommentAdd,
-    downloadedFiles: NonNullable<IncomingLarkMessage["downloadedFiles"]>
-  ): Promise<string[]> {
-    const imageFiles = downloadedFiles.filter((file) => file.resourceType === "image");
-    if (imageFiles.length === 0) {
-      return [];
-    }
-    if (!this.options.larkFiles?.uploadImage) {
-      this.log.warn({ commentId: comment.commentId }, "Lark image uploader is not configured; sending doc comment proxy without images");
-      return [];
-    }
-
-    const imageKeys: string[] = [];
-    for (const file of imageFiles) {
-      try {
-        const uploaded = await this.options.larkFiles.uploadImage({
-          filePath: file.path,
-          fileName: file.fileName,
-          contentType: file.contentType
-        });
-        imageKeys.push(uploaded.imageKey);
-      } catch (error) {
-        this.log.warn({ error, commentId: comment.commentId, imageKey: file.fileKey }, "failed to upload doc comment image for proxy");
-      }
-    }
-    return imageKeys;
   }
 
   private async applyGroupResponsePolicy(
@@ -4518,6 +4442,7 @@ export class ConversationManager {
       active.messageIds.add(queued.messageId);
       active.processingMessageIds.add(queued.messageId);
     }
+    addDocCommentCardMessagesToActive(active, batch);
     await this.markMessagesProcessingBestEffort(messageIds, {
       conversationKey: active.conversationKey,
       codexThreadId: active.threadId,
@@ -4525,7 +4450,9 @@ export class ConversationManager {
     });
     const anchor = batch[batch.length - 1]!;
     active.replyMessageId = anchor.messageId;
-    await this.moveReactionBestEffort(active, anchor.messageId);
+    if (!anchor.docComment) {
+      await this.moveReactionBestEffort(active, anchor.messageId);
+    }
     await this.moveAgentCardBestEffort(state, active, anchor.messageId);
     await this.replyControlBestEffort(
       message.messageId,
@@ -4621,12 +4548,15 @@ export class ConversationManager {
       active.messageIds.add(message.messageId);
       active.processingMessageIds.add(message.messageId);
       active.steerMessageCount += 1;
+      addDocCommentCardMessagesToActive(active, [message]);
       await this.markMessagesProcessingBestEffort([message.messageId], {
         conversationKey: active.conversationKey,
         codexThreadId: active.threadId
       });
       active.replyMessageId = message.messageId;
-      await this.moveReactionBestEffort(active, message.messageId);
+      if (!message.docComment) {
+        await this.moveReactionBestEffort(active, message.messageId);
+      }
       await this.moveAgentCardBestEffort(state, active, message.messageId);
       return;
     }
@@ -4644,6 +4574,7 @@ export class ConversationManager {
       active.messagesById.set(message.messageId, message);
       active.messageIds.add(message.messageId);
       active.processingMessageIds.add(message.messageId);
+      addDocCommentCardMessagesToActive(active, [message]);
       await this.markMessagesProcessingBestEffort([message.messageId], {
         conversationKey: active.conversationKey,
         codexThreadId: active.threadId,
@@ -4651,7 +4582,9 @@ export class ConversationManager {
       });
       await this.addDocWorkingReactionsBestEffort([message]);
       active.replyMessageId = message.messageId;
-      await this.moveReactionBestEffort(active, message.messageId);
+      if (!message.docComment) {
+        await this.moveReactionBestEffort(active, message.messageId);
+      }
       await this.moveAgentCardBestEffort(state, active, message.messageId);
     } catch (error) {
       this.log.warn(
@@ -5124,7 +5057,6 @@ export class ConversationManager {
     if (!snapshot || snapshot.isDone || snapshot.isSolved) {
       this.log.info({ messageId: pending.messageId, commentId: doc.commentId }, "doc comment unavailable before processing; marking recalled");
       await this.markMessageRecalledBestEffort(pending.messageId);
-      await this.recallMessageBestEffort(pending.messageId, "failed to recall doc comment proxy message");
       return undefined;
     }
     const comment = docCommentFromPending(pending, snapshot);
@@ -5148,7 +5080,12 @@ export class ConversationManager {
     pending.text = rendered.text;
     pending.original.text = rendered.text;
     pending.original.downloadedFiles = rendered.downloadedFiles.length > 0 ? rendered.downloadedFiles : undefined;
-    pending.docComment = { ...doc, replyId: snapshot.replyId, isWhole: snapshot.isWhole };
+    pending.docComment = {
+      ...doc,
+      replyId: snapshot.replyId,
+      isWhole: snapshot.isWhole,
+      cardMessage: docCommentCardMessage(comment, { watchUrl: doc.watchUrl }, snapshot, senderName, this.options.botOpenId)
+    };
     await this.updateQueuedMessageBestEffort(pending.messageId, {
       text: pending.text,
       rawEventJson: safeJsonStringify({
@@ -5506,6 +5443,11 @@ export class ConversationManager {
     const currentThreadName = isMainSessionContext(context) ? undefined : threadRecord?.name ?? "";
     const mode = hasDocComment && threadRecord?.mode === "plan" ? "default" : threadRecord?.mode ?? "default";
     const startedAt = Date.now();
+    const initialCardMessages = [
+      ...docCommentCardMessagesForPending(activeMessages),
+      ...(params.initialCardMessages ?? [])
+    ];
+    const cardDelivery = activeTurnCardDeliveryForAnchor(anchor, threadRecord);
     const active: ActiveTurn = {
       kind: "normal",
       runId: ++state.nextRunId,
@@ -5529,11 +5471,14 @@ export class ConversationManager {
       usageCarryover: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       messageTokenUsage: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       generatedImagePaths: [],
-      reaction: await this.addReactionBestEffort(anchor.messageId),
+      reaction: anchor.docComment ? undefined : await this.addReactionBestEffort(anchor.messageId),
       card: params.card ?? {
-        anchorMessageId: anchor.messageId,
+        anchorMessageId: cardDelivery?.kind === "reply"
+          ? cardDelivery.messageId
+          : anchor.messageId,
+        delivery: cardDelivery,
         startedAt,
-        messages: params.initialCardMessages ? [...params.initialCardMessages] : [],
+        messages: initialCardMessages,
         fallbackPlain: false
       },
       pendingSteers: [],
@@ -7103,11 +7048,13 @@ export class ConversationManager {
     if (message.queuedReaction) {
       return;
     }
-    try {
-      message.queuedReaction = await this.options.lark.addQueuedReaction(message.messageId);
-    } catch (error) {
-      this.log.warn({ error, messageId: message.messageId }, "failed to add queued reaction");
-      message.queuedReaction = null;
+    if (!message.docComment) {
+      try {
+        message.queuedReaction = await this.options.lark.addQueuedReaction(message.messageId);
+      } catch (error) {
+        this.log.warn({ error, messageId: message.messageId }, "failed to add queued reaction");
+        message.queuedReaction = null;
+      }
     }
     await this.addDocQueuedReactionBestEffort(message);
   }
@@ -7699,9 +7646,9 @@ export class ConversationManager {
     }
     try {
       const rendered = this.renderAgentCard(state, active, "working");
-      const result = await this.options.lark.replyCard(card.anchorMessageId, rendered);
+      const result = await this.sendNewAgentCardMessage(card, rendered);
       if (!result?.messageId) {
-        throw new Error("Lark card reply did not return message_id");
+        throw new Error("Lark card send did not return message_id");
       }
       card.messageId = result.messageId;
       active.lastAgentReplyMessageId = result.messageId;
@@ -7717,6 +7664,23 @@ export class ConversationManager {
       this.stopAgentCardTimer(active);
       return false;
     }
+  }
+
+  private async sendNewAgentCardMessage(
+    card: ActiveTurnCardState,
+    rendered: LarkCardJson
+  ): Promise<LarkReplyResult | LarkSendMessageResult | void> {
+    const delivery = card.delivery;
+    if (!delivery) {
+      return this.options.lark.replyCard(card.anchorMessageId, rendered);
+    }
+    if (delivery.kind === "reply") {
+      return this.options.lark.replyCard(delivery.messageId, rendered, delivery.options);
+    }
+    if (delivery.conversationType === "p2p") {
+      return this.options.lark.sendCardToOpenId(delivery.chatId, rendered, { uuid: delivery.uuid });
+    }
+    return this.options.lark.sendCardToChatId(delivery.chatId, rendered, { uuid: delivery.uuid });
   }
 
   private async patchAgentCardBestEffort(
@@ -7768,9 +7732,9 @@ export class ConversationManager {
     const serialized = JSON.stringify(rendered);
     if (!card.messageId) {
       try {
-        const result = await this.options.lark.replyCard(card.anchorMessageId, rendered);
+        const result = await this.sendNewAgentCardMessage(card, rendered);
         if (!result?.messageId) {
-          throw new Error("Lark card reply did not return message_id");
+          throw new Error("Lark card send did not return message_id");
         }
         card.messageId = result.messageId;
         active.lastAgentReplyMessageId = result.messageId;
@@ -7786,7 +7750,9 @@ export class ConversationManager {
     try {
       const previousMessageId = card.messageId;
       const shouldUpdateInPlace =
-        state.pendingBatch.length > 0 || (await this.shouldUpdateCompletedAgentCardInPlace(active, previousMessageId));
+        card.delivery !== undefined ||
+        state.pendingBatch.length > 0 ||
+        (await this.shouldUpdateCompletedAgentCardInPlace(active, previousMessageId));
       if (shouldUpdateInPlace) {
         await this.options.lark.patchCard(previousMessageId, rendered);
         card.lastRenderedJson = serialized;
@@ -7830,15 +7796,16 @@ export class ConversationManager {
       const previousMessageId = card.messageId;
       const shouldUpdateInPlace =
         active.kind === "side" ||
+        card.delivery !== undefined ||
         state.pendingBatch.length > 0 ||
         (await this.shouldUpdateCompletedAgentCardInPlace(active, previousMessageId));
       if (shouldUpdateInPlace) {
         await this.updateCompletedAgentCardInPlace(active, card, previousMessageId, rendered);
-        await this.replyAgentCardFilesBestEffort(active.replyMessageId, output.files);
+        await this.replyAgentCardFilesBestEffort(this.agentCardFollowupAnchorMessageId(active), output.files);
         return;
       }
       await this.resendCompletedAgentCard(active, card, previousMessageId, rendered);
-      await this.replyAgentCardFilesBestEffort(active.replyMessageId, output.files);
+      await this.replyAgentCardFilesBestEffort(this.agentCardFollowupAnchorMessageId(active), output.files);
     } catch (error) {
       this.log.warn({ error, messageId: active.replyMessageId }, "failed to finalize agent card; falling back to plain");
       card.fallbackPlain = true;
@@ -7888,12 +7855,16 @@ export class ConversationManager {
     previousMessageId: string,
     rendered: LarkCardJson
   ): Promise<void> {
-    const result = await this.options.lark.replyCard(active.replyMessageId, rendered);
+    const result = card.delivery
+      ? await this.sendNewAgentCardMessage(card, rendered)
+      : await this.options.lark.replyCard(active.replyMessageId, rendered);
     const completedCardMessageId = nonEmptyString(result?.messageId);
     if (!completedCardMessageId) {
       throw new Error("Lark completed card reply did not return message_id");
     }
-    card.anchorMessageId = active.replyMessageId;
+    if (!card.delivery) {
+      card.anchorMessageId = active.replyMessageId;
+    }
     card.messageId = completedCardMessageId;
     active.lastAgentReplyMessageId = completedCardMessageId;
     card.lastRenderedJson = JSON.stringify(rendered);
@@ -7915,6 +7886,10 @@ export class ConversationManager {
         this.log.warn({ error, messageId, fileName: file.fileName }, "failed to send lark file attachment reply");
       }
     }
+  }
+
+  private agentCardFollowupAnchorMessageId(active: ActiveTurn): string {
+    return active.card?.delivery && active.card.messageId ? active.card.messageId : active.replyMessageId;
   }
 
   private async failAgentCardBestEffort(state: ConversationState, active: ActiveTurn, error: string): Promise<void> {
@@ -8040,6 +8015,12 @@ export class ConversationManager {
 
   private async moveAgentCardBestEffort(state: ConversationState, active: ActiveTurn, anchorMessageId: string): Promise<void> {
     const card = active.card;
+    if (card?.delivery) {
+      if (card.messageId && !card.fallbackPlain) {
+        await this.patchAgentCardBestEffort(state, active, "working");
+      }
+      return;
+    }
     if (!card || card.anchorMessageId === anchorMessageId) {
       return;
     }
@@ -9367,6 +9348,113 @@ function docCommentPlaceholderMessage(comment: IncomingLarkDocCommentAdd): Incom
   };
 }
 
+function docCommentSyntheticMessageId(
+  comment: IncomingLarkDocCommentAdd,
+  snapshot: LarkDocCommentSnapshot
+): string {
+  return [
+    "doc_comment",
+    safePathSegment(comment.eventId),
+    safePathSegment(comment.commentId),
+    safePathSegment(snapshot.replyId ?? comment.replyId ?? "root")
+  ].join(":");
+}
+
+function docCommentCardDelivery(
+  conversation: ConversationRecord,
+  thread: CodexThreadRecord,
+  comment: IncomingLarkDocCommentAdd
+): ActiveTurnCardDelivery {
+  if (thread.cardMessageId) {
+    return {
+      kind: "reply",
+      messageId: thread.cardMessageId,
+      options: { replyInThread: true }
+    };
+  }
+  return {
+    kind: "direct",
+    conversationType: conversation.type,
+    chatId: conversation.chatId,
+    uuid: createLarkUuid("twinny-doc-comment-card", comment.eventId, comment.commentId, comment.replyId ?? "")
+  };
+}
+
+function activeTurnCardDeliveryForAnchor(
+  anchor: PendingMessage,
+  thread: CodexThreadRecord | undefined
+): ActiveTurnCardDelivery | undefined {
+  const doc = anchor.docComment;
+  if (!doc) {
+    return undefined;
+  }
+  if (doc.cardDelivery) {
+    return doc.cardDelivery;
+  }
+  if (thread?.cardMessageId) {
+    return {
+      kind: "reply",
+      messageId: thread.cardMessageId,
+      options: { replyInThread: true }
+    };
+  }
+  return {
+    kind: "direct",
+    conversationType: conversationTypeForChat(anchor.original.chatType) ?? "group",
+    chatId: anchor.original.chatId,
+    uuid: createLarkUuid("twinny-doc-comment-card", anchor.original.eventId, doc.commentId, doc.replyId ?? "")
+  };
+}
+
+function docCommentCardMessage(
+  comment: IncomingLarkDocCommentAdd,
+  watcher: Pick<LarkDocWatcherRecord, "watchUrl">,
+  snapshot: LarkDocCommentSnapshot,
+  senderName: string | undefined,
+  botOpenId: string | undefined
+): TwinnyAgentCardMessage {
+  const senderOpenId = nonEmptyString(comment.senderOpenId) ?? nonEmptyString(snapshot.authorOpenId);
+  const sender = senderOpenId && isSafeLarkMentionOpenId(senderOpenId)
+    ? `<at id=${senderOpenId}></at>`
+    : escapeCardMarkdownText(senderName ?? snapshot.authorName ?? "未知用户");
+  const link = cardMarkdownLink(watcher.watchUrl);
+  const content = textForDocCommentCardContent(snapshot.text, botOpenId);
+  return {
+    id: `doc-comment:${comment.commentId}:${snapshot.replyId ?? comment.replyId ?? "root"}`,
+    text: `[收到文档评论] ${sender} 在 ${link} 中评论: ${content}`,
+    processOnly: true
+  };
+}
+
+function docCommentCardMessagesForPending(messages: PendingMessage[]): TwinnyAgentCardMessage[] {
+  const result: TwinnyAgentCardMessage[] = [];
+  const seen = new Set<string>();
+  for (const message of messages) {
+    const cardMessage = message.docComment?.cardMessage;
+    if (!cardMessage || seen.has(cardMessage.id)) {
+      continue;
+    }
+    seen.add(cardMessage.id);
+    result.push(cardMessage);
+  }
+  return result;
+}
+
+function addDocCommentCardMessagesToActive(active: ActiveTurn, messages: PendingMessage[]): void {
+  const card = active.card;
+  if (!card) {
+    return;
+  }
+  const existingIds = new Set(card.messages.map((message) => message.id));
+  for (const message of docCommentCardMessagesForPending(messages)) {
+    if (existingIds.has(message.id)) {
+      continue;
+    }
+    existingIds.add(message.id);
+    card.messages.push(message);
+  }
+}
+
 function docCommentRawContext(
   watcher: LarkDocWatcherRecord,
   comment: IncomingLarkDocCommentAdd,
@@ -9607,44 +9695,7 @@ function docCommentPersonMentionId(element: Record<string, unknown>): string | u
     nonEmptyString(stringRecordValue(element, "union_id"));
 }
 
-function textForDocCommentProxyMessage(input: {
-  senderOpenId: string;
-  senderName?: string;
-  watchUrl: string;
-  text: string;
-  botOpenId?: string;
-}): string {
-  const senderLabel = input.senderName ?? input.senderOpenId;
-  const content = textForDocCommentProxyContent(input.text, input.botOpenId);
-  return [
-    larkAtText(input.senderOpenId, senderLabel),
-    " 在 ",
-    escapeLarkText(input.watchUrl),
-    " 中评论: ",
-    content
-  ].join("");
-}
-
-function postContentForDocCommentProxyMessage(input: {
-  senderOpenId: string;
-  senderName?: string;
-  watchUrl: string;
-  text: string;
-  botOpenId?: string;
-  imageKeys: string[];
-}): LarkPostContent {
-  const paragraph: LarkPostNode[] = [
-    { tag: "at", user_id: input.senderOpenId, user_name: input.senderName ?? input.senderOpenId },
-    { tag: "text", text: ` 在 ${input.watchUrl} 中评论: ` }
-  ];
-  appendDocCommentProxyContentPostNodes(paragraph, input.text, input.botOpenId);
-  return [
-    paragraph,
-    ...input.imageKeys.map((imageKey) => [{ tag: "img" as const, image_key: imageKey }])
-  ];
-}
-
-function textForDocCommentProxyContent(text: string, botOpenId: string | undefined): string {
+function textForDocCommentCardContent(text: string, botOpenId: string | undefined): string {
   const withoutBotMention = stripDocCommentBotMention(compactInlineText(text), botOpenId);
   if (!withoutBotMention) {
     return "";
@@ -9655,45 +9706,45 @@ function textForDocCommentProxyContent(text: string, botOpenId: string | undefin
   for (const match of withoutBotMention.matchAll(DOC_COMMENT_OPEN_ID_MENTION_PATTERN)) {
     const index = match.index ?? 0;
     if (index > cursor) {
-      parts.push(escapeLarkText(withoutBotMention.slice(cursor, index)));
+      parts.push(escapeCardMarkdownText(withoutBotMention.slice(cursor, index)));
     }
     const openId = match[1]!;
-    if (openId !== botOpenId) {
-      parts.push(larkAtText(openId, openId));
+    if (openId !== botOpenId && isSafeLarkMentionOpenId(openId)) {
+      parts.push(`<at id=${openId}></at>`);
     }
     cursor = index + match[0]!.length;
   }
   if (cursor < withoutBotMention.length) {
-    parts.push(escapeLarkText(withoutBotMention.slice(cursor)));
+    parts.push(escapeCardMarkdownText(withoutBotMention.slice(cursor)));
   }
   return parts.join("").trim();
 }
 
-function appendDocCommentProxyContentPostNodes(
-  paragraph: LarkPostNode[],
-  text: string,
-  botOpenId: string | undefined
-): void {
-  const withoutBotMention = stripDocCommentBotMention(compactInlineText(text), botOpenId);
-  if (!withoutBotMention) {
-    return;
+function cardMarkdownLink(url: string): string {
+  if (!/^https?:\/\//i.test(url)) {
+    return escapeCardMarkdownText(url);
   }
+  const escapedUrl = escapeSingleQuotedCardAttribute(url);
+  return `<link url='${escapedUrl}'>${escapeCardMarkdownText(url)}</link>`;
+}
 
-  let cursor = 0;
-  for (const match of withoutBotMention.matchAll(DOC_COMMENT_OPEN_ID_MENTION_PATTERN)) {
-    const index = match.index ?? 0;
-    if (index > cursor) {
-      paragraph.push({ tag: "text", text: withoutBotMention.slice(cursor, index) });
-    }
-    const openId = match[1]!;
-    if (openId !== botOpenId) {
-      paragraph.push({ tag: "at", user_id: openId, user_name: openId });
-    }
-    cursor = index + match[0]!.length;
-  }
-  if (cursor < withoutBotMention.length) {
-    paragraph.push({ tag: "text", text: withoutBotMention.slice(cursor) });
-  }
+function escapeCardMarkdownText(value: string): string {
+  const markdownEscapes: Record<string, string> = {
+    "*": "&#42;",
+    "~": "&sim;",
+    "[": "&#91;",
+    "]": "&#93;",
+    "(": "&#40;",
+    ")": "&#41;",
+    "`": "&#96;",
+    "_": "&#95;",
+    "#": "&#35;"
+  };
+  return escapeLarkText(value).replace(/[\*~\[\]\(\)`_#]/g, (char) => markdownEscapes[char] ?? char);
+}
+
+function escapeSingleQuotedCardAttribute(value: string): string {
+  return escapeLarkText(value).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 function stripDocCommentBotMention(text: string, botOpenId: string | undefined): string {
@@ -9703,10 +9754,6 @@ function stripDocCommentBotMention(text: string, botOpenId: string | undefined):
   }
   const pattern = new RegExp(`@${escapeRegExp(openId)}(?![A-Za-z0-9_-])\\s*`, "g");
   return compactInlineText(text.replace(pattern, " "));
-}
-
-function larkAtText(openId: string, label: string): string {
-  return `<at user_id="${escapeLarkTextAttribute(openId)}">${escapeLarkText(label)}</at>`;
 }
 
 function escapeRegExp(value: string): string {

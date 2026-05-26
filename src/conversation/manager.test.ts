@@ -1316,7 +1316,6 @@ describe("ConversationManager", () => {
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     const lark = createLarkResponder();
-    vi.mocked(lark.sendTextToOpenId).mockResolvedValue({ messageId: "proxy_doc_comment", raw: {} });
     const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
       text: "@ou_bot Please fix <this> with @ou_reviewer and @ouid_extra",
       quote: "Quoted & referenced text",
@@ -1355,13 +1354,20 @@ describe("ConversationManager", () => {
         input: expect.stringContaining("@ou_bot Please fix &lt;this&gt; with @ou_reviewer and @ouid_extra")
       })
     );
-    expect(lark.sendTextToOpenId).toHaveBeenCalledWith(
+    expect(lark.sendTextToOpenId).not.toHaveBeenCalled();
+    expect(lark.sendPostToOpenId).not.toHaveBeenCalled();
+    expect(lark.sendCardToOpenId).toHaveBeenCalledWith(
       "ou_guest",
-      '<at user_id="ou_owner">Owner</at> 在 https://example.feishu.cn/docx/doc_token 中评论: Please fix &lt;this&gt; with <at user_id="ou_reviewer">ou_reviewer</at> and <at user_id="ouid_extra">ouid_extra</at>'
+      expect.objectContaining({ schema: "2.0" }),
+      { uuid: expect.stringMatching(UUID_PATTERN) }
+    );
+    const card = vi.mocked(lark.sendCardToOpenId).mock.calls[0]![1] as Record<string, unknown>;
+    expect(JSON.stringify(card)).toContain(
+      "[收到文档评论] <at id=ou_owner></at> 在 <link url='https://example.feishu.cn/docx/doc_token'>https://example.feishu.cn/docx/doc&#95;token</link> 中评论: Please fix &lt;this&gt; with <at id=ou_reviewer></at> and <at id=ouid_extra></at>"
     );
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        larkMessageId: "proxy_doc_comment",
+        larkMessageId: "doc_comment:event_doc_comment:comment_1:reply_1",
         docCommentId: "comment_1",
         routeKind: "doc_comment",
         status: "processing",
@@ -1388,7 +1394,7 @@ describe("ConversationManager", () => {
     );
   });
 
-  it("sends watched doc comment proxy messages as posts with images appended", async () => {
+  it("sends watched doc comments as turn cards while preserving images for Codex", async () => {
     const { repository } = createRepository(conversationRecord(), {
       codexThreads: [codexThreadRecord({ codexThreadId: "thread_1" })]
     });
@@ -1400,7 +1406,6 @@ describe("ConversationManager", () => {
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     const lark = createLarkResponder();
-    vi.mocked(lark.sendPostToOpenId).mockResolvedValue({ messageId: "proxy_doc_comment_image", raw: {} });
     const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
       text: "@ou_bot Please inspect @ou_reviewer",
       imageKeys: ["img_1", "img_2"]
@@ -1431,33 +1436,23 @@ describe("ConversationManager", () => {
     }));
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
-    expect(larkFiles.uploadImage).toHaveBeenCalledWith({
-      filePath: "/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/doc_comments/comment_1/img_1.png",
-      fileName: "img_1.png",
-      contentType: "image/png"
+    expect(larkDocComments.downloadCommentImage).toHaveBeenCalledWith({
+      fileToken: "img_1",
+      outputDir: expect.stringContaining(path.join("doc_comments", "comment_1")),
+      driveRouteToken: undefined,
+      fileName: undefined
     });
-    expect(larkFiles.uploadImage).toHaveBeenCalledWith({
-      filePath: "/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/doc_comments/comment_1/img_2.png",
-      fileName: "img_2.png",
-      contentType: "image/png"
-    });
-    expect(lark.sendPostToOpenId).toHaveBeenCalledWith(
+    expect(larkFiles.uploadImage).not.toHaveBeenCalled();
+    expect(lark.sendCardToOpenId).toHaveBeenCalledWith(
       "ou_guest",
-      [
-        [
-          { tag: "at", user_id: "ou_owner", user_name: "Owner" },
-          { tag: "text", text: " 在 https://example.feishu.cn/docx/doc_token 中评论: " },
-          { tag: "text", text: "Please inspect " },
-          { tag: "at", user_id: "ou_reviewer", user_name: "ou_reviewer" }
-        ],
-        [{ tag: "img", image_key: "uploaded_img_1" }],
-        [{ tag: "img", image_key: "uploaded_img_2" }]
-      ]
+      expect.objectContaining({ schema: "2.0" }),
+      { uuid: expect.stringMatching(UUID_PATTERN) }
     );
+    expect(lark.sendPostToOpenId).not.toHaveBeenCalled();
     expect(lark.sendTextToOpenId).not.toHaveBeenCalled();
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        larkMessageId: "proxy_doc_comment_image",
+        larkMessageId: "doc_comment:event_doc_comment:comment_1:reply_1",
         routeKind: "doc_comment",
         status: "processing",
         codexThreadId: "thread_1"
@@ -1482,9 +1477,6 @@ describe("ConversationManager", () => {
     });
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();
-    vi.mocked(lark.sendTextToOpenId)
-      .mockResolvedValueOnce({ messageId: "proxy_doc_comment_1", raw: {} })
-      .mockResolvedValueOnce({ messageId: "proxy_doc_comment_2", raw: {} });
     const larkDocComments = createLarkDocCommentClient();
     vi.mocked(larkDocComments.getCommentSnapshot)
       .mockResolvedValueOnce(larkDocCommentSnapshot({ replyId: "reply_1", text: "First doc request" }))
@@ -1516,7 +1508,7 @@ describe("ConversationManager", () => {
     expect(manager.queueDepth("p2p_ou_guest")).toBe(0);
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        larkMessageId: "proxy_doc_comment_2",
+        larkMessageId: "doc_comment:event_doc_comment_2:comment_1:reply_2",
         routeKind: "doc_comment",
         status: "processing",
         codexThreadId: "thread_1"
@@ -1532,7 +1524,7 @@ describe("ConversationManager", () => {
       })
     );
     await waitForExpect(() =>
-      expect(repository.markLarkMessagesSteered).toHaveBeenCalledWith(["proxy_doc_comment_1"], {
+      expect(repository.markLarkMessagesSteered).toHaveBeenCalledWith(["doc_comment:event_doc_comment_1:comment_1:reply_1"], {
         conversationKey: "p2p_ou_guest",
         codexThreadId: "thread_1",
         codexTurnId: "turn_1"
@@ -1550,7 +1542,7 @@ describe("ConversationManager", () => {
 
     turns[0]!.resolve({ ...completed("thread_1", "turn_1"), text: "Final doc answer" });
     await waitForExpect(() =>
-      expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["proxy_doc_comment_2"])
+      expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["doc_comment:event_doc_comment_2:comment_1:reply_2"])
     );
     await waitForExpect(() =>
       expect(larkDocComments.replyToComment).toHaveBeenCalledWith({
@@ -1595,7 +1587,7 @@ describe("ConversationManager", () => {
       )
     );
     await waitForExpect(() =>
-      expect(repository.markLarkMessagesSteered).toHaveBeenCalledWith(["text_oc_group_1"], {
+      expect(repository.markLarkMessagesSteered).toHaveBeenCalledWith(["doc_comment:event_doc_comment:comment_1:reply_1"], {
         conversationKey: "group_oc_group",
         codexThreadId: "thread_group",
         codexTurnId: "turn_1"
@@ -1640,9 +1632,6 @@ describe("ConversationManager", () => {
     });
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();
-    vi.mocked(lark.sendTextToOpenId)
-      .mockResolvedValueOnce({ messageId: "proxy_doc_comment_1", raw: {} })
-      .mockResolvedValueOnce({ messageId: "proxy_doc_comment_2", raw: {} });
     const larkDocComments = createLarkDocCommentClient();
     vi.mocked(larkDocComments.getCommentSnapshot)
       .mockResolvedValueOnce(larkDocCommentSnapshot({ commentId: "comment_1", replyId: "reply_1" }))
@@ -1667,7 +1656,7 @@ describe("ConversationManager", () => {
     expect(codex.steerTurn).not.toHaveBeenCalled();
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        larkMessageId: "proxy_doc_comment_2",
+        larkMessageId: "doc_comment:event_doc_comment_2:comment_2:reply_2",
         routeKind: "doc_comment",
         status: "queued",
         codexThreadId: "thread_1"
@@ -1687,7 +1676,6 @@ describe("ConversationManager", () => {
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     const lark = createLarkResponder();
-    vi.mocked(lark.sendTextToOpenId).mockResolvedValue({ messageId: "proxy_doc_comment", raw: {} });
     const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
       authorOpenId: "ou_reviewer",
       authorName: "Reviewer",
@@ -1727,7 +1715,6 @@ describe("ConversationManager", () => {
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     const lark = createLarkResponder();
-    vi.mocked(lark.sendTextToOpenId).mockResolvedValue({ messageId: "proxy_doc_comment", raw: {} });
     const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
       text: "@Twinny 图里是啥",
       quote: "[图片]",
@@ -1816,7 +1803,6 @@ describe("ConversationManager", () => {
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     const lark = createLarkResponder();
-    vi.mocked(lark.sendTextToOpenId).mockResolvedValue({ messageId: "proxy_doc_comment_2", raw: {} });
     const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
       replyId: "reply_2",
       text: "Follow-up same block",
@@ -1840,7 +1826,7 @@ describe("ConversationManager", () => {
     );
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        larkMessageId: "proxy_doc_comment_2",
+        larkMessageId: "doc_comment:event_doc_comment_2:comment_1:reply_2",
         docCommentId: "comment_1",
         routeKind: "doc_comment",
         status: "processing",
