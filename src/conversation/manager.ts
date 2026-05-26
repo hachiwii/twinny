@@ -741,6 +741,7 @@ interface CreatedSessionTopic {
 
 interface LarkReplyOptions {
   replyInThread?: boolean;
+  uuid?: string;
 }
 
 interface LarkReplyResult {
@@ -5407,6 +5408,11 @@ export class ConversationManager {
       name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
       larkThreadId: context.larkThreadId
     });
+    await this.backfillThreadSummaryCardForLarkThread(context, message, {
+      conversationKey: context.conversationKey,
+      codexThreadId: activeThread.threadId,
+      profile
+    });
     return {
       conversationKey: context.conversationKey,
       profile,
@@ -5415,6 +5421,59 @@ export class ConversationManager {
       replacedMissingThread: activeThread.replacedMissingThread,
       previousThreadId: activeThread.previousThreadId
     };
+  }
+
+  private async backfillThreadSummaryCardForLarkThread(
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    params: { conversationKey: string; codexThreadId: string; profile: ProfileName }
+  ): Promise<void> {
+    if (!context.larkThreadId) {
+      return;
+    }
+    try {
+      let thread = await this.options.repository.getCodexThreadById(params.codexThreadId);
+      if (!thread || thread.cardMessageId) {
+        return;
+      }
+      const pendingName = this.consumePendingThreadName(params.codexThreadId);
+      if (pendingName) {
+        thread = await this.options.repository.updateCodexThreadName(params.codexThreadId, pendingName) ?? {
+          ...thread,
+          name: pendingName
+        };
+      }
+      const result = await this.options.lark.replyCard(
+        topicReplyAnchorMessageId(message),
+        await this.renderThreadSummaryCard(thread),
+        {
+          replyInThread: true,
+          uuid: createLarkUuid("twinny-thread-card-backfill", message.eventId, context.larkThreadId)
+        }
+      );
+      const cardMessageId = nonEmptyString(result?.messageId);
+      if (!cardMessageId) {
+        this.log.warn(
+          { messageId: message.messageId, codexThreadId: params.codexThreadId, larkThreadId: context.larkThreadId },
+          "failed to backfill thread summary card because Lark response did not include message_id"
+        );
+        return;
+      }
+      await this.options.repository.updateCodexThreadCard({
+        conversationKey: params.conversationKey,
+        codexThreadId: params.codexThreadId,
+        profile: params.profile,
+        name: thread.name,
+        larkThreadId: extractLarkMessageThreadId(result?.raw) ?? context.larkThreadId,
+        creatorOpenId: message.senderOpenId,
+        cardMessageId
+      });
+    } catch (error) {
+      this.log.warn(
+        { error, messageId: message.messageId, codexThreadId: params.codexThreadId, larkThreadId: context.larkThreadId },
+        "failed to backfill thread summary card"
+      );
+    }
   }
 
   private profileForNewConversation(context: MessageContext, message: IncomingLarkMessage): ProfileName {

@@ -3383,6 +3383,56 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("backfills a topic thread card before starting Codex for an untracked Lark thread", async () => {
+    const row = groupConversationRecord({ profile: "host", responseMode: "all" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_backfilled" })),
+      startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
+        await onTurnStarted?.("turn_1");
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockResolvedValueOnce({
+      messageId: "card_backfilled",
+      raw: { data: { thread_id: "topic_manual" } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_manual_topic", "manual topic message", {
+      chatType: "topic_group",
+      larkThreadId: "topic_manual",
+      larkRootMessageId: "topic_manual_root",
+      senderOpenId: "ou_guest"
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(lark.replyCard).toHaveBeenCalledWith("topic_manual_root", expect.any(Object), {
+      replyInThread: true,
+      uuid: expect.stringMatching(UUID_PATTERN)
+    });
+    expect(vi.mocked(lark.replyCard).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(codex.startTurn).mock.invocationCallOrder[0]!
+    );
+    expect(repository.updateCodexThreadCard).toHaveBeenCalledWith(expect.objectContaining({
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread_backfilled",
+      profile: "host",
+      larkThreadId: "topic_manual",
+      creatorOpenId: "ou_guest",
+      cardMessageId: "card_backfilled"
+    }));
+    expect(repository.getCodexThreadByConversationAndLarkThread("group_oc_group", "topic_manual")).toMatchObject({
+      codexThreadId: "thread_backfilled",
+      cardMessageId: "card_backfilled"
+    });
+    expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread_backfilled",
+      input: wrappedMessage("manual topic message", "g_manual_topic", "ou_guest")
+    }));
+  });
+
   it("unescapes normalized post markdown when proxying /thread initial text", async () => {
     const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
