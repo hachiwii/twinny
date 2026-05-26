@@ -2305,6 +2305,7 @@ function adaptConversationRepository(repository: StoreConversationRepository): M
     upsertLarkDocWatcher: repository.upsertLarkDocWatcher.bind(repository),
     getLarkDocWatcherByFile: repository.getLarkDocWatcherByFile.bind(repository),
     listLarkDocWatchersByThread: repository.listLarkDocWatchersByThread.bind(repository),
+    migrateLarkDocWatchersToThread: repository.migrateLarkDocWatchersToThread.bind(repository),
     touchLarkDocWatcherCommentReceived: repository.touchLarkDocWatcherCommentReceived.bind(repository)
   };
 }

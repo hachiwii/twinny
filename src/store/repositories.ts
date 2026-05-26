@@ -341,6 +341,7 @@ export class ConversationRepository {
   private readonly upsertLarkDocWatcherStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly selectLarkDocWatcherByFileStatement: Database.Statement<[string, string], LarkDocWatcherRow>;
   private readonly selectLarkDocWatchersByThreadStatement: Database.Statement<[string], LarkDocWatcherRow>;
+  private readonly migrateLarkDocWatchersToThreadStatement: Database.Statement<[string, number, string, string]>;
   private readonly updateLarkDocWatcherLastCommentStatement: Database.Statement<[number, number, string, string]>;
 
   constructor(
@@ -919,6 +920,13 @@ export class ConversationRepository {
       SELECT * FROM lark_doc_watcher
       WHERE thread_id = ?
       ORDER BY updated_at DESC, id DESC
+    `);
+    this.migrateLarkDocWatchersToThreadStatement = this.db.prepare(`
+      UPDATE lark_doc_watcher
+      SET thread_id = ?,
+          updated_at = ?
+      WHERE thread_id = ?
+        AND thread_id != ?
     `);
     this.updateLarkDocWatcherLastCommentStatement = this.db.prepare(`
       UPDATE lark_doc_watcher
@@ -1500,6 +1508,21 @@ export class ConversationRepository {
   listLarkDocWatchersByThread(threadId: string): LarkDocWatcherRecord[] {
     assertNonEmpty(threadId, "threadId");
     return this.selectLarkDocWatchersByThreadStatement.all(threadId).map((row) => mapRequiredLarkDocWatcherRow(row));
+  }
+
+  migrateLarkDocWatchersToThread(previousThreadId: string, nextThreadId: string): number {
+    assertNonEmpty(previousThreadId, "previousThreadId");
+    assertNonEmpty(nextThreadId, "nextThreadId");
+    if (previousThreadId === nextThreadId) {
+      return 0;
+    }
+    const result = this.migrateLarkDocWatchersToThreadStatement.run(
+      nextThreadId,
+      this.now(),
+      previousThreadId,
+      nextThreadId
+    );
+    return result.changes;
   }
 
   touchLarkDocWatcherCommentReceived(fileType: string, fileToken: string, receivedAt: number): boolean {

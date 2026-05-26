@@ -346,6 +346,10 @@ export interface ConversationRepository {
     fileToken: string
   ): Promise<LarkDocWatcherRecord | undefined> | LarkDocWatcherRecord | undefined;
   listLarkDocWatchersByThread(threadId: string): Promise<LarkDocWatcherRecord[]> | LarkDocWatcherRecord[];
+  migrateLarkDocWatchersToThread(
+    previousThreadId: string,
+    nextThreadId: string
+  ): Promise<number> | number;
   touchLarkDocWatcherCommentReceived(fileType: string, fileToken: string, receivedAt: number): Promise<boolean> | boolean;
 }
 
@@ -5467,7 +5471,8 @@ export class ConversationManager {
       effort: active.modelReasoningEffort,
       workspace: active.workspace,
       larkThreadId: active.context.larkThreadId,
-      codexThreadHasRollout: false
+      codexThreadHasRollout: false,
+      previousThreadId
     });
     active.threadId = replacement.threadId;
     active.threadTokenUsage = await this.readThreadTokenUsageBestEffort(active.threadId);
@@ -6753,7 +6758,8 @@ export class ConversationManager {
           effort: settings.effort,
           workspace: params.workspace,
           larkThreadId: params.larkThreadId,
-          codexThreadHasRollout: true
+          codexThreadHasRollout: true,
+          previousThreadId: thread.codexThreadId
         });
       }
       return { threadId: resumed.threadId, replacedMissingThread: false };
@@ -6786,7 +6792,8 @@ export class ConversationManager {
         effort: settings.effort,
         workspace: params.workspace,
         larkThreadId: params.larkThreadId,
-        codexThreadHasRollout: false
+        codexThreadHasRollout: false,
+        previousThreadId: thread.codexThreadId
       });
       return {
         threadId: replacement.threadId,
@@ -6805,6 +6812,7 @@ export class ConversationManager {
     workspace: string;
     larkThreadId?: string;
     codexThreadHasRollout: boolean;
+    previousThreadId?: string;
   }): Promise<void> {
     if (params.larkThreadId) {
       await this.recordOrReplaceCodexThreadBestEffort({
@@ -6817,6 +6825,7 @@ export class ConversationManager {
         codexThreadHasRollout: params.codexThreadHasRollout,
         replaceExistingLarkThread: true
       });
+      await this.migrateLarkDocWatchersBestEffort(params.previousThreadId, params.codexThreadId);
       return;
     }
     await this.options.repository.updateThreadBinding(params.conversationKey, {
@@ -6834,6 +6843,27 @@ export class ConversationManager {
       name: MAIN_THREAD_NAME,
       codexThreadHasRollout: params.codexThreadHasRollout
     });
+    await this.migrateLarkDocWatchersBestEffort(params.previousThreadId, params.codexThreadId);
+  }
+
+  private async migrateLarkDocWatchersBestEffort(
+    previousThreadId: string | undefined,
+    nextThreadId: string
+  ): Promise<void> {
+    if (!previousThreadId || previousThreadId === nextThreadId) {
+      return;
+    }
+    try {
+      const migrated = await this.options.repository.migrateLarkDocWatchersToThread(previousThreadId, nextThreadId);
+      if (migrated > 0) {
+        this.log.info({ previousThreadId, nextThreadId, migrated }, "migrated lark doc watchers to replacement thread");
+      }
+    } catch (error) {
+      this.log.warn(
+        { error, previousThreadId, nextThreadId },
+        "failed to migrate lark doc watchers to replacement thread"
+      );
+    }
   }
 
   private getState(conversationKey: string): ConversationState {

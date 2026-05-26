@@ -4946,11 +4946,27 @@ describe("ConversationManager", () => {
     const lark = createLarkResponder();
     vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
     const manager = createManager({ repository, codex, lark });
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_missing",
+      watchMode: "owner",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
 
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(lark.replyMarkdown).toHaveBeenCalledWith("m1", "reply"));
 
     expect(row.codexThreadId).toBe("thread_replacement");
+    expect(repository.listLarkDocWatchersByThread("thread_missing")).toEqual([]);
+    expect(repository.listLarkDocWatchersByThread("thread_replacement")).toEqual([
+      expect.objectContaining({
+        fileType: "docx",
+        fileToken: "doc_token",
+        threadId: "thread_replacement"
+      })
+    ]);
+    expect(repository.migrateLarkDocWatchersToThread).toHaveBeenCalledWith("thread_missing", "thread_replacement");
     expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_replacement" }));
     expect(lark.replyText).toHaveBeenNthCalledWith(
       1,
@@ -4979,11 +4995,27 @@ describe("ConversationManager", () => {
     const lark = createLarkResponder();
     vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
     const manager = createManager({ repository, codex, lark });
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_turn",
+      threadId: "thread_missing",
+      watchMode: "all",
+      watchUrl: "https://example.feishu.cn/docx/doc_turn"
+    });
 
     manager.submitIncoming(message("m1", "first"));
     await waitForExpect(() => expect(lark.replyMarkdown).toHaveBeenCalledWith("m1", "reply"));
 
     expect(row.codexThreadId).toBe("thread_replacement");
+    expect(repository.listLarkDocWatchersByThread("thread_missing")).toEqual([]);
+    expect(repository.listLarkDocWatchersByThread("thread_replacement")).toEqual([
+      expect.objectContaining({
+        fileType: "docx",
+        fileToken: "doc_turn",
+        threadId: "thread_replacement"
+      })
+    ]);
+    expect(repository.migrateLarkDocWatchersToThread).toHaveBeenCalledWith("thread_missing", "thread_replacement");
     expect(codex.resumeThread).not.toHaveBeenCalled();
     expect(codex.startTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({ threadId: "thread_missing" }));
     expect(codex.startTurn).toHaveBeenNthCalledWith(2, expect.objectContaining({ threadId: "thread_replacement" }));
@@ -8474,6 +8506,21 @@ function createRepository(initial?: ConversationRecord, options: {
       listLarkDocWatchersByThread: vi.fn((threadId) =>
         [...larkDocWatchers.values()].filter((watcher) => watcher.threadId === threadId)
       ),
+      migrateLarkDocWatchersToThread: vi.fn((previousThreadId, nextThreadId) => {
+        if (previousThreadId === nextThreadId) {
+          return 0;
+        }
+        let migrated = 0;
+        for (const watcher of larkDocWatchers.values()) {
+          if (watcher.threadId !== previousThreadId) {
+            continue;
+          }
+          watcher.threadId = nextThreadId;
+          watcher.updatedAt = Date.now();
+          migrated += 1;
+        }
+        return migrated;
+      }),
       touchLarkDocWatcherCommentReceived: vi.fn((fileType, fileToken, receivedAt) => {
         const existing = larkDocWatchers.get(larkDocWatcherKey(fileType, fileToken));
         if (!existing) {

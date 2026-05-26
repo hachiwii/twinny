@@ -205,6 +205,42 @@ describe("ConversationRepository", () => {
     expect(repo.touchLarkDocWatcherCommentReceived("docx", "missing", 1)).toBe(false);
   });
 
+  it("migrates Lark doc watchers between replacement threads", () => {
+    const repo = createConversationRepository(db, { now: () => now });
+
+    repo.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_a",
+      threadId: "thread_old",
+      watchMode: "owner",
+      watchUrl: "https://example.feishu.cn/docx/doc_a"
+    });
+    repo.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_b",
+      threadId: "thread_old",
+      watchMode: "all",
+      watchUrl: "https://example.feishu.cn/docx/doc_b"
+    });
+    const untouched = repo.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_c",
+      threadId: "thread_other",
+      watchMode: "none",
+      watchUrl: "https://example.feishu.cn/docx/doc_c"
+    });
+
+    now = 2000;
+    expect(repo.migrateLarkDocWatchersToThread("thread_old", "thread_new")).toBe(2);
+    expect(repo.listLarkDocWatchersByThread("thread_old")).toEqual([]);
+    expect(repo.listLarkDocWatchersByThread("thread_new")).toEqual([
+      expect.objectContaining({ fileToken: "doc_b", threadId: "thread_new", updatedAt: 2000 }),
+      expect.objectContaining({ fileToken: "doc_a", threadId: "thread_new", updatedAt: 2000 })
+    ]);
+    expect(repo.listLarkDocWatchersByThread("thread_other")).toEqual([untouched]);
+    expect(repo.migrateLarkDocWatchersToThread("thread_new", "thread_new")).toBe(0);
+  });
+
   it("records runtime codex threads, messages, and token usage by business ids", () => {
     const repo = createConversationRepository(db, { now: () => now });
     const workspace = path.join(tempDir, "workspaces", "p2p_ou_456");
