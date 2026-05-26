@@ -502,6 +502,49 @@ describe("normalizeLarkDocCommentAddWithReason", () => {
     });
   });
 
+  it("normalizes drive notice doc comment events with notice_meta", () => {
+    expect(
+      normalizeLarkDocCommentAddWithReason({
+        schema: "2.0",
+        event_id: "event-doc-comment-notice",
+        create_time: "1779806422000",
+        event_type: "drive.notice.comment_add_v1",
+        comment_id: "7644210372219555015",
+        is_mentioned: true,
+        notice_meta: {
+          file_token: "O8TAd0SLAo95U8xclgFcE4Ppnd1",
+          file_type: "docx",
+          from_user_id: {
+            open_id: "ou_owner",
+            union_id: "on_owner",
+            user_id: null
+          },
+          notice_type: "add_comment",
+          to_user_id: {
+            open_id: "ou_bot",
+            union_id: "on_bot",
+            user_id: null
+          }
+        },
+        reply_id: "7644210372240510137"
+      })
+    ).toEqual({
+      kind: "doc_comment",
+      comment: {
+        eventId: "event-doc-comment-notice",
+        fileType: "docx",
+        fileToken: "O8TAd0SLAo95U8xclgFcE4Ppnd1",
+        commentId: "7644210372219555015",
+        replyId: "7644210372240510137",
+        senderOpenId: "ou_owner",
+        senderName: undefined,
+        isMentioned: true,
+        createTime: 1779806422000,
+        raw: expect.anything()
+      }
+    });
+  });
+
   it("ignores malformed doc comment add events", () => {
     expect(normalizeLarkDocCommentAddWithReason({ event: { comment_id: "comment_1" } })).toMatchObject({
       kind: "ignored",

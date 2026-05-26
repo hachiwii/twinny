@@ -234,14 +234,17 @@ export function normalizeLarkDocCommentAddWithReason(raw: unknown): NormalizeLar
 
   const header = eventHeader(raw);
   const event = eventPayload(raw);
+  const noticeMeta = isRecord(event.notice_meta) ? event.notice_meta : {};
   const fileType = firstStringValue(
     event.file_type,
+    noticeMeta.file_type,
     getRecordValue(event.file, "file_type"),
     getRecordValue(event.file, "type"),
     event.obj_type
   );
   const fileToken = firstStringValue(
     event.file_token,
+    noticeMeta.file_token,
     getRecordValue(event.file, "file_token"),
     getRecordValue(event.file, "token"),
     event.obj_token
@@ -252,6 +255,7 @@ export function normalizeLarkDocCommentAddWithReason(raw: unknown): NormalizeLar
 
   const comment = isRecord(event.comment) ? event.comment : {};
   const reply = isRecord(event.reply) ? event.reply : {};
+  const noticeFromUser = isRecord(noticeMeta.from_user_id) ? noticeMeta.from_user_id : {};
   const commentId = firstStringValue(event.comment_id, comment.comment_id, comment.id);
   if (!commentId) {
     return ignoredDocComment("missing_comment_id", raw);
@@ -260,6 +264,7 @@ export function normalizeLarkDocCommentAddWithReason(raw: unknown): NormalizeLar
   const senderOpenId = firstStringValue(
     getRecordValue(getRecordValue(event.operator, "operator_id"), "open_id"),
     getRecordValue(getRecordValue(event.sender, "sender_id"), "open_id"),
+    noticeFromUser.open_id,
     event.user_id,
     reply.user_id,
     comment.user_id
