@@ -368,7 +368,7 @@ export class TwinnyRuntime {
       this.conversation?.submitCodexThreadNameUpdated(update);
     });
     server.on("exit", (code, signal) => {
-      if (this.codexIntentionalStopByProfile.delete(profile)) {
+      if (this.codexIntentionalStopByProfile.delete(profile) || this.stopped) {
         this.log.info({ profile, code, signal }, "codex app-server stopped intentionally");
         return;
       }
@@ -478,10 +478,18 @@ export class TwinnyRuntime {
     }
     const pool = this.codexPool;
     this.codexPool = undefined;
+    const profiles = pool.listProfiles();
+    for (const profile of profiles) {
+      this.codexIntentionalStopByProfile.add(profile);
+    }
     try {
       await pool.stopAll(signal);
     } catch (error) {
       this.log.warn({ error }, "failed to stop codex app-server pool cleanly");
+    } finally {
+      for (const profile of profiles) {
+        this.codexIntentionalStopByProfile.delete(profile);
+      }
     }
   }
 
