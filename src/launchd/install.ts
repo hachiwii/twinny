@@ -2,20 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execa } from "execa";
-import { createRuntimePaths, readConfigStatus, resolveTwinnyHome } from "../config/index.js";
-import { isTwinnyLockHeld, readTwinnyLockPid } from "../lock/index.js";
+import { createRuntimePaths, readConfigStatus } from "../config/index.js";
+import { waitForRuntimeLockRelease, type WaitForRuntimeLockReleaseOptions } from "../service/lock.js";
 import type { TwinnyConfig } from "../types.js";
 import { createLaunchAgentPlist, launchAgentLabelForHomeRandom } from "./plist.js";
 
-const defaultStopWaitTimeoutMs = 35_000;
-const defaultStopWaitPollMs = 250;
-const runtimeLockStaleMs = 30_000;
-
-export interface WaitForRuntimeLockReleaseOptions {
-  home?: string;
-  timeoutMs?: number;
-  pollMs?: number;
-}
+export { waitForRuntimeLockRelease, type WaitForRuntimeLockReleaseOptions };
 
 export interface LaunchAgentCommandOptions {
   home?: string;
@@ -91,22 +83,6 @@ export async function restartLaunchAgent(options: LaunchAgentCommandOptions = {}
   await startLaunchAgent(options);
 }
 
-export async function waitForRuntimeLockRelease(options: WaitForRuntimeLockReleaseOptions = {}): Promise<void> {
-  const paths = createRuntimePaths(options.home ?? resolveTwinnyHome());
-  const timeoutMs = options.timeoutMs ?? defaultStopWaitTimeoutMs;
-  const pollMs = options.pollMs ?? defaultStopWaitPollMs;
-  const deadline = Date.now() + timeoutMs;
-
-  while (await isTwinnyLockHeld(paths, { stale: runtimeLockStaleMs })) {
-    if (Date.now() >= deadline) {
-      const pid = await readTwinnyLockPid(paths, { stale: runtimeLockStaleMs });
-      const detail = pid ? `pid ${pid}` : "unknown pid";
-      throw new Error(`Timed out waiting for Twinny runtime lock to release (${detail})`);
-    }
-    await sleep(pollMs);
-  }
-}
-
 export async function statusLaunchAgent(options: LaunchAgentCommandOptions = {}): Promise<void> {
   const runtime = await resolveLaunchAgentRuntime(options);
   const result = await execa("launchctl", ["print", `gui/${process.getuid?.() ?? os.userInfo().uid}/${runtime.label}`], {
@@ -147,8 +123,4 @@ async function resolveLaunchAgentRuntime(options: InstallLaunchAgentOptions = {}
     plistPath: getLaunchAgentPath(label),
     config: status.config
   };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

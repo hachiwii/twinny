@@ -18,7 +18,7 @@ export const installGuideRequiredEvents = [
   {
     event: LARK_MESSAGE_RECEIVE_EVENT,
     kind: "事件",
-    description: "接收单聊和群聊消息"
+    description: "接收单聊和群聊 @ 机器人消息"
   },
   {
     event: LARK_MESSAGE_RECALLED_EVENT,

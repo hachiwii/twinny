@@ -8,7 +8,7 @@
 
 ## 环境要求
 
-- macOS，用于 installer 管理的 LaunchAgent 工作流。
+- macOS 或 Linux。installer 在 macOS 上管理 LaunchAgent，在 Linux 上管理 systemd user service。
 - Node.js 22 或更新版本。
 - `PATH` 中有 Codex CLI 0.130.0 或更新版本，或者设置 `CODEX_BINARY`。
 - 一个已配置下方权限和事件订阅的 Feishu/Lark 机器人应用。
@@ -26,6 +26,8 @@ node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)
 ```
 
 Twinny 需要 Codex CLI 0.130.0 或更新版本，以及带 npm 的 Node.js 22 或更新版本。如果缺少 `codex`，用 `brew install codex` 安装。如果缺少 `node` 或 `npm`，或者 Node.js 版本低于 22，用 `brew install node` 安装当前 Node.js 版本。
+
+macOS 上推荐用 Homebrew 准备依赖。Linux 上请用发行版包管理器、npm 或版本管理器安装 Node.js 22+ 和 Codex，并确保 installer 能解析到最终的绝对路径。Linux daemon 管理依赖 `systemctl --user` 和 `journalctl`。
 
 通过 `npx` 运行交互式 installer：
 
@@ -46,13 +48,15 @@ npx twinny@latest uninstall
 
 如果不使用默认 home，给任意命令加上 `TWINNY_HOME=/path/to/home`。
 
+Secret 不写入 `config.toml`。macOS 安装使用系统 Keychain；Linux 安装默认使用 `TWINNY_HOME/runtime/secrets.json`，文件权限限制为 `0600`，除非你通过后台服务环境提供 `TWINNY_LARK_APP_SECRET`。
+
 ## 飞书/Lark 应用配置
 
 你需要在飞书/Lark 开发者后台申请这些 API 权限：
 
 ```text
 im:message.p2p_msg:readonly
-im:message.group_msg
+im:message.group_at_msg:readonly
 im:message:readonly
 im:message:send_as_bot
 im:message:update
@@ -62,6 +66,12 @@ im:chat:read
 im:chat:create
 im:chat:update
 im:resource
+```
+
+如果你希望群聊响应模式不需要 @ bot、直接接收全部群消息，再额外申请高级权限：
+
+```text
+im:message.group_msg
 ```
 
 订阅这些事件/回调：
@@ -175,7 +185,7 @@ Twinny 从 `TWINNY_HOME` 读取 `config.toml`。
 
 | 字段 | 含义和取值 |
 | --- | --- |
-| `[codex].binary` | Codex CLI 可执行文件路径或命令名。默认是 `codex`。如果 LaunchAgent 不能通过 `PATH` 找到 Codex，建议使用绝对路径。 |
+| `[codex].binary` | Codex CLI 可执行文件路径或命令名。默认是 `codex`。如果后台服务不能通过 `PATH` 找到 Codex，建议使用绝对路径。 |
 | `[lark.reaction].working` | Twinny 工作中给 Lark 消息添加的 emoji type。默认是 `JubilantRabbit`。 |
 | `[lark.reaction].queued` | 消息进入队列时添加的 Lark emoji type。默认是 `OneSecond`。 |
 | `[lark.redaction].email` | 发往 Lark 的 payload 中邮箱地址的脱敏策略。`mask` 保留域名并遮蔽邮箱用户名，例如 `alice@example.com` 会变成 `a***e@example.com`；`whitespace` 插入空格，例如 `alice @ example.com`；`none` 发送明文邮箱。飞书可能会拦截包含明文邮箱或手机号的 bot message。默认是 `mask`。 |
@@ -242,7 +252,7 @@ Twinny 不会收集或上传对话内容和凭据。这包括 Lark 消息正文�
 
 Telemetry 可能包含：
 
-- 安装和启动生命周期状态、启动耗时、LaunchAgent 配置状态；
+- 安装和启动生命周期状态、启动耗时、后台服务配置状态；
 - 运行时健康信号，例如 heartbeat、uptime、队列和 active turn 数量、内存使用量、Lark/Codex ready 状态；
 - 消息路由元数据，例如 conversation type、message 或 action type、route kind、queue depth、resource count；
 - turn 元数据，例如状态、类型、模型、reasoning effort、token 数、耗时、生成图片数量，以及失败时的 error code/category；

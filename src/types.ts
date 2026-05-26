@@ -148,6 +148,7 @@ export interface RuntimePaths {
   configFile: string;
   authFile: string;
   homeRandomFile: string;
+  secretsFile: string;
   sqliteDir: string;
   sqliteFile: string;
   workspacesDir: string;

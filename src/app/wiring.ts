@@ -2,11 +2,12 @@ import type { Logger } from "pino";
 import path from "node:path";
 import {
   createRuntimePaths,
+  createDefaultSecretStore,
   loadTwinnyConfig,
   resolveBundledBannerPath,
   resolveBundledLogoPath,
   resolveLarkAppSecret,
-  SecurityCliSecretStore
+  type SecretStore
 } from "../config/index.js";
 import { ProfileCodexAppServerPool, type CodexAppServer } from "../codex/index.js";
 import { ConversationManager, type CodexBridge } from "../conversation/manager.js";
@@ -74,7 +75,7 @@ export class TwinnyRuntime {
   private readonly log: Logger;
   private readonly larkSdkLogger: LarkSdkLogger;
   private readonly paths;
-  private readonly secretStore = new SecurityCliSecretStore();
+  private readonly secretStore: SecretStore;
   private lock?: TwinnyRuntimeLock;
   private db?: TwinnyDatabase;
   private codexPool?: ProfileCodexAppServerPool;
@@ -97,6 +98,7 @@ export class TwinnyRuntime {
   ) {
     this.log = options.logger ?? defaultLogger;
     this.paths = createRuntimePaths(config.home);
+    this.secretStore = createDefaultSecretStore({ paths: this.paths });
     this.larkSdkLogger =
       options.larkSdkLogger ??
       createLarkSdkLogger(createLogger({ logFile: path.join(this.paths.logsDir, "lark-sdk.log") }));

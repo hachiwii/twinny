@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   bootstrapTwinnyHome,
+  createDefaultSecretStore,
   createTwinnyConfig,
+  FileSecretStore,
   loadTwinnyConfig,
   MemorySecretStore,
   parseTwinnyConfig,
@@ -193,6 +195,34 @@ describe("secrets", () => {
 
     await expect(resolveLarkAppSecret(account, store, {})).resolves.toBe("from-store");
     await expect(resolveLarkAppSecret(account, store, { TWINNY_LARK_APP_SECRET: "from-env" })).resolves.toBe("from-env");
+  });
+
+  it("stores Linux secrets in a 0600 JSON file by default", async () => {
+    const home = await tempHome();
+    const paths = {
+      secretsFile: path.join(home, "runtime", "secrets.json")
+    };
+    const account = `twinny.home.${homeRandom}.lark.app_secret`;
+    const store = createDefaultSecretStore({ platform: "linux", paths });
+
+    await store.set(account, "from-file");
+
+    await expect(resolveLarkAppSecret(account, store, {})).resolves.toBe("from-file");
+    await expect(fs.readFile(paths.secretsFile, "utf8")).resolves.toContain("from-file");
+    const mode = (await fs.stat(paths.secretsFile)).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+
+  it("can delete file-backed secrets", async () => {
+    const home = await tempHome();
+    const account = `twinny.home.${homeRandom}.lark.app_secret`;
+    const store = new FileSecretStore({ filePath: path.join(home, "runtime", "secrets.json") });
+
+    await store.set(account, "from-file");
+    await expect(store.has(account)).resolves.toBe(true);
+    await store.delete(account);
+
+    await expect(store.get(account)).resolves.toBeNull();
   });
 });
 

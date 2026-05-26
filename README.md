@@ -8,7 +8,7 @@
 
 ## Requirements
 
-- macOS for the installer-managed LaunchAgent workflow.
+- macOS or Linux. The installer manages a macOS LaunchAgent on macOS and a systemd user service on Linux.
 - Node.js 22 or newer.
 - Codex CLI 0.130.0 or newer in `PATH`, or set `CODEX_BINARY`.
 - A Feishu/Lark bot app with the permissions and event subscriptions listed below.
@@ -25,7 +25,7 @@ npm --version
 node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' || brew install node
 ```
 
-Twinny requires Codex CLI 0.130.0 or newer and Node.js 22 or newer with npm. If `codex` is missing, install it with `brew install codex`. If `node` or `npm` is missing, or if Node.js is older than 22, install a current Node.js release with `brew install node`.
+Twinny requires Codex CLI 0.130.0 or newer and Node.js 22 or newer with npm. On macOS, Homebrew is the simplest setup path. On Linux, install Node.js 22+ and Codex through your preferred package manager, npm, or a version manager, then make sure the installer can resolve the final absolute paths. Linux daemon management requires `systemctl --user` and `journalctl`.
 
 Run the interactive installer with `npx`:
 
@@ -46,13 +46,15 @@ npx twinny@latest uninstall
 
 Use `TWINNY_HOME=/path/to/home` with any command when you are not using the default home.
 
+Secrets are stored outside `config.toml`. macOS installs use the system Keychain. Linux installs use a `0600` JSON secret file under `TWINNY_HOME/runtime/secrets.json`, unless `TWINNY_LARK_APP_SECRET` is provided in the service environment.
+
 ## Feishu/Lark App Configuration
 
 You need to grant these API permissions in the Feishu/Lark developer console:
 
 ```text
 im:message.p2p_msg:readonly
-im:message.group_msg
+im:message.group_at_msg:readonly
 im:message:readonly
 im:message:send_as_bot
 im:message:update
@@ -62,6 +64,12 @@ im:chat:read
 im:chat:create
 im:chat:update
 im:resource
+```
+
+If you want group response modes that receive every group message without requiring an @ mention, also request the advanced all-group-message permission:
+
+```text
+im:message.group_msg
 ```
 
 Subscribe to these events/callbacks:
@@ -182,7 +190,7 @@ Recognized fields:
 
 | Field                                   | Meaning and values                                                                                                                                                                                                                                                                                                                                                                       |
 | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[codex].binary`                        | Codex CLI executable path or command name. Defaults to `codex`. Use an absolute path when the LaunchAgent cannot find Codex through `PATH`.                                                                                                                                                                                                                                              |
+| `[codex].binary`                        | Codex CLI executable path or command name. Defaults to `codex`. Use an absolute path when the managed service cannot find Codex through `PATH`.                                                                                                                                                                                                                                           |
 | `[lark.reaction].working`               | Lark emoji type added while Twinny is working. Defaults to `JubilantRabbit`.                                                                                                                                                                                                                                                                                                             |
 | `[lark.reaction].queued`                | Lark emoji type added to queued messages. Defaults to `OneSecond`.                                                                                                                                                                                                                                                                                                                       |
 | `[lark.redaction].email`                | Redaction strategy for email addresses in outgoing Lark payloads. `mask` keeps the domain and masks the local part, for example `alice@example.com` becomes `a***e@example.com`; `whitespace` inserts spaces, for example `alice @ example.com`; `none` sends raw email addresses. Feishu may reject bot messages that contain raw email addresses or phone numbers. Defaults to `mask`. |
@@ -250,7 +258,7 @@ Twinny does not collect or upload conversation content or credentials. This incl
 
 Telemetry may include:
 
-- install and launch lifecycle status, startup duration, and LaunchAgent setup state;
+- install and launch lifecycle status, startup duration, and managed service setup state;
 - runtime health signals such as heartbeat, uptime, queue and active-turn counts, memory usage, and Lark/Codex readiness;
 - message routing metadata such as conversation type, message or action type, route kind, queue depth, and resource counts;
 - turn metadata such as status, type, model, reasoning effort, token counts, duration, generated image count, and error code/category when a turn fails;

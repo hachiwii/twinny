@@ -23,34 +23,34 @@ export async function runCli(argv: string[]): Promise<void> {
     await runInstallWizard();
   });
 
-  program.command("uninstall").description("Uninstall the macOS LaunchAgent.").action(async () => {
-    const { uninstallLaunchAgent } = await import("../launchd/install.js");
-    await uninstallLaunchAgent();
+  program.command("uninstall").description("Uninstall the managed daemon service.").action(async () => {
+    const { uninstallManagedService } = await import("../service/index.js");
+    await uninstallManagedService();
   });
 
-  program.command("start").description("Start the LaunchAgent.").action(async () => {
-    const { startLaunchAgent } = await import("../launchd/install.js");
-    await startLaunchAgent();
+  program.command("start").description("Start the managed daemon service.").action(async () => {
+    const { startManagedService } = await import("../service/index.js");
+    await startManagedService();
   });
 
-  program.command("stop").description("Stop the LaunchAgent.").action(async () => {
-    const { stopLaunchAgent } = await import("../launchd/install.js");
-    await stopLaunchAgent();
+  program.command("stop").description("Stop the managed daemon service.").action(async () => {
+    const { stopManagedService } = await import("../service/index.js");
+    await stopManagedService();
   });
 
-  program.command("restart").description("Restart the LaunchAgent.").action(async () => {
-    const { restartLaunchAgent } = await import("../launchd/install.js");
-    await restartLaunchAgent();
+  program.command("restart").description("Restart the managed daemon service.").action(async () => {
+    const { restartManagedService } = await import("../service/index.js");
+    await restartManagedService();
   });
 
   program.command("status").description("Show daemon status.").action(async () => {
-    const { statusLaunchAgent } = await import("../launchd/install.js");
-    await statusLaunchAgent();
+    const { statusManagedService } = await import("../service/index.js");
+    await statusManagedService();
   });
 
   program.command("logs").description("Tail Twinny logs.").action(async () => {
-    const { tailLogs } = await import("../launchd/install.js");
-    await tailLogs();
+    const { tailManagedServiceLogs } = await import("../service/index.js");
+    await tailManagedServiceLogs();
   });
 
   await program.parseAsync(argv);

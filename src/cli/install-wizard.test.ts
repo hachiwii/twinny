@@ -14,7 +14,7 @@ import {
 import {
   assertInstallHomeIsEmpty,
   buildEnvSelection,
-  buildLaunchEnvironmentStats,
+  buildServiceEnvironmentStats,
   compareSemver,
   defaultIncludeEnvKey,
   installWizardIntro,
@@ -22,13 +22,13 @@ import {
   isNpxEntrypoint,
   parseCodexVersion,
   readCodexDefaults,
-  resolveLaunchAgentEntrypoint,
+  resolveServiceEntrypoint,
   runInstallWizard
 } from "./install-wizard.js";
 
 const tempDirs: string[] = [];
-type ResolveLaunchAgentEntrypointOptions = NonNullable<Parameters<typeof resolveLaunchAgentEntrypoint>[1]>;
-type NpmInstallRunner = NonNullable<ResolveLaunchAgentEntrypointOptions["runNpmInstall"]>;
+type ResolveServiceEntrypointOptions = NonNullable<Parameters<typeof resolveServiceEntrypoint>[1]>;
+type NpmInstallRunner = NonNullable<ResolveServiceEntrypointOptions["runNpmInstall"]>;
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
@@ -65,21 +65,26 @@ describe("install wizard helpers", () => {
 
   it("selects launch environment defaults without sensitive or terminal session variables", () => {
     const selection = buildEnvSelection({
+      CODEX_THREAD_ID: "thread",
       FOO: "bar",
+      HTTPS_PROXY: "http://user:password@proxy.example:8080",
       OPENAI_API_KEY: "secret",
       PATH: "/usr/bin",
       PWD: "/tmp",
+      SSH_CLIENT: "127.0.0.1 1 2",
       TERM: "xterm-256color",
       TWINNY_HOME: "/tmp/twinny"
     });
 
-    expect(selection.options.map((option) => option.value)).toEqual(["FOO", "OPENAI_API_KEY", "PATH", "PWD", "TERM"]);
+    expect(selection.options.map((option) => option.value)).toEqual(["CODEX_THREAD_ID", "FOO", "HTTPS_PROXY", "OPENAI_API_KEY", "PATH", "PWD", "SSH_CLIENT", "TERM"]);
     expect(selection.initialValues).toEqual(["FOO", "PATH"]);
+    expect(defaultIncludeEnvKey("HTTPS_PROXY", "http://user:password@proxy.example:8080")).toBe(false);
     expect(defaultIncludeEnvKey("OPENAI_API_KEY")).toBe(false);
+    expect(defaultIncludeEnvKey("SSH_CLIENT")).toBe(false);
     expect(defaultIncludeEnvKey("TERM")).toBe(false);
   });
 
-  it("counts LaunchAgent environment keys for install telemetry", () => {
+  it("counts managed service environment keys for install telemetry", () => {
     const env = {
       FOO: "bar",
       PATH: "/usr/bin",
@@ -87,7 +92,7 @@ describe("install wizard helpers", () => {
       TWINNY_HOME: "/old"
     };
 
-    expect(buildLaunchEnvironmentStats(env, {
+    expect(buildServiceEnvironmentStats(env, {
       FOO: "bar",
       TWINNY_HOME: "/new",
       TWINNY_PROFILE: "host"
@@ -138,7 +143,7 @@ describe("install wizard helpers", () => {
       version: string;
     };
 
-    const result = await resolveLaunchAgentEntrypoint(home, {
+    const result = await resolveServiceEntrypoint(home, {
       entrypoint,
       runNpmInstall: runNpmInstallMock as unknown as NpmInstallRunner
     });
