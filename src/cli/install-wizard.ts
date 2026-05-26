@@ -14,11 +14,11 @@ import {
   resolveBundledBannerPath,
   resolveBundledLogoPath,
   resolveTwinnyHome,
-  SecurityCliSecretStore,
+  createDefaultSecretStore,
   type SecretStore
 } from "../config/index.js";
 import { provisionLarkAssetImageKeys } from "../app/lark-assets.js";
-import { installLaunchAgent, startLaunchAgent } from "../launchd/install.js";
+import { installManagedService, managedServiceDisplayName, startManagedService } from "../service/index.js";
 import { createTwinnyTelemetryClient, type TelemetryClient } from "../telemetry/index.js";
 import {
   buildLarkVerificationUrl,
@@ -91,15 +91,15 @@ interface CodexDefaults {
   effort: string;
 }
 
-export interface LaunchEnvironmentStats {
+export interface ServiceEnvironmentStats {
   importedEnvKeyCount: number;
   candidateEnvKeyCount: number;
   defaultIncludedEnvKeyCount: number;
 }
 
-interface LaunchEnvironmentSelection {
+interface ServiceEnvironmentSelection {
   environment: Record<string, string>;
-  stats: LaunchEnvironmentStats;
+  stats: ServiceEnvironmentStats;
 }
 
 interface FinalizeInstallResult {
@@ -107,7 +107,7 @@ interface FinalizeInstallResult {
   wroteHomeRandom: boolean;
   wroteConfig: boolean;
   wroteAuth: boolean;
-  launchAgentInstalled: boolean;
+  serviceInstalled: boolean;
   assetUploadAttempted: boolean;
 }
 
@@ -133,7 +133,7 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
   let codex: CodexDetection | undefined;
   let botSetup: BotSetupResult | undefined;
   let ownerSetup: OwnerSetupResult | undefined;
-  let launchEnvironment: LaunchEnvironmentSelection | undefined;
+  let serviceEnvironment: ServiceEnvironmentSelection | undefined;
   let codexDefaults: CodexDefaults | undefined;
   let finalizeResult: FinalizeInstallResult | undefined;
   let startedAfterInstall = false;
@@ -154,7 +154,7 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
     const bot = botSetup.credentials;
     ownerSetup = await promptOwnerIdentity(bot);
     const owner = ownerSetup.identity;
-    launchEnvironment = await promptLaunchEnvironment(home, env);
+    serviceEnvironment = await promptServiceEnvironment(home, env);
     codexDefaults = await readCodexDefaults();
 
     config = createTwinnyConfig({
@@ -178,7 +178,7 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
     });
     telemetry ??= createTwinnyTelemetryClient(config, { codexVersion: () => codex?.version });
 
-    finalizeResult = await finalizeInstall({ config, appSecret: bot.appSecret, environment: launchEnvironment.environment });
+    finalizeResult = await finalizeInstall({ config, appSecret: bot.appSecret, environment: serviceEnvironment.environment });
 
     const shouldStart = await cancelable(
       p.confirm({
@@ -192,7 +192,7 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
         const s = p.spinner();
         s.start("启动 Twinny");
         try {
-          await startLaunchAgent({ home });
+          await startManagedService({ home });
           s.stop("Twinny 已启动");
           p.log.success("🐰 安装完成，现在在飞书里愉快使用 CodeX 吧 🎉");
         } catch (error) {
@@ -213,15 +213,17 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
         stdin_is_tty: terminal.stdinIsTty,
         stdout_is_tty: terminal.stdoutIsTty,
         tty_mode: terminal.ttyMode,
-        imported_env_key_count: launchEnvironment.stats.importedEnvKeyCount,
-        candidate_env_key_count: launchEnvironment.stats.candidateEnvKeyCount,
-        default_included_env_key_count: launchEnvironment.stats.defaultIncludedEnvKeyCount,
+        imported_env_key_count: serviceEnvironment.stats.importedEnvKeyCount,
+        candidate_env_key_count: serviceEnvironment.stats.candidateEnvKeyCount,
+        default_included_env_key_count: serviceEnvironment.stats.defaultIncludedEnvKeyCount,
         started_after_install: startedAfterInstall,
         home_created: finalizeResult.homeCreated,
         wrote_home_random: finalizeResult.wroteHomeRandom,
         wrote_config: finalizeResult.wroteConfig,
         wrote_auth: finalizeResult.wroteAuth,
-        launch_agent_installed: finalizeResult.launchAgentInstalled,
+        service_installed: finalizeResult.serviceInstalled,
+        launch_agent_installed: finalizeResult.serviceInstalled,
+        service_manager: managedServiceDisplayName(),
         asset_upload_attempted: finalizeResult.assetUploadAttempted,
         codex_binary_id: telemetry.hashId("codex_binary", codex.binary),
         default_model: codexDefaults.model,
@@ -247,15 +249,17 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
         stdin_is_tty: terminal.stdinIsTty,
         stdout_is_tty: terminal.stdoutIsTty,
         tty_mode: terminal.ttyMode,
-        imported_env_key_count: launchEnvironment?.stats.importedEnvKeyCount ?? null,
-        candidate_env_key_count: launchEnvironment?.stats.candidateEnvKeyCount ?? null,
-        default_included_env_key_count: launchEnvironment?.stats.defaultIncludedEnvKeyCount ?? null,
+        imported_env_key_count: serviceEnvironment?.stats.importedEnvKeyCount ?? null,
+        candidate_env_key_count: serviceEnvironment?.stats.candidateEnvKeyCount ?? null,
+        default_included_env_key_count: serviceEnvironment?.stats.defaultIncludedEnvKeyCount ?? null,
         started_after_install: startedAfterInstall,
         home_created: finalizeResult?.homeCreated ?? false,
         wrote_home_random: finalizeResult?.wroteHomeRandom ?? false,
         wrote_config: finalizeResult?.wroteConfig ?? false,
         wrote_auth: finalizeResult?.wroteAuth ?? false,
-        launch_agent_installed: finalizeResult?.launchAgentInstalled ?? false,
+        service_installed: finalizeResult?.serviceInstalled ?? false,
+        launch_agent_installed: finalizeResult?.serviceInstalled ?? false,
+        service_manager: safeManagedServiceDisplayName(),
         asset_upload_attempted: finalizeResult?.assetUploadAttempted ?? false,
         codex_binary_id: codex ? telemetry.hashId("codex_binary", codex.binary) : null,
         default_model: codexDefaults?.model ?? null,
@@ -298,6 +302,14 @@ function installTelemetryConfigFromEnv(env: NodeJS.ProcessEnv): Partial<Telemetr
     ...(posthogProjectToken ? { posthogProjectToken } : {}),
     ...(posthogHost ? { posthogHost } : {})
   };
+}
+
+function safeManagedServiceDisplayName(): string {
+  try {
+    return managedServiceDisplayName();
+  } catch {
+    return "unsupported";
+  }
 }
 
 function optionalEnv(value: string | undefined): string | undefined {
@@ -386,10 +398,10 @@ export function buildEnvSelection(env: NodeJS.ProcessEnv): { options: { value: s
   };
 }
 
-export function buildLaunchEnvironmentStats(
+export function buildServiceEnvironmentStats(
   env: NodeJS.ProcessEnv,
   environment: Record<string, string | undefined>
-): LaunchEnvironmentStats {
+): ServiceEnvironmentStats {
   const selection = buildEnvSelection(env);
   return {
     importedEnvKeyCount: Object.keys(environment).filter((key) => environment[key] !== undefined).length,
@@ -397,6 +409,8 @@ export function buildLaunchEnvironmentStats(
     defaultIncludedEnvKeyCount: selection.initialValues.length
   };
 }
+
+export const buildLaunchEnvironmentStats = buildServiceEnvironmentStats;
 
 export function defaultIncludeEnvKey(key: string): boolean {
   return !sensitiveEnvPattern.test(key) && !terminalEnvKeys.has(key);
@@ -576,7 +590,7 @@ async function lookupOwnerName(bot: BotCredentials, openId: string): Promise<str
   return new LarkUserDirectory({ openApiClient }).getUserNameByOpenId(openId);
 }
 
-async function promptLaunchEnvironment(home: string, env: NodeJS.ProcessEnv): Promise<LaunchEnvironmentSelection> {
+async function promptServiceEnvironment(home: string, env: NodeJS.ProcessEnv): Promise<ServiceEnvironmentSelection> {
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     if (key.startsWith("TWINNY_") && value !== undefined) {
@@ -587,17 +601,17 @@ async function promptLaunchEnvironment(home: string, env: NodeJS.ProcessEnv): Pr
 
   const includeOther = await cancelable(
     p.confirm({
-      message: "是否导入其它环境变量到 LaunchAgent？",
+      message: `是否导入其它环境变量到 ${managedServiceDisplayName()}？`,
       initialValue: true
     })
   );
   if (!includeOther) {
-    return { environment: result, stats: buildLaunchEnvironmentStats(env, result) };
+    return { environment: result, stats: buildServiceEnvironmentStats(env, result) };
   }
 
   const selection = buildEnvSelection(env);
   if (selection.options.length === 0) {
-    return { environment: result, stats: buildLaunchEnvironmentStats(env, result) };
+    return { environment: result, stats: buildServiceEnvironmentStats(env, result) };
   }
   const selected = await cancelable(
     p.multiselect<string>({
@@ -615,7 +629,7 @@ async function promptLaunchEnvironment(home: string, env: NodeJS.ProcessEnv): Pr
     }
   }
   result.TWINNY_HOME = home;
-  return { environment: result, stats: buildLaunchEnvironmentStats(env, result) };
+  return { environment: result, stats: buildServiceEnvironmentStats(env, result) };
 }
 
 async function finalizeInstall(input: {
@@ -629,23 +643,26 @@ async function finalizeInstall(input: {
   let wroteHomeRandom = false;
   let wroteConfig = false;
   let wroteAuth = false;
-  let launchAgentInstalled = false;
+  let serviceInstalled = false;
   let assetUploadAttempted = false;
   try {
-    const entrypoint = await resolveLaunchAgentEntrypoint(input.config.home);
+    const entrypoint = await resolveServiceEntrypoint(input.config.home);
     const bootstrap = await bootstrapTwinnyHome(input.config);
     homeCreated = true;
     wroteHomeRandom = bootstrap.wroteHomeRandom;
     wroteConfig = bootstrap.wroteConfig;
     wroteAuth = bootstrap.wroteAuth;
-    await (input.secretStore ?? new SecurityCliSecretStore()).set(input.config.homeIdentity.keychainAccounts.larkAppSecret, input.appSecret);
-    await installLaunchAgent({
+    await (input.secretStore ?? createDefaultSecretStore({ paths: createRuntimePaths(input.config.home) })).set(
+      input.config.homeIdentity.keychainAccounts.larkAppSecret,
+      input.appSecret
+    );
+    await installManagedService({
       config: input.config,
       entrypoint,
       environment: input.environment
     });
-    launchAgentInstalled = true;
-    p.log.success("Twinny home 和 LaunchAgent 已创建");
+    serviceInstalled = true;
+    p.log.success(`Twinny home 和 ${managedServiceDisplayName()} 已创建`);
   } catch (error) {
     p.log.error("初始化失败");
     throw error;
@@ -660,7 +677,7 @@ async function finalizeInstall(input: {
     wroteHomeRandom,
     wroteConfig,
     wroteAuth,
-    launchAgentInstalled,
+    serviceInstalled,
     assetUploadAttempted
   };
 }
@@ -696,12 +713,12 @@ function createOpenApiClient(credentials: BotCredentials): LarkOpenApiClient {
   });
 }
 
-interface ResolveLaunchAgentEntrypointOptions {
+interface ResolveServiceEntrypointOptions {
   entrypoint?: string;
   runNpmInstall?: typeof execa;
 }
 
-export async function resolveLaunchAgentEntrypoint(home: string, options: ResolveLaunchAgentEntrypointOptions = {}): Promise<string> {
+export async function resolveServiceEntrypoint(home: string, options: ResolveServiceEntrypointOptions = {}): Promise<string> {
   const entrypoint = path.resolve(options.entrypoint ?? process.argv[1] ?? process.execPath);
   if (!isNpxEntrypoint(entrypoint)) {
     return entrypoint;
@@ -716,13 +733,15 @@ export async function resolveLaunchAgentEntrypoint(home: string, options: Resolv
     const output = childProcessErrorOutput(error);
     throw new Error(
       output
-        ? `failed to install ${identity.name}@${identity.version} for LaunchAgent runner:\n${output}`
-        : `failed to install ${identity.name}@${identity.version} for LaunchAgent runner`,
+        ? `failed to install ${identity.name}@${identity.version} for managed service runner:\n${output}`
+        : `failed to install ${identity.name}@${identity.version} for managed service runner`,
       { cause: error }
     );
   }
   return path.join(runnerDir, "node_modules", ".bin", "twinny");
 }
+
+export const resolveLaunchAgentEntrypoint = resolveServiceEntrypoint;
 
 export function isNpxEntrypoint(entrypoint: string): boolean {
   return entrypoint.split(path.sep).includes("_npx");

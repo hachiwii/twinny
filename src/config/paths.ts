@@ -36,14 +36,22 @@ export function createRuntimePaths(home = resolveTwinnyHome()): RuntimePaths {
     configFile: path.join(resolvedHome, "config.toml"),
     authFile: path.join(resolvedHome, "auth.json"),
     homeRandomFile: path.join(runtimeDir, "home-random"),
+    secretsFile: path.join(runtimeDir, "secrets.json"),
     sqliteDir,
     sqliteFile: path.join(sqliteDir, "twinny.db"),
     workspacesDir: path.join(resolvedHome, "workspaces"),
     runtimeDir,
     larkAssetsFile: path.join(runtimeDir, "lark-assets.json"),
     lockFile: path.join(runtimeDir, "twinny.lock"),
-    logsDir: path.join(os.homedir(), "Library", "Logs", "twinny")
+    logsDir: resolveLogsDir()
   };
+}
+
+function resolveLogsDir(): string {
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Logs", "twinny");
+  }
+  return path.join(process.env.XDG_STATE_HOME?.trim() || path.join(os.homedir(), ".local", "state"), "twinny", "logs");
 }
 
 export function resolveBundledLogoPath(): string {

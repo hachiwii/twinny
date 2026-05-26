@@ -14,7 +14,7 @@ import {
 import {
   assertInstallHomeIsEmpty,
   buildEnvSelection,
-  buildLaunchEnvironmentStats,
+  buildServiceEnvironmentStats,
   compareSemver,
   defaultIncludeEnvKey,
   installWizardIntro,
@@ -22,13 +22,13 @@ import {
   isNpxEntrypoint,
   parseCodexVersion,
   readCodexDefaults,
-  resolveLaunchAgentEntrypoint,
+  resolveServiceEntrypoint,
   runInstallWizard
 } from "./install-wizard.js";
 
 const tempDirs: string[] = [];
-type ResolveLaunchAgentEntrypointOptions = NonNullable<Parameters<typeof resolveLaunchAgentEntrypoint>[1]>;
-type NpmInstallRunner = NonNullable<ResolveLaunchAgentEntrypointOptions["runNpmInstall"]>;
+type ResolveServiceEntrypointOptions = NonNullable<Parameters<typeof resolveServiceEntrypoint>[1]>;
+type NpmInstallRunner = NonNullable<ResolveServiceEntrypointOptions["runNpmInstall"]>;
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
@@ -79,7 +79,7 @@ describe("install wizard helpers", () => {
     expect(defaultIncludeEnvKey("TERM")).toBe(false);
   });
 
-  it("counts LaunchAgent environment keys for install telemetry", () => {
+  it("counts managed service environment keys for install telemetry", () => {
     const env = {
       FOO: "bar",
       PATH: "/usr/bin",
@@ -87,7 +87,7 @@ describe("install wizard helpers", () => {
       TWINNY_HOME: "/old"
     };
 
-    expect(buildLaunchEnvironmentStats(env, {
+    expect(buildServiceEnvironmentStats(env, {
       FOO: "bar",
       TWINNY_HOME: "/new",
       TWINNY_PROFILE: "host"
@@ -138,7 +138,7 @@ describe("install wizard helpers", () => {
       version: string;
     };
 
-    const result = await resolveLaunchAgentEntrypoint(home, {
+    const result = await resolveServiceEntrypoint(home, {
       entrypoint,
       runNpmInstall: runNpmInstallMock as unknown as NpmInstallRunner
     });

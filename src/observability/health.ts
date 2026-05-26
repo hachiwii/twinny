@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { execa } from "execa";
 import { DEFAULT_CAFFEINATE_COMMAND } from "../app/caffeinate.js";
 import { formatStartupInitializationProbeDetail, runStartupInitializationProbe } from "../app/startup-probe.js";
-import { readConfigStatus, resolveLarkAppSecret, SecurityCliSecretStore, type SecretStore } from "../config/index.js";
+import { createDefaultSecretStore, readConfigStatus, resolveLarkAppSecret, type SecretStore } from "../config/index.js";
 import {
   LARK_REQUIRED_SCOPES,
   LarkBotDirectory,
@@ -41,7 +41,7 @@ export async function runDoctorChecks(): Promise<HealthSnapshot> {
   }
 
   const config = configStatus.config;
-  const secretStore = new SecurityCliSecretStore();
+  const secretStore = createDefaultSecretStore({ paths: configStatus.paths });
   let appSecret: string | undefined;
   await checkAsync(checks, "lark app_secret", async () => {
     const secret = await resolveDoctorLarkAppSecret(config.homeIdentity.keychainAccounts.larkAppSecret, secretStore);
