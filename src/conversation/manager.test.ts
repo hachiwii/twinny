@@ -1588,26 +1588,14 @@ describe("ConversationManager", () => {
         action: "add"
       })
     );
-    await waitForExpect(() =>
-      expect(repository.markLarkMessagesSteered).toHaveBeenCalledWith(["proxy_doc_comment_1"], {
-        conversationKey: "p2p_ou_guest",
-        codexThreadId: "thread_1",
-        codexTurnId: "turn_1"
-      })
-    );
-    await waitForExpect(() =>
-      expect(larkDocComments.updateReaction).toHaveBeenCalledWith({
-        fileType: "docx",
-        fileToken: "doc_token",
-        replyId: "reply_1",
-        reactionType: config.lark.workingReaction,
-        action: "delete"
-      })
+    expect(repository.markLarkMessagesSteered).not.toHaveBeenCalledWith(
+      ["proxy_doc_comment_1"],
+      expect.anything()
     );
 
     turns[0]!.resolve({ ...completed("thread_1", "turn_1"), text: "Final doc answer" });
     await waitForExpect(() =>
-      expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["proxy_doc_comment_2"])
+      expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["proxy_doc_comment_1", "proxy_doc_comment_2"])
     );
     await waitForExpect(() =>
       expect(larkDocComments.replyToComment).toHaveBeenCalledWith({
@@ -1616,6 +1604,58 @@ describe("ConversationManager", () => {
         commentId: "comment_1",
         isWhole: false,
         text: "Final doc answer"
+      })
+    );
+  });
+
+  it("replies final output to the document when a doc-comment turn is steered by a conversation message", async () => {
+    const { repository } = createRepository(groupConversationRecord());
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_group",
+      watchMode: "owner",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
+    const lark = createLarkResponder();
+    const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot());
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository, codex, lark, larkDocComments, botOpenId: "ou_bot" });
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      senderOpenId: "ou_owner",
+      senderName: "Owner",
+      isMentioned: true
+    }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    manager.submitIncoming(groupMessage("m_steer", "extra context", { senderOpenId: "ou_owner", senderName: "Owner" }));
+    await waitForExpect(() =>
+      expect(codex.steerTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: "thread_group",
+          turnId: "turn_1",
+          input: '<lark_message lark_message_id="m_steer" timestamp="1234" sender_ouid="ou_owner" sender_name="Owner">\nextra context\n</lark_message>'
+        })
+      )
+    );
+    expect(repository.markLarkMessagesSteered).not.toHaveBeenCalledWith(
+      ["text_oc_group_1"],
+      expect.anything()
+    );
+
+    turns[0]!.resolve({ ...completed("thread_group", "turn_1"), text: "Final answer after steer" });
+
+    await waitForExpect(() =>
+      expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["text_oc_group_1", "m_steer"])
+    );
+    await waitForExpect(() =>
+      expect(larkDocComments.replyToComment).toHaveBeenCalledWith({
+        fileType: "docx",
+        fileToken: "doc_token",
+        commentId: "comment_1",
+        isWhole: false,
+        text: "Final answer after steer"
       })
     );
   });

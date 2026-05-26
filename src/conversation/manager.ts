@@ -6652,7 +6652,10 @@ export class ConversationManager {
   }
 
   private async markActiveProcessingMessagesSteered(active: ActiveTurn): Promise<void> {
-    const messageIds = [...active.processingMessageIds];
+    // Keep doc comments recoverable until the turn reaches a terminal state and replies to the document.
+    const messageIds = [...active.processingMessageIds].filter(
+      (messageId) => !active.messagesById.get(messageId)?.docComment
+    );
     if (messageIds.length === 0) {
       return;
     }
