@@ -8,6 +8,7 @@ import { resolveBundledLogoPath } from "../config/index.js";
 import {
   LARK_BOT_MENU_EVENT,
   LARK_CARD_ACTION_TRIGGER_EVENT,
+  LARK_DOC_COMMENT_ADD_EVENT,
   LARK_MESSAGE_RECEIVE_EVENT,
   LARK_MESSAGE_RECALLED_EVENT,
   LARK_REQUIRED_SCOPES
@@ -24,6 +25,11 @@ export const installGuideRequiredEvents = [
     event: LARK_MESSAGE_RECALLED_EVENT,
     kind: "事件",
     description: "同步已撤回消息"
+  },
+  {
+    event: LARK_DOC_COMMENT_ADD_EVENT,
+    kind: "事件",
+    description: "接收 /watch 文档中 @ 机器人的新增评论"
   },
   {
     event: LARK_BOT_MENU_EVENT,
@@ -454,7 +460,7 @@ export function buildInstallGuideHtml(
       <div>
         <p class="eyebrow">Twinny install wizard</p>
         <h1>飞书应用配置指引</h1>
-        <p class="lead">请按照下面三步完成飞书开放平台配置。配置完成后，Twinny 才能在飞书里接收消息、回复结果、更新卡片，并响应快捷菜单。</p>
+        <p class="lead">请按照下面三步完成飞书开放平台配置。配置完成后，Twinny 才能在飞书里接收消息和文档评论、回复结果、更新卡片，并响应快捷菜单。</p>
         <span class="app-id">App ID: ${appIdLabel}</span>
       </div>
     </header>

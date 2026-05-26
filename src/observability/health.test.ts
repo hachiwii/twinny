@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTwinnyConfig, MemorySecretStore } from "../config/index.js";
+import { LARK_REQUIRED_SCOPES } from "../lark/index.js";
 import { checkCaffeinateBinary, checkLarkBotOpenId, checkLarkRequiredScopes, resolveDoctorLarkAppSecret } from "./health.js";
 
 describe("doctor health checks", () => {
@@ -97,6 +98,36 @@ describe("doctor health checks", () => {
       })
     ).resolves.toBe("2 required scopes granted");
     expect(request).toHaveBeenCalledWith("/application/v6/scopes", { method: "GET" });
+  });
+
+  it("includes doc comment watch permissions in the default doctor scope check", async () => {
+    expect(LARK_REQUIRED_SCOPES).toEqual(expect.arrayContaining([
+      "docs:document.comment:read",
+      "docs:document.comment:create",
+      "docs:document.comment:write_only",
+      "drive:drive:readonly"
+    ]));
+
+    const config = createTwinnyConfig({
+      home: fs.mkdtempSync(path.join(os.tmpdir(), "twinny-doc-comment-scope-check-")),
+      homeRandom: "0123456789abcdef0123456789abcdef",
+      auth: { larkAppId: "cli_app", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner User" }
+    });
+    tempDirs.push(config.home);
+    const request = vi.fn(async () => ({
+      data: {
+        scopes: LARK_REQUIRED_SCOPES.map((scope) => ({
+          scope_name: scope,
+          grant_status: 1
+        }))
+      }
+    }));
+
+    await expect(
+      checkLarkRequiredScopes(config, "secret", {
+        openApiClient: { request }
+      })
+    ).resolves.toBe(`${LARK_REQUIRED_SCOPES.length} required scopes granted`);
   });
 
   it("accepts broader or legacy group scopes for the group mention requirement", async () => {

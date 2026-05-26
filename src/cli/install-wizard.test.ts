@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TelemetryClient } from "../telemetry/index.js";
-import { LARK_REQUIRED_SCOPES } from "../lark/index.js";
+import { LARK_DOC_COMMENT_ADD_EVENT, LARK_REQUIRED_SCOPES } from "../lark/index.js";
 import {
   buildInstallGuideHtml,
   buildInstallGuideScopeImportJson,
@@ -465,6 +465,21 @@ describe("install wizard helpers", () => {
     });
   });
 
+  it("documents the Lark doc comment watch requirements", () => {
+    const importJson = JSON.parse(buildInstallGuideScopeImportJson()) as { scopes: { tenant: string[] } };
+
+    expect(importJson.scopes.tenant).toEqual(expect.arrayContaining([
+      "docs:document.comment:read",
+      "docs:document.comment:create",
+      "docs:document.comment:write_only",
+      "drive:drive:readonly"
+    ]));
+    expect(installGuideRequiredEvents).toContainEqual(expect.objectContaining({
+      event: LARK_DOC_COMMENT_ADD_EVENT,
+      kind: "事件"
+    }));
+  });
+
   it("renders install guide links, events, and menu actions", () => {
     const html = buildInstallGuideHtml("cli_test/app", { logoDataUri: "data:image/png;base64,abc" });
 
@@ -474,6 +489,9 @@ describe("install wizard helpers", () => {
     expect(html).toContain("https://open.larkoffice.com/app/cli_test%2Fapp/bot");
     expect(html).toContain("<h3>事件</h3>");
     expect(html).toContain("<h3>回调</h3>");
+    expect(html).toContain("接收消息和文档评论");
+    expect(html).toContain(LARK_DOC_COMMENT_ADD_EVENT);
+    expect(html).toContain("接收 /watch 文档中 @ 机器人的新增评论");
     expect(html.match(/<table class="config-table">/g)).toHaveLength(2);
     expect(html).not.toContain("权限列表与");
     expect(html).not.toContain("new_session");
