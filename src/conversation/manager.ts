@@ -94,6 +94,7 @@ const COMPACT_PROGRESS_TEXT = "正在压缩上下文";
 const COMPACT_COMPLETED_TEXT = "完成上下文压缩";
 const SIDE_SHUTDOWN_ERROR = "Twinny 服务退出";
 const MAIN_THREAD_NAME = "主会话";
+const DOC_COMMENT_AGENT_CARD_SUBTITLE = "文档评论触发";
 const TWINNY_THREAD_DEVELOPER_INSTRUCTIONS = `# Twinny Lark Context
 
 The user is messaging you through Twinny (https://github.com/hachiwii/twinny), a local Feishu/Lark-to-Codex bridge.
@@ -8095,7 +8096,7 @@ export class ConversationManager {
         : activeHasGoal(active) && status === "finished"
           ? "已实现目标"
           : undefined,
-      subtitle: active.kind === "side" ? sideCardSubtitle(status, active.sideId) : undefined,
+      subtitle: agentCardSubtitle(active, status),
       hideQueueControls: active.kind === "side",
       waiting:
         status === "waiting_input" ||
@@ -8824,6 +8825,22 @@ function sideCardSubtitle(status: TwinnyAgentCardStatus, sideId: number | undefi
     return `临时会话 [${sideId}]`;
   }
   return "临时会话";
+}
+
+function agentCardSubtitle(active: ActiveTurn, status: TwinnyAgentCardStatus): string | undefined {
+  if (active.kind === "side") {
+    return sideCardSubtitle(status, active.sideId);
+  }
+  return activeTurnHasDocComment(active) ? DOC_COMMENT_AGENT_CARD_SUBTITLE : undefined;
+}
+
+function activeTurnHasDocComment(active: ActiveTurn): boolean {
+  for (const message of active.messagesById.values()) {
+    if (message.docComment) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function sideBoundaryResponseItem(): Record<string, unknown> {

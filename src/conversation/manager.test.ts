@@ -1362,6 +1362,9 @@ describe("ConversationManager", () => {
       { uuid: expect.stringMatching(UUID_PATTERN) }
     );
     const card = vi.mocked(lark.sendCardToOpenId).mock.calls[0]![1] as Record<string, unknown>;
+    expect(card.header).toMatchObject({
+      subtitle: { tag: "plain_text", content: "文档评论触发" }
+    });
     expect(JSON.stringify(card)).toContain(
       "[收到文档评论] <at id=ou_owner></at> 在 <link url='https://example.feishu.cn/docx/doc_token'>https://example.feishu.cn/docx/doc&#95;token</link> 中评论: Please fix &lt;this&gt; with <at id=ou_reviewer></at> and <at id=ouid_extra></at>"
     );
@@ -1395,6 +1398,9 @@ describe("ConversationManager", () => {
     const completedCard = vi.mocked(lark.patchCard).mock.calls.find(([, patched]) =>
       JSON.stringify(patched).includes("Final answer for doc")
     )?.[1] as Record<string, unknown>;
+    expect(completedCard.header).toMatchObject({
+      subtitle: { tag: "plain_text", content: "文档评论触发" }
+    });
     const completedBodyElements = (completedCard.body as { elements: Array<Record<string, unknown>> }).elements;
     expect(completedBodyElements[0]?.tag).toBe("collapsible_panel");
     expect(JSON.stringify(completedBodyElements[0])).toContain("[收到文档评论] <at id=ou_owner></at>");
