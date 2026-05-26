@@ -79,7 +79,7 @@ The installer stores secrets in Twinny home and should not print app secrets or 
 
 Ask the user to open `guide_file_url` and finish the Feishu/Lark developer-console configuration shown there.
 
-If the user cannot open the local page, read the file behind `guide_file_url` and summarize the required configuration steps. If you have browser-use, computer-use, or an equivalent browser automation capability, you may operate the browser for the user only after the user explicitly allows it.
+If the user cannot open the local page, read the file behind `guide_file_url` and summarize the required configuration steps. If you have browser-use, computer-use, or an equivalent browser automation capability, you can ask user to let you operate the browser.
 
 Then verify:
 
