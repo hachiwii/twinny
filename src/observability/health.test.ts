@@ -100,14 +100,14 @@ describe("doctor health checks", () => {
     expect(request).toHaveBeenCalledWith("/application/v6/scopes", { method: "GET" });
   });
 
-  it("includes doc comment watch permissions in the default doctor scope check", async () => {
+  it("keeps doc comment watch permissions narrow in the default doctor scope check", async () => {
     expect(LARK_REQUIRED_SCOPES).toEqual(expect.arrayContaining([
       "docs:document.comment:read",
       "docs:document.comment:create",
       "docs:document.comment:write_only",
-      "docs:document.media:download",
-      "drive:drive:readonly"
+      "docs:document.media:download"
     ]));
+    expect(LARK_REQUIRED_SCOPES.some((scope) => scope.startsWith("drive:drive"))).toBe(false);
 
     const config = createTwinnyConfig({
       home: fs.mkdtempSync(path.join(os.tmpdir(), "twinny-doc-comment-scope-check-")),

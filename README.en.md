@@ -66,7 +66,6 @@ im:resource
 docs:document.comment:read
 docs:document.comment:create
 docs:document.comment:write_only
-drive:drive:readonly
 ```
 
 Subscribe to these events/callbacks:

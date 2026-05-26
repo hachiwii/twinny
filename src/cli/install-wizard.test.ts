@@ -480,9 +480,9 @@ describe("install wizard helpers", () => {
       "docs:document.comment:read",
       "docs:document.comment:create",
       "docs:document.comment:write_only",
-      "docs:document.media:download",
-      "drive:drive:readonly"
+      "docs:document.media:download"
     ]));
+    expect(importJson.scopes.tenant.some((scope) => scope.startsWith("drive:drive"))).toBe(false);
     expect(installGuideRequiredEvents).toContainEqual(expect.objectContaining({
       event: LARK_DOC_COMMENT_ADD_EVENT,
       kind: "事件"
