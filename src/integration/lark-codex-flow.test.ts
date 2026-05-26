@@ -2424,6 +2424,8 @@ function adaptLarkSender(sender: LarkMessageSender, config: TwinnyConfig): LarkR
     replyImage: (messageId, imageKey) => sender.replyImage(messageId, imageKey),
     sendTextToOpenId: (openId, text) => sender.sendTextToOpenId(openId, text),
     sendTextToChatId: (chatId, text) => sender.sendTextToChatId(chatId, text),
+    sendPostToOpenId: (openId, content) => sender.sendPostToOpenId(openId, content),
+    sendPostToChatId: (chatId, content) => sender.sendPostToChatId(chatId, content),
     sendCardToOpenId: (openId, card, options) => sender.sendInteractiveCardToOpenId(openId, card, options),
     sendCardToChatId: (chatId, card, options) => sender.sendInteractiveCardToChatId(chatId, card, options),
     sendEphemeralCardToChatId: (chatId, openId, card) =>

@@ -372,6 +372,44 @@ describe("LarkMessageSender", () => {
     });
   });
 
+  it("sends a rich post directly to an open_id", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { message_id: "om_sent" } }
+    ]);
+    const sender = createSender(fetch);
+
+    await expect(
+      sender.sendPostToOpenId("ou_user", [
+        [{ tag: "text", text: "hello" }],
+        [{ tag: "img", image_key: "img_1" }]
+      ])
+    ).resolves.toMatchObject({
+      messageId: "om_sent"
+    });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        receive_id: "ou_user",
+        content: JSON.stringify({
+          zh_cn: {
+            content: [
+              [{ tag: "text", text: "hello" }],
+              [{ tag: "img", image_key: "img_1" }]
+            ]
+          }
+        }),
+        msg_type: "post"
+      }),
+      signal: undefined
+    });
+  });
+
   it("sends an interactive card directly to an open_id", async () => {
     const fetch = sequenceFetch([
       { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
@@ -423,6 +461,45 @@ describe("LarkMessageSender", () => {
         content: JSON.stringify(card),
         msg_type: "interactive",
         uuid: "uuid-card"
+      }),
+      signal: undefined
+    });
+  });
+
+  it("sends a rich post directly to a chat_id", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { message_id: "om_sent" } }
+    ]);
+    const sender = createSender(fetch);
+
+    await expect(
+      sender.sendPostToChatId("oc_group", [
+        [{ tag: "text", text: "hello" }],
+        [{ tag: "img", image_key: "img_1" }]
+      ], { uuid: "uuid-post" })
+    ).resolves.toMatchObject({
+      messageId: "om_sent"
+    });
+
+    expect(fetch).toHaveBeenLastCalledWith("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer tenant-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        receive_id: "oc_group",
+        content: JSON.stringify({
+          zh_cn: {
+            content: [
+              [{ tag: "text", text: "hello" }],
+              [{ tag: "img", image_key: "img_1" }]
+            ]
+          }
+        }),
+        msg_type: "post",
+        uuid: "uuid-post"
       }),
       signal: undefined
     });

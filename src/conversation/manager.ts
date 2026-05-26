@@ -619,6 +619,8 @@ export interface LarkResponder {
   replyImage(messageId: string, imageKey: string): Promise<{ messageId?: string } | void>;
   sendTextToOpenId(openId: string, text: string): Promise<LarkSendMessageResult | void>;
   sendTextToChatId(chatId: string, text: string): Promise<LarkSendMessageResult | void>;
+  sendPostToOpenId(openId: string, content: LarkPostContent): Promise<LarkSendMessageResult | void>;
+  sendPostToChatId(chatId: string, content: LarkPostContent): Promise<LarkSendMessageResult | void>;
   sendCardToOpenId(
     openId: string,
     card: LarkCardJson,
@@ -1158,7 +1160,15 @@ export class ConversationManager {
     }
     const senderName = await this.resolveDocCommentSenderName(context, comment, snapshot);
     const prepared = await this.renderDocCommentMessage(context, watcher, comment, snapshot, senderName);
-    const proxy = await this.sendDocCommentProxyMessage(conversation, thread, watcher, comment, senderName, snapshot);
+    const proxy = await this.sendDocCommentProxyMessage(
+      conversation,
+      thread,
+      watcher,
+      comment,
+      senderName,
+      snapshot,
+      prepared.downloadedFiles
+    );
     const proxyMessageId = nonEmptyString(proxy?.messageId);
     if (!proxyMessageId) {
       this.log.warn({ eventId: comment.eventId }, "failed to create doc comment proxy message; ignoring doc comment");
@@ -2326,7 +2336,8 @@ export class ConversationManager {
     watcher: LarkDocWatcherRecord,
     comment: IncomingLarkDocCommentAdd,
     senderName: string | undefined,
-    snapshot: LarkDocCommentSnapshot
+    snapshot: LarkDocCommentSnapshot,
+    downloadedFiles: NonNullable<IncomingLarkMessage["downloadedFiles"]>
   ): Promise<LarkReplyResult | LarkSendMessageResult | void> {
     const text = textForDocCommentProxyMessage({
       senderOpenId: comment.senderOpenId || snapshot.authorOpenId,
@@ -2335,6 +2346,24 @@ export class ConversationManager {
       text: snapshot.text,
       botOpenId: this.options.botOpenId
     });
+    const imageKeys = await this.uploadDocCommentProxyImagesBestEffort(comment, downloadedFiles);
+    if (imageKeys.length > 0) {
+      const postContent = postContentForDocCommentProxyMessage({
+        senderOpenId: comment.senderOpenId || snapshot.authorOpenId,
+        senderName,
+        watchUrl: watcher.watchUrl,
+        text: snapshot.text,
+        botOpenId: this.options.botOpenId,
+        imageKeys
+      });
+      if (thread.cardMessageId) {
+        return this.options.lark.replyPost(thread.cardMessageId, postContent, { replyInThread: true });
+      }
+      if (conversation.type === "p2p") {
+        return this.options.lark.sendPostToOpenId(conversation.chatId, postContent);
+      }
+      return this.options.lark.sendPostToChatId(conversation.chatId, postContent);
+    }
     if (thread.cardMessageId) {
       return this.options.lark.replyText(thread.cardMessageId, text, { replyInThread: true });
     }
@@ -2342,6 +2371,35 @@ export class ConversationManager {
       return this.options.lark.sendTextToOpenId(conversation.chatId, text);
     }
     return this.options.lark.sendTextToChatId(conversation.chatId, text);
+  }
+
+  private async uploadDocCommentProxyImagesBestEffort(
+    comment: IncomingLarkDocCommentAdd,
+    downloadedFiles: NonNullable<IncomingLarkMessage["downloadedFiles"]>
+  ): Promise<string[]> {
+    const imageFiles = downloadedFiles.filter((file) => file.resourceType === "image");
+    if (imageFiles.length === 0) {
+      return [];
+    }
+    if (!this.options.larkFiles?.uploadImage) {
+      this.log.warn({ commentId: comment.commentId }, "Lark image uploader is not configured; sending doc comment proxy without images");
+      return [];
+    }
+
+    const imageKeys: string[] = [];
+    for (const file of imageFiles) {
+      try {
+        const uploaded = await this.options.larkFiles.uploadImage({
+          filePath: file.path,
+          fileName: file.fileName,
+          contentType: file.contentType
+        });
+        imageKeys.push(uploaded.imageKey);
+      } catch (error) {
+        this.log.warn({ error, commentId: comment.commentId, imageKey: file.fileKey }, "failed to upload doc comment image for proxy");
+      }
+    }
+    return imageKeys;
   }
 
   private async applyGroupResponsePolicy(
@@ -9357,6 +9415,25 @@ function textForDocCommentProxyMessage(input: {
   ].join("");
 }
 
+function postContentForDocCommentProxyMessage(input: {
+  senderOpenId: string;
+  senderName?: string;
+  watchUrl: string;
+  text: string;
+  botOpenId?: string;
+  imageKeys: string[];
+}): LarkPostContent {
+  const paragraph: LarkPostNode[] = [
+    { tag: "at", user_id: input.senderOpenId, user_name: input.senderName ?? input.senderOpenId },
+    { tag: "text", text: ` 在 ${input.watchUrl} 中评论: ` }
+  ];
+  appendDocCommentProxyContentPostNodes(paragraph, input.text, input.botOpenId);
+  return [
+    paragraph,
+    ...input.imageKeys.map((imageKey) => [{ tag: "img" as const, image_key: imageKey }])
+  ];
+}
+
 function textForDocCommentProxyContent(text: string, botOpenId: string | undefined): string {
   const withoutBotMention = stripDocCommentBotMention(compactInlineText(text), botOpenId);
   if (!withoutBotMention) {
@@ -9380,6 +9457,33 @@ function textForDocCommentProxyContent(text: string, botOpenId: string | undefin
     parts.push(escapeLarkText(withoutBotMention.slice(cursor)));
   }
   return parts.join("").trim();
+}
+
+function appendDocCommentProxyContentPostNodes(
+  paragraph: LarkPostNode[],
+  text: string,
+  botOpenId: string | undefined
+): void {
+  const withoutBotMention = stripDocCommentBotMention(compactInlineText(text), botOpenId);
+  if (!withoutBotMention) {
+    return;
+  }
+
+  let cursor = 0;
+  for (const match of withoutBotMention.matchAll(DOC_COMMENT_OPEN_ID_MENTION_PATTERN)) {
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      paragraph.push({ tag: "text", text: withoutBotMention.slice(cursor, index) });
+    }
+    const openId = match[1]!;
+    if (openId !== botOpenId) {
+      paragraph.push({ tag: "at", user_id: openId, user_name: openId });
+    }
+    cursor = index + match[0]!.length;
+  }
+  if (cursor < withoutBotMention.length) {
+    paragraph.push({ tag: "text", text: withoutBotMention.slice(cursor) });
+  }
 }
 
 function stripDocCommentBotMention(text: string, botOpenId: string | undefined): string {

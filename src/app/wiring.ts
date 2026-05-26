@@ -941,6 +941,12 @@ function adaptLarkSender(
     sendTextToChatId: async (chatId: string, text: string) => {
       return sender.sendTextToChatId(chatId, text);
     },
+    sendPostToOpenId: async (openId: string, content: Parameters<LarkMessageSender["sendPostToOpenId"]>[1]) => {
+      return sender.sendPostToOpenId(openId, content);
+    },
+    sendPostToChatId: async (chatId: string, content: Parameters<LarkMessageSender["sendPostToChatId"]>[1]) => {
+      return sender.sendPostToChatId(chatId, content);
+    },
     sendCardToOpenId: async (
       openId: string,
       card: Parameters<LarkMessageSender["sendInteractiveCardToOpenId"]>[1],

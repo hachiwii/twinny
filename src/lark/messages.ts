@@ -262,6 +262,30 @@ export class LarkMessageSender {
     };
   }
 
+  async sendPostToOpenId(
+    openId: string,
+    content: LarkPostParagraph[],
+    options: TextMessageOptions = {}
+  ): Promise<LarkSendMessageResult> {
+    const raw = await this.openApiClient.request("/im/v1/messages", {
+      method: "POST",
+      query: {
+        receive_id_type: "open_id"
+      },
+      signal: options.signal,
+      body: {
+        receive_id: openId,
+        content: this.stringifyMessageContent(createPostContent(content)),
+        msg_type: "post",
+        ...(options.uuid ? { uuid: options.uuid } : {})
+      }
+    });
+    return {
+      messageId: extractMessageId(raw),
+      raw
+    };
+  }
+
   async sendInteractiveCardToOpenId(
     openId: string,
     card: LarkInteractiveCard,
@@ -297,6 +321,30 @@ export class LarkMessageSender {
         receive_id: chatId,
         content: this.stringifyMessageContent({ text }),
         msg_type: "text",
+        ...(options.uuid ? { uuid: options.uuid } : {})
+      }
+    });
+    return {
+      messageId: extractMessageId(raw),
+      raw
+    };
+  }
+
+  async sendPostToChatId(
+    chatId: string,
+    content: LarkPostParagraph[],
+    options: TextMessageOptions = {}
+  ): Promise<LarkSendMessageResult> {
+    const raw = await this.openApiClient.request("/im/v1/messages", {
+      method: "POST",
+      query: {
+        receive_id_type: "chat_id"
+      },
+      signal: options.signal,
+      body: {
+        receive_id: chatId,
+        content: this.stringifyMessageContent(createPostContent(content)),
+        msg_type: "post",
         ...(options.uuid ? { uuid: options.uuid } : {})
       }
     });

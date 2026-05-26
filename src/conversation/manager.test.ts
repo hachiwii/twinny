@@ -1444,6 +1444,87 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("sends watched doc comment proxy messages as posts with images appended", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [codexThreadRecord({ codexThreadId: "thread_1" })]
+    });
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_1",
+      watchMode: "owner",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendPostToOpenId).mockResolvedValue({ messageId: "proxy_doc_comment_image", raw: {} });
+    const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
+      text: "@ou_bot Please inspect @ou_reviewer",
+      imageKeys: ["img_1", "img_2"]
+    }));
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(async ({ outputDir }) => ({
+        path: path.join(outputDir, "unused.png"),
+        resourceType: "image" as const,
+        fileKey: "unused",
+        fileName: "unused.png",
+        size: 1,
+        contentType: "image/png"
+      })),
+      uploadImage: vi.fn(async ({ fileName }) => ({
+        imageKey: `uploaded_${fileName?.replace(/\.png$/, "")}`
+      }))
+    };
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId }) => ({ ...completed(threadId, "turn_doc"), text: "Final answer for doc" }))
+    });
+    const manager = createManager({ repository, codex, lark, larkDocComments, larkFiles, botOpenId: "ou_bot" });
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment",
+      senderOpenId: "ou_owner",
+      senderName: "Owner",
+      isMentioned: true
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(larkFiles.uploadImage).toHaveBeenCalledWith({
+      filePath: "/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/doc_comments/comment_1/img_1.png",
+      fileName: "img_1.png",
+      contentType: "image/png"
+    });
+    expect(larkFiles.uploadImage).toHaveBeenCalledWith({
+      filePath: "/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/doc_comments/comment_1/img_2.png",
+      fileName: "img_2.png",
+      contentType: "image/png"
+    });
+    expect(lark.sendPostToOpenId).toHaveBeenCalledWith(
+      "ou_guest",
+      [
+        [
+          { tag: "at", user_id: "ou_owner", user_name: "Owner" },
+          { tag: "text", text: " 在 https://example.feishu.cn/docx/doc_token 中评论: " },
+          { tag: "text", text: "Please inspect " },
+          { tag: "at", user_id: "ou_reviewer", user_name: "ou_reviewer" }
+        ],
+        [{ tag: "img", image_key: "uploaded_img_1" }],
+        [{ tag: "img", image_key: "uploaded_img_2" }]
+      ]
+    );
+    expect(lark.sendTextToOpenId).not.toHaveBeenCalled();
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "proxy_doc_comment_image",
+        routeKind: "doc_comment",
+        status: "processing",
+        codexThreadId: "thread_1"
+      })
+    );
+    const startTurnInput = vi.mocked(codex.startTurn).mock.calls[0]?.[0].input;
+    expect(JSON.stringify(startTurnInput)).toContain(
+      "/tmp/twinny/workspaces/p2p_ou_guest/.twinny/lark_files/doc_comments/comment_1/img_1.png"
+    );
+  });
+
   it("steers watched doc comments from the active comment block into the current turn", async () => {
     const { repository } = createRepository(conversationRecord(), {
       codexThreads: [codexThreadRecord({ codexThreadId: "thread_1" })]
@@ -8233,6 +8314,8 @@ function createLarkResponder(): LarkResponder {
     replyImage: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     sendTextToOpenId: vi.fn(async () => undefined),
     sendTextToChatId: vi.fn(async (chatId) => ({ messageId: `text_${chatId}_${++markdownReplyCount}`, raw: {} })),
+    sendPostToOpenId: vi.fn(async (openId) => ({ messageId: `post_${openId}_${++markdownReplyCount}`, raw: {} })),
+    sendPostToChatId: vi.fn(async (chatId) => ({ messageId: `post_${chatId}_${++markdownReplyCount}`, raw: {} })),
     sendCardToOpenId: vi.fn(async (openId) => ({ messageId: `card_${openId}_${++markdownReplyCount}`, raw: {} })),
     sendCardToChatId: vi.fn(async (chatId) => ({ messageId: `card_${chatId}_${++markdownReplyCount}`, raw: {} })),
     sendEphemeralCardToChatId: vi.fn(async (chatId) => ({ messageId: `ephemeral_${chatId}_${++markdownReplyCount}`, raw: {} })),
