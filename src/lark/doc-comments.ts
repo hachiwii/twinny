@@ -6,16 +6,28 @@ import type {
   LarkDocResolver,
   ResolvedLarkDocTarget
 } from "../conversation/manager.js";
-import { LarkOpenApiClient } from "./openapi.js";
+import { LarkOpenApiClient, LarkOpenApiError } from "./openapi.js";
 
 export interface LarkDocClientOptions {
   openApiClient: LarkOpenApiClient;
+  commentReadMaxRetries?: number;
+  commentReadRetryBaseDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 const SUPPORTED_DOC_TYPES = new Set(["doc", "docx", "sheet", "slides", "bitable", "file"]);
+const DOC_COMMENT_PERMISSION_NOT_READY_CODE = 1069301;
 
 export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
-  constructor(private readonly options: LarkDocClientOptions) {}
+  private readonly commentReadMaxRetries: number;
+  private readonly commentReadRetryBaseDelayMs: number;
+  private readonly sleep: (ms: number) => Promise<void>;
+
+  constructor(private readonly options: LarkDocClientOptions) {
+    this.commentReadMaxRetries = Math.max(0, Math.floor(options.commentReadMaxRetries ?? 5));
+    this.commentReadRetryBaseDelayMs = Math.max(0, options.commentReadRetryBaseDelayMs ?? 1_000);
+    this.sleep = options.sleep ?? sleep;
+  }
 
   async resolveDocTarget(url: string): Promise<ResolvedLarkDocTarget> {
     const parsed = parseLarkDocUrl(url);
@@ -41,6 +53,15 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
   }
 
   async getCommentSnapshot(params: {
+    fileType: string;
+    fileToken: string;
+    commentId: string;
+    replyId?: string;
+  }): Promise<LarkDocCommentSnapshot | null> {
+    return this.withCommentReadRetry(() => this.getCommentSnapshotOnce(params));
+  }
+
+  private async getCommentSnapshotOnce(params: {
     fileType: string;
     fileToken: string;
     commentId: string;
@@ -76,6 +97,23 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
       rawComment,
       rawReply: reply
     };
+  }
+
+  private async withCommentReadRetry<T>(operation: () => Promise<T>): Promise<T> {
+    const attempts = this.commentReadMaxRetries + 1;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+        if (attempt >= attempts - 1 || !isRetryableCommentReadError(error)) {
+          throw error;
+        }
+        await this.sleep(this.commentReadRetryBaseDelayMs * 2 ** attempt);
+      }
+    }
+    throw lastError;
   }
 
   async updateReaction(params: {
@@ -289,6 +327,17 @@ function findReply(replies: Record<string, unknown>[], replyId: string | undefin
 
 function newestReply(replies: Record<string, unknown>[]): Record<string, unknown> | undefined {
   return [...replies].sort((left, right) => (numberValue(right.create_time) ?? 0) - (numberValue(left.create_time) ?? 0))[0];
+}
+
+function isRetryableCommentReadError(error: unknown): boolean {
+  // Lark can emit comment_add before a freshly mentioned bot can read that comment.
+  return error instanceof LarkOpenApiError && error.detail.code === DOC_COMMENT_PERMISSION_NOT_READY_CODE;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function replyText(reply: Record<string, unknown>): string {

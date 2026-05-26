@@ -1443,6 +1443,46 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("processes all-mode watched doc comments from non-owner senders", async () => {
+    const { repository } = createRepository(conversationRecord());
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_1",
+      watchMode: "all",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendTextToOpenId).mockResolvedValue({ messageId: "proxy_doc_comment", raw: {} });
+    const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
+      authorOpenId: "ou_reviewer",
+      authorName: "Reviewer",
+      text: "@Twinny please check this"
+    }));
+    const codex = createCodex();
+    const manager = createManager({ repository, codex, lark, larkDocComments });
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment_reviewer",
+      senderOpenId: "ou_reviewer",
+      senderName: "Reviewer",
+      isMentioned: true
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.stringContaining('<lark-doc-comment sender_id="ou_reviewer" sender_name="Reviewer"')
+      })
+    );
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkUserId: "ou_reviewer",
+        routeKind: "doc_comment"
+      })
+    );
+  });
+
   it("ignores watched doc comments unless the comment mentions the bot", async () => {
     const { repository } = createRepository(conversationRecord());
     repository.upsertLarkDocWatcher({

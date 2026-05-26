@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { LarkDocClient } from "./doc-comments.js";
-import type { LarkOpenApiClient } from "./openapi.js";
+import { LarkOpenApiError, type LarkOpenApiClient } from "./openapi.js";
 
 describe("LarkDocClient", () => {
   it("resolves direct doc URLs without OpenAPI calls", async () => {
@@ -130,6 +130,69 @@ describe("LarkDocClient", () => {
         query: expect.objectContaining({ file_type: "docx", need_reaction: true })
       })
     );
+  });
+
+  it("retries comment snapshot reads when Lark has not exposed a freshly mentioned comment yet", async () => {
+    let batchQueryCalls = 0;
+    const request = vi.fn(async (path: string) => {
+      if (path.endsWith("/comments/batch_query")) {
+        batchQueryCalls += 1;
+        if (batchQueryCalls === 1) {
+          throw new LarkOpenApiError("comment permission not ready", {
+            status: 400,
+            code: 1069301,
+            responseBody: { code: 1069301, msg: "fail" },
+            retryable: false
+          });
+        }
+        return {
+          data: {
+            items: [
+              {
+                comment_id: "comment_1",
+                user_id: "ou_reviewer",
+                quote: "quoted text",
+                is_solved: false,
+                is_whole: false
+              }
+            ]
+          }
+        };
+      }
+      return {
+        data: {
+          items: [
+            {
+              reply_id: "reply_1",
+              user_id: "ou_reviewer",
+              create_time: 2000,
+              content: { text: "@Twinny please check" }
+            }
+          ]
+        }
+      };
+    });
+    const sleep = vi.fn(async () => undefined);
+    const client = new LarkDocClient({
+      openApiClient: createOpenApiClient({ request }),
+      commentReadMaxRetries: 2,
+      commentReadRetryBaseDelayMs: 25,
+      sleep
+    });
+
+    await expect(
+      client.getCommentSnapshot({
+        fileType: "docx",
+        fileToken: "doc_token",
+        commentId: "comment_1",
+        replyId: "reply_1"
+      })
+    ).resolves.toMatchObject({
+      authorOpenId: "ou_reviewer",
+      text: "@Twinny please check"
+    });
+    expect(batchQueryCalls).toBe(2);
+    expect(sleep).toHaveBeenCalledWith(25);
   });
 
   it("uses the whole-comment create endpoint when replying to global comments", async () => {
