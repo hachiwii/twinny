@@ -1588,14 +1588,26 @@ describe("ConversationManager", () => {
         action: "add"
       })
     );
-    expect(repository.markLarkMessagesSteered).not.toHaveBeenCalledWith(
-      ["proxy_doc_comment_1"],
-      expect.anything()
+    await waitForExpect(() =>
+      expect(repository.markLarkMessagesSteered).toHaveBeenCalledWith(["proxy_doc_comment_1"], {
+        conversationKey: "p2p_ou_guest",
+        codexThreadId: "thread_1",
+        codexTurnId: "turn_1"
+      })
+    );
+    await waitForExpect(() =>
+      expect(larkDocComments.updateReaction).toHaveBeenCalledWith({
+        fileType: "docx",
+        fileToken: "doc_token",
+        replyId: "reply_1",
+        reactionType: config.lark.workingReaction,
+        action: "delete"
+      })
     );
 
     turns[0]!.resolve({ ...completed("thread_1", "turn_1"), text: "Final doc answer" });
     await waitForExpect(() =>
-      expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["proxy_doc_comment_1", "proxy_doc_comment_2"])
+      expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["proxy_doc_comment_2"])
     );
     await waitForExpect(() =>
       expect(larkDocComments.replyToComment).toHaveBeenCalledWith({
@@ -1639,15 +1651,27 @@ describe("ConversationManager", () => {
         })
       )
     );
-    expect(repository.markLarkMessagesSteered).not.toHaveBeenCalledWith(
-      ["text_oc_group_1"],
-      expect.anything()
+    await waitForExpect(() =>
+      expect(repository.markLarkMessagesSteered).toHaveBeenCalledWith(["text_oc_group_1"], {
+        conversationKey: "group_oc_group",
+        codexThreadId: "thread_group",
+        codexTurnId: "turn_1"
+      })
+    );
+    await waitForExpect(() =>
+      expect(larkDocComments.updateReaction).toHaveBeenCalledWith({
+        fileType: "docx",
+        fileToken: "doc_token",
+        replyId: "reply_1",
+        reactionType: config.lark.workingReaction,
+        action: "delete"
+      })
     );
 
     turns[0]!.resolve({ ...completed("thread_group", "turn_1"), text: "Final answer after steer" });
 
     await waitForExpect(() =>
-      expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["text_oc_group_1", "m_steer"])
+      expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m_steer"])
     );
     await waitForExpect(() =>
       expect(larkDocComments.replyToComment).toHaveBeenCalledWith({
@@ -7924,6 +7948,73 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("recovers contiguous steered doc comments before processing messages for terminal document replies", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_recovered" });
+    const docCommentRecord = larkMessageRecord({
+      id: 1,
+      larkMessageId: "proxy_doc_comment",
+      eventId: "doc_comment:event_doc_comment:docx:doc_token",
+      larkUserId: "ou_owner",
+      routeKind: "doc_comment",
+      status: "steered",
+      text: "steered doc comment",
+      conversationKey: "p2p_ou_guest",
+      codexThreadId: "thread_recovered",
+      codexTurnId: "turn_1",
+      receivedAt: 100,
+      rawEventJson: JSON.stringify({
+        kind: "doc_comment",
+        file_type: "docx",
+        file_token: "doc_token",
+        comment_id: "comment_1",
+        reply_id: "reply_1",
+        is_whole: false,
+        watch_url: "https://example.feishu.cn/docx/doc_token"
+      })
+    });
+    const steerRecord = larkMessageRecord({
+      id: 2,
+      larkMessageId: "m_steer",
+      eventId: "e_m_steer",
+      larkUserId: "ou_owner",
+      routeKind: "steered_message",
+      status: "processing",
+      text: "extra context",
+      conversationKey: "p2p_ou_guest",
+      codexThreadId: "thread_recovered",
+      codexTurnId: "turn_1",
+      receivedAt: 110,
+      rawEventJson: JSON.stringify(rawReceiveEvent("m_steer", "extra context", { senderOpenId: "ou_owner" }))
+    });
+    const { repository } = createRepository(row, { larkMessages: [docCommentRecord, steerRecord] });
+    const larkDocComments = createLarkDocCommentClient();
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
+        await onTurnStarted?.("turn_1");
+        return { ...completed(threadId, "turn_1"), text: "Recovered final after steer" };
+      })
+    });
+    const manager = createManager({ repository, codex, larkDocComments });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m_steer"]));
+
+    expect(repository.getLarkMessageById("proxy_doc_comment")).toMatchObject({ status: "steered" });
+    expect(repository.markLarkMessagesProcessing).not.toHaveBeenCalledWith(
+      ["proxy_doc_comment"],
+      expect.anything()
+    );
+    await waitForExpect(() =>
+      expect(larkDocComments.replyToComment).toHaveBeenCalledWith({
+        fileType: "docx",
+        fileToken: "doc_token",
+        commentId: "comment_1",
+        isWhole: false,
+        text: "Recovered final after steer"
+      })
+    );
+  });
+
   it("recovers queued /compact by rerunning the compact control path", async () => {
     const row = conversationRecord({ codexThreadId: "thread_recovered" });
     const record = larkMessageRecord({
@@ -8668,6 +8759,26 @@ function createRepository(initial?: ConversationRecord, options: {
           )
           .sort((left, right) => right.receivedAt - left.receivedAt || right.id - left.id)[0]
       ),
+      listContiguousSteeredLarkMessagesBefore: vi.fn((record) => {
+        const previous = [...larkMessages.values()]
+          .filter((message) =>
+            message.conversationKey === record.conversationKey &&
+            message.codexThreadId === record.codexThreadId &&
+            message.codexTurnId === record.codexTurnId &&
+            (message.receivedAt < record.receivedAt ||
+              (message.receivedAt === record.receivedAt && message.id < record.id))
+          )
+          .sort((left, right) => left.receivedAt - right.receivedAt || left.id - right.id);
+        const contiguous: LarkMessageRecord[] = [];
+        for (let index = previous.length - 1; index >= 0; index -= 1) {
+          const message = previous[index]!;
+          if (message.status !== "steered") {
+            break;
+          }
+          contiguous.unshift(message);
+        }
+        return contiguous;
+      }),
       listUnfinishedLarkMessages: vi.fn(() => [...larkMessages.values()].filter((message) =>
         message.status === "processing" || message.status === "queued"
       )),

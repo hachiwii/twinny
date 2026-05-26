@@ -661,6 +661,7 @@ export function adaptConversationRepository(repository: ConversationRepository) 
     getLarkMessageByEventId: repository.getLarkMessageByEventId.bind(repository),
     getLarkMessageUsageTargetForTurn: repository.getLarkMessageUsageTargetForTurn.bind(repository),
     getLatestSteeredLarkMessageForTurn: repository.getLatestSteeredLarkMessageForTurn.bind(repository),
+    listContiguousSteeredLarkMessagesBefore: repository.listContiguousSteeredLarkMessagesBefore.bind(repository),
     listUnfinishedLarkMessages: repository.listUnfinishedLarkMessages.bind(repository),
     upsertCodexThread: repository.upsertCodexThread.bind(repository),
     replaceCodexThreadForLarkThread: repository.replaceCodexThreadForLarkThread.bind(repository),

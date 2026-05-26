@@ -188,6 +188,9 @@ export interface ConversationRepository {
     codexThreadId: string,
     codexTurnId: string
   ): Promise<LarkMessageRecord | undefined> | LarkMessageRecord | undefined;
+  listContiguousSteeredLarkMessagesBefore(
+    record: LarkMessageRecord
+  ): Promise<LarkMessageRecord[]> | LarkMessageRecord[];
   listUnfinishedLarkMessages(): Promise<LarkMessageRecord[]> | LarkMessageRecord[];
   upsertCodexThread(input: {
     codexThreadId: string;
@@ -1529,11 +1532,13 @@ export class ConversationManager {
     if (state.active || messages.length === 0) {
       return;
     }
+    const associated = await this.recoverContiguousSteeredMessagesBeforeProcessing(context, records);
+    const allRecords = [...associated.records, ...records];
     const anchor = messages[messages.length - 1]!;
-    const conversation = await this.getOrCreateRecoveryConversation(context, records, anchor.original);
+    const conversation = await this.getOrCreateRecoveryConversation(context, allRecords, anchor.original);
     const profile = conversation.profile;
     const workspace = conversation.workspace;
-    const recoveredThreadId = lastDefined(records.map((record) => record.codexThreadId)) ?? conversation.codexThreadId;
+    const recoveredThreadId = lastDefined(allRecords.map((record) => record.codexThreadId)) ?? conversation.codexThreadId;
     const recoveredThread = await this.options.repository.getCodexThreadById(recoveredThreadId);
     if (recoveredThread && isRecoverableGoalStatus(recoveredThread.goalStatus) && this.options.codex.getThreadGoal) {
       try {
@@ -1548,7 +1553,7 @@ export class ConversationManager {
             larkThreadId: context.larkThreadId
           });
           await this.setThreadModeBestEffort(context.conversationKey, recoveredThread.codexThreadId, "default");
-          const usageTarget = await this.resolveRecoveredUsageTarget(recoveredThread.codexThreadId, records);
+          const usageTarget = await this.resolveRecoveredUsageTarget(recoveredThread.codexThreadId, allRecords);
           await this.beginGoalTurn(state, context, {
             messages,
             profile,
@@ -1579,9 +1584,10 @@ export class ConversationManager {
     });
     const usageTarget = activeThread.replacedMissingThread
       ? undefined
-      : await this.resolveRecoveredUsageTarget(activeThread.threadId, records);
+      : await this.resolveRecoveredUsageTarget(activeThread.threadId, allRecords);
     await this.beginActiveTurn(state, context, {
       messages,
+      associatedMessages: associated.messages,
       profile,
       threadId: activeThread.threadId,
       workspace,
@@ -1589,6 +1595,34 @@ export class ConversationManager {
       usageTargetMessageId: usageTarget?.messageId,
       usageCarryover: usageTarget?.carryover
     });
+  }
+
+  private async recoverContiguousSteeredMessagesBeforeProcessing(
+    context: MessageContext,
+    records: LarkMessageRecord[]
+  ): Promise<{ records: LarkMessageRecord[]; messages: PendingMessage[] }> {
+    const firstProcessingRecord = records[0];
+    if (!firstProcessingRecord) {
+      return { records: [], messages: [] };
+    }
+    const steeredRecords = await this.options.repository.listContiguousSteeredLarkMessagesBefore(firstProcessingRecord);
+    const messages: PendingMessage[] = [];
+    const recoveredRecords: LarkMessageRecord[] = [];
+    for (const record of steeredRecords) {
+      const message = await this.toRecoveredPendingMessage(record, context).catch((error: unknown) => {
+        this.log.warn(
+          { error, eventId: record.eventId, messageId: record.larkMessageId },
+          "failed to recover associated steered Lark message"
+        );
+        return undefined;
+      });
+      if (!message) {
+        continue;
+      }
+      recoveredRecords.push(record);
+      messages.push(message);
+    }
+    return { records: recoveredRecords, messages };
   }
 
   private async getOrCreateRecoveryConversation(
@@ -5398,6 +5432,7 @@ export class ConversationManager {
     context: MessageContext,
     params: {
       messages: PendingMessage[];
+      associatedMessages?: PendingMessage[];
       profile: ProfileName;
       threadId: string;
       workspace: string;
@@ -5411,6 +5446,7 @@ export class ConversationManager {
     if (params.messages.length === 0) {
       return;
     }
+    const activeMessages = [...(params.associatedMessages ?? []), ...params.messages];
     const anchor = params.messages[params.messages.length - 1]!;
     await this.markPendingMessagesProcessingBestEffort(params.messages, {
       conversationKey: context.conversationKey,
@@ -5421,7 +5457,7 @@ export class ConversationManager {
       this.readThreadTokenUsageBestEffort(params.threadId)
     ]);
     const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
-    const hasDocComment = params.messages.some((message) => message.docComment);
+    const hasDocComment = activeMessages.some((message) => message.docComment);
     if (hasDocComment && threadRecord?.mode === "plan") {
       await this.setThreadModeBestEffort(context.conversationKey, params.threadId, "default");
     }
@@ -5432,7 +5468,7 @@ export class ConversationManager {
       kind: "normal",
       runId: ++state.nextRunId,
       profile: params.profile,
-      triggerOpenId: params.messages[0]!.original.senderOpenId,
+      triggerOpenId: activeMessages[0]!.original.senderOpenId,
       threadId: params.threadId,
       workspace: params.workspace,
       conversationKey: context.conversationKey,
@@ -5459,8 +5495,8 @@ export class ConversationManager {
         fallbackPlain: false
       },
       pendingSteers: [],
-      messagesById: new Map(params.messages.map((message) => [message.messageId, message])),
-      messageIds: new Set(params.messages.map((message) => message.messageId)),
+      messagesById: new Map(activeMessages.map((message) => [message.messageId, message])),
+      messageIds: new Set(activeMessages.map((message) => message.messageId)),
       processingMessageIds: new Set(params.messages.map((message) => message.messageId)),
       steeredMessageIds: new Set(),
       cancelRequested: false
@@ -6088,14 +6124,14 @@ export class ConversationManager {
       state.suspendedActiveTurns.unshift(active);
       return false;
     }
-    const messages = suspendedActiveTurnMessagesForRecovery(active);
-    if (messages.length === 0) {
+    const recoveredMessages = suspendedActiveTurnMessagesForRecovery(active);
+    if (recoveredMessages.messages.length === 0) {
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
       return false;
     }
     if (active.kind === "compact") {
       await this.beginCompactTurn(state, active.context, {
-        message: messages[messages.length - 1]!,
+        message: recoveredMessages.messages[recoveredMessages.messages.length - 1]!,
         profile: active.profile,
         threadId: active.threadId,
         workspace: active.workspace,
@@ -6108,7 +6144,7 @@ export class ConversationManager {
     if (active.kind === "goal") {
       await this.setThreadModeBestEffort(active.conversationKey, active.threadId, "default");
       await this.beginGoalTurn(state, active.context, {
-        messages,
+        messages: recoveredMessages.messages,
         profile: active.profile,
         threadId: active.threadId,
         workspace: active.workspace,
@@ -6120,7 +6156,8 @@ export class ConversationManager {
       return true;
     }
     await this.beginActiveTurn(state, active.context, {
-      messages,
+      messages: recoveredMessages.messages,
+      associatedMessages: recoveredMessages.associatedMessages,
       profile: active.profile,
       threadId: active.threadId,
       workspace: active.workspace,
@@ -6652,10 +6689,7 @@ export class ConversationManager {
   }
 
   private async markActiveProcessingMessagesSteered(active: ActiveTurn): Promise<void> {
-    // Keep doc comments recoverable until the turn reaches a terminal state and replies to the document.
-    const messageIds = [...active.processingMessageIds].filter(
-      (messageId) => !active.messagesById.get(messageId)?.docComment
-    );
+    const messageIds = [...active.processingMessageIds];
     if (messageIds.length === 0) {
       return;
     }
@@ -10187,20 +10221,44 @@ function queuedRouteForParsedCommand(
   });
 }
 
-function suspendedActiveTurnMessagesForRecovery(active: ActiveTurn): PendingMessage[] {
+function suspendedActiveTurnMessagesForRecovery(active: ActiveTurn): {
+  messages: PendingMessage[];
+  associatedMessages: PendingMessage[];
+} {
   const recoverAllMessages = active.kind === "goal" || active.processingMessageIds.size === 0;
   const recoverableIds = recoverAllMessages ? active.messageIds : active.processingMessageIds;
+  const firstRecoverableId = recoverableIds.values().next().value as string | undefined;
+  const associatedIds = new Set<string>();
+  if (!recoverAllMessages && firstRecoverableId) {
+    const preceding: string[] = [];
+    for (const messageId of active.messageIds) {
+      if (messageId === firstRecoverableId) {
+        break;
+      }
+      preceding.push(messageId);
+    }
+    for (let index = preceding.length - 1; index >= 0; index -= 1) {
+      const messageId = preceding[index]!;
+      if (!active.steeredMessageIds.has(messageId)) {
+        break;
+      }
+      associatedIds.add(messageId);
+    }
+  }
   const messages: PendingMessage[] = [];
+  const associatedMessages: PendingMessage[] = [];
   for (const messageId of active.messageIds) {
-    if (!recoverableIds.has(messageId)) {
+    const message = active.messagesById.get(messageId);
+    if (!message) {
       continue;
     }
-    const message = active.messagesById.get(messageId);
-    if (message) {
+    if (associatedIds.has(messageId)) {
+      associatedMessages.push(message);
+    } else if (recoverableIds.has(messageId)) {
       messages.push(message);
     }
   }
-  return messages;
+  return { messages, associatedMessages };
 }
 
 function cloneActiveTurnCardForRecovery(card: ActiveTurnCardState | undefined): ActiveTurnCardState | undefined {

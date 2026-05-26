@@ -278,6 +278,69 @@ describe("ConversationRepository", () => {
     expect(repo.hasProcessedDocComment("comment_1")).toBe(true);
   });
 
+  it("lists contiguous steered messages before a processing message in the same turn", () => {
+    const repo = createConversationRepository(db, { now: () => now });
+    const base = {
+      larkUserId: "ou_456",
+      conversationKey: "p2p_ou_456",
+      codexThreadId: "thread-1",
+      codexTurnId: "turn-1",
+      routeKind: "doc_comment" as const,
+      text: "doc comment",
+      rawEventJson: "{}"
+    };
+
+    repo.insertLarkMessage({
+      ...base,
+      larkMessageId: "om_old_steered",
+      eventId: "event_old_steered",
+      status: "steered"
+    });
+    now += 1;
+    repo.insertLarkMessage({
+      ...base,
+      larkMessageId: "om_boundary",
+      eventId: "event_boundary",
+      status: "completed"
+    });
+    now += 1;
+    repo.insertLarkMessage({
+      ...base,
+      larkMessageId: "om_steered_1",
+      eventId: "event_steered_1",
+      status: "steered"
+    });
+    now += 1;
+    repo.insertLarkMessage({
+      ...base,
+      larkMessageId: "om_other_turn",
+      eventId: "event_other_turn",
+      codexTurnId: "turn-other",
+      status: "steered"
+    });
+    now += 1;
+    repo.insertLarkMessage({
+      ...base,
+      larkMessageId: "om_steered_2",
+      eventId: "event_steered_2",
+      status: "steered"
+    });
+    now += 1;
+    const processing = repo.insertLarkMessage({
+      ...base,
+      larkMessageId: "om_processing",
+      eventId: "event_processing",
+      routeKind: "steered_message",
+      status: "processing",
+      text: "extra context"
+    });
+
+    expect(repo.listContiguousSteeredLarkMessagesBefore(processing).map((message) => message.larkMessageId)).toEqual([
+      "om_steered_1",
+      "om_steered_2"
+    ]);
+  });
+
   it("records runtime codex threads, messages, and token usage by business ids", () => {
     const repo = createConversationRepository(db, { now: () => now });
     const workspace = path.join(tempDir, "workspaces", "p2p_ou_456");

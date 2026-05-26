@@ -316,6 +316,7 @@ export class ConversationRepository {
   private readonly selectProcessedDocCommentCount: Database.Statement<[string], { count: number }>;
   private readonly selectLarkMessageUsageTargetForTurn: Database.Statement<[string, string], LarkMessageRow>;
   private readonly selectLatestSteeredLarkMessageForTurn: Database.Statement<[string, string], LarkMessageRow>;
+  private readonly selectContiguousSteeredLarkMessagesBefore: Database.Statement<[Record<string, unknown>], LarkMessageRow>;
   private readonly selectUnfinishedLarkMessages: Database.Statement<[], LarkMessageRow>;
   private readonly updateLarkMessageUsageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly updateLarkMessageProcessingStatement: Database.Statement<[
@@ -804,6 +805,41 @@ export class ConversationRepository {
         AND route_kind = 'steered_message'
       ORDER BY received_at DESC, id DESC
       LIMIT 1
+    `);
+    this.selectContiguousSteeredLarkMessagesBefore = this.db.prepare(`
+      SELECT candidate.*
+      FROM lark_messages AS candidate
+      WHERE candidate.conversation_key = @conversationKey
+        AND candidate.thread_id = @threadId
+        AND (
+          (@codexTurnId IS NULL AND candidate.codex_turn_id IS NULL)
+          OR candidate.codex_turn_id = @codexTurnId
+        )
+        AND candidate.status = 'steered'
+        AND (
+          candidate.received_at < @beforeReceivedAt
+          OR (candidate.received_at = @beforeReceivedAt AND candidate.id < @beforeId)
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM lark_messages AS boundary
+          WHERE boundary.conversation_key = @conversationKey
+            AND boundary.thread_id = @threadId
+            AND (
+              (@codexTurnId IS NULL AND boundary.codex_turn_id IS NULL)
+              OR boundary.codex_turn_id = @codexTurnId
+            )
+            AND (
+              boundary.received_at < @beforeReceivedAt
+              OR (boundary.received_at = @beforeReceivedAt AND boundary.id < @beforeId)
+            )
+            AND (
+              boundary.received_at > candidate.received_at
+              OR (boundary.received_at = candidate.received_at AND boundary.id > candidate.id)
+            )
+            AND boundary.status <> 'steered'
+        )
+      ORDER BY candidate.received_at ASC, candidate.id ASC
     `);
     this.selectUnfinishedLarkMessages = this.db.prepare(`
       SELECT * FROM lark_messages
@@ -1381,6 +1417,19 @@ export class ConversationRepository {
     assertNonEmpty(codexThreadId, "codexThreadId");
     assertNonEmpty(codexTurnId, "codexTurnId");
     return mapLarkMessageRow(this.selectLatestSteeredLarkMessageForTurn.get(codexThreadId, codexTurnId));
+  }
+
+  listContiguousSteeredLarkMessagesBefore(record: LarkMessageRecord): LarkMessageRecord[] {
+    if (!record.conversationKey || !record.codexThreadId) {
+      return [];
+    }
+    return this.selectContiguousSteeredLarkMessagesBefore.all({
+      conversationKey: record.conversationKey,
+      threadId: record.codexThreadId,
+      codexTurnId: record.codexTurnId ?? null,
+      beforeReceivedAt: record.receivedAt,
+      beforeId: record.id
+    }).map((row) => mapRequiredLarkMessageRow(row));
   }
 
   listUnfinishedLarkMessages(): LarkMessageRecord[] {
