@@ -59,6 +59,7 @@ import {
   provisionLarkAssetImageKeys as provisionRuntimeLarkAssetImageKeys,
   type LarkAssetImageKeys
 } from "./lark-assets.js";
+import { recordStartupErrorTelemetryAttempt } from "./startup-error-telemetry.js";
 
 export interface TwinnyRuntimeOptions {
   logger?: Logger;
@@ -263,19 +264,36 @@ export class TwinnyRuntime {
       this.startHeartbeat();
       this.log.info({ home: this.config.home }, "twinny daemon started");
     } catch (error) {
-      this.telemetry.captureError(error, {
+      const startupErrorTelemetry = await recordStartupErrorTelemetryAttempt(this.paths, error, {
         errorType: "runtime_start",
         errorSite: "runtime.start",
-        operation: "start",
-        fatal: true,
-        properties: {
-          launch_duration_ms: Date.now() - launchStartedAt,
-          lark_consumer_started: larkConsumerStarted,
-          db_opened: dbOpened,
-          lock_acquired: lockAcquired,
-          recovery_attempted: recoveryAttempted
-        }
+        operation: "start"
       });
+      if (startupErrorTelemetry.throttleStateError) {
+        this.log.warn({ error: startupErrorTelemetry.throttleStateError }, "failed to update startup error telemetry throttle state");
+      }
+      if (startupErrorTelemetry.capture) {
+        this.telemetry.captureError(error, {
+          errorType: "runtime_start",
+          errorSite: "runtime.start",
+          operation: "start",
+          fatal: true,
+          insertId: startupErrorTelemetry.insertId,
+          properties: {
+            launch_duration_ms: Date.now() - launchStartedAt,
+            lark_consumer_started: larkConsumerStarted,
+            db_opened: dbOpened,
+            lock_acquired: lockAcquired,
+            recovery_attempted: recoveryAttempted,
+            ...startupErrorTelemetry.properties
+          }
+        });
+      } else {
+        this.log.warn(
+          { startupErrorFingerprint: startupErrorTelemetry.fingerprint },
+          "suppressed repeated startup error telemetry"
+        );
+      }
       await this.cleanupAfterStartFailure(error);
       throw error;
     }
