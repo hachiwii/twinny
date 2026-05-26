@@ -1392,6 +1392,13 @@ describe("ConversationManager", () => {
         text: "Final answer for doc"
       })
     );
+    const completedCard = vi.mocked(lark.patchCard).mock.calls.find(([, patched]) =>
+      JSON.stringify(patched).includes("Final answer for doc")
+    )?.[1] as Record<string, unknown>;
+    const completedBodyElements = (completedCard.body as { elements: Array<Record<string, unknown>> }).elements;
+    expect(completedBodyElements[0]?.tag).toBe("collapsible_panel");
+    expect(JSON.stringify(completedBodyElements[0])).toContain("[收到文档评论] <at id=ou_owner></at>");
+    expect(lark.recallMessage).not.toHaveBeenCalledWith("card_ou_guest_1");
   });
 
   it("sends watched doc comments as turn cards while preserving images for Codex", async () => {
@@ -6079,6 +6086,37 @@ describe("ConversationManager", () => {
     );
 
     expect(lark.getMessageReadOpenIds).toHaveBeenCalledWith("card_m1_1");
+    expect(lark.replyCard).toHaveBeenCalledTimes(1);
+    expect(lark.recallMessage).not.toHaveBeenCalledWith("card_m1_1");
+  });
+
+  it("updates the completed card in place when there are no valid turn participants to mention", async () => {
+    const { repository } = createRepository(groupConversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(groupMessage("m1", "first", { senderOpenId: "", senderName: "" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    turns[0]!.resolve(completed("thread_group", "turn_1"));
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith(
+        "card_m1_1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+
+    const completedCard = vi.mocked(lark.patchCard).mock.calls.find(([messageId]) => messageId === "card_m1_1")?.[1];
+    const completedBodyElements = ((completedCard as Record<string, unknown>).body as { elements: unknown[] }).elements;
+    expect(JSON.stringify(completedBodyElements[0])).not.toContain("<at id=");
+    expect(lark.getMessageReadOpenIds).not.toHaveBeenCalled();
     expect(lark.replyCard).toHaveBeenCalledTimes(1);
     expect(lark.recallMessage).not.toHaveBeenCalledWith("card_m1_1");
   });

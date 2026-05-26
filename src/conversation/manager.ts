@@ -7837,7 +7837,7 @@ export class ConversationManager {
   private async shouldUpdateCompletedAgentCardInPlace(active: ActiveTurn, currentCardMessageId: string): Promise<boolean> {
     const participantOpenIds = activeTurnMentionOpenIds(active);
     if (participantOpenIds.length === 0) {
-      return false;
+      return true;
     }
 
     try {
@@ -10550,6 +10550,9 @@ function activeTurnMentionOpenIds(active: ActiveTurn): string[] {
   const seen = new Set<string>();
   const openIds: string[] = [];
   for (const message of active.messagesById.values()) {
+    if (message.docComment) {
+      continue;
+    }
     const openId = nonEmptyString(message.original.senderOpenId);
     if (!openId || seen.has(openId)) {
       continue;
