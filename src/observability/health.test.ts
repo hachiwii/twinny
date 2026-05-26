@@ -99,6 +99,29 @@ describe("doctor health checks", () => {
     expect(request).toHaveBeenCalledWith("/application/v6/scopes", { method: "GET" });
   });
 
+  it("accepts broader or legacy group scopes for the group mention requirement", async () => {
+    const config = createTwinnyConfig({
+      home: fs.mkdtempSync(path.join(os.tmpdir(), "twinny-group-scope-check-")),
+      homeRandom: "0123456789abcdef0123456789abcdef",
+      auth: { larkAppId: "cli_app", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner User" }
+    });
+    tempDirs.push(config.home);
+    const request = vi.fn(async () => ({
+      data: {
+        scopes: [
+          { scope_name: "im:message.group_msg", grant_status: 1 }
+        ]
+      }
+    }));
+
+    await expect(
+      checkLarkRequiredScopes(config, "secret", {
+        openApiClient: { request },
+        requiredScopes: ["im:message.group_at_msg:readonly"]
+      })
+    ).resolves.toBe("1 required scopes granted");
+  });
+
   it("lists missing Lark required scopes", async () => {
     const config = createTwinnyConfig({
       home: fs.mkdtempSync(path.join(os.tmpdir(), "twinny-missing-scope-check-")),

@@ -54,7 +54,7 @@ You need to grant these API permissions in the Feishu/Lark developer console:
 
 ```text
 im:message.p2p_msg:readonly
-im:message.group_msg
+im:message.group_at_msg:readonly
 im:message:readonly
 im:message:send_as_bot
 im:message:update
@@ -64,6 +64,12 @@ im:chat:read
 im:chat:create
 im:chat:update
 im:resource
+```
+
+If you want group response modes that receive every group message without requiring an @ mention, also request the advanced all-group-message permission:
+
+```text
+im:message.group_msg
 ```
 
 Subscribe to these events/callbacks:

@@ -10,10 +10,12 @@ export const LARK_BOT_MENU_EVENT = "application.bot.menu_v6" as const;
 export const LARK_MESSAGE_RECEIVE_EVENT = "im.message.receive_v1" as const;
 export const LARK_MESSAGE_RECALLED_EVENT = "im.message.recalled_v1" as const;
 export const LARK_CARD_ACTION_TRIGGER_EVENT = "card.action.trigger" as const;
+export const LARK_GROUP_MENTION_SCOPE = "im:message.group_at_msg:readonly" as const;
+export const LARK_GROUP_ALL_MESSAGES_SCOPE = "im:message.group_msg" as const;
 
 export const LARK_REQUIRED_SCOPES = [
   "im:message.p2p_msg:readonly",
-  "im:message.group_msg",
+  LARK_GROUP_MENTION_SCOPE,
   "im:message:readonly",
   "im:message:send_as_bot",
   "im:message:update",
@@ -24,6 +26,19 @@ export const LARK_REQUIRED_SCOPES = [
   "im:chat:update",
   "im:resource"
 ] as const;
+
+export const LARK_OPTIONAL_SCOPES = [
+  LARK_GROUP_ALL_MESSAGES_SCOPE
+] as const;
+
+export const LARK_REQUIRED_SCOPE_ALTERNATIVES: Readonly<Record<string, readonly string[]>> = {
+  [LARK_GROUP_MENTION_SCOPE]: [
+    "im:message.group_at_msg",
+    "im:message.group_at_msg.include_bot:readonly",
+    LARK_GROUP_ALL_MESSAGES_SCOPE,
+    "im:message.group_msg:readonly"
+  ]
+};
 
 export interface FetchResponseLike {
   readonly ok: boolean;

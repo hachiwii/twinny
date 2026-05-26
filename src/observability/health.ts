@@ -6,6 +6,7 @@ import { formatStartupInitializationProbeDetail, runStartupInitializationProbe }
 import { createDefaultSecretStore, readConfigStatus, resolveLarkAppSecret, type SecretStore } from "../config/index.js";
 import {
   LARK_REQUIRED_SCOPES,
+  LARK_REQUIRED_SCOPE_ALTERNATIVES,
   LarkBotDirectory,
   LarkOpenApiClient,
   resolveLarkEndpoints,
@@ -176,7 +177,7 @@ export async function checkLarkRequiredScopes(
   })();
   const requiredScopes = options.requiredScopes ?? LARK_REQUIRED_SCOPES;
   const grantedScopes = await getGrantedLarkScopes(openApiClient);
-  const missingScopes = requiredScopes.filter((scope) => !grantedScopes.has(scope));
+  const missingScopes = requiredScopes.filter((scope) => !hasGrantedLarkScope(scope, grantedScopes));
   if (missingScopes.length > 0) {
     throw new Error(`missing: ${missingScopes.join(", ")}`);
   }
@@ -234,6 +235,10 @@ async function getGrantedLarkScopes(openApiClient: Pick<LarkOpenApiClient, "requ
     }
   }
   return granted;
+}
+
+function hasGrantedLarkScope(scope: string, grantedScopes: Set<string>): boolean {
+  return grantedScopes.has(scope) || (LARK_REQUIRED_SCOPE_ALTERNATIVES[scope]?.some((alternative) => grantedScopes.has(alternative)) ?? false);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
