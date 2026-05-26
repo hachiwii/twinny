@@ -211,6 +211,7 @@ interface CodexDefaults {
 export interface LarkCliProfileSetupResult {
   profileName?: string;
   profilePersisted: boolean;
+  profileStatus?: "existing" | "created";
 }
 
 export interface ServiceEnvironmentStats {
@@ -1526,9 +1527,11 @@ async function promptLarkCliProfileSetup(
     if (!binary) {
       throw new Error("lark-cli install completed, but lark-cli was not found in PATH");
     }
+  } else {
+    p.log.success(`lark-cli 已安装：${binary}`);
   }
 
-  return ensureLarkCliProfile({
+  const profileSetup = await ensureLarkCliProfile({
     binary,
     appId: config.auth.larkAppId,
     appSecret,
@@ -1537,6 +1540,14 @@ async function promptLarkCliProfileSetup(
     telemetry,
     config
   });
+  if (profileSetup.profileName) {
+    p.log.success(
+      profileSetup.profileStatus === "created"
+        ? `lark-cli profile 已创建：${profileSetup.profileName}`
+        : `lark-cli profile 已存在：${profileSetup.profileName}`
+    );
+  }
+  return profileSetup;
 }
 
 async function setupLarkCliProfileForAgent(input: {
@@ -1669,7 +1680,7 @@ export async function ensureLarkCliProfile(input: {
   if (existing) {
     input.telemetry && (input.telemetry.larkCliProfileListResult = "profile_found");
     await persistLarkCliProfileName(input.home, existing.name, input.telemetry, input.config);
-    return { profileName: existing.name, profilePersisted: true };
+    return { profileName: existing.name, profilePersisted: true, profileStatus: "existing" };
   }
 
   input.telemetry && (input.telemetry.larkCliProfileListResult = "profile_missing");
@@ -1689,7 +1700,7 @@ export async function ensureLarkCliProfile(input: {
 
   input.telemetry && (input.telemetry.larkCliProfileAddResult = "succeeded");
   await persistLarkCliProfileName(input.home, input.appId, input.telemetry, input.config);
-  return { profileName: input.appId, profilePersisted: true };
+  return { profileName: input.appId, profilePersisted: true, profileStatus: "created" };
 }
 
 async function persistLarkCliProfileName(

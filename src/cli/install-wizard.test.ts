@@ -267,7 +267,7 @@ describe("install wizard helpers", () => {
       brand: "feishu",
       home,
       runCommand: runCommand as unknown as LarkCliProfileRunner
-    })).resolves.toEqual({ profileName: "cli_test", profilePersisted: true });
+    })).resolves.toEqual({ profileName: "cli_test", profilePersisted: true, profileStatus: "existing" });
 
     expect(runCommand).toHaveBeenCalledTimes(1);
     await expect(fs.readFile(path.join(home, "lark-cli-profile.json"), "utf8")).resolves.toContain("\"profileName\": \"cli_test\"");
@@ -280,14 +280,14 @@ describe("install wizard helpers", () => {
       .mockResolvedValueOnce({ stdout: "[]", stderr: "", exitCode: 0 })
       .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
 
-    await ensureLarkCliProfile({
+    await expect(ensureLarkCliProfile({
       binary: "/usr/local/bin/lark-cli",
       appId: "cli_test",
       appSecret: "secret",
       brand: "feishu",
       home,
       runCommand: runCommand as unknown as LarkCliProfileRunner
-    });
+    })).resolves.toEqual({ profileName: "cli_test", profilePersisted: true, profileStatus: "created" });
 
     expect(runCommand).toHaveBeenLastCalledWith(
       "/usr/local/bin/lark-cli",
