@@ -18,10 +18,35 @@ export async function runCli(argv: string[]): Promise<void> {
     await runDoctorCommand();
   });
 
-  program.command("install").description("Run the Twinny install wizard.").action(async () => {
+  const install = program.command("install").description("Run the Twinny install wizard.");
+  install.action(async () => {
     const { runInstallWizard } = await import("./install-wizard.js");
     await runInstallWizard();
   });
+  install
+    .command("agent")
+    .description("Run the non-interactive Twinny install flow for agents.")
+    .option("--env-mode <mode>", "Environment import mode: default, manual, or none.", "default")
+    .option("--env-key <key>", "Environment key to import when --env-mode manual is used.", collectOption, [])
+    .option("--install-codex <mode>", "Codex install behavior: auto or never.", "auto")
+    .option("--install-lark-cli <mode>", "lark-cli install behavior: auto or never.", "auto")
+    .option("--start <value>", "Whether to start Twinny after installing: true or false.", "false")
+    .action(async (options: {
+      envMode: string;
+      envKey: string[];
+      installCodex: string;
+      installLarkCli: string;
+      start: string;
+    }) => {
+      const { runInstallAgent } = await import("./install-wizard.js");
+      await runInstallAgent({
+        envMode: parseChoice(options.envMode, ["default", "manual", "none"], "--env-mode"),
+        envKeys: options.envKey,
+        installCodex: parseChoice(options.installCodex, ["auto", "never"], "--install-codex"),
+        installLarkCli: parseChoice(options.installLarkCli, ["auto", "never"], "--install-lark-cli"),
+        start: parseBooleanOption(options.start, "--start")
+      });
+    });
 
   program.command("uninstall").description("Uninstall the managed daemon service.").action(async () => {
     const { uninstallManagedService } = await import("../service/index.js");
@@ -54,4 +79,26 @@ export async function runCli(argv: string[]): Promise<void> {
   });
 
   await program.parseAsync(argv);
+}
+
+function collectOption(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+function parseChoice<const T extends readonly string[]>(value: string, allowed: T, optionName: string): T[number] {
+  if ((allowed as readonly string[]).includes(value)) {
+    return value as T[number];
+  }
+  throw new Error(`${optionName} must be one of: ${allowed.join(", ")}`);
+}
+
+function parseBooleanOption(value: string, optionName: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  throw new Error(`${optionName} must be true or false`);
 }

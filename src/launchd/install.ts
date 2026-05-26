@@ -11,6 +11,7 @@ export { waitForRuntimeLockRelease, type WaitForRuntimeLockReleaseOptions };
 
 export interface LaunchAgentCommandOptions {
   home?: string;
+  quiet?: boolean;
 }
 
 export interface InstallLaunchAgentOptions extends LaunchAgentCommandOptions {
@@ -40,7 +41,9 @@ export async function installLaunchAgent(options: InstallLaunchAgentOptions = {}
     }),
     "utf8"
   );
-  console.log(`Installed ${runtime.label} at ${plistPath}`);
+  if (!options.quiet) {
+    console.log(`Installed ${runtime.label} at ${plistPath}`);
+  }
 }
 
 export async function uninstallLaunchAgent(options: LaunchAgentCommandOptions = {}): Promise<void> {
@@ -52,7 +55,9 @@ export async function uninstallLaunchAgent(options: LaunchAgentCommandOptions = 
   if (fs.existsSync(plistPath)) {
     fs.rmSync(plistPath);
   }
-  console.log(`Uninstalled ${runtime.label}`);
+  if (!options.quiet) {
+    console.log(`Uninstalled ${runtime.label}`);
+  }
 }
 
 export async function startLaunchAgent(options: LaunchAgentCommandOptions = {}): Promise<void> {
@@ -66,7 +71,9 @@ export async function startLaunchAgent(options: LaunchAgentCommandOptions = {}):
     reject: false
   });
   await execa("launchctl", ["kickstart", "-k", `gui/${process.getuid?.() ?? os.userInfo().uid}/${runtime.label}`]);
-  console.log(`Started ${runtime.label}`);
+  if (!options.quiet) {
+    console.log(`Started ${runtime.label}`);
+  }
 }
 
 export async function stopLaunchAgent(options: LaunchAgentCommandOptions = {}): Promise<void> {
@@ -75,7 +82,9 @@ export async function stopLaunchAgent(options: LaunchAgentCommandOptions = {}): 
     reject: false
   });
   await waitForRuntimeLockRelease({ home: runtime.home });
-  console.log(`Stopped ${runtime.label}`);
+  if (!options.quiet) {
+    console.log(`Stopped ${runtime.label}`);
+  }
 }
 
 export async function restartLaunchAgent(options: LaunchAgentCommandOptions = {}): Promise<void> {
