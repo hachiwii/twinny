@@ -5841,11 +5841,11 @@ export class ConversationManager {
     if (active.completedStatus === "completed") {
       await this.markMessagesCompletedBestEffort([...active.processingMessageIds]);
       await this.completeAgentCardBestEffort(state, active);
-      await this.replyDocCommentsTerminalBestEffort(active, docCommentTerminalText(active));
+      await this.replyInitialDocCommentTerminalBestEffort(active, docCommentTerminalText(active));
     } else {
       await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
       await this.failAgentCardBestEffort(state, active, active.resultError ?? "Codex turn failed");
-      await this.replyDocCommentsTerminalBestEffort(active, active.resultError ?? "Codex turn failed");
+      await this.replyInitialDocCommentTerminalBestEffort(active, active.resultError ?? "Codex turn failed");
     }
     if (hasClearableTerminalGoal(active)) {
       await this.clearActiveGoalBestEffort(active);
@@ -6646,7 +6646,7 @@ export class ConversationManager {
   }
 
   private async markActiveProcessingMessagesSteered(active: ActiveTurn): Promise<void> {
-    const messageIds = [...active.processingMessageIds].filter((messageId) => !active.messagesById.get(messageId)?.docComment);
+    const messageIds = [...active.processingMessageIds];
     if (messageIds.length === 0) {
       return;
     }
@@ -6658,6 +6658,10 @@ export class ConversationManager {
     for (const messageId of messageIds) {
       active.steeredMessageIds.add(messageId);
       active.processingMessageIds.delete(messageId);
+      const message = active.messagesById.get(messageId);
+      if (message) {
+        await this.clearDocWorkingReactionBestEffort(message);
+      }
     }
   }
 
@@ -7782,7 +7786,7 @@ export class ConversationManager {
     }
   }
 
-  private async replyDocCommentsTerminalBestEffort(active: ActiveTurn, text: string): Promise<void> {
+  private async replyInitialDocCommentTerminalBestEffort(active: ActiveTurn, text: string): Promise<void> {
     if (!this.options.larkDocComments) {
       return;
     }
@@ -7790,28 +7794,21 @@ export class ConversationManager {
     if (!trimmed) {
       return;
     }
-    const seen = new Set<string>();
-    for (const message of active.messagesById.values()) {
-      const doc = message.docComment;
-      if (!doc) {
-        continue;
-      }
-      const key = `${doc.fileType}:${doc.fileToken}:${doc.commentId}`;
-      if (seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-      try {
-        await this.options.larkDocComments.replyToComment({
-          fileType: doc.fileType,
-          fileToken: doc.fileToken,
-          commentId: doc.commentId,
-          isWhole: doc.isWhole,
-          text: trimmed
-        });
-      } catch (error) {
-        this.log.warn({ error, messageId: message.messageId, commentId: doc.commentId }, "failed to reply terminal doc comment");
-      }
+    const message = firstActiveTurnMessage(active);
+    const doc = message?.docComment;
+    if (!doc) {
+      return;
+    }
+    try {
+      await this.options.larkDocComments.replyToComment({
+        fileType: doc.fileType,
+        fileToken: doc.fileToken,
+        commentId: doc.commentId,
+        isWhole: doc.isWhole,
+        text: trimmed
+      });
+    } catch (error) {
+      this.log.warn({ error, messageId: message.messageId, commentId: doc.commentId }, "failed to reply terminal doc comment");
     }
   }
 
@@ -8630,6 +8627,11 @@ function hasClearableTerminalGoal(active: ActiveTurn): boolean {
 
 function needsPlainFailureFallback(active: ActiveTurn): boolean {
   return !active.card?.messageId || active.card.fallbackPlain;
+}
+
+function firstActiveTurnMessage(active: ActiveTurn): PendingMessage | undefined {
+  const firstMessageId = active.messageIds.values().next().value as string | undefined;
+  return firstMessageId ? active.messagesById.get(firstMessageId) : undefined;
 }
 
 function docCommentTerminalText(active: ActiveTurn): string {

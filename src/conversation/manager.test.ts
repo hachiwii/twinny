@@ -1587,10 +1587,35 @@ describe("ConversationManager", () => {
         action: "add"
       })
     );
-
-    turns[0]!.resolve(completed("thread_1", "turn_1"));
     await waitForExpect(() =>
-      expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["proxy_doc_comment_1", "proxy_doc_comment_2"])
+      expect(repository.markLarkMessagesSteered).toHaveBeenCalledWith(["proxy_doc_comment_1"], {
+        conversationKey: "p2p_ou_guest",
+        codexThreadId: "thread_1",
+        codexTurnId: "turn_1"
+      })
+    );
+    await waitForExpect(() =>
+      expect(larkDocComments.updateReaction).toHaveBeenCalledWith({
+        fileType: "docx",
+        fileToken: "doc_token",
+        replyId: "reply_1",
+        reactionType: config.lark.workingReaction,
+        action: "delete"
+      })
+    );
+
+    turns[0]!.resolve({ ...completed("thread_1", "turn_1"), text: "Final doc answer" });
+    await waitForExpect(() =>
+      expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["proxy_doc_comment_2"])
+    );
+    await waitForExpect(() =>
+      expect(larkDocComments.replyToComment).toHaveBeenCalledWith({
+        fileType: "docx",
+        fileToken: "doc_token",
+        commentId: "comment_1",
+        isWhole: false,
+        text: "Final doc answer"
+      })
     );
   });
 
