@@ -39,7 +39,7 @@ export async function runCli(argv: string[]): Promise<void> {
     .option("--env-key <key>", "Environment key to import when --env-mode manual is used.", collectOption, [])
     .option("--install-codex <mode>", "Codex install behavior: auto or never.", "auto")
     .option("--install-lark-cli <mode>", "lark-cli install behavior: auto or never.", "auto")
-    .option("--start <value>", "Whether to start Twinny after installing: true or false.", "false")
+    .option("--start <value>", "Whether to start Twinny after installing: true or false.", "true")
     .action(async (options: {
       envMode: string;
       envKey: string[];
