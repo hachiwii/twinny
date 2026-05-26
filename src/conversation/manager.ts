@@ -48,10 +48,13 @@ import type {
   ConversationResponseMode,
   ConversationRecord,
   ConversationType,
+  IncomingLarkDocCommentAdd,
   IncomingLarkBotMenuAction,
   IncomingLarkCardAction,
   IncomingLarkMessage,
   IncomingLarkMessageRecall,
+  LarkDocWatcherRecord,
+  LarkDocWatchMode,
   LarkMessageRecord,
   LarkMessageRouteKind,
   LarkMessageStatus,
@@ -331,6 +334,19 @@ export interface ConversationRepository {
   markLarkMessagesFailed(larkMessageIds: string[]): Promise<void> | void;
   markLarkMessagesInterrupted(larkMessageIds: string[]): Promise<void> | void;
   markLarkMessagesCleared(larkMessageIds: string[]): Promise<void> | void;
+  upsertLarkDocWatcher(input: {
+    fileType: string;
+    fileToken: string;
+    threadId: string;
+    watchMode: LarkDocWatchMode;
+    watchUrl: string;
+  }): Promise<LarkDocWatcherRecord> | LarkDocWatcherRecord;
+  getLarkDocWatcherByFile(
+    fileType: string,
+    fileToken: string
+  ): Promise<LarkDocWatcherRecord | undefined> | LarkDocWatcherRecord | undefined;
+  listLarkDocWatchersByThread(threadId: string): Promise<LarkDocWatcherRecord[]> | LarkDocWatcherRecord[];
+  touchLarkDocWatcherCommentReceived(fileType: string, fileToken: string, receivedAt: number): Promise<boolean> | boolean;
 }
 
 export interface LarkUserDirectory {
@@ -374,6 +390,68 @@ export interface LarkFileDownloader {
 export interface LarkMessageReader {
   getMessage(messageId: string): Promise<unknown>;
   getMessageItems?(messageId: string): Promise<unknown[]>;
+}
+
+export interface ResolvedLarkDocTarget {
+  fileType: string;
+  fileToken: string;
+  watchUrl: string;
+}
+
+export interface LarkDocResolver {
+  resolveDocTarget(url: string): Promise<ResolvedLarkDocTarget>;
+}
+
+export interface LarkDocCommentSnapshot {
+  fileType: string;
+  fileToken: string;
+  commentId: string;
+  replyId?: string;
+  isWhole: boolean;
+  authorOpenId: string;
+  authorName?: string;
+  text: string;
+  quote?: string;
+  imageKeys: string[];
+  isDone: boolean;
+  isSolved: boolean;
+  createTime?: number;
+  rawComment: unknown;
+  rawReply?: unknown;
+}
+
+export interface LarkDocCommentClient {
+  getCommentSnapshot(params: {
+    fileType: string;
+    fileToken: string;
+    commentId: string;
+    replyId?: string;
+  }): Promise<LarkDocCommentSnapshot | null>;
+  updateReaction(params: {
+    fileType: string;
+    fileToken: string;
+    replyId: string;
+    reactionType: string;
+    action: "add" | "delete";
+  }): Promise<void>;
+  replyToComment(params: {
+    fileType: string;
+    fileToken: string;
+    commentId: string;
+    isWhole?: boolean;
+    text: string;
+  }): Promise<{ replyId?: string; raw?: unknown } | void>;
+  downloadCommentImage(params: {
+    fileToken: string;
+    outputDir: string;
+  }): Promise<{
+    path: string;
+    resourceType: "image";
+    fileKey: string;
+    fileName?: string;
+    size: number;
+    contentType?: string;
+  }>;
 }
 
 export interface WorkspaceManagerLike {
@@ -518,7 +596,8 @@ export interface LarkResponder {
   replyPost(messageId: string, content: LarkPostContent, options?: LarkReplyOptions): Promise<LarkReplyResult | void>;
   replyFile(messageId: string, fileKey: string): Promise<{ messageId?: string } | void>;
   replyImage(messageId: string, imageKey: string): Promise<{ messageId?: string } | void>;
-  sendTextToOpenId(openId: string, text: string): Promise<void>;
+  sendTextToOpenId(openId: string, text: string): Promise<LarkSendMessageResult | void>;
+  sendTextToChatId(chatId: string, text: string): Promise<LarkSendMessageResult | void>;
   sendCardToOpenId(
     openId: string,
     card: LarkCardJson,
@@ -560,6 +639,8 @@ export interface ConversationManagerOptions {
   larkChats?: LarkChatDirectory;
   larkFiles?: LarkFileDownloader;
   larkMessages?: LarkMessageReader;
+  larkDocs?: LarkDocResolver;
+  larkDocComments?: LarkDocCommentClient;
   botOpenId?: string;
   assetImageKeys?: {
     logoImageKey?: string;
@@ -660,6 +741,25 @@ interface PendingMessage {
   queueBoundary: boolean;
   control?: "plan_on" | "plan_off" | "compact" | "goal_set";
   queuedReaction?: LarkReactionHandle | null;
+  docComment?: PendingDocCommentContext;
+  docQueuedReaction?: LarkDocCommentReactionHandle | null;
+  docWorkingReaction?: LarkDocCommentReactionHandle | null;
+}
+
+interface PendingDocCommentContext {
+  fileType: string;
+  fileToken: string;
+  commentId: string;
+  replyId?: string;
+  isWhole?: boolean;
+  watchUrl: string;
+}
+
+interface LarkDocCommentReactionHandle {
+  fileType: string;
+  fileToken: string;
+  replyId: string;
+  reactionType: string;
 }
 
 interface ClassifiedMessageRoute {
@@ -788,6 +888,7 @@ type ParsedCommand =
   | { kind: "new" }
   | { kind: "thread"; text: string }
   | { kind: "fork"; text: string }
+  | { kind: "watch"; text: string }
   | { kind: "activate"; text: string }
   | { kind: "pair"; text: string }
   | { kind: "reload"; text: string }
@@ -890,6 +991,27 @@ export class ConversationManager {
     });
   }
 
+  submitDocCommentAdd(comment: IncomingLarkDocCommentAdd): void {
+    if (this.shuttingDown) {
+      throw new TwinnyError("Conversation manager is shutting down", "CONVERSATION_MANAGER_SHUTTING_DOWN");
+    }
+
+    void this.processDocCommentAdd(comment).catch((error) => {
+      this.options.telemetry?.captureError(error, {
+        errorType: "conversation",
+        errorSite: "conversation.submitDocCommentAdd",
+        operation: "submit_doc_comment",
+        fatal: false,
+        larkSenderOpenId: comment.senderOpenId,
+        larkEventId: comment.eventId
+      });
+      this.log.error(
+        { error, eventId: comment.eventId, fileType: comment.fileType, fileToken: comment.fileToken },
+        "conversation doc comment event failed"
+      );
+    });
+  }
+
   submitBotMenuAction(action: IncomingLarkBotMenuAction): void {
     if (this.shuttingDown) {
       throw new TwinnyError("Conversation manager is shutting down", "CONVERSATION_MANAGER_SHUTTING_DOWN");
@@ -956,6 +1078,117 @@ export class ConversationManager {
       });
       this.log.error({ error, eventId: action.eventId }, "conversation card action failed");
     });
+  }
+
+  private async processDocCommentAdd(comment: IncomingLarkDocCommentAdd): Promise<void> {
+    if (!comment.isMentioned) {
+      return;
+    }
+    if (this.options.botOpenId && comment.senderOpenId === this.options.botOpenId) {
+      return;
+    }
+    const watcher = await this.options.repository.getLarkDocWatcherByFile(comment.fileType, comment.fileToken);
+    if (!watcher || watcher.watchMode === "none") {
+      return;
+    }
+    if (watcher.watchMode === "owner" && comment.senderOpenId !== this.options.config.owner.openId) {
+      return;
+    }
+    const thread = await this.options.repository.getCodexThreadById(watcher.threadId);
+    if (!thread) {
+      this.log.warn({ watcherId: watcher.id, threadId: watcher.threadId }, "ignored doc comment for missing watched thread");
+      return;
+    }
+    const conversation = await this.options.repository.findByConversationKey(thread.conversationKey);
+    if (!conversation) {
+      this.log.warn(
+        { watcherId: watcher.id, threadId: watcher.threadId, conversationKey: thread.conversationKey },
+        "ignored doc comment for missing watched conversation"
+      );
+      return;
+    }
+    const context = createMessageContextForThread(conversation, thread);
+    const state = this.getState(context.stateKey);
+    await state.controlQueue.enqueue(() =>
+      this.processDocCommentForState(state, context, conversation, thread, watcher, comment)
+    );
+  }
+
+  private async processDocCommentForState(
+    state: ConversationState,
+    context: MessageContext,
+    conversation: ConversationRecord,
+    thread: CodexThreadRecord,
+    watcher: LarkDocWatcherRecord,
+    comment: IncomingLarkDocCommentAdd
+  ): Promise<void> {
+    if (!this.options.larkDocComments) {
+      this.log.warn({ eventId: comment.eventId }, "Lark doc comment client is not configured; ignoring doc comment");
+      return;
+    }
+    const snapshot = await this.options.larkDocComments.getCommentSnapshot({
+      fileType: watcher.fileType,
+      fileToken: watcher.fileToken,
+      commentId: comment.commentId,
+      replyId: comment.replyId
+    });
+    if (!snapshot || snapshot.isDone || snapshot.isSolved) {
+      return;
+    }
+    const senderName = await this.resolveDocCommentSenderName(context, comment, snapshot);
+    const prepared = await this.renderDocCommentMessage(context, watcher, comment, snapshot, senderName);
+    const proxy = await this.sendDocCommentProxyMessage(conversation, thread, watcher, senderName, snapshot);
+    const proxyMessageId = nonEmptyString(proxy?.messageId);
+    if (!proxyMessageId) {
+      this.log.warn({ eventId: comment.eventId }, "failed to create doc comment proxy message; ignoring doc comment");
+      return;
+    }
+    const raw = docCommentRawContext(watcher, comment, snapshot);
+    const incoming: IncomingLarkMessage = {
+      eventId: `doc_comment:${comment.eventId}:${watcher.fileType}:${watcher.fileToken}`,
+      messageId: proxyMessageId,
+      chatId: conversation.chatId,
+      chatType: conversation.type,
+      messageType: "doc_comment",
+      senderOpenId: comment.senderOpenId,
+      senderName,
+      larkGroupId: conversation.type === "p2p" ? undefined : conversation.chatId,
+      larkThreadId: thread.larkThreadId,
+      text: prepared.text,
+      createTime: comment.createTime,
+      raw
+    };
+    if (prepared.downloadedFiles.length > 0) {
+      incoming.downloadedFiles = prepared.downloadedFiles;
+    }
+    const pending = toPendingMessage(incoming, prepared.text, {
+      queueBoundary: true,
+      docComment: {
+        fileType: watcher.fileType,
+        fileToken: watcher.fileToken,
+        commentId: comment.commentId,
+        replyId: snapshot.replyId,
+        isWhole: snapshot.isWhole,
+        watchUrl: watcher.watchUrl
+      }
+    });
+    const status = state.active || state.suspendedActiveTurns.length > 0 || state.pendingBatch.length > 0 ? "queued" : "processing";
+    await this.options.repository.insertLarkMessage({
+      larkMessageId: incoming.messageId,
+      eventId: incoming.eventId,
+      larkUserId: incoming.senderOpenId,
+      larkGroupId: incoming.larkGroupId,
+      larkThreadId: incoming.larkThreadId,
+      conversationKey: context.conversationKey,
+      codexThreadId: watcher.threadId,
+      routeKind: "doc_comment",
+      status,
+      text: incoming.text,
+      larkCreateTime: incoming.createTime,
+      rawEventJson: safeJsonStringify(raw)
+    });
+    await this.options.repository.touchLarkDocWatcherCommentReceived(watcher.fileType, watcher.fileToken, Date.now());
+    await this.schedulePendingMessage(state, context, pending);
   }
 
   submitCodexThreadNameUpdated(update: CodexThreadNameUpdate): void {
@@ -1212,6 +1445,12 @@ export class ConversationManager {
 
   private async toRecoveredPendingMessage(record: LarkMessageRecord, context: MessageContext): Promise<PendingMessage> {
     const raw = parseStoredRawEvent(record.rawEventJson);
+    if (record.routeKind === "doc_comment") {
+      const recovered = recoverDocCommentPendingMessageFromRecord(record, context, raw);
+      if (recovered) {
+        return recovered;
+      }
+    }
     const normalized = normalizeIncomingLarkMessage(raw) ?? recoverLarkMessageFromRecord(record, context);
     if (!normalized) {
       throw new TwinnyError(
@@ -1883,6 +2122,10 @@ export class ConversationManager {
       await this.handleForkCommand(state, context, message, parsed.text);
       return;
     }
+    if (parsed.kind === "watch") {
+      await this.handleWatchCommand(state, context, message, parsed.text);
+      return;
+    }
     if (parsed.kind === "deactivate") {
       await this.handleDeactivateCommand(context, message);
       return;
@@ -1975,6 +2218,91 @@ export class ConversationManager {
     }
     message.downloadedFiles = downloadedFiles;
     message.text = formatMessageTextWithDownloadedFiles(message.text, downloadedFiles, message.messageType);
+  }
+
+  private async resolveDocCommentSenderName(
+    context: MessageContext,
+    comment: IncomingLarkDocCommentAdd,
+    snapshot: LarkDocCommentSnapshot
+  ): Promise<string | undefined> {
+    const explicit = nonEmptyString(comment.senderName) ?? nonEmptyString(snapshot.authorName);
+    if (explicit) {
+      return explicit;
+    }
+    return this.resolveSenderName(context, {
+      ...docCommentPlaceholderMessage(comment),
+      senderOpenId: comment.senderOpenId
+    }, profileForSender(this.options.config, comment.senderOpenId));
+  }
+
+  private async renderDocCommentMessage(
+    context: MessageContext,
+    watcher: LarkDocWatcherRecord,
+    comment: IncomingLarkDocCommentAdd,
+    snapshot: LarkDocCommentSnapshot,
+    senderName: string | undefined
+  ): Promise<{ text: string; downloadedFiles: NonNullable<IncomingLarkMessage["downloadedFiles"]> }> {
+    const downloadedFiles = await this.downloadDocCommentImagesBestEffort(context, comment, snapshot);
+    const resourceText = downloadedFiles.length > 0 ? formatMessageTextWithDownloadedFiles("", downloadedFiles, "doc_comment") : "";
+    const lines = [
+      formatXmlOpenTag("lark-doc-comment", [
+        ["sender_id", comment.senderOpenId],
+        ...(senderName ? [["sender_name", senderName] as [string, string]] : []),
+        ["file_type", watcher.fileType],
+        ["file_token", watcher.fileToken],
+        ["comment_id", comment.commentId]
+      ]),
+      ...(snapshot.quote ? [`<quote>${escapeXmlText(snapshot.quote)}</quote>`] : []),
+      escapeXmlText(snapshot.text),
+      ...(resourceText ? [resourceText] : []),
+      "</lark-doc-comment>"
+    ];
+    return { text: lines.join("\n"), downloadedFiles };
+  }
+
+  private async downloadDocCommentImagesBestEffort(
+    context: MessageContext,
+    comment: IncomingLarkDocCommentAdd,
+    snapshot: LarkDocCommentSnapshot
+  ): Promise<NonNullable<IncomingLarkMessage["downloadedFiles"]>> {
+    if (snapshot.imageKeys.length === 0 || !this.options.larkDocComments) {
+      return [];
+    }
+    const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
+    const outputDir = path.join(workspace, ".twinny", "lark_files", "doc_comments", safePathSegment(comment.commentId));
+    const files: NonNullable<IncomingLarkMessage["downloadedFiles"]> = [];
+    for (const imageKey of snapshot.imageKeys) {
+      try {
+        const downloaded = await this.options.larkDocComments.downloadCommentImage({
+          fileToken: imageKey,
+          outputDir
+        });
+        files.push({
+          ...downloaded,
+          codexTag: "img"
+        });
+      } catch (error) {
+        this.log.warn({ error, commentId: comment.commentId, imageKey }, "failed to download doc comment image");
+      }
+    }
+    return files;
+  }
+
+  private async sendDocCommentProxyMessage(
+    conversation: ConversationRecord,
+    thread: CodexThreadRecord,
+    watcher: LarkDocWatcherRecord,
+    senderName: string | undefined,
+    snapshot: LarkDocCommentSnapshot
+  ): Promise<LarkReplyResult | LarkSendMessageResult | void> {
+    const text = `@${senderName ?? snapshot.authorOpenId} 在 ${watcher.watchUrl} 中评论: ${compactInlineText(snapshot.text)}`;
+    if (thread.cardMessageId) {
+      return this.options.lark.replyText(thread.cardMessageId, text, { replyInThread: true });
+    }
+    if (conversation.type === "p2p") {
+      return this.options.lark.sendTextToOpenId(conversation.chatId, text);
+    }
+    return this.options.lark.sendTextToChatId(conversation.chatId, text);
   }
 
   private async applyGroupResponsePolicy(
@@ -2511,6 +2839,68 @@ export class ConversationManager {
     const proxyParsed = parseSlashCommand(proxyMessage.text);
     await this.recordIncomingMessage(proxyState, proxyContext, proxyMessage, proxyParsed);
     await this.handleRecordedParsedCommand(proxyState, proxyContext, proxyMessage, proxyParsed);
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async handleWatchCommand(
+    _state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    const resolved = await this.resolveThreadForMessage(context, message);
+    if (resolved.replacedMissingThread) {
+      await this.notifyThreadReplacementBestEffort(message.messageId, resolved.previousThreadId, resolved.threadId);
+    }
+
+    const parsed = parseWatchCommand(text);
+    if (parsed.kind === "list") {
+      const watchers = await this.options.repository.listLarkDocWatchersByThread(resolved.threadId);
+      const activeWatchers = watchers.filter((watcher) => watcher.watchMode !== "none");
+      const lines = activeWatchers.length === 0
+        ? ["当前 thread 没有启用中的文档监听。"]
+        : activeWatchers.map((watcher) =>
+            `${watcher.fileType}/${watcher.fileToken} ${watcher.watchMode} ${watcher.watchUrl} 最新：${formatBeijingTime(watcher.lastCommentReceivedAt)}`
+          );
+      await this.replyControlBestEffort(message.messageId, lines.join("\n"));
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    if (parsed.kind === "invalid") {
+      await this.replyControlBestEffort(message.messageId, parsed.message);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    if (!this.options.larkDocs) {
+      await this.replyControlBestEffort(message.messageId, "当前运行环境未配置 Lark 文档解析能力。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    let target: ResolvedLarkDocTarget;
+    try {
+      target = await this.options.larkDocs.resolveDocTarget(parsed.url);
+    } catch (error) {
+      await this.replyControlBestEffort(message.messageId, toErrorMessage(error));
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    await this.options.repository.upsertLarkDocWatcher({
+      fileType: target.fileType,
+      fileToken: target.fileToken,
+      threadId: resolved.threadId,
+      watchMode: parsed.watchMode,
+      watchUrl: target.watchUrl
+    });
+    await this.replyControlBestEffort(
+      message.messageId,
+      parsed.watchMode === "none"
+        ? `已关闭 ${target.fileType}/${target.fileToken} 的文档评论监听。`
+        : `已监听 ${target.fileType}/${target.fileToken}，mode=${parsed.watchMode}。`
+    );
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
@@ -4266,7 +4656,7 @@ export class ConversationManager {
       return false;
     }
     const first = state.pendingBatch[0]!;
-    if (first.original.senderOpenId !== active.triggerOpenId) {
+    if (!first.docComment && first.original.senderOpenId !== active.triggerOpenId) {
       return false;
     }
     const interrupted = await this.cancelActiveTurn(state, { waitForCompletion: true });
@@ -4400,6 +4790,7 @@ export class ConversationManager {
       this.readCodexTurnModelSettingsBestEffort(params.profile, params.threadId),
       this.readThreadTokenUsageBestEffort(params.threadId)
     ]);
+    await this.addDocWorkingReactionsBestEffort([message]);
     const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
     const mode = threadRecord?.mode ?? "default";
     const startedAt = Date.now();
@@ -4504,7 +4895,7 @@ export class ConversationManager {
   }
 
   private async refreshPendingMessagesBeforeStart(context: MessageContext, messages: PendingMessage[]): Promise<PendingMessage[]> {
-    if (!this.options.larkMessages || messages.length === 0) {
+    if (messages.length === 0) {
       return messages;
     }
     const refreshed = await Promise.all(messages.map((message) => this.refreshPendingMessageBeforeStart(context, message)));
@@ -4515,6 +4906,9 @@ export class ConversationManager {
     context: MessageContext,
     pending: PendingMessage
   ): Promise<PendingMessage | undefined> {
+    if (pending.docComment) {
+      return this.refreshDocCommentPendingMessageBeforeStart(context, pending);
+    }
     const reader = this.options.larkMessages;
     if (!reader) {
       return pending;
@@ -4570,6 +4964,66 @@ export class ConversationManager {
     } catch (error) {
       this.log.warn({ error, messageId: pending.messageId }, "failed to apply refreshed Lark message; using stored content");
     }
+    return pending;
+  }
+
+  private async refreshDocCommentPendingMessageBeforeStart(
+    context: MessageContext,
+    pending: PendingMessage
+  ): Promise<PendingMessage | undefined> {
+    const doc = pending.docComment;
+    if (!doc || !this.options.larkDocComments) {
+      return pending;
+    }
+    const snapshot = await this.options.larkDocComments.getCommentSnapshot({
+      fileType: doc.fileType,
+      fileToken: doc.fileToken,
+      commentId: doc.commentId,
+      replyId: doc.replyId
+    }).catch((error: unknown) => {
+      this.log.warn({ error, messageId: pending.messageId }, "failed to refresh doc comment; using stored content");
+      return undefined;
+    });
+    if (snapshot === undefined) {
+      return pending;
+    }
+    if (!snapshot || snapshot.isDone || snapshot.isSolved) {
+      this.log.info({ messageId: pending.messageId, commentId: doc.commentId }, "doc comment unavailable before processing; marking recalled");
+      await this.markMessageRecalledBestEffort(pending.messageId);
+      await this.recallMessageBestEffort(pending.messageId, "failed to recall doc comment proxy message");
+      return undefined;
+    }
+    const comment = docCommentFromPending(pending, snapshot);
+    const senderName = await this.resolveDocCommentSenderName(context, comment, snapshot);
+    const rendered = await this.renderDocCommentMessage(
+      context,
+      {
+        id: 0,
+        fileType: doc.fileType,
+        fileToken: doc.fileToken,
+        threadId: pending.original.messageId,
+        watchMode: "all",
+        watchUrl: doc.watchUrl,
+        createdAt: 0,
+        updatedAt: 0
+      },
+      comment,
+      snapshot,
+      senderName
+    );
+    pending.text = rendered.text;
+    pending.original.text = rendered.text;
+    pending.original.downloadedFiles = rendered.downloadedFiles.length > 0 ? rendered.downloadedFiles : undefined;
+    pending.docComment = { ...doc, replyId: snapshot.replyId, isWhole: snapshot.isWhole };
+    await this.updateQueuedMessageBestEffort(pending.messageId, {
+      text: pending.text,
+      rawEventJson: safeJsonStringify({
+        ...(isRecord(pending.original.raw) ? pending.original.raw : {}),
+        raw_comment: snapshot.rawComment,
+        raw_reply: snapshot.rawReply,
+        reply_id: snapshot.replyId
+      })
+    });
     return pending;
   }
 
@@ -4850,8 +5304,12 @@ export class ConversationManager {
       this.readThreadTokenUsageBestEffort(params.threadId)
     ]);
     const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
+    const hasDocComment = params.messages.some((message) => message.docComment);
+    if (hasDocComment && threadRecord?.mode === "plan") {
+      await this.setThreadModeBestEffort(context.conversationKey, params.threadId, "default");
+    }
     const currentThreadName = isMainSessionContext(context) ? undefined : threadRecord?.name ?? "";
-    const mode = threadRecord?.mode ?? "default";
+    const mode = hasDocComment && threadRecord?.mode === "plan" ? "default" : threadRecord?.mode ?? "default";
     const startedAt = Date.now();
     const active: ActiveTurn = {
       kind: "normal",
@@ -4891,6 +5349,7 @@ export class ConversationManager {
       cancelRequested: false
     };
     state.active = active;
+    await this.addDocWorkingReactionsBestEffort(params.messages);
     await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
 
     const runTurn = async (allowMissingThreadReplacement: boolean): Promise<void> => {
@@ -5269,9 +5728,11 @@ export class ConversationManager {
     if (active.completedStatus === "completed") {
       await this.markMessagesCompletedBestEffort([...active.processingMessageIds]);
       await this.completeAgentCardBestEffort(state, active);
+      await this.replyDocCommentsTerminalBestEffort(active, docCommentTerminalText(active));
     } else {
       await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
       await this.failAgentCardBestEffort(state, active, active.resultError ?? "Codex turn failed");
+      await this.replyDocCommentsTerminalBestEffort(active, active.resultError ?? "Codex turn failed");
     }
     if (hasClearableTerminalGoal(active)) {
       await this.clearActiveGoalBestEffort(active);
@@ -6418,6 +6879,7 @@ export class ConversationManager {
       this.log.warn({ error, messageId: message.messageId }, "failed to add queued reaction");
       message.queuedReaction = null;
     }
+    await this.addDocQueuedReactionBestEffort(message);
   }
 
   private async addQueuedReactionsBestEffort(messages: PendingMessage[]): Promise<void> {
@@ -6432,6 +6894,7 @@ export class ConversationManager {
     if (reaction) {
       await this.removeReactionBestEffort(reaction);
     }
+    await this.clearDocQueuedReactionBestEffort(message);
   }
 
   private async clearQueuedReactionsBestEffort(messages: PendingMessage[]): Promise<void> {
@@ -6459,6 +6922,65 @@ export class ConversationManager {
     active.reaction = null;
     if (reaction) {
       await this.removeReactionBestEffort(reaction);
+    }
+    for (const message of active.messagesById.values()) {
+      await this.clearDocWorkingReactionBestEffort(message);
+    }
+  }
+
+  private async addDocQueuedReactionBestEffort(message: PendingMessage): Promise<void> {
+    if (!message.docComment?.replyId || message.docQueuedReaction || !this.options.larkDocComments) {
+      return;
+    }
+    try {
+      const reaction = docCommentReactionHandle(message.docComment, this.options.config.lark.queuedReaction);
+      await this.options.larkDocComments.updateReaction({ ...reaction, action: "add" });
+      message.docQueuedReaction = reaction;
+    } catch (error) {
+      this.log.warn({ error, messageId: message.messageId }, "failed to add doc comment queued reaction");
+      message.docQueuedReaction = null;
+    }
+  }
+
+  private async clearDocQueuedReactionBestEffort(message: PendingMessage): Promise<void> {
+    const reaction = message.docQueuedReaction;
+    delete message.docQueuedReaction;
+    if (!reaction || !this.options.larkDocComments) {
+      return;
+    }
+    try {
+      await this.options.larkDocComments.updateReaction({ ...reaction, action: "delete" });
+    } catch (error) {
+      this.log.warn({ error, messageId: message.messageId }, "failed to clear doc comment queued reaction");
+    }
+  }
+
+  private async addDocWorkingReactionsBestEffort(messages: PendingMessage[]): Promise<void> {
+    for (const message of messages) {
+      if (!message.docComment?.replyId || message.docWorkingReaction || !this.options.larkDocComments) {
+        continue;
+      }
+      try {
+        const reaction = docCommentReactionHandle(message.docComment, this.options.config.lark.workingReaction);
+        await this.options.larkDocComments.updateReaction({ ...reaction, action: "add" });
+        message.docWorkingReaction = reaction;
+      } catch (error) {
+        this.log.warn({ error, messageId: message.messageId }, "failed to add doc comment working reaction");
+        message.docWorkingReaction = null;
+      }
+    }
+  }
+
+  private async clearDocWorkingReactionBestEffort(message: PendingMessage): Promise<void> {
+    const reaction = message.docWorkingReaction;
+    delete message.docWorkingReaction;
+    if (!reaction || !this.options.larkDocComments) {
+      return;
+    }
+    try {
+      await this.options.larkDocComments.updateReaction({ ...reaction, action: "delete" });
+    } catch (error) {
+      this.log.warn({ error, messageId: message.messageId }, "failed to clear doc comment working reaction");
     }
   }
 
@@ -7091,6 +7613,39 @@ export class ConversationManager {
       this.log.warn({ error: patchError, messageId: active.replyMessageId }, "failed to update failed agent card");
       if (active.card) {
         active.card.fallbackPlain = true;
+      }
+    }
+  }
+
+  private async replyDocCommentsTerminalBestEffort(active: ActiveTurn, text: string): Promise<void> {
+    if (!this.options.larkDocComments) {
+      return;
+    }
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return;
+    }
+    const seen = new Set<string>();
+    for (const message of active.messagesById.values()) {
+      const doc = message.docComment;
+      if (!doc) {
+        continue;
+      }
+      const key = `${doc.fileType}:${doc.fileToken}:${doc.commentId}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      try {
+        await this.options.larkDocComments.replyToComment({
+          fileType: doc.fileType,
+          fileToken: doc.fileToken,
+          commentId: doc.commentId,
+          isWhole: doc.isWhole,
+          text: trimmed
+        });
+      } catch (error) {
+        this.log.warn({ error, messageId: message.messageId, commentId: doc.commentId }, "failed to reply terminal doc comment");
       }
     }
   }
@@ -7758,6 +8313,9 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "fork") {
     return { kind: "fork", text: rest };
   }
+  if (command === "watch") {
+    return { kind: "watch", text: rest };
+  }
   if (command === "help") {
     return { kind: "help" };
   }
@@ -7907,6 +8465,10 @@ function hasClearableTerminalGoal(active: ActiveTurn): boolean {
 
 function needsPlainFailureFallback(active: ActiveTurn): boolean {
   return !active.card?.messageId || active.card.fallbackPlain;
+}
+
+function docCommentTerminalText(active: ActiveTurn): string {
+  return nonEmptyString(active.finalAgentMessageText) ?? active.resultText ?? "";
 }
 
 function isSideTurnCurrent(state: ConversationState, active: ActiveTurn): boolean {
@@ -8173,7 +8735,8 @@ function parsedCommandTitleText(command: ParsedCommand): string | undefined {
     command.kind === "pair" ||
     command.kind === "reload" ||
     command.kind === "thread" ||
-    command.kind === "fork"
+    command.kind === "fork" ||
+    command.kind === "watch"
   ) {
     return command.text;
   }
@@ -8246,6 +8809,40 @@ function parsePairCommand(text: string): { kind: "valid"; guestOpenId: string; p
   return { kind: "valid", guestOpenId, profile };
 }
 
+function parseWatchCommand(text: string):
+  | { kind: "list" }
+  | { kind: "valid"; url: string; watchMode: LarkDocWatchMode }
+  | { kind: "invalid"; message: string } {
+  const tokens = text.split(/\s+/).map((token) => token.trim()).filter(Boolean);
+  if (tokens.length === 0) {
+    return { kind: "list" };
+  }
+  if (tokens.length > 2) {
+    return { kind: "invalid", message: "用法：/watch <lark_doc_url> [owner|all|none]" };
+  }
+  const watchMode = (tokens[1] ?? "owner").toLowerCase();
+  if (watchMode !== "owner" && watchMode !== "all" && watchMode !== "none") {
+    return { kind: "invalid", message: "用法：/watch <lark_doc_url> [owner|all|none]" };
+  }
+  return { kind: "valid", url: tokens[0]!, watchMode };
+}
+
+function formatBeijingTime(timestamp: number | undefined): string {
+  if (timestamp === undefined) {
+    return "暂无";
+  }
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(new Date(timestamp));
+}
+
 function normalizeCommandProfileName(text: string): ProfileName | undefined {
   const trimmed = text.trim();
   return trimmed || undefined;
@@ -8267,6 +8864,17 @@ function createMessageContext(type: ConversationType, message: IncomingLarkMessa
     conversationKey,
     stateKey: larkThreadId ? `${conversationKey}_thread_${safePathSegment(larkThreadId)}` : conversationKey,
     larkThreadId
+  };
+}
+
+function createMessageContextForThread(conversation: ConversationRecord, thread: CodexThreadRecord): MessageContext {
+  return {
+    type: thread.larkThreadId && conversation.type !== "p2p" ? "topic_group" : conversation.type,
+    conversationKey: thread.conversationKey,
+    stateKey: thread.larkThreadId
+      ? `${thread.conversationKey}_thread_${safePathSegment(thread.larkThreadId)}`
+      : thread.conversationKey,
+    larkThreadId: thread.larkThreadId
   };
 }
 
@@ -8374,6 +8982,127 @@ function createThreadReplyMessage(
         content: JSON.stringify({ text })
       }
     }
+  };
+}
+
+function docCommentPlaceholderMessage(comment: IncomingLarkDocCommentAdd): IncomingLarkMessage {
+  return {
+    eventId: comment.eventId,
+    messageId: `doc_comment:${comment.eventId}`,
+    chatId: comment.senderOpenId,
+    chatType: "p2p",
+    messageType: "doc_comment",
+    senderOpenId: comment.senderOpenId,
+    senderName: comment.senderName,
+    text: "",
+    createTime: comment.createTime,
+    raw: comment.raw
+  };
+}
+
+function docCommentRawContext(
+  watcher: LarkDocWatcherRecord,
+  comment: IncomingLarkDocCommentAdd,
+  snapshot: LarkDocCommentSnapshot
+): Record<string, unknown> {
+  return {
+    kind: "doc_comment",
+    file_type: watcher.fileType,
+    file_token: watcher.fileToken,
+    comment_id: comment.commentId,
+    reply_id: snapshot.replyId,
+    is_whole: snapshot.isWhole,
+    watch_url: watcher.watchUrl,
+    watch_mode: watcher.watchMode,
+    quote: snapshot.quote,
+    raw_event: comment.raw,
+    raw_comment: snapshot.rawComment,
+    raw_reply: snapshot.rawReply
+  };
+}
+
+function docCommentFromPending(pending: PendingMessage, snapshot: LarkDocCommentSnapshot): IncomingLarkDocCommentAdd {
+  const doc = pending.docComment;
+  return {
+    eventId: pending.original.eventId,
+    fileType: doc?.fileType ?? snapshot.fileType,
+    fileToken: doc?.fileToken ?? snapshot.fileToken,
+    commentId: doc?.commentId ?? snapshot.commentId,
+    replyId: snapshot.replyId ?? doc?.replyId,
+    senderOpenId: pending.original.senderOpenId,
+    senderName: pending.original.senderName,
+    isMentioned: true,
+    createTime: pending.original.createTime,
+    raw: pending.original.raw
+  };
+}
+
+function docCommentReactionHandle(
+  doc: PendingDocCommentContext,
+  reactionType: string
+): LarkDocCommentReactionHandle {
+  return {
+    fileType: doc.fileType,
+    fileToken: doc.fileToken,
+    replyId: doc.replyId ?? "",
+    reactionType
+  };
+}
+
+function recoverDocCommentPendingMessageFromRecord(
+  record: LarkMessageRecord,
+  context: MessageContext,
+  raw: unknown
+): PendingMessage | undefined {
+  if (!record.larkMessageId || !record.larkUserId) {
+    return undefined;
+  }
+  const doc = recoverDocCommentContext(raw);
+  if (!doc) {
+    return undefined;
+  }
+  const chatType: ConversationType = context.larkThreadId && context.type !== "p2p" ? "topic_group" : context.type;
+  const chatId = chatType === "p2p" ? record.larkUserId : record.larkGroupId;
+  if (!chatId) {
+    return undefined;
+  }
+  const message: IncomingLarkMessage = {
+    eventId: record.eventId,
+    messageId: record.larkMessageId,
+    chatId,
+    chatType,
+    messageType: "doc_comment",
+    senderOpenId: record.larkUserId,
+    larkGroupId: chatType === "p2p" ? undefined : chatId,
+    larkThreadId: context.larkThreadId,
+    text: record.text,
+    createTime: record.larkCreateTime ?? record.receivedAt,
+    raw
+  };
+  return toPendingMessage(message, record.text, {
+    queueBoundary: true,
+    docComment: doc
+  });
+}
+
+function recoverDocCommentContext(raw: unknown): PendingDocCommentContext | undefined {
+  if (!isRecord(raw) || raw.kind !== "doc_comment") {
+    return undefined;
+  }
+  const fileType = nonEmptyString(stringRecordValue(raw, "file_type"));
+  const fileToken = nonEmptyString(stringRecordValue(raw, "file_token"));
+  const commentId = nonEmptyString(stringRecordValue(raw, "comment_id"));
+  const watchUrl = nonEmptyString(stringRecordValue(raw, "watch_url"));
+  if (!fileType || !fileToken || !commentId || !watchUrl) {
+    return undefined;
+  }
+  return {
+    fileType,
+    fileToken,
+    commentId,
+    replyId: nonEmptyString(stringRecordValue(raw, "reply_id")),
+    isWhole: raw.is_whole === true,
+    watchUrl
   };
 }
 
@@ -8762,7 +9491,8 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/logo - 发送 Twinny logo.png",
     "/twinny 或 /banner - 发送 Twinny banner 卡片",
     "/thread [message] - 创建新话题",
-    "/fork [message] - 从当前 Codex thread fork 出新话题"
+    "/fork [message] - 从当前 Codex thread fork 出新话题",
+    "/watch <lark_doc_url> [owner|all|none] - 监听文档 @bot 评论；不带参数查看当前 thread 监听"
   ];
   if (isGroupConversationType(context.type) && profileForSender(config, message.senderOpenId) === "host") {
     lines.push(
@@ -8893,6 +9623,7 @@ function classifyInitialRoute(
     parsed.kind === "new" ||
     parsed.kind === "thread" ||
     parsed.kind === "fork" ||
+    parsed.kind === "watch" ||
     parsed.kind === "activate" ||
     parsed.kind === "pair" ||
     parsed.kind === "reload" ||
@@ -8946,14 +9677,15 @@ function canUpdateActiveGoalWithMessage(
 function toPendingMessage(
   message: IncomingLarkMessage,
   text: string,
-  options: { queueBoundary?: boolean; control?: PendingMessage["control"] } = {}
+  options: { queueBoundary?: boolean; control?: PendingMessage["control"]; docComment?: PendingDocCommentContext } = {}
 ): PendingMessage {
   return {
     messageId: message.messageId,
     text,
     original: message,
     queueBoundary: options.queueBoundary ?? false,
-    control: options.control
+    control: options.control,
+    docComment: options.docComment
   };
 }
 
@@ -9150,6 +9882,9 @@ function activeTurnMentionOpenIds(active: ActiveTurn): string[] {
 }
 
 function formatPendingMessageForCodex(message: PendingMessage): string {
+  if (message.docComment) {
+    return message.text;
+  }
   const timestamp = message.original.createTime === undefined ? "" : String(message.original.createTime);
   const attributes: Array<[string, string]> = [
     ["lark_message_id", message.messageId],

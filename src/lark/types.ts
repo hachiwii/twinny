@@ -2,6 +2,7 @@ import type {
   IncomingLarkBotMenuAction,
   IncomingLarkCardAction,
   IncomingLarkMessage,
+  IncomingLarkDocCommentAdd,
   IncomingLarkMessageRecall,
   LarkReactionHandle
 } from "../types.js";
@@ -10,6 +11,7 @@ export const LARK_BOT_MENU_EVENT = "application.bot.menu_v6" as const;
 export const LARK_MESSAGE_RECEIVE_EVENT = "im.message.receive_v1" as const;
 export const LARK_MESSAGE_RECALLED_EVENT = "im.message.recalled_v1" as const;
 export const LARK_CARD_ACTION_TRIGGER_EVENT = "card.action.trigger" as const;
+export const LARK_DOC_COMMENT_ADD_EVENT = "drive.notice.comment_add_v1" as const;
 export const LARK_GROUP_MENTION_SCOPE = "im:message.group_at_msg:readonly" as const;
 export const LARK_GROUP_ALL_MESSAGES_SCOPE = "im:message.group_msg" as const;
 
@@ -24,7 +26,11 @@ export const LARK_REQUIRED_SCOPES = [
   "im:chat:read",
   "im:chat:create",
   "im:chat:update",
-  "im:resource"
+  "im:resource",
+  "docs:document.comment:read",
+  "docs:document.comment:create",
+  "docs:document.comment:write_only",
+  "drive:drive:readonly"
 ] as const;
 
 export const LARK_OPTIONAL_SCOPES = [
@@ -93,6 +99,7 @@ export type {
   IncomingLarkBotMenuAction,
   IncomingLarkCardAction,
   IncomingLarkMessage,
+  IncomingLarkDocCommentAdd,
   IncomingLarkMessageRecall,
   LarkReactionHandle
 };

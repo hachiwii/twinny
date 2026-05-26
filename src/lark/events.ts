@@ -3,16 +3,19 @@ import { DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS, type LarkBrand } from "../types.j
 import { TenantAccessTokenManager } from "./auth.js";
 import {
   normalizeLarkBotMenuWithReason,
+  normalizeLarkDocCommentAddWithReason,
   normalizeIncomingLarkMessageWithReason,
   normalizeLarkMessageRecallWithReason
 } from "./filters.js";
 import {
   LARK_BOT_MENU_EVENT,
   LARK_CARD_ACTION_TRIGGER_EVENT,
+  LARK_DOC_COMMENT_ADD_EVENT,
   LARK_MESSAGE_RECEIVE_EVENT,
   LARK_MESSAGE_RECALLED_EVENT,
   type IncomingLarkBotMenuAction,
   type IncomingLarkCardAction,
+  type IncomingLarkDocCommentAdd,
   type IncomingLarkMessage,
   type IncomingLarkMessageRecall,
   type LarkLogger,
@@ -43,6 +46,7 @@ export interface LarkEventConsumerOptions {
   now?: () => number;
   onMessage: (message: IncomingLarkMessage) => Promise<void> | void;
   onMessageRecall?: (recall: IncomingLarkMessageRecall) => Promise<void> | void;
+  onDocCommentAdd?: (comment: IncomingLarkDocCommentAdd) => Promise<void> | void;
   onBotMenu?: (action: IncomingLarkBotMenuAction) => Promise<void> | void;
   onCardAction?: (action: IncomingLarkCardAction) => Promise<void> | void;
   onConnectionError?: (error: Error) => void;
@@ -128,6 +132,18 @@ export class LarkEventConsumer {
           return;
         }
         await this.options.onMessageRecall(result.recall);
+      },
+      [LARK_DOC_COMMENT_ADD_EVENT]: async (data: unknown) => {
+        if (!this.options.onDocCommentAdd) {
+          return;
+        }
+        const result = normalizeLarkDocCommentAddWithReason(data);
+        if (result.kind === "ignored") {
+          this.options.onIgnored?.(result.reason, result.raw);
+          this.options.logger?.debug?.({ reason: result.reason }, "ignored Lark doc comment event");
+          return;
+        }
+        await this.options.onDocCommentAdd(result.comment);
       },
       [LARK_BOT_MENU_EVENT]: async (data: unknown) => {
         if (!this.options.onBotMenu) {

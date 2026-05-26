@@ -16,6 +16,7 @@ import {
   LarkFileDownloader,
   LarkMessageReader,
   LarkMessageSender,
+  LarkDocClient,
   LarkBotDirectory,
   LarkChatDirectory,
   LarkUserDirectory,
@@ -166,6 +167,7 @@ export class TwinnyRuntime {
         return undefined;
       });
       const larkFiles = new LarkFileDownloader({ openApiClient });
+      const larkDocs = new LarkDocClient({ openApiClient });
       const assetImageKeys = await this.provisionLarkAssetImageKeys(larkFiles);
       const systemNotifier = new TwinnySystemNotifier({
         ownerOpenId: this.config.owner.openId,
@@ -190,6 +192,8 @@ export class TwinnyRuntime {
         larkChats,
         larkFiles,
         larkMessages,
+        larkDocs,
+        larkDocComments: larkDocs,
         botOpenId,
         assetImageKeys,
         profiles: { codexHomeFor: (profile) => getProfileCodexHome(this.config, profile) },
@@ -215,6 +219,9 @@ export class TwinnyRuntime {
         },
         onMessageRecall: (recall) => {
           conversation.submitMessageRecall(recall);
+        },
+        onDocCommentAdd: (comment) => {
+          conversation.submitDocCommentAdd(comment);
         },
         onBotMenu: (action) => {
           conversation.submitBotMenuAction(action);
@@ -661,7 +668,11 @@ export function adaptConversationRepository(repository: ConversationRepository) 
     markLarkMessagesCompleted: repository.markLarkMessagesCompleted.bind(repository),
     markLarkMessagesFailed: repository.markLarkMessagesFailed.bind(repository),
     markLarkMessagesInterrupted: repository.markLarkMessagesInterrupted.bind(repository),
-    markLarkMessagesCleared: repository.markLarkMessagesCleared.bind(repository)
+    markLarkMessagesCleared: repository.markLarkMessagesCleared.bind(repository),
+    upsertLarkDocWatcher: repository.upsertLarkDocWatcher.bind(repository),
+    getLarkDocWatcherByFile: repository.getLarkDocWatcherByFile.bind(repository),
+    listLarkDocWatchersByThread: repository.listLarkDocWatchersByThread.bind(repository),
+    touchLarkDocWatcherCommentReceived: repository.touchLarkDocWatcherCommentReceived.bind(repository)
   };
 }
 
@@ -905,8 +916,11 @@ function adaptLarkSender(
     replyImage: async (messageId: string, imageKey: string): Promise<{ messageId?: string }> => {
       return sender.replyImage(messageId, imageKey);
     },
-    sendTextToOpenId: async (openId: string, text: string): Promise<void> => {
-      await sender.sendTextToOpenId(openId, text);
+    sendTextToOpenId: async (openId: string, text: string) => {
+      return sender.sendTextToOpenId(openId, text);
+    },
+    sendTextToChatId: async (chatId: string, text: string) => {
+      return sender.sendTextToChatId(chatId, text);
     },
     sendCardToOpenId: async (
       openId: string,

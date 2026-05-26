@@ -3,6 +3,7 @@ import {
   normalizeIncomingLarkMessage,
   normalizeIncomingLarkMessageWithReason,
   normalizeLarkBotMenuWithReason,
+  normalizeLarkDocCommentAddWithReason,
   normalizeLarkMessageRecallWithReason,
   normalizeTextContent
 } from "./filters.js";
@@ -458,6 +459,63 @@ describe("normalizeLarkMessageRecallWithReason", () => {
         raw: expect.anything()
       }
     });
+  });
+});
+
+describe("normalizeLarkDocCommentAddWithReason", () => {
+  it("normalizes mentioned doc comment add events", () => {
+    expect(
+      normalizeLarkDocCommentAddWithReason({
+        header: { event_id: "event-doc-comment", create_time: "1234567890" },
+        event: {
+          file: { file_type: "docx", token: "doc_token" },
+          comment: {
+            id: "comment_1",
+            user_name: "Fallback User"
+          },
+          reply: {
+            reply_id: "reply_1",
+            user_id: "ou_reply_user",
+            is_mentioned: "true",
+            create_time: "1234567891"
+          },
+          operator: {
+            name: "Owner",
+            operator_id: { open_id: "ou_owner" }
+          }
+        }
+      })
+    ).toEqual({
+      kind: "doc_comment",
+      comment: {
+        eventId: "event-doc-comment",
+        fileType: "docx",
+        fileToken: "doc_token",
+        commentId: "comment_1",
+        replyId: "reply_1",
+        senderOpenId: "ou_owner",
+        senderName: "Owner",
+        isMentioned: true,
+        createTime: 1234567891,
+        raw: expect.anything()
+      }
+    });
+  });
+
+  it("ignores malformed doc comment add events", () => {
+    expect(normalizeLarkDocCommentAddWithReason({ event: { comment_id: "comment_1" } })).toMatchObject({
+      kind: "ignored",
+      reason: "missing_file"
+    });
+    expect(
+      normalizeLarkDocCommentAddWithReason({
+        event: {
+          file_type: "docx",
+          file_token: "doc_token",
+          operator: { operator_id: { open_id: "ou_owner" } }
+        }
+      })
+    ).toMatchObject({ kind: "ignored", reason: "missing_comment_id" });
   });
 });
 

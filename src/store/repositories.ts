@@ -11,6 +11,8 @@ import type {
   ConversationResponseMode,
   ConversationRecord,
   ConversationType,
+  LarkDocWatcherRecord,
+  LarkDocWatchMode,
   LarkMessageRecord,
   LarkMessageRouteKind,
   LarkMessageStatus,
@@ -126,6 +128,18 @@ interface LarkMessageRow {
   cached_input_tokens: number;
   reasoning_output_tokens: number;
   token_usage_json: string;
+}
+
+interface LarkDocWatcherRow {
+  id: number;
+  file_type: string;
+  file_token: string;
+  thread_id: string;
+  watch_mode: LarkDocWatchMode;
+  watch_url: string;
+  last_comment_received_at: number | null;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface UpsertCodexThreadInput {
@@ -249,6 +263,14 @@ export interface UpdateConversationSettingsInput {
   responseMode?: ConversationResponseMode;
 }
 
+export interface UpsertLarkDocWatcherInput {
+  fileType: string;
+  fileToken: string;
+  threadId: string;
+  watchMode: LarkDocWatchMode;
+  watchUrl: string;
+}
+
 export interface ConversationRepositoryOptions {
   now?: () => number;
 }
@@ -316,6 +338,10 @@ export class ConversationRepository {
   private readonly updateLarkMessageFailedStatement: Database.Statement<[number, number, string]>;
   private readonly updateLarkMessageInterruptedStatement: Database.Statement<[number, number, string]>;
   private readonly updateLarkMessageClearedStatement: Database.Statement<[number, number, string]>;
+  private readonly upsertLarkDocWatcherStatement: Database.Statement<[Record<string, unknown>]>;
+  private readonly selectLarkDocWatcherByFileStatement: Database.Statement<[string, string], LarkDocWatcherRow>;
+  private readonly selectLarkDocWatchersByThreadStatement: Database.Statement<[string], LarkDocWatcherRow>;
+  private readonly updateLarkDocWatcherLastCommentStatement: Database.Statement<[number, number, string, string]>;
 
   constructor(
     private readonly db: Database.Database,
@@ -621,7 +647,7 @@ export class ConversationRepository {
           SELECT COUNT(*)
           FROM lark_messages
           WHERE thread_id = @codexThreadId
-            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'side_message')
+            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'side_message', 'doc_comment')
         ) AS user_message_count,
         COUNT(*) AS turn_count,
         COALESCE(SUM(CASE
@@ -653,7 +679,7 @@ export class ConversationRepository {
           SELECT COUNT(*)
           FROM lark_messages
           WHERE conversation_key = @conversationKey
-            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'side_message')
+            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'side_message', 'doc_comment')
         ) AS user_message_count,
         (
           SELECT COALESCE(SUM(input_tokens), 0)
@@ -859,6 +885,47 @@ export class ConversationRepository {
           cleared_at = COALESCE(cleared_at, ?),
           updated_at = ?
       WHERE lark_message_id = ?
+    `);
+    this.upsertLarkDocWatcherStatement = this.db.prepare(`
+      INSERT INTO lark_doc_watcher (
+        file_type,
+        file_token,
+        thread_id,
+        watch_mode,
+        watch_url,
+        created_at,
+        updated_at
+      ) VALUES (
+        @fileType,
+        @fileToken,
+        @threadId,
+        @watchMode,
+        @watchUrl,
+        @createdAt,
+        @updatedAt
+      )
+      ON CONFLICT(file_type, file_token) DO UPDATE SET
+        thread_id = excluded.thread_id,
+        watch_mode = excluded.watch_mode,
+        watch_url = excluded.watch_url,
+        updated_at = excluded.updated_at
+    `);
+    this.selectLarkDocWatcherByFileStatement = this.db.prepare(`
+      SELECT * FROM lark_doc_watcher
+      WHERE file_type = ?
+        AND file_token = ?
+    `);
+    this.selectLarkDocWatchersByThreadStatement = this.db.prepare(`
+      SELECT * FROM lark_doc_watcher
+      WHERE thread_id = ?
+      ORDER BY updated_at DESC, id DESC
+    `);
+    this.updateLarkDocWatcherLastCommentStatement = this.db.prepare(`
+      UPDATE lark_doc_watcher
+      SET last_comment_received_at = ?,
+          updated_at = ?
+      WHERE file_type = ?
+        AND file_token = ?
     `);
   }
 
@@ -1409,6 +1476,45 @@ export class ConversationRepository {
     this.markLarkMessagesTerminal(larkMessageIds, this.updateLarkMessageClearedStatement);
   }
 
+  upsertLarkDocWatcher(input: UpsertLarkDocWatcherInput): LarkDocWatcherRecord {
+    validateLarkDocWatcherInput(input);
+    const now = this.now();
+    this.upsertLarkDocWatcherStatement.run({
+      fileType: input.fileType,
+      fileToken: input.fileToken,
+      threadId: input.threadId,
+      watchMode: input.watchMode,
+      watchUrl: input.watchUrl,
+      createdAt: now,
+      updatedAt: now
+    });
+    return this.requireLarkDocWatcherByFile(input.fileType, input.fileToken);
+  }
+
+  getLarkDocWatcherByFile(fileType: string, fileToken: string): LarkDocWatcherRecord | undefined {
+    assertNonEmpty(fileType, "fileType");
+    assertNonEmpty(fileToken, "fileToken");
+    return mapLarkDocWatcherRow(this.selectLarkDocWatcherByFileStatement.get(fileType, fileToken));
+  }
+
+  listLarkDocWatchersByThread(threadId: string): LarkDocWatcherRecord[] {
+    assertNonEmpty(threadId, "threadId");
+    return this.selectLarkDocWatchersByThreadStatement.all(threadId).map((row) => mapRequiredLarkDocWatcherRow(row));
+  }
+
+  touchLarkDocWatcherCommentReceived(fileType: string, fileToken: string, receivedAt: number): boolean {
+    assertNonEmpty(fileType, "fileType");
+    assertNonEmpty(fileToken, "fileToken");
+    assertNonNegativeFinite(receivedAt, "receivedAt");
+    const result = this.updateLarkDocWatcherLastCommentStatement.run(
+      Math.trunc(receivedAt),
+      this.now(),
+      fileType,
+      fileToken
+    );
+    return result.changes > 0;
+  }
+
   private requireByConversationKey(conversationKey: string): ConversationRecord {
     const record = this.getByConversationKey(conversationKey);
     if (!record) {
@@ -1457,6 +1563,14 @@ export class ConversationRepository {
     const record = this.getLarkMessageByEventId(eventId);
     if (!record) {
       throw new TwinnyError(`Lark event ${eventId} was not found`, "LARK_MESSAGE_NOT_FOUND");
+    }
+    return record;
+  }
+
+  private requireLarkDocWatcherByFile(fileType: string, fileToken: string): LarkDocWatcherRecord {
+    const record = this.getLarkDocWatcherByFile(fileType, fileToken);
+    if (!record) {
+      throw new TwinnyError(`Lark doc watcher ${fileType}/${fileToken} was not found`, "LARK_DOC_WATCHER_NOT_FOUND");
     }
     return record;
   }
@@ -1584,6 +1698,27 @@ function mapRequiredLarkMessageRow(row: LarkMessageRow): LarkMessageRecord {
   };
 }
 
+function mapLarkDocWatcherRow(row: LarkDocWatcherRow | undefined): LarkDocWatcherRecord | undefined {
+  if (!row) {
+    return undefined;
+  }
+  return mapRequiredLarkDocWatcherRow(row);
+}
+
+function mapRequiredLarkDocWatcherRow(row: LarkDocWatcherRow): LarkDocWatcherRecord {
+  return {
+    id: row.id,
+    fileType: row.file_type,
+    fileToken: row.file_token,
+    threadId: row.thread_id,
+    watchMode: validLarkDocWatchMode(row.watch_mode) ? row.watch_mode : "owner",
+    watchUrl: row.watch_url,
+    lastCommentReceivedAt: row.last_comment_received_at ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
 function validateNewConversation(input: NewConversationRecord): void {
   assertExpectedConversationKey(input.conversationKey, input.type, input.chatId);
   assertNonEmpty(input.name, "name");
@@ -1656,6 +1791,14 @@ function validateLarkMessageInput(input: InsertLarkMessageInput): void {
   }
 }
 
+function validateLarkDocWatcherInput(input: UpsertLarkDocWatcherInput): void {
+  assertNonEmpty(input.fileType, "fileType");
+  assertNonEmpty(input.fileToken, "fileToken");
+  assertNonEmpty(input.threadId, "threadId");
+  assertValidLarkDocWatchMode(input.watchMode);
+  assertNonEmpty(input.watchUrl, "watchUrl");
+}
+
 function assertExpectedConversationKey(conversationKey: string, type: ConversationType, chatId: string): void {
   assertValidConversationType(type);
   const expectedKey = conversationKeyForTypeAndChatId(type, chatId);
@@ -1715,6 +1858,7 @@ function assertValidRouteKind(routeKind: LarkMessageRouteKind): void {
     routeKind !== "message" &&
     routeKind !== "steered_message" &&
     routeKind !== "queued_message" &&
+    routeKind !== "doc_comment" &&
     routeKind !== "side_message" &&
     routeKind !== "goal_message" &&
     routeKind !== "control_message" &&
@@ -1723,6 +1867,16 @@ function assertValidRouteKind(routeKind: LarkMessageRouteKind): void {
   ) {
     throw new TwinnyError(`Unsupported Lark message route kind: ${routeKind}`, "LARK_MESSAGE_ROUTE_KIND_INVALID");
   }
+}
+
+function assertValidLarkDocWatchMode(mode: LarkDocWatchMode): void {
+  if (!validLarkDocWatchMode(mode)) {
+    throw new TwinnyError(`Unsupported Lark doc watch mode: ${mode}`, "LARK_DOC_WATCH_MODE_INVALID");
+  }
+}
+
+function validLarkDocWatchMode(mode: unknown): mode is LarkDocWatchMode {
+  return mode === "owner" || mode === "all" || mode === "none";
 }
 
 function assertValidMessageStatus(status: LarkMessageStatus): void {

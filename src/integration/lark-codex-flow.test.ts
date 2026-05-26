@@ -2301,7 +2301,11 @@ function adaptConversationRepository(repository: StoreConversationRepository): M
     markLarkMessagesCompleted: repository.markLarkMessagesCompleted.bind(repository),
     markLarkMessagesFailed: repository.markLarkMessagesFailed.bind(repository),
     markLarkMessagesInterrupted: repository.markLarkMessagesInterrupted.bind(repository),
-    markLarkMessagesCleared: repository.markLarkMessagesCleared.bind(repository)
+    markLarkMessagesCleared: repository.markLarkMessagesCleared.bind(repository),
+    upsertLarkDocWatcher: repository.upsertLarkDocWatcher.bind(repository),
+    getLarkDocWatcherByFile: repository.getLarkDocWatcherByFile.bind(repository),
+    listLarkDocWatchersByThread: repository.listLarkDocWatchersByThread.bind(repository),
+    touchLarkDocWatcherCommentReceived: repository.touchLarkDocWatcherCommentReceived.bind(repository)
   };
 }
 
@@ -2417,9 +2421,8 @@ function adaptLarkSender(sender: LarkMessageSender, config: TwinnyConfig): LarkR
     replyPost: (messageId, content, options) => sender.replyPost(messageId, content, options),
     replyFile: (messageId, fileKey) => sender.replyFile(messageId, fileKey),
     replyImage: (messageId, imageKey) => sender.replyImage(messageId, imageKey),
-    sendTextToOpenId: async (openId, text) => {
-      await sender.sendTextToOpenId(openId, text);
-    },
+    sendTextToOpenId: (openId, text) => sender.sendTextToOpenId(openId, text),
+    sendTextToChatId: (chatId, text) => sender.sendTextToChatId(chatId, text),
     sendCardToOpenId: (openId, card, options) => sender.sendInteractiveCardToOpenId(openId, card, options),
     sendCardToChatId: (chatId, card, options) => sender.sendInteractiveCardToChatId(chatId, card, options),
     sendEphemeralCardToChatId: (chatId, openId, card) =>

@@ -18,6 +18,7 @@ describe("LarkEventConsumer", () => {
     };
     const onMessage = vi.fn();
     const onBotMenu = vi.fn();
+    const onDocCommentAdd = vi.fn();
     const onIgnored = vi.fn();
     const consumer = new LarkEventConsumer({
       appId: "cli_1234567890abcdef",
@@ -25,6 +26,7 @@ describe("LarkEventConsumer", () => {
       warmTenantToken: false,
       onMessage,
       onBotMenu,
+      onDocCommentAdd,
       onIgnored,
       eventDispatcherFactory: () => dispatcher,
       wsClientFactory: () => wsClient
@@ -38,6 +40,7 @@ describe("LarkEventConsumer", () => {
     expect(Object.keys(registered).sort()).toEqual([
       "application.bot.menu_v6",
       "card.action.trigger",
+      "drive.notice.comment_add_v1",
       "im.message.recalled_v1",
       "im.message.receive_v1"
     ]);
@@ -49,6 +52,71 @@ describe("LarkEventConsumer", () => {
     await consumer.stop({ force: true });
     expect(wsClient.close).toHaveBeenCalledWith({ force: true });
     expect(consumer.isRunning).toBe(false);
+  });
+
+  it("forwards normalized doc comment add events", async () => {
+    const registered: Record<string, (data: unknown) => unknown> = {};
+    const dispatcher: EventDispatcherLike = {
+      register(handles) {
+        Object.assign(registered, handles);
+        return this;
+      }
+    };
+    const wsClient: WsClientLike = {
+      start: vi.fn(),
+      close: vi.fn()
+    };
+    const onDocCommentAdd = vi.fn();
+    const onIgnored = vi.fn();
+    const consumer = new LarkEventConsumer({
+      appId: "cli_1234567890abcdef",
+      appSecret: "secret",
+      warmTenantToken: false,
+      onMessage: vi.fn(),
+      onDocCommentAdd,
+      onIgnored,
+      eventDispatcherFactory: () => dispatcher,
+      wsClientFactory: () => wsClient
+    });
+
+    await consumer.start();
+    await registered["drive.notice.comment_add_v1"]({
+      header: { event_id: "event-doc-comment", create_time: "1234567890" },
+      event: {
+        file_type: "docx",
+        file_token: "doc_token",
+        comment_id: "comment_1",
+        reply_id: "reply_1",
+        is_mentioned: true,
+        operator: {
+          name: "Owner",
+          operator_id: { open_id: "ou_owner" }
+        }
+      }
+    });
+    await registered["drive.notice.comment_add_v1"]({
+      header: { event_id: "event-doc-comment-ignored" },
+      event: {
+        file_type: "docx",
+        file_token: "doc_token",
+        is_mentioned: true,
+        operator: { operator_id: { open_id: "ou_owner" } }
+      }
+    });
+
+    expect(onDocCommentAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventId: "event-doc-comment",
+        fileType: "docx",
+        fileToken: "doc_token",
+        commentId: "comment_1",
+        replyId: "reply_1",
+        senderOpenId: "ou_owner",
+        senderName: "Owner",
+        isMentioned: true
+      })
+    );
+    expect(onIgnored).toHaveBeenCalledWith("missing_comment_id", expect.anything());
   });
 
   it("forwards normalized bot menu events", async () => {

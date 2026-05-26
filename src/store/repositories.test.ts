@@ -152,7 +152,57 @@ describe("ConversationRepository", () => {
       )
       .all()
       .map((row) => row.name);
-    expect(tables).toEqual(["conversations", "lark_messages", "threads"]);
+    expect(tables).toEqual(["conversations", "lark_doc_watcher", "lark_messages", "threads"]);
+  });
+
+  it("upserts Lark doc watchers by file and records latest comment time", () => {
+    const repo = createConversationRepository(db, { now: () => now });
+
+    const created = repo.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_1",
+      watchMode: "owner",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
+    expect(created).toMatchObject({
+      id: 1,
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_1",
+      watchMode: "owner",
+      watchUrl: "https://example.feishu.cn/docx/doc_token",
+      createdAt: 1000,
+      updatedAt: 1000
+    });
+
+    now = 1500;
+    expect(repo.touchLarkDocWatcherCommentReceived("docx", "doc_token", 1234567890)).toBe(true);
+    expect(repo.getLarkDocWatcherByFile("docx", "doc_token")).toMatchObject({
+      lastCommentReceivedAt: 1234567890,
+      updatedAt: 1500
+    });
+
+    now = 2000;
+    const replaced = repo.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_2",
+      watchMode: "none",
+      watchUrl: "https://example.feishu.cn/docx/doc_token?from=updated"
+    });
+    expect(replaced).toMatchObject({
+      id: 1,
+      threadId: "thread_2",
+      watchMode: "none",
+      watchUrl: "https://example.feishu.cn/docx/doc_token?from=updated",
+      lastCommentReceivedAt: 1234567890,
+      createdAt: 1000,
+      updatedAt: 2000
+    });
+    expect(repo.listLarkDocWatchersByThread("thread_1")).toEqual([]);
+    expect(repo.listLarkDocWatchersByThread("thread_2")).toEqual([replaced]);
+    expect(repo.touchLarkDocWatcherCommentReceived("docx", "missing", 1)).toBe(false);
   });
 
   it("records runtime codex threads, messages, and token usage by business ids", () => {

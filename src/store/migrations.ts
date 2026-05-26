@@ -15,9 +15,10 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 1;
+export const currentStoreSchemaVersion = 2;
 
 const baselineMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
+const larkDocWatcherMigrationFile = fileURLToPath(new URL("../../migrations/0002_lark_doc_watcher.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -25,6 +26,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 1,
       name: "0001_initial",
       sql: fs.readFileSync(baselineMigrationFile, "utf8")
+    },
+    {
+      version: 2,
+      name: "0002_lark_doc_watcher",
+      sql: fs.readFileSync(larkDocWatcherMigrationFile, "utf8")
     }
   ];
 }
@@ -94,6 +100,10 @@ function validateBaselineSchema(db: Database.Database): void {
     [
       "lark_messages",
       ["event_id", "lark_user_id", "conversation_key", "thread_id", "route_kind", "status", "side_id", "token_usage_json"]
+    ],
+    [
+      "lark_doc_watcher",
+      ["file_type", "file_token", "thread_id", "watch_mode", "watch_url", "last_comment_received_at"]
     ]
   ]);
 

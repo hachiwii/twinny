@@ -57,6 +57,7 @@ export type LarkMessageRouteKind =
   | "goal_message"
   | "steered_message"
   | "queued_message"
+  | "doc_comment"
   | "control_message"
   | "card_action"
   | "menu_action";
@@ -245,6 +246,20 @@ export interface LarkMessageRecord {
   tokenUsageJson: string;
 }
 
+export type LarkDocWatchMode = "owner" | "all" | "none";
+
+export interface LarkDocWatcherRecord {
+  id: number;
+  fileType: string;
+  fileToken: string;
+  threadId: string;
+  watchMode: LarkDocWatchMode;
+  watchUrl: string;
+  lastCommentReceivedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface IncomingLarkMessage {
   eventId: string;
   messageId: string;
@@ -304,6 +319,19 @@ export interface IncomingLarkCardAction {
   actionTag?: string;
   actionValue: Record<string, unknown>;
   formValue?: Record<string, unknown>;
+  raw: unknown;
+}
+
+export interface IncomingLarkDocCommentAdd {
+  eventId: string;
+  fileType: string;
+  fileToken: string;
+  commentId: string;
+  replyId?: string;
+  senderOpenId: string;
+  senderName?: string;
+  isMentioned: boolean;
+  createTime?: number;
   raw: unknown;
 }
 

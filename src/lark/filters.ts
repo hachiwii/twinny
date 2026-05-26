@@ -1,5 +1,6 @@
 import type {
   IncomingLarkBotMenuAction,
+  IncomingLarkDocCommentAdd,
   IncomingLarkMention,
   IncomingLarkMessage,
   IncomingLarkMessageRecall,
@@ -46,6 +47,12 @@ export type LarkMessageIgnoreReason =
 
 export type LarkMessageChangeIgnoreReason = "malformed_event" | "missing_message_id";
 
+export type LarkDocCommentIgnoreReason =
+  | "malformed_event"
+  | "missing_file"
+  | "missing_comment_id"
+  | "missing_sender_open_id";
+
 export type LarkBotMenuIgnoreReason =
   | "malformed_event"
   | "missing_event_key"
@@ -67,6 +74,10 @@ export type NormalizeLarkMessageRecallResult =
 export type NormalizeLarkBotMenuResult =
   | { kind: "bot_menu"; action: IncomingLarkBotMenuAction }
   | { kind: "ignored"; reason: LarkBotMenuIgnoreReason; raw: unknown };
+
+export type NormalizeLarkDocCommentResult =
+  | { kind: "doc_comment"; comment: IncomingLarkDocCommentAdd }
+  | { kind: "ignored"; reason: LarkDocCommentIgnoreReason; raw: unknown };
 
 export function normalizeIncomingLarkMessage(
   raw: unknown,
@@ -211,6 +222,71 @@ export function normalizeLarkMessageRecallWithReason(raw: unknown): NormalizeLar
       messageId,
       chatId: stringValue(event.chat_id) ?? chatIdFromChatInfo(event.chat_info),
       recallTime: parseEpochMs(event.recall_time),
+      raw
+    }
+  };
+}
+
+export function normalizeLarkDocCommentAddWithReason(raw: unknown): NormalizeLarkDocCommentResult {
+  if (!isRecord(raw)) {
+    return ignoredDocComment("malformed_event", raw);
+  }
+
+  const header = eventHeader(raw);
+  const event = eventPayload(raw);
+  const fileType = firstStringValue(
+    event.file_type,
+    getRecordValue(event.file, "file_type"),
+    getRecordValue(event.file, "type"),
+    event.obj_type
+  );
+  const fileToken = firstStringValue(
+    event.file_token,
+    getRecordValue(event.file, "file_token"),
+    getRecordValue(event.file, "token"),
+    event.obj_token
+  );
+  if (!fileType || !fileToken) {
+    return ignoredDocComment("missing_file", raw);
+  }
+
+  const comment = isRecord(event.comment) ? event.comment : {};
+  const reply = isRecord(event.reply) ? event.reply : {};
+  const commentId = firstStringValue(event.comment_id, comment.comment_id, comment.id);
+  if (!commentId) {
+    return ignoredDocComment("missing_comment_id", raw);
+  }
+
+  const senderOpenId = firstStringValue(
+    getRecordValue(getRecordValue(event.operator, "operator_id"), "open_id"),
+    getRecordValue(getRecordValue(event.sender, "sender_id"), "open_id"),
+    event.user_id,
+    reply.user_id,
+    comment.user_id
+  );
+  if (!senderOpenId) {
+    return ignoredDocComment("missing_sender_open_id", raw);
+  }
+
+  return {
+    kind: "doc_comment",
+    comment: {
+      eventId: firstStringValue(header.event_id, raw.event_id, raw.uuid, `${fileType}:${fileToken}:${commentId}`) ?? `${fileType}:${fileToken}:${commentId}`,
+      fileType,
+      fileToken,
+      commentId,
+      replyId: firstStringValue(event.reply_id, reply.reply_id, reply.id),
+      senderOpenId,
+      senderName: firstStringValue(
+        event.operator_name,
+        event.sender_name,
+        getRecordValue(event.operator, "name"),
+        getRecordValue(event.sender, "name"),
+        reply.user_name,
+        comment.user_name
+      ),
+      isMentioned: booleanValue(event.is_mentioned) || booleanValue(reply.is_mentioned) || booleanValue(comment.is_mentioned),
+      createTime: parseEpochMs(event.create_time ?? reply.create_time ?? comment.create_time ?? header.create_time),
       raw
     }
   };
@@ -802,6 +878,10 @@ function ignoredBotMenu(reason: LarkBotMenuIgnoreReason, raw: unknown): Normaliz
   return { kind: "ignored", reason, raw };
 }
 
+function ignoredDocComment(reason: LarkDocCommentIgnoreReason, raw: unknown): NormalizeLarkDocCommentResult {
+  return { kind: "ignored", reason, raw };
+}
+
 function botMenuActionForEventKey(eventKey: string): IncomingLarkBotMenuAction["action"] | undefined {
   const normalized = eventKey.trim().toLowerCase();
   switch (normalized) {
@@ -828,6 +908,10 @@ function eventPayload(raw: Record<string, unknown>): Record<string, unknown> {
 
 function eventHeader(raw: Record<string, unknown>): Record<string, unknown> {
   return isRecord(raw.header) ? raw.header : {};
+}
+
+function getRecordValue(value: unknown, key: string): unknown {
+  return isRecord(value) ? value[key] : undefined;
 }
 
 function chatIdFromChatInfo(value: unknown): string | undefined {
@@ -861,6 +945,16 @@ function firstStringValue(...values: unknown[]): string | undefined {
     }
   }
   return undefined;
+}
+
+function booleanValue(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    return value.trim().toLowerCase() === "true";
+  }
+  return false;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

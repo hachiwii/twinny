@@ -15,14 +15,18 @@ interface TableColumnRow {
 }
 
 describe("store migrations", () => {
-  it("loads the 1.0 baseline migration", () => {
+  it("loads the bundled store migrations", () => {
     const migrations = loadStoreMigrations();
 
-    expect(currentStoreSchemaVersion).toBe(1);
-    expect(migrations).toHaveLength(1);
+    expect(currentStoreSchemaVersion).toBe(2);
+    expect(migrations).toHaveLength(2);
     expect(migrations[0]).toMatchObject({
       version: 1,
       name: "0001_initial"
+    });
+    expect(migrations[1]).toMatchObject({
+      version: 2,
+      name: "0002_lark_doc_watcher"
     });
   });
 
@@ -38,7 +42,7 @@ describe("store migrations", () => {
         )
         .all()
         .map((row) => row.name);
-      expect(tables).toEqual(["conversations", "lark_messages", "threads"]);
+      expect(tables).toEqual(["conversations", "lark_doc_watcher", "lark_messages", "threads"]);
 
       const conversationColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(conversations)").all().map((row) => ({
         name: row.name,
@@ -172,6 +176,35 @@ describe("store migrations", () => {
         "idx_lark_messages_lark_message_id",
         "idx_lark_messages_thread_turn"
       ]);
+
+      const watcherColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(lark_doc_watcher)").all().map((row) => ({
+        name: row.name,
+        type: row.type,
+        notnull: row.notnull,
+        pk: row.pk
+      }));
+      expect(watcherColumns).toEqual([
+        { name: "id", type: "INTEGER", notnull: 0, pk: 1 },
+        { name: "file_type", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "file_token", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "thread_id", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "watch_mode", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "watch_url", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "last_comment_received_at", type: "INTEGER", notnull: 0, pk: 0 },
+        { name: "created_at", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 }
+      ]);
+
+      const watcherIndexes = db
+        .prepare<[], SqliteNameRow>(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'lark_doc_watcher' ORDER BY name"
+        )
+        .all()
+        .map((row) => row.name);
+      expect(watcherIndexes).toEqual([
+        "idx_lark_doc_watcher_thread_id",
+        "sqlite_autoindex_lark_doc_watcher_1"
+      ]);
     } finally {
       db.close();
     }
@@ -189,7 +222,7 @@ describe("store migrations", () => {
         )
         .all()
         .map((row) => row.name);
-      expect(tables).toEqual(["conversations", "lark_messages", "threads"]);
+      expect(tables).toEqual(["conversations", "lark_doc_watcher", "lark_messages", "threads"]);
     } finally {
       db.close();
     }

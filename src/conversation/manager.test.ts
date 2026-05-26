@@ -11,7 +11,9 @@ import type {
   CodexTurnResult,
   ConversationRecord,
   IncomingLarkBotMenuAction,
+  IncomingLarkDocCommentAdd,
   IncomingLarkMessage,
+  LarkDocWatcherRecord,
   LarkMessageRecord,
   ProfileName,
   TwinnyConfig
@@ -21,6 +23,9 @@ import {
   type CodexBridge,
   type ConversationRepository,
   type LarkFileDownloader,
+  type LarkDocCommentClient,
+  type LarkDocCommentSnapshot,
+  type LarkDocResolver,
   type LarkMessageReader,
   type LarkResponder,
   type LarkChatDirectory,
@@ -1273,6 +1278,162 @@ describe("ConversationManager", () => {
 
     goals[0]!.resolve({ ...completed("thread_1", "goal_1"), text: "goal done" });
     await waitForExpect(() => expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m1"]));
+  });
+
+  it("binds /watch to the current thread, supports none mode, and lists active watchers", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const lark = createLarkResponder();
+    const larkDocs = createLarkDocResolver();
+    const manager = createManager({ repository, lark, larkDocs });
+
+    manager.submitIncoming(message("m_watch", "/watch https://example.feishu.cn/docx/doc_token"));
+
+    await waitForExpect(() =>
+      expect(repository.upsertLarkDocWatcher).toHaveBeenCalledWith({
+        fileType: "docx",
+        fileToken: "doc_token",
+        threadId: "thread_1",
+        watchMode: "owner",
+        watchUrl: "https://example.feishu.cn/docx/doc_token"
+      })
+    );
+    expect(lark.replyText).toHaveBeenCalledWith("m_watch", "已监听 docx/doc_token，mode=owner。");
+
+    manager.submitIncoming(message("m_watch_none", "/watch https://example.feishu.cn/docx/doc_token none"));
+    await waitForExpect(() =>
+      expect(repository.upsertLarkDocWatcher).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fileToken: "doc_token",
+          watchMode: "none"
+        })
+      )
+    );
+    expect(lark.replyText).toHaveBeenCalledWith("m_watch_none", "已关闭 docx/doc_token 的文档评论监听。");
+
+    manager.submitIncoming(message("m_watch_other", "/watch https://example.feishu.cn/docx/other_doc all"));
+    await waitForExpect(() =>
+      expect(repository.upsertLarkDocWatcher).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fileToken: "other_doc",
+          watchMode: "all"
+        })
+      )
+    );
+
+    manager.submitIncoming(message("m_watch_list", "/watch"));
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith(
+        "m_watch_list",
+        expect.stringContaining("docx/other_doc all https://example.feishu.cn/docx/other_doc 最新：暂无")
+      )
+    );
+    expect(vi.mocked(lark.replyText).mock.calls.find(([messageId]) => messageId === "m_watch_list")?.[1]).not.toContain("doc_token");
+  });
+
+  it("processes mentioned watched doc comments, exits plan mode at start, and replies to the document", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [codexThreadRecord({ codexThreadId: "thread_1", mode: "plan" })]
+    });
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_1",
+      watchMode: "owner",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendTextToOpenId).mockResolvedValue({ messageId: "proxy_doc_comment", raw: {} });
+    const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
+      text: "Please fix <this>",
+      quote: "Quoted & referenced text"
+    }));
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
+        await onTurnStarted?.("turn_doc");
+        return { ...completed(threadId, "turn_doc"), text: "Final answer for doc" };
+      })
+    });
+    const manager = createManager({ repository, codex, lark, larkDocComments });
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment",
+      senderOpenId: "ou_owner",
+      senderName: "Owner",
+      isMentioned: true
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(repository.updateCodexThreadMode).toHaveBeenCalledWith("p2p_ou_guest", "thread_1", "default");
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "default",
+        input: expect.stringContaining('<lark-doc-comment sender_id="ou_owner" sender_name="Owner" file_type="docx" file_token="doc_token" comment_id="comment_1">')
+      })
+    );
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.stringContaining("<quote>Quoted &amp; referenced text</quote>")
+      })
+    );
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.stringContaining("Please fix &lt;this&gt;")
+      })
+    );
+    expect(lark.sendTextToOpenId).toHaveBeenCalledWith(
+      "ou_guest",
+      "@Owner 在 https://example.feishu.cn/docx/doc_token 中评论: Please fix <this>"
+    );
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "proxy_doc_comment",
+        routeKind: "doc_comment",
+        status: "processing",
+        codexThreadId: "thread_1"
+      })
+    );
+    await waitForExpect(() =>
+      expect(larkDocComments.updateReaction).toHaveBeenCalledWith({
+        fileType: "docx",
+        fileToken: "doc_token",
+        replyId: "reply_1",
+        reactionType: config.lark.workingReaction,
+        action: "add"
+      })
+    );
+    await waitForExpect(() =>
+      expect(larkDocComments.replyToComment).toHaveBeenCalledWith({
+        fileType: "docx",
+        fileToken: "doc_token",
+        commentId: "comment_1",
+        isWhole: false,
+        text: "Final answer for doc"
+      })
+    );
+  });
+
+  it("ignores watched doc comments unless the comment mentions the bot", async () => {
+    const { repository } = createRepository(conversationRecord());
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_1",
+      watchMode: "all",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
+    const codex = createCodex();
+    const larkDocComments = createLarkDocCommentClient();
+    const manager = createManager({ repository, codex, larkDocComments });
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment_reply_to_bot",
+      replyId: "reply_to_bot",
+      isMentioned: false
+    }));
+
+    await waitForDelay();
+    expect(larkDocComments.getCommentSnapshot).not.toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
   });
 
   it("allows /queue /goal and rejects /plan /goal or /side /goal", async () => {
@@ -7087,6 +7248,65 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("recovers queued doc comments with refresh and terminal document reply", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_recovered" });
+    const record = larkMessageRecord({
+      larkMessageId: "proxy_doc_comment",
+      eventId: "doc_comment:event_doc_comment:docx:doc_token",
+      larkUserId: "ou_owner",
+      routeKind: "doc_comment",
+      status: "queued",
+      text: "stale doc comment",
+      codexThreadId: "thread_recovered",
+      rawEventJson: JSON.stringify({
+        kind: "doc_comment",
+        file_type: "docx",
+        file_token: "doc_token",
+        comment_id: "comment_1",
+        reply_id: "reply_1",
+        is_whole: true,
+        watch_url: "https://example.feishu.cn/docx/doc_token"
+      })
+    });
+    const { repository } = createRepository(row, { larkMessages: [record] });
+    const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
+      text: "Updated doc comment",
+      isWhole: true
+    }));
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
+        await onTurnStarted?.("turn_1");
+        return { ...completed(threadId, "turn_1"), text: "Recovered final" };
+      })
+    });
+    const manager = createManager({ repository, codex, larkDocComments });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_recovered",
+        input: expect.stringContaining("Updated doc comment")
+      })
+    );
+    expect(repository.updateQueuedLarkMessage).toHaveBeenCalledWith(
+      "proxy_doc_comment",
+      expect.objectContaining({
+        text: expect.stringContaining("Updated doc comment")
+      })
+    );
+    await waitForExpect(() =>
+      expect(larkDocComments.replyToComment).toHaveBeenCalledWith({
+        fileType: "docx",
+        fileToken: "doc_token",
+        commentId: "comment_1",
+        isWhole: true,
+        text: "Recovered final"
+      })
+    );
+  });
+
   it("recovers queued /compact by rerunning the compact control path", async () => {
     const row = conversationRecord({ codexThreadId: "thread_recovered" });
     const record = larkMessageRecord({
@@ -7429,6 +7649,8 @@ function createManager(options: {
   larkChats?: LarkChatDirectory;
   larkFiles?: LarkFileDownloader;
   larkMessages?: LarkMessageReader;
+  larkDocs?: LarkDocResolver;
+  larkDocComments?: LarkDocCommentClient;
   botOpenId?: string;
   assetImageKeys?: ConstructorParameters<typeof ConversationManager>[0]["assetImageKeys"];
   workspaceRoot?: string;
@@ -7453,6 +7675,8 @@ function createManager(options: {
     larkChats: options.larkChats,
     larkFiles: options.larkFiles,
     larkMessages: options.larkMessages,
+    larkDocs: options.larkDocs,
+    larkDocComments: options.larkDocComments,
     botOpenId: options.botOpenId,
     assetImageKeys: options.assetImageKeys,
     telemetry: options.telemetry,
@@ -7474,6 +7698,37 @@ function cardModeConfig(overrides: Partial<TwinnyConfig["lark"]> = {}): TwinnyCo
 function createLarkUserDirectory(): LarkUserDirectory {
   return {
     getUserNameByOpenId: vi.fn(async () => "Guest User")
+  };
+}
+
+function createLarkDocResolver(): LarkDocResolver {
+  return {
+    resolveDocTarget: vi.fn(async (url) => {
+      const parsed = new URL(url);
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      const fileType = parts[0] === "sheets" ? "sheet" : parts[0] ?? "docx";
+      return {
+        fileType,
+        fileToken: parts[1] ?? "doc_token",
+        watchUrl: url
+      };
+    })
+  };
+}
+
+function createLarkDocCommentClient(snapshot: LarkDocCommentSnapshot | null = larkDocCommentSnapshot()): LarkDocCommentClient {
+  return {
+    getCommentSnapshot: vi.fn(async () => snapshot),
+    updateReaction: vi.fn(async () => undefined),
+    replyToComment: vi.fn(async () => ({ replyId: "bot_reply_1", raw: {} })),
+    downloadCommentImage: vi.fn(async ({ fileToken, outputDir }) => ({
+      path: path.join(outputDir, `${fileToken}.png`),
+      resourceType: "image" as const,
+      fileKey: fileToken,
+      fileName: `${fileToken}.png`,
+      size: 123,
+      contentType: "image/png"
+    }))
   };
 }
 
@@ -7649,6 +7904,7 @@ function createLarkResponder(): LarkResponder {
     replyFile: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     replyImage: vi.fn(async (messageId) => ({ messageId: `reply_${messageId}_${++markdownReplyCount}` })),
     sendTextToOpenId: vi.fn(async () => undefined),
+    sendTextToChatId: vi.fn(async (chatId) => ({ messageId: `text_${chatId}_${++markdownReplyCount}`, raw: {} })),
     sendCardToOpenId: vi.fn(async (openId) => ({ messageId: `card_${openId}_${++markdownReplyCount}`, raw: {} })),
     sendCardToChatId: vi.fn(async (chatId) => ({ messageId: `card_${chatId}_${++markdownReplyCount}`, raw: {} })),
     sendEphemeralCardToChatId: vi.fn(async (chatId) => ({ messageId: `ephemeral_${chatId}_${++markdownReplyCount}`, raw: {} })),
@@ -7675,7 +7931,9 @@ function createRepository(initial?: ConversationRecord, options: {
   const larkMessages = new Map<string, LarkMessageRecord>();
   const larkMessagesByEventId = new Map<string, LarkMessageRecord>();
   const codexThreads = new Map<string, CodexThreadRecord>();
+  const larkDocWatchers = new Map<string, LarkDocWatcherRecord>();
   let nextCodexThreadId = 1;
+  let nextLarkDocWatcherId = 1;
   for (const record of options.larkMessages ?? []) {
     if (record.larkMessageId) {
       larkMessageIds.add(record.larkMessageId);
@@ -7691,6 +7949,7 @@ function createRepository(initial?: ConversationRecord, options: {
     [...codexThreads.values()].find(
       (thread) => thread.conversationKey === conversationKey && thread.larkThreadId === larkThreadId
     );
+  const larkDocWatcherKey = (fileType: string, fileToken: string) => `${fileType}:${fileToken}`;
   const putCodexThread = (input: {
     codexThreadId: string;
     conversationKey: string;
@@ -8159,6 +8418,38 @@ function createRepository(initial?: ConversationRecord, options: {
             existing.updatedAt = now;
           }
         }
+      }),
+      upsertLarkDocWatcher: vi.fn((input) => {
+        const key = larkDocWatcherKey(input.fileType, input.fileToken);
+        const existing = larkDocWatchers.get(key);
+        const record: LarkDocWatcherRecord = {
+          id: existing?.id ?? nextLarkDocWatcherId++,
+          fileType: input.fileType,
+          fileToken: input.fileToken,
+          threadId: input.threadId,
+          watchMode: input.watchMode,
+          watchUrl: input.watchUrl,
+          lastCommentReceivedAt: existing?.lastCommentReceivedAt,
+          createdAt: existing?.createdAt ?? Date.now(),
+          updatedAt: Date.now()
+        };
+        larkDocWatchers.set(key, record);
+        return record;
+      }),
+      getLarkDocWatcherByFile: vi.fn((fileType, fileToken) =>
+        larkDocWatchers.get(larkDocWatcherKey(fileType, fileToken))
+      ),
+      listLarkDocWatchersByThread: vi.fn((threadId) =>
+        [...larkDocWatchers.values()].filter((watcher) => watcher.threadId === threadId)
+      ),
+      touchLarkDocWatcherCommentReceived: vi.fn((fileType, fileToken, receivedAt) => {
+        const existing = larkDocWatchers.get(larkDocWatcherKey(fileType, fileToken));
+        if (!existing) {
+          return false;
+        }
+        existing.lastCommentReceivedAt = receivedAt;
+        existing.updatedAt = Date.now();
+        return true;
       })
     }
   };
@@ -8205,7 +8496,8 @@ function isUserMessageRouteKind(routeKind: LarkMessageRecord["routeKind"]): bool
     routeKind === "goal_message" ||
     routeKind === "steered_message" ||
     routeKind === "queued_message" ||
-    routeKind === "side_message"
+    routeKind === "side_message" ||
+    routeKind === "doc_comment"
   );
 }
 
@@ -8316,6 +8608,42 @@ function groupMessage(messageId: string, text: string, overrides: Partial<Incomi
     larkGroupId: "oc_group",
     ...overrides
   });
+}
+
+function docCommentAdd(overrides: Partial<IncomingLarkDocCommentAdd> = {}): IncomingLarkDocCommentAdd {
+  return {
+    eventId: "event_doc_comment",
+    fileType: "docx",
+    fileToken: "doc_token",
+    commentId: "comment_1",
+    replyId: "reply_1",
+    senderOpenId: "ou_owner",
+    senderName: "Owner",
+    isMentioned: true,
+    createTime: 1234,
+    raw: {},
+    ...overrides
+  };
+}
+
+function larkDocCommentSnapshot(overrides: Partial<LarkDocCommentSnapshot> = {}): LarkDocCommentSnapshot {
+  return {
+    fileType: "docx",
+    fileToken: "doc_token",
+    commentId: "comment_1",
+    replyId: "reply_1",
+    isWhole: false,
+    authorOpenId: "ou_owner",
+    authorName: "Owner",
+    text: "Please inspect this",
+    imageKeys: [],
+    isDone: false,
+    isSolved: false,
+    createTime: 1234,
+    rawComment: { comment_id: "comment_1" },
+    rawReply: { reply_id: "reply_1" },
+    ...overrides
+  };
 }
 
 function botMention(): NonNullable<IncomingLarkMessage["mentions"]>[number] {
