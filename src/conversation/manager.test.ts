@@ -1964,7 +1964,8 @@ describe("ConversationManager", () => {
       "/logo - 发送 Twinny logo.png",
       "/twinny 或 /banner - 发送 Twinny banner 卡片",
       "/thread [message] - 创建新话题",
-      "/fork [message] - 从当前 Codex thread fork 出新话题"
+      "/fork [message] - 从当前 Codex thread fork 出新话题",
+      "/watch <lark_doc_url> [owner|all|none] - 监听文档 @bot 评论；不带参数查看当前 thread 监听"
     ]) {
       expect(helpText).toContain(usage);
     }

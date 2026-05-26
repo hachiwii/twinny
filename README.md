@@ -63,6 +63,10 @@ im:chat:read
 im:chat:create
 im:chat:update
 im:resource
+docs:document.comment:read
+docs:document.comment:create
+docs:document.comment:write_only
+drive:drive:readonly
 ```
 
 订阅这些事件/回调：
@@ -70,6 +74,7 @@ im:resource
 ```text
 im.message.receive_v1
 im.message.recalled_v1
+drive.notice.comment_add_v1
 application.bot.menu_v6
 card.action.trigger
 ```
@@ -108,6 +113,7 @@ card.action.trigger
 | `/compact` | 在下一轮队列控制步骤中压缩当前 Codex thread 上下文。 |
 | `/thread [message]` | 创建一个新的 Lark 话题，并绑定新的 Codex thread。带 `message` 时会把消息代理到新话题内。 |
 | `/fork [message]` | 从当前 Codex thread fork 出一个新的 Lark 话题。带 `message` 时会把消息代理到新话题内。 |
+| `/watch <lark_doc_url> [owner\|all\|none]` | 监听飞书/Lark 文档中的 @bot 评论，并把评论路由到当前 thread。不带参数时列出当前 thread 的监听；`owner` 只响应 owner，`all` 响应所有人，`none` 关闭监听。 |
 | `/model <model> <effort>` | 设置当前 thread 后续 turn 使用的模型和推理强度。 |
 | `/logo` | 发送 Twinny logo 图片。 |
 | `/twinny` 或 `/banner` | 发送 Twinny banner 卡片。 |

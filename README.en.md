@@ -63,6 +63,10 @@ im:chat:read
 im:chat:create
 im:chat:update
 im:resource
+docs:document.comment:read
+docs:document.comment:create
+docs:document.comment:write_only
+drive:drive:readonly
 ```
 
 Subscribe to these events/callbacks:
@@ -70,6 +74,7 @@ Subscribe to these events/callbacks:
 ```text
 im.message.receive_v1
 im.message.recalled_v1
+drive.notice.comment_add_v1
 application.bot.menu_v6
 card.action.trigger
 ```
@@ -111,6 +116,7 @@ Send normal messages to the bot to start or continue a Codex turn. In groups, th
 | `/compact`                            | Compact the current Codex thread context in the next queued control step.                                    |
 | `/thread [message]`                   | Create a new Lark topic backed by a new Codex thread. If `message` is present, proxy it into that new topic. |
 | `/fork [message]`                     | Fork the current Codex thread into a new Lark topic. If `message` is present, proxy it into that new topic.  |
+| `/watch <lark_doc_url> [owner\|all\|none]` | Watch @bot comments on a Feishu/Lark document and route them to the current thread. Without arguments, list watchers for the current thread. `owner` responds only to the owner, `all` responds to everyone, and `none` disables the watcher. |
 | `/model <model> <effort>`             | Set the model and reasoning effort for future turns in the current thread.                                   |
 | `/logo`                               | Send the Twinny logo image.                                                                                  |
 | `/twinny` or `/banner`                | Send the Twinny banner card.                                                                                 |
