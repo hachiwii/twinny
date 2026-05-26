@@ -1579,16 +1579,12 @@ describe("Lark to Codex integration flow", () => {
     await queueHarness.dispatchLarkJsonl(jsonl({
       event: "card.action.trigger",
       data: cardActionEvent({
-        eventId: "e_card_queue_unauthorized",
+        eventId: "e_card_queue_other",
         action: "queue",
         stateKey: "p2p_ou_guest",
         runId: 1,
         operatorOpenId: "ou_other"
       })
-    }));
-    await queueHarness.dispatchLarkJsonl(jsonl({
-      event: "card.action.trigger",
-      data: cardActionEvent({ eventId: "e_card_queue", action: "queue", stateKey: "p2p_ou_guest", runId: 1 })
     }));
     await queueHarness.dispatchLarkJsonl(jsonl({
       event: "im.message.receive_v1",
@@ -1609,7 +1605,12 @@ describe("Lark to Codex integration flow", () => {
     let trace = queueHarness.readTrace();
     expect(codexOut(trace, "turn/interrupt")).toHaveLength(1);
     expect(traceText(codexOut(trace, "turn/start")[1])).toContain("queued by card");
-    expect(JSON.stringify(trace)).not.toContain("e_card_queue_unauthorized");
+    await queueHarness.waitForExpect(() => {
+      expect(queueHarness.repository.getLarkMessageByEventId("e_card_queue_other")).toMatchObject({
+        routeKind: "card_action",
+        status: "completed"
+      });
+    });
     await queueHarness.dispose();
 
     const inputHarness = await IntegrationHarness.create(jsonl(
@@ -1727,7 +1728,7 @@ describe("Lark to Codex integration flow", () => {
     await planHarness.dispose();
   });
 
-  it("queues different-user group messages during an active turn while preserving authorized owner stop", async () => {
+  it("steers different-user group messages during an active turn and accepts cross-user next", async () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
         profile: "guest",
@@ -1736,55 +1737,12 @@ describe("Lark to Codex integration flow", () => {
       },
       {
         profile: "guest",
-        after: { method: "turn/start", nth: 1 },
-        delayMs: 180,
-        notify: {
-          method: "turn/completed",
-          params: {
-            threadId: "guest_thread_1",
-            turn: {
-              id: "turn_1",
-              status: "completed",
-              durationMs: 180,
-              items: [{ type: "agentMessage", id: "guest_done", text: "guest done", phase: "final_answer" }]
-            }
-          }
-        }
-      },
-      {
-        profile: "guest",
-        after: { method: "turn/start", nth: 2 },
-        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_2" } } }
-      },
-      {
-        profile: "guest",
-        after: { method: "turn/start", nth: 2 },
-        notify: {
-          method: "turn/completed",
-          params: {
-            threadId: "guest_thread_1",
-            turn: {
-              id: "turn_2",
-              status: "completed",
-              durationMs: 6,
-              items: [{ type: "agentMessage", id: "other_done", text: "other done", phase: "final_answer" }]
-            }
-          }
-        }
-      },
-      {
-        profile: "guest",
-        after: { method: "turn/start", nth: 3 },
-        notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_3" } } }
-      },
-      {
-        profile: "guest",
         after: { method: "turn/interrupt", nth: 1 },
         notify: {
           method: "turn/completed",
           params: {
             threadId: "guest_thread_1",
-            turn: { id: "turn_3", status: "interrupted", durationMs: 8, items: [] }
+            turn: { id: "turn_1", status: "interrupted", durationMs: 8, items: [] }
           }
         }
       }
@@ -1823,15 +1781,23 @@ describe("Lark to Codex integration flow", () => {
       data: receiveMessageEvent({
         eventId: "e_multi_other",
         messageId: "g_multi_other",
-        text: "other user should queue",
+        text: "other user should steer",
         chatType: "group",
         chatId: "oc_group",
         senderOpenId: "ou_other"
       })
     }));
     await harness.waitForExpect(() => {
-      expect(harness.repository.getLarkMessageById("g_multi_other")).toMatchObject({ status: "queued" });
+      expect(harness.repository.getLarkMessageById("g_multi_other")).toMatchObject({
+        routeKind: "steered_message",
+        status: "processing"
+      });
     });
+    await harness.waitForTrace((trace) => codexOut(trace, "turn/steer").length === 1, "different user steer");
+    let trace = harness.readTrace();
+    expect(traceText(codexOut(trace, "turn/steer")[0])).toContain("other user should steer");
+    expect(traceText(codexOut(trace, "turn/steer")[0])).toContain("ou_other");
+
     await harness.dispatchLarkJsonl(jsonl({
       event: "im.message.receive_v1",
       data: receiveMessageEvent({
@@ -1843,63 +1809,16 @@ describe("Lark to Codex integration flow", () => {
         senderOpenId: "ou_other"
       })
     }));
-    await waitForDelay(30);
-    expect(codexOut(harness.readTrace(), "turn/steer")).toHaveLength(0);
-    expect(codexOut(harness.readTrace(), "turn/interrupt")).toHaveLength(0);
-
-    await harness.waitForTrace((trace) => codexOut(trace, "turn/start").length === 2, "different user queued turn");
+    await harness.waitForTrace((items) => codexOut(items, "turn/interrupt").length === 1, "cross-user next interrupt");
     await harness.waitForExpect(() => {
-      expect(harness.repository.getLarkMessageById("g_multi_other")).toMatchObject({ status: "completed" });
+      expect(harness.repository.getLarkMessageById("g_multi_other_next")).toMatchObject({
+        routeKind: "control_message",
+        status: "completed"
+      });
     });
-    let trace = harness.readTrace();
-    expect(traceText(codexOut(trace, "turn/start")[1])).toContain("other user should queue");
-    expect(traceText(codexOut(trace, "turn/start")[1])).toContain("ou_other");
-
-    await harness.dispatchLarkJsonl(jsonl({
-      event: "im.message.receive_v1",
-      data: receiveMessageEvent({
-        eventId: "e_multi_stop_active",
-        messageId: "g_multi_stop_active",
-        text: "guest active task for owner stop",
-        chatType: "group",
-        chatId: "oc_group",
-        senderOpenId: "ou_guest"
-      })
-    }));
-    await harness.waitForTrace((items) => codexOut(items, "turn/start").length === 3, "owner stop active turn");
-    await harness.dispatchLarkJsonl(jsonl({
-      event: "im.message.receive_v1",
-      data: receiveMessageEvent({
-        eventId: "e_multi_stop_queued",
-        messageId: "g_multi_stop_queued",
-        text: "queued before owner stop",
-        chatType: "group",
-        chatId: "oc_group",
-        senderOpenId: "ou_other"
-      })
-    }));
-    await harness.waitForExpect(() => {
-      expect(harness.repository.getLarkMessageById("g_multi_stop_queued")).toMatchObject({ status: "queued" });
-    });
-    await harness.dispatchLarkJsonl(jsonl({
-      event: "im.message.receive_v1",
-      data: receiveMessageEvent({
-        eventId: "e_multi_owner_stop",
-        messageId: "g_multi_owner_stop",
-        text: "/stop",
-        chatType: "group",
-        chatId: "oc_group",
-        senderOpenId: "ou_owner"
-      })
-    }));
-    await harness.waitForTrace((items) => codexOut(items, "turn/interrupt").length === 1, "owner stop interrupt");
-    await harness.waitForExpect(() => {
-      expect(harness.repository.getLarkMessageById("g_multi_stop_queued")).toMatchObject({ status: "cleared" });
-    });
-    await waitForDelay(30);
     trace = harness.readTrace();
-    expect(codexOut(trace, "turn/start")).toHaveLength(3);
-    expect(larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g_multi_owner_stop/reply")).toBe(false);
+    expect(codexOut(trace, "turn/start")).toHaveLength(1);
+    expect(larkOut(trace).some((entry) => entry.path === "/im/v1/messages/g_multi_other_next/reply")).toBe(false);
   });
 });
 

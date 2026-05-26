@@ -1897,10 +1897,6 @@ export class ConversationManager {
       return;
     }
 
-    if (this.shouldDropOccupiedControlCommand(state, message, parsed)) {
-      return;
-    }
-
     await this.prepareIncomingMessageForCodex(context, message);
     const preparedParsed: ParsedCommand = parsed.kind === "message" ? { kind: "message", text: message.text } : parsed;
     const queueDepthBefore = state.pendingBatch.length;
@@ -2131,21 +2127,6 @@ export class ConversationManager {
       }
     }
     return downloadedFiles;
-  }
-
-  private shouldDropOccupiedControlCommand(
-    state: ConversationState,
-    message: IncomingLarkMessage,
-    parsed: ParsedCommand
-  ): boolean {
-    if (parsed.kind !== "stop" && parsed.kind !== "next" && parsed.kind !== "steer") {
-      return false;
-    }
-    if (parsed.kind === "stop" && /^\d+$/.test(parsed.text.trim())) {
-      return false;
-    }
-    const active = state.active;
-    return active !== undefined && !this.canControlActiveTurn(active, message.senderOpenId);
   }
 
   private async handleRecordedParsedCommand(
@@ -4035,11 +4016,6 @@ export class ConversationManager {
         await this.markMessagesCompletedBestEffort([message.messageId]);
         return;
       }
-      if (!this.canControlActiveTurn(side, message.senderOpenId)) {
-        await this.replyControlBestEffort(message.messageId, `无权停止临时会话 [${sideId}]。`);
-        await this.markMessagesCompletedBestEffort([message.messageId]);
-        return;
-      }
       await this.cancelSideTurn(state, side);
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
@@ -4172,8 +4148,7 @@ export class ConversationManager {
     return candidates.find((active) =>
       active.runId === command.runId &&
       active.context.stateKey === command.stateKey &&
-      (action.openMessageId === undefined || active.card?.messageId === undefined || action.openMessageId === active.card.messageId) &&
-      this.canControlActiveTurn(active, action.operatorOpenId)
+      (action.openMessageId === undefined || active.card?.messageId === undefined || action.openMessageId === active.card.messageId)
     );
   }
 
@@ -4742,7 +4717,7 @@ export class ConversationManager {
 
     if (active?.waiting) {
       const canInterruptWaitingTurn =
-        state.pendingBatch.length === 0 && this.canSteerActiveTurn(active, message.original.senderOpenId);
+        state.pendingBatch.length === 0 && message.original.senderOpenId === active.triggerOpenId;
       const isPlainWaitingFollowUp = !message.control && !message.queueBoundary;
       if (canInterruptWaitingTurn && (active.waiting.kind === "plan" || isPlainWaitingFollowUp)) {
         await this.interruptWaitingTurnWithMessage(state, context, active, message);
@@ -4759,7 +4734,7 @@ export class ConversationManager {
       const canSteerMessage =
         !message.control &&
         (this.canSteerDocCommentIntoActiveTurn(active, message) ||
-          (state.pendingBatch.length === 0 && !message.queueBoundary && this.canSteerActiveTurn(active, message.original.senderOpenId)));
+          (state.pendingBatch.length === 0 && !message.queueBoundary));
       if (canSteerMessage) {
         await this.steerOrDefer(state, active, message);
         return true;
@@ -6093,12 +6068,9 @@ export class ConversationManager {
     return true;
   }
 
-  private async cancelAllSideTurns(state: ConversationState, openId?: string): Promise<number> {
+  private async cancelAllSideTurns(state: ConversationState): Promise<number> {
     let stopped = 0;
     for (const active of [...state.sideTurns.values()]) {
-      if (openId && !this.canControlActiveTurn(active, openId)) {
-        continue;
-      }
       if (await this.cancelSideTurn(state, active)) {
         stopped += 1;
       }
@@ -7234,14 +7206,6 @@ export class ConversationManager {
     } catch (error) {
       this.log.warn({ error, messageId: handle.messageId, reactionId: handle.reactionId }, "failed to remove lark reaction");
     }
-  }
-
-  private canControlActiveTurn(active: ActiveTurn, openId: string): boolean {
-    return openId === active.triggerOpenId || openId === this.options.config.owner.openId;
-  }
-
-  private canSteerActiveTurn(active: ActiveTurn, openId: string): boolean {
-    return openId === active.triggerOpenId;
   }
 
   private canSteerDocCommentIntoActiveTurn(active: ActiveTurn, message: PendingMessage): boolean {
@@ -10157,9 +10121,7 @@ function classifyInitialRoute(
     return queuedRouteForParsedCommand(parsed, message, "active_compact");
   }
   if (active) {
-    return message.senderOpenId === active.triggerOpenId
-      ? routeForParsedCommand(parsed, { routeKind: "steered_message", status: "processing", text: parsed.text })
-      : queuedRouteForParsedCommand(parsed, message, "active_turn");
+    return routeForParsedCommand(parsed, { routeKind: "steered_message", status: "processing", text: parsed.text });
   }
   return routeForParsedCommand(parsed, { routeKind: "message", status: "processing", text: parsed.text });
 }
