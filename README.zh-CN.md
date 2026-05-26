@@ -56,7 +56,7 @@ Secret 不写入 `config.toml`。macOS 安装使用系统 Keychain；Linux 安�
 
 ```text
 im:message.p2p_msg:readonly
-im:message.group_msg
+im:message.group_at_msg:readonly
 im:message:readonly
 im:message:send_as_bot
 im:message:update
@@ -66,6 +66,12 @@ im:chat:read
 im:chat:create
 im:chat:update
 im:resource
+```
+
+如果你希望群聊响应模式不需要 @ bot、直接接收全部群消息，再额外申请高级权限：
+
+```text
+im:message.group_msg
 ```
 
 订阅这些事件/回调：
