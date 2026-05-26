@@ -1375,7 +1375,7 @@ describe("ConversationManager", () => {
     const lark = createLarkResponder();
     vi.mocked(lark.sendTextToOpenId).mockResolvedValue({ messageId: "proxy_doc_comment", raw: {} });
     const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
-      text: "Please fix <this>",
+      text: "@ou_bot Please fix <this> with @ou_reviewer and @ouid_extra",
       quote: "Quoted & referenced text"
     }));
     const codex = createCodex({
@@ -1384,7 +1384,7 @@ describe("ConversationManager", () => {
         return { ...completed(threadId, "turn_doc"), text: "Final answer for doc" };
       })
     });
-    const manager = createManager({ repository, codex, lark, larkDocComments });
+    const manager = createManager({ repository, codex, lark, larkDocComments, botOpenId: "ou_bot" });
 
     manager.submitDocCommentAdd(docCommentAdd({
       eventId: "event_doc_comment",
@@ -1408,12 +1408,12 @@ describe("ConversationManager", () => {
     );
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        input: expect.stringContaining("Please fix &lt;this&gt;")
+        input: expect.stringContaining("@ou_bot Please fix &lt;this&gt; with @ou_reviewer and @ouid_extra")
       })
     );
     expect(lark.sendTextToOpenId).toHaveBeenCalledWith(
       "ou_guest",
-      "@Owner 在 https://example.feishu.cn/docx/doc_token 中评论: Please fix <this>"
+      '<at user_id="ou_owner">Owner</at> 在 https://example.feishu.cn/docx/doc_token 中评论: Please fix &lt;this&gt; with <at user_id="ou_reviewer">ou_reviewer</at> and <at user_id="ouid_extra">ouid_extra</at>'
     );
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({

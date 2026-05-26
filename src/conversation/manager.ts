@@ -1141,7 +1141,7 @@ export class ConversationManager {
     }
     const senderName = await this.resolveDocCommentSenderName(context, comment, snapshot);
     const prepared = await this.renderDocCommentMessage(context, watcher, comment, snapshot, senderName);
-    const proxy = await this.sendDocCommentProxyMessage(conversation, thread, watcher, senderName, snapshot);
+    const proxy = await this.sendDocCommentProxyMessage(conversation, thread, watcher, comment, senderName, snapshot);
     const proxyMessageId = nonEmptyString(proxy?.messageId);
     if (!proxyMessageId) {
       this.log.warn({ eventId: comment.eventId }, "failed to create doc comment proxy message; ignoring doc comment");
@@ -2296,10 +2296,17 @@ export class ConversationManager {
     conversation: ConversationRecord,
     thread: CodexThreadRecord,
     watcher: LarkDocWatcherRecord,
+    comment: IncomingLarkDocCommentAdd,
     senderName: string | undefined,
     snapshot: LarkDocCommentSnapshot
   ): Promise<LarkReplyResult | LarkSendMessageResult | void> {
-    const text = `@${senderName ?? snapshot.authorOpenId} 在 ${watcher.watchUrl} 中评论: ${compactInlineText(snapshot.text)}`;
+    const text = textForDocCommentProxyMessage({
+      senderOpenId: comment.senderOpenId || snapshot.authorOpenId,
+      senderName,
+      watchUrl: watcher.watchUrl,
+      text: snapshot.text,
+      botOpenId: this.options.botOpenId
+    });
     if (thread.cardMessageId) {
       return this.options.lark.replyText(thread.cardMessageId, text, { replyInThread: true });
     }
@@ -9211,6 +9218,68 @@ function textForLarkReply(text: string, mentions: IncomingLarkMessage["mentions"
       return `<at user_id="${escapeLarkTextAttribute(part.id)}">${escapeLarkText(part.name ?? part.id)}</at>`;
     })
     .join("");
+}
+
+const DOC_COMMENT_OPEN_ID_MENTION_PATTERN = /@((?:ouid|ou)_[A-Za-z0-9_-]+)/g;
+
+function textForDocCommentProxyMessage(input: {
+  senderOpenId: string;
+  senderName?: string;
+  watchUrl: string;
+  text: string;
+  botOpenId?: string;
+}): string {
+  const senderLabel = input.senderName ?? input.senderOpenId;
+  const content = textForDocCommentProxyContent(input.text, input.botOpenId);
+  return [
+    larkAtText(input.senderOpenId, senderLabel),
+    " 在 ",
+    escapeLarkText(input.watchUrl),
+    " 中评论: ",
+    content
+  ].join("");
+}
+
+function textForDocCommentProxyContent(text: string, botOpenId: string | undefined): string {
+  const withoutBotMention = stripDocCommentBotMention(compactInlineText(text), botOpenId);
+  if (!withoutBotMention) {
+    return "";
+  }
+
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const match of withoutBotMention.matchAll(DOC_COMMENT_OPEN_ID_MENTION_PATTERN)) {
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      parts.push(escapeLarkText(withoutBotMention.slice(cursor, index)));
+    }
+    const openId = match[1]!;
+    if (openId !== botOpenId) {
+      parts.push(larkAtText(openId, openId));
+    }
+    cursor = index + match[0]!.length;
+  }
+  if (cursor < withoutBotMention.length) {
+    parts.push(escapeLarkText(withoutBotMention.slice(cursor)));
+  }
+  return parts.join("").trim();
+}
+
+function stripDocCommentBotMention(text: string, botOpenId: string | undefined): string {
+  const openId = nonEmptyString(botOpenId);
+  if (!openId || !text) {
+    return text;
+  }
+  const pattern = new RegExp(`@${escapeRegExp(openId)}(?![A-Za-z0-9_-])\\s*`, "g");
+  return compactInlineText(text.replace(pattern, " "));
+}
+
+function larkAtText(openId: string, label: string): string {
+  return `<at user_id="${escapeLarkTextAttribute(openId)}">${escapeLarkText(label)}</at>`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function textForThreadProxyReply(text: string, messageType: string): string {
