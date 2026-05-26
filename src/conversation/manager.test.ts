@@ -1306,7 +1306,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m1"]));
   });
 
-  it("binds /watch to the current thread, supports none mode, and lists active watchers", async () => {
+  it("binds /watch to the current thread, supports none mode, and lists watchers as a post table", async () => {
     const { repository } = createRepository(conversationRecord());
     const lark = createLarkResponder();
     const larkDocs = createLarkDocResolver();
@@ -1345,15 +1345,20 @@ describe("ConversationManager", () => {
         })
       )
     );
+    repository.touchLarkDocWatcherCommentReceived("docx", "other_doc", Date.UTC(2025, 0, 1));
 
     manager.submitIncoming(message("m_watch_list", "/watch"));
     await waitForExpect(() =>
-      expect(lark.replyText).toHaveBeenCalledWith(
+      expect(lark.replyPost).toHaveBeenCalledWith(
         "m_watch_list",
-        expect.stringContaining("docx/other_doc all https://example.feishu.cn/docx/other_doc 最新：暂无")
+        [[{ tag: "md", text: expect.stringContaining("| URL | 状态 | 最新评论时间（北京时间） |") }]]
       )
     );
-    expect(vi.mocked(lark.replyText).mock.calls.find(([messageId]) => messageId === "m_watch_list")?.[1]).not.toContain("doc_token");
+    const watchListPost = vi.mocked(lark.replyPost).mock.calls.find(([messageId]) => messageId === "m_watch_list")?.[1];
+    const watchListMarkdown = watchListPost?.[0]?.[0]?.tag === "md" ? watchListPost[0][0].text : "";
+    expect(watchListMarkdown).toContain("| https://example.feishu.cn/docx/other_doc | all | 2025-01-01 08:00:00 |");
+    expect(watchListMarkdown).toContain("| https://example.feishu.cn/docx/doc_token | none | 暂无 |");
+    expect(vi.mocked(lark.replyText).mock.calls.find(([messageId]) => messageId === "m_watch_list")).toBeUndefined();
   });
 
   it("processes mentioned watched doc comments, exits plan mode at start, and replies to the document", async () => {

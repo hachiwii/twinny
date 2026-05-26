@@ -2856,13 +2856,7 @@ export class ConversationManager {
     const parsed = parseWatchCommand(text);
     if (parsed.kind === "list") {
       const watchers = await this.options.repository.listLarkDocWatchersByThread(resolved.threadId);
-      const activeWatchers = watchers.filter((watcher) => watcher.watchMode !== "none");
-      const lines = activeWatchers.length === 0
-        ? ["当前 thread 没有启用中的文档监听。"]
-        : activeWatchers.map((watcher) =>
-            `${watcher.fileType}/${watcher.fileToken} ${watcher.watchMode} ${watcher.watchUrl} 最新：${formatBeijingTime(watcher.lastCommentReceivedAt)}`
-          );
-      await this.replyControlBestEffort(message.messageId, lines.join("\n"));
+      await this.replyWatchListBestEffort(message.messageId, watchers);
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
@@ -7026,6 +7020,14 @@ export class ConversationManager {
     }
   }
 
+  private async replyWatchListBestEffort(messageId: string, watchers: LarkDocWatcherRecord[]): Promise<void> {
+    try {
+      await this.options.lark.replyPost(messageId, watchListPostContent(watchers));
+    } catch (error) {
+      this.log.warn({ error, messageId }, "failed to send lark doc watcher list");
+    }
+  }
+
   private async replyStatusCardBestEffort(
     messageId: string,
     card: LarkCardJson,
@@ -8825,6 +8827,30 @@ function parseWatchCommand(text: string):
     return { kind: "invalid", message: "用法：/watch <lark_doc_url> [owner|all|none]" };
   }
   return { kind: "valid", url: tokens[0]!, watchMode };
+}
+
+function watchListPostContent(watchers: LarkDocWatcherRecord[]): LarkPostContent {
+  return [[{ tag: "md", text: watchListMarkdown(watchers) }]];
+}
+
+function watchListMarkdown(watchers: LarkDocWatcherRecord[]): string {
+  const rows = watchers.length === 0
+    ? ["| 暂无 | - | - |"]
+    : watchers.map((watcher) =>
+        `| ${markdownTableCell(watcher.watchUrl)} | ${watcher.watchMode} | ${formatBeijingTime(watcher.lastCommentReceivedAt)} |`
+      );
+  return [
+    "### 文档监听",
+    "",
+    "| URL | 状态 | 最新评论时间（北京时间） |",
+    "| --- | --- | --- |",
+    ...rows
+  ].join("\n");
+}
+
+function markdownTableCell(value: string): string {
+  const normalized = value.replace(/\r?\n/g, " ").trim();
+  return (normalized || "-").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }
 
 function formatBeijingTime(timestamp: number | undefined): string {
