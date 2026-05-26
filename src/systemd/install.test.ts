@@ -32,10 +32,10 @@ describe("systemd user service helpers", () => {
     expect(systemdUnitNameForHomeRandom(firstRandom)).toMatch(/^twinny-[a-f0-9]{16}\.service$/);
   });
 
-  it("escapes systemd specifiers and dollars in generated units", () => {
+  it("escapes systemd specifiers while preserving environment dollars", () => {
     const unit = createSystemdUserServiceUnit({
       twinnyHome: "/home/tester/twinny%home",
-      entrypoint: "/home/tester/bin/twinny",
+      entrypoint: "/home/tester/bin/twin$ny",
       environment: {
         FOO: "value%with$dollar",
         "bad-key": "ignored"
@@ -43,7 +43,9 @@ describe("systemd user service helpers", () => {
     });
 
     expect(unit).toContain("WorkingDirectory=/home/tester/twinny%%home");
-    expect(unit).toContain('"FOO=value%%with$$dollar"');
+    expect(unit).toContain(`"${path.resolve("/home/tester/bin/twin$$ny")}"`);
+    expect(unit).toContain('"FOO=value%%with$dollar"');
+    expect(unit).not.toContain('"FOO=value%%with$$dollar"');
     expect(unit).not.toContain("bad-key");
   });
 });

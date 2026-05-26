@@ -29,10 +29,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${escapeSystemdPath(twinnyHome)}
-ExecStart=${args.map(quoteSystemd).join(" ")}
+ExecStart=${args.map(quoteSystemdCommandArgument).join(" ")}
 Restart=always
 RestartSec=5
-${Object.keys(environment).length > 0 ? `Environment=${Object.entries(environment).map(([key, value]) => quoteSystemd(`${key}=${value}`)).join(" ")}\n` : ""}StandardOutput=journal
+${Object.keys(environment).length > 0 ? `Environment=${Object.entries(environment).map(([key, value]) => quoteSystemdEnvironmentAssignment(`${key}=${value}`)).join(" ")}\n` : ""}StandardOutput=journal
 StandardError=journal
 
 [Install]
@@ -58,7 +58,11 @@ function isSystemdEnvironmentKey(key: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
 }
 
-function quoteSystemd(value: string): string {
+function quoteSystemdCommandArgument(value: string): string {
+  return `"${escapeSystemdText(value).replaceAll("$", "$$$$")}"`;
+}
+
+function quoteSystemdEnvironmentAssignment(value: string): string {
   return `"${escapeSystemdText(value)}"`;
 }
 
@@ -70,6 +74,5 @@ function escapeSystemdText(value: string): string {
   return value
     .replaceAll("\\", "\\\\")
     .replaceAll('"', '\\"')
-    .replaceAll("%", "%%")
-    .replaceAll("$", "$$$$");
+    .replaceAll("%", "%%");
 }
