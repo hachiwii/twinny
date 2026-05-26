@@ -1443,6 +1443,125 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("steers watched doc comments from the active comment block into the current turn", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [codexThreadRecord({ codexThreadId: "thread_1" })]
+    });
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_1",
+      watchMode: "owner",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendTextToOpenId)
+      .mockResolvedValueOnce({ messageId: "proxy_doc_comment_1", raw: {} })
+      .mockResolvedValueOnce({ messageId: "proxy_doc_comment_2", raw: {} });
+    const larkDocComments = createLarkDocCommentClient();
+    vi.mocked(larkDocComments.getCommentSnapshot)
+      .mockResolvedValueOnce(larkDocCommentSnapshot({ replyId: "reply_1", text: "First doc request" }))
+      .mockResolvedValueOnce(larkDocCommentSnapshot({ replyId: "reply_2", text: "Follow-up same block" }));
+    const manager = createManager({ repository, codex, lark, larkDocComments });
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment_1",
+      replyId: "reply_1"
+    }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment_2",
+      replyId: "reply_2",
+      createTime: 1235
+    }));
+
+    await waitForExpect(() =>
+      expect(codex.steerTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: "thread_1",
+          turnId: "turn_1",
+          input: expect.stringContaining("Follow-up same block")
+        })
+      )
+    );
+    expect(codex.startTurn).toHaveBeenCalledTimes(1);
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(0);
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "proxy_doc_comment_2",
+        routeKind: "doc_comment",
+        status: "processing",
+        codexThreadId: "thread_1"
+      })
+    );
+    await waitForExpect(() =>
+      expect(larkDocComments.updateReaction).toHaveBeenCalledWith({
+        fileType: "docx",
+        fileToken: "doc_token",
+        replyId: "reply_2",
+        reactionType: config.lark.workingReaction,
+        action: "add"
+      })
+    );
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() =>
+      expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["proxy_doc_comment_1", "proxy_doc_comment_2"])
+    );
+  });
+
+  it("queues watched doc comments from a different comment block while a doc turn is active", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [codexThreadRecord({ codexThreadId: "thread_1" })]
+    });
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_1",
+      watchMode: "owner",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendTextToOpenId)
+      .mockResolvedValueOnce({ messageId: "proxy_doc_comment_1", raw: {} })
+      .mockResolvedValueOnce({ messageId: "proxy_doc_comment_2", raw: {} });
+    const larkDocComments = createLarkDocCommentClient();
+    vi.mocked(larkDocComments.getCommentSnapshot)
+      .mockResolvedValueOnce(larkDocCommentSnapshot({ commentId: "comment_1", replyId: "reply_1" }))
+      .mockResolvedValueOnce(larkDocCommentSnapshot({ commentId: "comment_2", replyId: "reply_2" }));
+    const manager = createManager({ repository, codex, lark, larkDocComments });
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment_1",
+      commentId: "comment_1",
+      replyId: "reply_1"
+    }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment_2",
+      commentId: "comment_2",
+      replyId: "reply_2",
+      createTime: 1235
+    }));
+
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+    expect(codex.steerTurn).not.toHaveBeenCalled();
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "proxy_doc_comment_2",
+        routeKind: "doc_comment",
+        status: "queued",
+        codexThreadId: "thread_1"
+      })
+    );
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+  });
+
   it("processes all-mode watched doc comments from non-owner senders", async () => {
     const { repository } = createRepository(conversationRecord());
     repository.upsertLarkDocWatcher({
@@ -7407,6 +7526,56 @@ describe("ConversationManager", () => {
         commentId: "comment_1",
         isWhole: true,
         text: "Recovered final"
+      })
+    );
+  });
+
+  it("recovers processing doc comments and replies terminal output to the document", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_recovered" });
+    const record = larkMessageRecord({
+      larkMessageId: "proxy_doc_comment",
+      eventId: "doc_comment:event_doc_comment:docx:doc_token",
+      larkUserId: "ou_owner",
+      routeKind: "doc_comment",
+      status: "processing",
+      text: "processing doc comment",
+      codexThreadId: "thread_recovered",
+      rawEventJson: JSON.stringify({
+        kind: "doc_comment",
+        file_type: "docx",
+        file_token: "doc_token",
+        comment_id: "comment_1",
+        reply_id: "reply_1",
+        is_whole: false,
+        watch_url: "https://example.feishu.cn/docx/doc_token"
+      })
+    });
+    const { repository } = createRepository(row, { larkMessages: [record] });
+    const larkDocComments = createLarkDocCommentClient();
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
+        await onTurnStarted?.("turn_1");
+        return { ...completed(threadId, "turn_1"), text: "Recovered doc final" };
+      })
+    });
+    const manager = createManager({ repository, codex, larkDocComments });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["proxy_doc_comment"]));
+
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_recovered",
+        input: "Twinny daemon has beed reloaded, continue with the unfinished work."
+      })
+    );
+    await waitForExpect(() =>
+      expect(larkDocComments.replyToComment).toHaveBeenCalledWith({
+        fileType: "docx",
+        fileToken: "doc_token",
+        commentId: "comment_1",
+        isWhole: false,
+        text: "Recovered doc final"
       })
     );
   });

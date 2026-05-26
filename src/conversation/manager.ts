@@ -1176,7 +1176,7 @@ export class ConversationManager {
         watchUrl: watcher.watchUrl
       }
     });
-    const status = state.active || state.suspendedActiveTurns.length > 0 || state.pendingBatch.length > 0 ? "queued" : "processing";
+    const status = this.willProcessPendingMessageImmediately(state, pending) ? "processing" : "queued";
     await this.options.repository.insertLarkMessage({
       larkMessageId: incoming.messageId,
       eventId: incoming.eventId,
@@ -4540,6 +4540,7 @@ export class ConversationManager {
         codexThreadId: active.threadId,
         codexTurnId: active.turnId
       });
+      await this.addDocWorkingReactionsBestEffort([message]);
       active.replyMessageId = message.messageId;
       await this.moveReactionBestEffort(active, message.messageId);
       await this.moveAgentCardBestEffort(state, active, message.messageId);
@@ -4623,20 +4624,39 @@ export class ConversationManager {
       return false;
     }
 
-    if (active?.kind === "compact" || active?.cancelRequested || state.pendingBatch.length > 0) {
+    if (active?.kind === "compact" || active?.cancelRequested) {
       return false;
     }
 
     if (active) {
-      if (!message.control && !message.queueBoundary && this.canSteerActiveTurn(active, message.original.senderOpenId)) {
+      const canSteerMessage =
+        !message.control &&
+        (this.canSteerDocCommentIntoActiveTurn(active, message) ||
+          (state.pendingBatch.length === 0 && !message.queueBoundary && this.canSteerActiveTurn(active, message.original.senderOpenId)));
+      if (canSteerMessage) {
         await this.steerOrDefer(state, active, message);
         return true;
       }
       return false;
     }
 
+    if (state.pendingBatch.length > 0) {
+      return false;
+    }
+
     await this.startImmediatePendingMessages(state, context, [message]);
     return true;
+  }
+
+  private willProcessPendingMessageImmediately(state: ConversationState, message: PendingMessage): boolean {
+    const active = state.active;
+    if (!active) {
+      return !state.waitingInterruptBatch && state.suspendedActiveTurns.length === 0 && state.pendingBatch.length === 0;
+    }
+    if (active.waiting || active.kind === "compact" || active.cancelRequested) {
+      return false;
+    }
+    return this.canSteerDocCommentIntoActiveTurn(active, message);
   }
 
   private async enqueuePendingMessage(state: ConversationState, context: MessageContext, message: PendingMessage): Promise<void> {
@@ -5591,6 +5611,7 @@ export class ConversationManager {
         };
         if (active.processingMessageIds.has(message.messageId)) {
           await this.markMessagesProcessingBestEffort([message.messageId], update);
+          await this.addDocWorkingReactionsBestEffort([message]);
         } else {
           await this.markMessagesSteeredBestEffort([message.messageId], update);
         }
@@ -6539,7 +6560,7 @@ export class ConversationManager {
   }
 
   private async markActiveProcessingMessagesSteered(active: ActiveTurn): Promise<void> {
-    const messageIds = [...active.processingMessageIds];
+    const messageIds = [...active.processingMessageIds].filter((messageId) => !active.messagesById.get(messageId)?.docComment);
     if (messageIds.length === 0) {
       return;
     }
@@ -6550,8 +6571,8 @@ export class ConversationManager {
     });
     for (const messageId of messageIds) {
       active.steeredMessageIds.add(messageId);
+      active.processingMessageIds.delete(messageId);
     }
-    active.processingMessageIds.clear();
   }
 
   private async markMessagesSteeredBestEffort(
@@ -7029,6 +7050,25 @@ export class ConversationManager {
 
   private canSteerActiveTurn(active: ActiveTurn, openId: string): boolean {
     return openId === active.triggerOpenId;
+  }
+
+  private canSteerDocCommentIntoActiveTurn(active: ActiveTurn, message: PendingMessage): boolean {
+    const doc = message.docComment;
+    if (!doc) {
+      return false;
+    }
+    for (const activeMessage of active.messagesById.values()) {
+      const activeDoc = activeMessage.docComment;
+      if (
+        activeDoc &&
+        activeDoc.fileType === doc.fileType &&
+        activeDoc.fileToken === doc.fileToken &&
+        activeDoc.commentId === doc.commentId
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private async notifyThreadReplacementBestEffort(
