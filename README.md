@@ -66,6 +66,7 @@ im:resource
 docs:document.comment:read
 docs:document.comment:create
 docs:document.comment:write_only
+docs:document.media:download
 wiki:node:read
 ```
 

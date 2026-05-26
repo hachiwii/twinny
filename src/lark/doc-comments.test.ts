@@ -113,6 +113,20 @@ describe("LarkDocClient", () => {
       text: "hello @Twinny",
       quote: "quoted text",
       imageKeys: ["img_1", "img_2"],
+      imageRefs: [
+        {
+          fileToken: "img_1",
+          source: "reply",
+          driveRouteToken: "doc_token",
+          fileName: "comment-image-img_1"
+        },
+        {
+          fileToken: "img_2",
+          source: "reply",
+          driveRouteToken: "doc_token",
+          fileName: "comment-image-img_2"
+        }
+      ],
       isDone: false,
       isSolved: false,
       isWhole: false,
@@ -447,6 +461,42 @@ describe("LarkDocClient", () => {
                     }
                   ]
                 }
+              }
+            ]
+          }
+        }
+      })
+    );
+  });
+
+  it("escapes angle brackets when replying to local comments", async () => {
+    const request = vi.fn(async () => ({
+      data: {
+        reply_id: "reply_created"
+      }
+    }));
+    const client = new LarkDocClient({ openApiClient: createOpenApiClient({ request }) });
+
+    await expect(
+      client.replyToComment({
+        fileType: "docx",
+        fileToken: "doc_token",
+        commentId: "comment_1",
+        isWhole: false,
+        text: "<tag>done</tag>"
+      })
+    ).resolves.toMatchObject({ replyId: "reply_created" });
+    expect(request).toHaveBeenCalledWith(
+      "/drive/v1/files/doc_token/comments/comment_1/replies",
+      expect.objectContaining({
+        method: "POST",
+        query: { file_type: "docx" },
+        body: {
+          content: {
+            elements: [
+              {
+                type: "text_run",
+                text_run: { text: "&lt;tag&gt;done&lt;/tag&gt;" }
               }
             ]
           }

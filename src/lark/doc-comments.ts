@@ -97,7 +97,7 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
       return null;
     }
 
-    const replyImageRefs = imageRefsFromReply(reply);
+    const replyImageRefs = imageRefsFromReply(reply, params.fileToken);
     const docxBlockRefs = await this.findDocxCommentBlockRefsBestEffort(params.fileType, params.fileToken, params.commentId);
     const imageRefs = dedupeImageRefs([...replyImageRefs, ...docxBlockRefs.imageRefs]);
 
@@ -366,7 +366,7 @@ function commentReplyContent(text: string): Record<string, unknown> {
       {
         type: "text_run",
         text_run: {
-          text: truncateCommentReplyText(text)
+          text: sanitizeCommentReplyText(text)
         }
       }
     ]
@@ -477,7 +477,7 @@ function textFromElement(element: Record<string, unknown>): string {
   return textContentValue(element.text) ?? "";
 }
 
-function imageRefsFromReply(reply: Record<string, unknown>): LarkDocCommentImageRef[] {
+function imageRefsFromReply(reply: Record<string, unknown>, driveRouteToken: string): LarkDocCommentImageRef[] {
   const extra = getRecord(reply, "extra");
   return getUnknownArray(extra, "image_list")
     .map((item) => typeof item === "string"
@@ -488,7 +488,9 @@ function imageRefsFromReply(reply: Record<string, unknown>): LarkDocCommentImage
     .filter((item): item is string => !!item)
     .map((fileToken) => ({
       fileToken,
-      source: "reply" as const
+      source: "reply" as const,
+      driveRouteToken,
+      fileName: `comment-image-${fileToken}`
     }));
 }
 
@@ -526,9 +528,34 @@ function dedupeImageRefs(refs: LarkDocCommentImageRef[]): LarkDocCommentImageRef
   return result;
 }
 
-function truncateCommentReplyText(text: string): string {
-  const chars = Array.from(text.trim());
-  return chars.length <= 10_000 ? chars.join("") : `${chars.slice(0, 9990).join("")}\n[已截断]`;
+function sanitizeCommentReplyText(text: string): string {
+  const escaped = Array.from(text.trim()).map(escapeCommentReplyChar);
+  const joined = escaped.join("");
+  if (joined.length <= 10_000) {
+    return joined;
+  }
+  const suffix = "\n[已截断]";
+  const prefixLimit = 10_000 - suffix.length;
+  const prefix: string[] = [];
+  let length = 0;
+  for (const part of escaped) {
+    if (length + part.length > prefixLimit) {
+      break;
+    }
+    prefix.push(part);
+    length += part.length;
+  }
+  return `${prefix.join("")}${suffix}`;
+}
+
+function escapeCommentReplyChar(char: string): string {
+  if (char === "<") {
+    return "&lt;";
+  }
+  if (char === ">") {
+    return "&gt;";
+  }
+  return char;
 }
 
 function getRecord(value: unknown, key?: string): Record<string, unknown> {
