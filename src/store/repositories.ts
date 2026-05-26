@@ -107,6 +107,7 @@ interface LarkMessageRow {
   lark_user_id: string;
   lark_group_id: string | null;
   lark_thread_id: string | null;
+  doc_comment_id: string | null;
   conversation_key: string | null;
   thread_id: string | null;
   codex_turn_id: string | null;
@@ -161,6 +162,7 @@ export interface InsertLarkMessageInput {
   larkUserId: string;
   larkGroupId?: string;
   larkThreadId?: string;
+  docCommentId?: string;
   conversationKey?: string;
   codexThreadId?: string;
   codexTurnId?: string;
@@ -311,6 +313,7 @@ export class ConversationRepository {
   private readonly insertLarkMessageStatement: Database.Statement<[Record<string, unknown>]>;
   private readonly selectLarkMessageById: Database.Statement<[string], LarkMessageRow>;
   private readonly selectLarkMessageByEventId: Database.Statement<[string], LarkMessageRow>;
+  private readonly selectProcessedDocCommentCount: Database.Statement<[string], { count: number }>;
   private readonly selectLarkMessageUsageTargetForTurn: Database.Statement<[string, string], LarkMessageRow>;
   private readonly selectLatestSteeredLarkMessageForTurn: Database.Statement<[string, string], LarkMessageRow>;
   private readonly selectUnfinishedLarkMessages: Database.Statement<[], LarkMessageRow>;
@@ -734,6 +737,7 @@ export class ConversationRepository {
         lark_user_id,
         lark_group_id,
         lark_thread_id,
+        doc_comment_id,
         conversation_key,
         thread_id,
         codex_turn_id,
@@ -752,6 +756,7 @@ export class ConversationRepository {
         @larkUserId,
         @larkGroupId,
         @larkThreadId,
+        @docCommentId,
         @conversationKey,
         @codexThreadId,
         @codexTurnId,
@@ -775,6 +780,12 @@ export class ConversationRepository {
       WHERE event_id = ?
       ORDER BY id ASC
       LIMIT 1
+    `);
+    this.selectProcessedDocCommentCount = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM lark_messages
+      WHERE route_kind = 'doc_comment'
+        AND doc_comment_id = ?
     `);
     this.selectLarkMessageUsageTargetForTurn = this.db.prepare(`
       SELECT * FROM lark_messages
@@ -1328,6 +1339,7 @@ export class ConversationRepository {
       larkUserId: input.larkUserId,
       larkGroupId: input.larkGroupId ?? null,
       larkThreadId: input.larkThreadId ?? null,
+      docCommentId: input.docCommentId ?? null,
       conversationKey: input.conversationKey ?? null,
       codexThreadId: input.codexThreadId ?? null,
       codexTurnId: input.codexTurnId ?? null,
@@ -1352,6 +1364,11 @@ export class ConversationRepository {
   getLarkMessageByEventId(eventId: string): LarkMessageRecord | undefined {
     assertNonEmpty(eventId, "eventId");
     return mapLarkMessageRow(this.selectLarkMessageByEventId.get(eventId));
+  }
+
+  hasProcessedDocComment(commentId: string): boolean {
+    assertNonEmpty(commentId, "commentId");
+    return (this.selectProcessedDocCommentCount.get(commentId)?.count ?? 0) > 0;
   }
 
   getLarkMessageUsageTargetForTurn(codexThreadId: string, codexTurnId: string): LarkMessageRecord | undefined {
@@ -1697,6 +1714,7 @@ function mapRequiredLarkMessageRow(row: LarkMessageRow): LarkMessageRecord {
     larkUserId: row.lark_user_id,
     larkGroupId: row.lark_group_id ?? undefined,
     larkThreadId: row.lark_thread_id ?? undefined,
+    docCommentId: row.doc_comment_id ?? undefined,
     conversationKey: row.conversation_key ?? undefined,
     codexThreadId: row.thread_id ?? undefined,
     codexTurnId: row.codex_turn_id ?? undefined,
@@ -1811,6 +1829,9 @@ function validateLarkMessageInput(input: InsertLarkMessageInput): void {
   }
   if (input.codexTurnId !== undefined) {
     assertNonEmpty(input.codexTurnId, "codexTurnId");
+  }
+  if (input.docCommentId !== undefined) {
+    assertNonEmpty(input.docCommentId, "docCommentId");
   }
 }
 

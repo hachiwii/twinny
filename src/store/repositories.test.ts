@@ -241,6 +241,43 @@ describe("ConversationRepository", () => {
     expect(repo.migrateLarkDocWatchersToThread("thread_new", "thread_new")).toBe(0);
   });
 
+  it("tracks processed Lark doc comment ids", () => {
+    const repo = createConversationRepository(db, { now: () => now });
+
+    expect(repo.hasProcessedDocComment("comment_1")).toBe(false);
+
+    repo.insertLarkMessage({
+      larkMessageId: "om_regular",
+      eventId: "event_regular",
+      larkUserId: "ou_456",
+      docCommentId: "comment_1",
+      routeKind: "message",
+      status: "processing",
+      text: "not a doc comment",
+      rawEventJson: "{}"
+    });
+    expect(repo.hasProcessedDocComment("comment_1")).toBe(false);
+
+    const docComment = repo.insertLarkMessage({
+      larkMessageId: "om_doc_comment",
+      eventId: "event_doc_comment",
+      larkUserId: "ou_456",
+      docCommentId: "comment_1",
+      routeKind: "doc_comment",
+      status: "processing",
+      text: "doc follow-up",
+      rawEventJson: "{}"
+    });
+
+    expect(docComment).toMatchObject({
+      larkMessageId: "om_doc_comment",
+      docCommentId: "comment_1",
+      routeKind: "doc_comment"
+    });
+    expect(repo.getLarkMessageById("om_doc_comment")).toMatchObject({ docCommentId: "comment_1" });
+    expect(repo.hasProcessedDocComment("comment_1")).toBe(true);
+  });
+
   it("records runtime codex threads, messages, and token usage by business ids", () => {
     const repo = createConversationRepository(db, { now: () => now });
     const workspace = path.join(tempDir, "workspaces", "p2p_ou_456");

@@ -229,6 +229,7 @@ export interface LarkMessageRecord {
   larkUserId: string;
   larkGroupId?: string;
   larkThreadId?: string;
+  docCommentId?: string;
   conversationKey?: string;
   codexThreadId?: string;
   codexTurnId?: string;

@@ -293,6 +293,7 @@ export interface ConversationRepository {
     larkUserId: string;
     larkGroupId?: string;
     larkThreadId?: string;
+    docCommentId?: string;
     conversationKey?: string;
     codexThreadId?: string;
     codexTurnId?: string;
@@ -304,6 +305,7 @@ export interface ConversationRepository {
     agentCardMessageId?: string;
     rawEventJson?: string;
   }): Promise<unknown> | unknown;
+  hasProcessedDocComment(commentId: string): Promise<boolean> | boolean;
   markLarkMessageQueued(larkMessageId: string): Promise<void> | void;
   markLarkMessageRecalled(larkMessageId: string): Promise<boolean> | boolean;
   updateQueuedLarkMessage(
@@ -1104,9 +1106,6 @@ export class ConversationManager {
   }
 
   private async processDocCommentAdd(comment: IncomingLarkDocCommentAdd): Promise<void> {
-    if (!comment.isMentioned) {
-      return;
-    }
     if (this.options.botOpenId && comment.senderOpenId === this.options.botOpenId) {
       return;
     }
@@ -1115,6 +1114,9 @@ export class ConversationManager {
       return;
     }
     if (watcher.watchMode === "owner" && comment.senderOpenId !== this.options.config.owner.openId) {
+      return;
+    }
+    if (!comment.isMentioned && !(await this.options.repository.hasProcessedDocComment(comment.commentId))) {
       return;
     }
     const thread = await this.options.repository.getCodexThreadById(watcher.threadId);
@@ -1156,6 +1158,9 @@ export class ConversationManager {
       replyId: comment.replyId
     });
     if (!snapshot || snapshot.isDone || snapshot.isSolved) {
+      return;
+    }
+    if (!comment.isMentioned && docCommentReplyMentionsOtherUser(snapshot, this.options.botOpenId)) {
       return;
     }
     const senderName = await this.resolveDocCommentSenderName(context, comment, snapshot);
@@ -1210,6 +1215,7 @@ export class ConversationManager {
       larkUserId: incoming.senderOpenId,
       larkGroupId: incoming.larkGroupId,
       larkThreadId: incoming.larkThreadId,
+      docCommentId: comment.commentId,
       conversationKey: context.conversationKey,
       codexThreadId: watcher.threadId,
       routeKind: "doc_comment",
@@ -9398,6 +9404,49 @@ function textForLarkReply(text: string, mentions: IncomingLarkMessage["mentions"
 }
 
 const DOC_COMMENT_OPEN_ID_MENTION_PATTERN = /@((?:ouid|ou)_[A-Za-z0-9_-]+)/g;
+const DOC_COMMENT_UNKNOWN_PERSON_MENTION_ID = "__unknown_person_mention__";
+
+function docCommentReplyMentionsOtherUser(snapshot: LarkDocCommentSnapshot, botOpenId: string | undefined): boolean {
+  const bot = nonEmptyString(botOpenId);
+  return docCommentReplyMentionIds(snapshot).some((openId) => !bot || openId !== bot);
+}
+
+function docCommentReplyMentionIds(snapshot: LarkDocCommentSnapshot): string[] {
+  const ids = new Set<string>();
+  for (const match of snapshot.text.matchAll(DOC_COMMENT_OPEN_ID_MENTION_PATTERN)) {
+    ids.add(match[1]!);
+  }
+  for (const element of docCommentReplyContentElements(snapshot.rawReply)) {
+    if (stringRecordValue(element, "type") !== "person") {
+      continue;
+    }
+    ids.add(docCommentPersonMentionId(element) ?? DOC_COMMENT_UNKNOWN_PERSON_MENTION_ID);
+  }
+  return [...ids];
+}
+
+function docCommentReplyContentElements(rawReply: unknown): Record<string, unknown>[] {
+  if (!isRecord(rawReply)) {
+    return [];
+  }
+  const content = isRecord(rawReply.content) ? rawReply.content : {};
+  const elements = content.elements;
+  return Array.isArray(elements) ? elements.filter(isRecord) : [];
+}
+
+function docCommentPersonMentionId(element: Record<string, unknown>): string | undefined {
+  const person = isRecord(element.person) ? element.person : {};
+  const id = isRecord(person.id) ? person.id : {};
+  return nonEmptyString(stringRecordValue(person, "open_id")) ??
+    nonEmptyString(stringRecordValue(id, "open_id")) ??
+    nonEmptyString(stringRecordValue(person, "user_id")) ??
+    nonEmptyString(stringRecordValue(id, "user_id")) ??
+    nonEmptyString(stringRecordValue(person, "union_id")) ??
+    nonEmptyString(stringRecordValue(id, "union_id")) ??
+    nonEmptyString(stringRecordValue(element, "open_id")) ??
+    nonEmptyString(stringRecordValue(element, "user_id")) ??
+    nonEmptyString(stringRecordValue(element, "union_id"));
+}
 
 function textForDocCommentProxyMessage(input: {
   senderOpenId: string;

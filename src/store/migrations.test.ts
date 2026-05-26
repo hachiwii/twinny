@@ -18,8 +18,8 @@ describe("store migrations", () => {
   it("loads the bundled store migrations", () => {
     const migrations = loadStoreMigrations();
 
-    expect(currentStoreSchemaVersion).toBe(2);
-    expect(migrations).toHaveLength(2);
+    expect(currentStoreSchemaVersion).toBe(3);
+    expect(migrations).toHaveLength(3);
     expect(migrations[0]).toMatchObject({
       version: 1,
       name: "0001_initial"
@@ -27,6 +27,10 @@ describe("store migrations", () => {
     expect(migrations[1]).toMatchObject({
       version: 2,
       name: "0002_lark_doc_watcher"
+    });
+    expect(migrations[2]).toMatchObject({
+      version: 3,
+      name: "0003_lark_message_doc_comment_id"
     });
   });
 
@@ -159,7 +163,8 @@ describe("store migrations", () => {
         { name: "output_tokens", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "cached_input_tokens", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "reasoning_output_tokens", type: "INTEGER", notnull: 1, pk: 0 },
-        { name: "token_usage_json", type: "TEXT", notnull: 1, pk: 0 }
+        { name: "token_usage_json", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "doc_comment_id", type: "TEXT", notnull: 0, pk: 0 }
       ]);
 
       const messageIndexes = db
@@ -172,6 +177,7 @@ describe("store migrations", () => {
         "idx_lark_messages_card_action_event_id",
         "idx_lark_messages_conversation_route",
         "idx_lark_messages_conversation_turn",
+        "idx_lark_messages_doc_comment_id",
         "idx_lark_messages_event_id",
         "idx_lark_messages_lark_message_id",
         "idx_lark_messages_thread_turn"

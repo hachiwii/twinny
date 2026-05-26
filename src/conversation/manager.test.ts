@@ -1419,6 +1419,7 @@ describe("ConversationManager", () => {
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         larkMessageId: "proxy_doc_comment",
+        docCommentId: "comment_1",
         routeKind: "doc_comment",
         status: "processing",
         codexThreadId: "thread_1"
@@ -1783,6 +1784,148 @@ describe("ConversationManager", () => {
     }));
 
     await waitForDelay();
+    expect(larkDocComments.getCommentSnapshot).not.toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+  });
+
+  it("processes unmentioned watched doc comment replies after the comment block has history", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [codexThreadRecord({ codexThreadId: "thread_1" })],
+      larkMessages: [
+        larkMessageRecord({
+          larkMessageId: "proxy_doc_comment_1",
+          eventId: "event_doc_comment_1",
+          routeKind: "doc_comment",
+          docCommentId: "comment_1",
+          codexThreadId: "thread_1"
+        })
+      ]
+    });
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_1",
+      watchMode: "owner",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendTextToOpenId).mockResolvedValue({ messageId: "proxy_doc_comment_2", raw: {} });
+    const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
+      replyId: "reply_2",
+      text: "Follow-up same block",
+      rawReply: { reply_id: "reply_2", content: { text: "Follow-up same block" } }
+    }));
+    const codex = createCodex();
+    const manager = createManager({ repository, codex, lark, larkDocComments, botOpenId: "ou_bot" });
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment_2",
+      replyId: "reply_2",
+      isMentioned: false
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(repository.hasProcessedDocComment).toHaveBeenCalledWith("comment_1");
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.stringContaining("Follow-up same block")
+      })
+    );
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "proxy_doc_comment_2",
+        docCommentId: "comment_1",
+        routeKind: "doc_comment",
+        status: "processing",
+        codexThreadId: "thread_1"
+      })
+    );
+  });
+
+  it("ignores unmentioned watched doc comment replies in a processed block when they mention someone else", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [codexThreadRecord({ codexThreadId: "thread_1" })],
+      larkMessages: [
+        larkMessageRecord({
+          larkMessageId: "proxy_doc_comment_1",
+          eventId: "event_doc_comment_1",
+          routeKind: "doc_comment",
+          docCommentId: "comment_1",
+          codexThreadId: "thread_1"
+        })
+      ]
+    });
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_1",
+      watchMode: "owner",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
+    const lark = createLarkResponder();
+    const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
+      replyId: "reply_2",
+      text: "Looping in @ou_reviewer",
+      rawReply: {
+        reply_id: "reply_2",
+        content: {
+          elements: [
+            { type: "text_run", text_run: { text: "Looping in " } },
+            { type: "person", person: { user_id: "ou_reviewer", name: "Reviewer" } }
+          ]
+        }
+      }
+    }));
+    const codex = createCodex();
+    const manager = createManager({ repository, codex, lark, larkDocComments, botOpenId: "ou_bot" });
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment_2",
+      replyId: "reply_2",
+      isMentioned: false
+    }));
+
+    await waitForExpect(() => expect(larkDocComments.getCommentSnapshot).toHaveBeenCalledTimes(1));
+    await waitForDelay();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(lark.sendTextToOpenId).not.toHaveBeenCalled();
+    expect(repository.insertLarkMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps owner-mode doc comment follow-ups restricted to the owner", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [codexThreadRecord({ codexThreadId: "thread_1" })],
+      larkMessages: [
+        larkMessageRecord({
+          larkMessageId: "proxy_doc_comment_1",
+          eventId: "event_doc_comment_1",
+          routeKind: "doc_comment",
+          docCommentId: "comment_1",
+          codexThreadId: "thread_1"
+        })
+      ]
+    });
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_1",
+      watchMode: "owner",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
+    const larkDocComments = createLarkDocCommentClient();
+    const codex = createCodex();
+    const manager = createManager({ repository, codex, larkDocComments });
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment_2",
+      replyId: "reply_2",
+      senderOpenId: "ou_reviewer",
+      senderName: "Reviewer",
+      isMentioned: false
+    }));
+
+    await waitForDelay();
+    expect(repository.hasProcessedDocComment).not.toHaveBeenCalled();
     expect(larkDocComments.getCommentSnapshot).not.toHaveBeenCalled();
     expect(codex.startTurn).not.toHaveBeenCalled();
   });
@@ -8488,6 +8631,11 @@ function createRepository(initial?: ConversationRecord, options: {
       listUnfinishedLarkMessages: vi.fn(() => [...larkMessages.values()].filter((message) =>
         message.status === "processing" || message.status === "queued"
       )),
+      hasProcessedDocComment: vi.fn((commentId) =>
+        [...larkMessages.values()].some((message) =>
+          message.routeKind === "doc_comment" && message.docCommentId === commentId
+        )
+      ),
       create: (record) => {
         const profile = record.profile ?? "guest";
         const profileCodexHome = record.profileCodexHome ?? config.profiles[profile].codexHome;
@@ -8721,6 +8869,7 @@ function createRepository(initial?: ConversationRecord, options: {
           larkUserId: input.larkUserId,
           larkGroupId: input.larkGroupId,
           larkThreadId: input.larkThreadId,
+          docCommentId: input.docCommentId,
           conversationKey: input.conversationKey,
           codexThreadId: input.codexThreadId,
           codexTurnId: input.codexTurnId,

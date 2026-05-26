@@ -2292,6 +2292,7 @@ function adaptConversationRepository(repository: StoreConversationRepository): M
     getCodexThreadStatusStats: repository.getCodexThreadStatusStats.bind(repository),
     getConversationStatusStats: repository.getConversationStatusStats.bind(repository),
     insertLarkMessage: repository.insertLarkMessage.bind(repository),
+    hasProcessedDocComment: repository.hasProcessedDocComment.bind(repository),
     markLarkMessageQueued: repository.markLarkMessageQueued.bind(repository),
     markLarkMessageRecalled: repository.markLarkMessageRecalled.bind(repository),
     updateQueuedLarkMessage: repository.updateQueuedLarkMessage.bind(repository),
