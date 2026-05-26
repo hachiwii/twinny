@@ -1210,11 +1210,16 @@ export class ConversationManager {
         replyId: snapshot.replyId,
         isWhole: snapshot.isWhole,
         watchUrl: watcher.watchUrl,
-        cardMessage: docCommentCardMessage(comment, watcher, snapshot, senderName, this.options.botOpenId),
         cardDelivery: docCommentCardDelivery(conversation, thread, comment)
       }
     });
-    const status = this.willProcessPendingMessageImmediately(state, pending) ? "processing" : "queued";
+    const willProcessImmediately = this.willProcessPendingMessageImmediately(state, pending);
+    const active = state.active;
+    const isReplySteer = willProcessImmediately && active !== undefined && this.canSteerDocCommentIntoActiveTurn(active, pending);
+    pending.docComment!.cardMessage = isReplySteer
+      ? docCommentReplySteerCardMessage(comment, snapshot, senderName, this.options.botOpenId)
+      : docCommentReceivedCardMessage(comment, watcher, snapshot, senderName, this.options.botOpenId);
+    const status = willProcessImmediately ? "processing" : "queued";
     await this.options.repository.insertLarkMessage({
       larkMessageId: incoming.messageId,
       eventId: incoming.eventId,
@@ -1224,7 +1229,7 @@ export class ConversationManager {
       docCommentId: comment.commentId,
       conversationKey: context.conversationKey,
       codexThreadId: watcher.threadId,
-      routeKind: "doc_comment",
+      routeKind: isReplySteer ? "doc_comment_reply_steer" : "doc_comment",
       status,
       text: incoming.text,
       larkCreateTime: incoming.createTime,
@@ -1392,33 +1397,15 @@ export class ConversationManager {
         const profile = await this.profileForRecoverableRecord(record, context);
         profiles[profile] = (profiles[profile] ?? 0) + 1;
         const raw = parseStoredRawEvent(record.rawEventJson);
-        const normalized = normalizeIncomingLarkMessage(raw) ?? recoverLarkMessageFromRecord(record, context);
-        if (!normalized) {
+        const pending = isDocCommentRouteKind(record.routeKind)
+          ? recoverDocCommentPendingMessageFromRecord(record, context, raw)
+          : await this.probeRecoveredLarkPendingMessage(record, context, raw);
+        if (!pending) {
           throw new TwinnyError(
             `Cannot recover Lark message ${record.larkMessageId ?? record.eventId} from raw event JSON`,
             "LARK_MESSAGE_RECOVERY_FAILED"
           );
         }
-
-        const parsed = parseQueuedAwareSlashCommand(normalized.text);
-        const text = record.status === "queued" && (normalized.resources?.length ?? 0) > 0 ? normalized.text : record.text;
-        const pending = toPendingMessage(normalized, text, {
-          queueBoundary:
-            parsed.kind === "compact" ||
-            parsed.kind === "goal" ||
-            (record.status === "queued" &&
-              (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit")),
-          control:
-            parsed.kind === "goal"
-              ? "goal_set"
-              : parsed.kind === "plan"
-              ? "plan_on"
-              : parsed.kind === "exit"
-                ? "plan_off"
-                : parsed.kind === "compact"
-                  ? "compact"
-                  : undefined
-        });
         if (pending.control === "compact") {
           compactMessages += 1;
         }
@@ -1456,6 +1443,36 @@ export class ConversationManager {
     };
   }
 
+  private async probeRecoveredLarkPendingMessage(
+    record: LarkMessageRecord,
+    context: MessageContext,
+    raw: unknown
+  ): Promise<PendingMessage | undefined> {
+    const normalized = normalizeIncomingLarkMessage(raw) ?? recoverLarkMessageFromRecord(record, context);
+    if (!normalized) {
+      return undefined;
+    }
+    const parsed = parseQueuedAwareSlashCommand(normalized.text);
+    const text = record.status === "queued" && (normalized.resources?.length ?? 0) > 0 ? normalized.text : record.text;
+    return toPendingMessage(normalized, text, {
+      queueBoundary:
+        parsed.kind === "compact" ||
+        parsed.kind === "goal" ||
+        (record.status === "queued" &&
+          (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit")),
+      control:
+        parsed.kind === "goal"
+          ? "goal_set"
+          : parsed.kind === "plan"
+          ? "plan_on"
+          : parsed.kind === "exit"
+            ? "plan_off"
+            : parsed.kind === "compact"
+              ? "compact"
+              : undefined
+    });
+  }
+
   private async profileForRecoverableRecord(record: LarkMessageRecord, context: MessageContext): Promise<ProfileName> {
     try {
       if (record.codexThreadId) {
@@ -1488,7 +1505,7 @@ export class ConversationManager {
 
   private async toRecoveredPendingMessage(record: LarkMessageRecord, context: MessageContext): Promise<PendingMessage> {
     const raw = parseStoredRawEvent(record.rawEventJson);
-    if (record.routeKind === "doc_comment") {
+    if (isDocCommentRouteKind(record.routeKind)) {
       const recovered = recoverDocCommentPendingMessageFromRecord(record, context, raw);
       if (recovered) {
         return recovered;
@@ -5084,7 +5101,7 @@ export class ConversationManager {
       ...doc,
       replyId: snapshot.replyId,
       isWhole: snapshot.isWhole,
-      cardMessage: docCommentCardMessage(comment, { watchUrl: doc.watchUrl }, snapshot, senderName, this.options.botOpenId)
+      cardMessage: docCommentReceivedCardMessage(comment, { watchUrl: doc.watchUrl }, snapshot, senderName, this.options.botOpenId)
     };
     await this.updateQueuedMessageBestEffort(pending.messageId, {
       text: pending.text,
@@ -8749,6 +8766,10 @@ function hasClearableTerminalGoal(active: ActiveTurn): boolean {
   return active.goal?.status === "complete" || active.goal?.status === "blocked";
 }
 
+function isDocCommentRouteKind(routeKind: LarkMessageRouteKind): boolean {
+  return routeKind === "doc_comment" || routeKind === "doc_comment_reply_steer";
+}
+
 function needsPlainFailureFallback(active: ActiveTurn): boolean {
   return !active.card?.messageId || active.card.fallbackPlain;
 }
@@ -9406,24 +9427,46 @@ function activeTurnCardDeliveryForAnchor(
   };
 }
 
-function docCommentCardMessage(
+function docCommentReceivedCardMessage(
   comment: IncomingLarkDocCommentAdd,
   watcher: Pick<LarkDocWatcherRecord, "watchUrl">,
   snapshot: LarkDocCommentSnapshot,
   senderName: string | undefined,
   botOpenId: string | undefined
 ): TwinnyAgentCardMessage {
-  const senderOpenId = nonEmptyString(comment.senderOpenId) ?? nonEmptyString(snapshot.authorOpenId);
-  const sender = senderOpenId && isSafeLarkMentionOpenId(senderOpenId)
-    ? `<at id=${senderOpenId}></at>`
-    : escapeCardMarkdownText(senderName ?? snapshot.authorName ?? "未知用户");
   const link = cardMarkdownLink(watcher.watchUrl);
   const content = textForDocCommentCardContent(snapshot.text, botOpenId);
   return {
     id: `doc-comment:${comment.commentId}:${snapshot.replyId ?? comment.replyId ?? "root"}`,
-    text: `[收到文档评论] ${sender} 在 ${link} 中评论: ${content}`,
+    text: `[收到文档评论] ${docCommentCardSender(comment, snapshot, senderName)} 在 ${link} 中评论: ${content}`,
     processOnly: true
   };
+}
+
+function docCommentReplySteerCardMessage(
+  comment: IncomingLarkDocCommentAdd,
+  snapshot: LarkDocCommentSnapshot,
+  senderName: string | undefined,
+  botOpenId: string | undefined
+): TwinnyAgentCardMessage {
+  const content = textForDocCommentCardContent(snapshot.text, botOpenId);
+  return {
+    id: `doc-comment-reply-steer:${comment.commentId}:${snapshot.replyId ?? comment.replyId ?? "root"}`,
+    text: `[新增评论] ${docCommentCardSender(comment, snapshot, senderName)}: ${content}`,
+    processOnly: true
+  };
+}
+
+function docCommentCardSender(
+  comment: IncomingLarkDocCommentAdd,
+  snapshot: LarkDocCommentSnapshot,
+  senderName: string | undefined
+): string {
+  const senderOpenId = nonEmptyString(comment.senderOpenId) ?? nonEmptyString(snapshot.authorOpenId);
+  if (senderOpenId && isSafeLarkMentionOpenId(senderOpenId)) {
+    return `<at id=${senderOpenId}></at>`;
+  }
+  return escapeCardMarkdownText(senderName ?? snapshot.authorName ?? "未知用户");
 }
 
 function docCommentCardMessagesForPending(messages: PendingMessage[]): TwinnyAgentCardMessage[] {

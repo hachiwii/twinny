@@ -652,7 +652,7 @@ export class ConversationRepository {
           SELECT COUNT(*)
           FROM lark_messages
           WHERE thread_id = @codexThreadId
-            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'side_message', 'doc_comment')
+            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'side_message', 'doc_comment', 'doc_comment_reply_steer')
         ) AS user_message_count,
         COUNT(*) AS turn_count,
         COALESCE(SUM(CASE
@@ -684,7 +684,7 @@ export class ConversationRepository {
           SELECT COUNT(*)
           FROM lark_messages
           WHERE conversation_key = @conversationKey
-            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'side_message', 'doc_comment')
+            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'side_message', 'doc_comment', 'doc_comment_reply_steer')
         ) AS user_message_count,
         (
           SELECT COALESCE(SUM(input_tokens), 0)
@@ -785,7 +785,7 @@ export class ConversationRepository {
     this.selectProcessedDocCommentCount = this.db.prepare(`
       SELECT COUNT(*) AS count
       FROM lark_messages
-      WHERE route_kind = 'doc_comment'
+      WHERE route_kind IN ('doc_comment', 'doc_comment_reply_steer')
         AND doc_comment_id = ?
     `);
     this.selectLarkMessageUsageTargetForTurn = this.db.prepare(`
@@ -793,7 +793,7 @@ export class ConversationRepository {
       WHERE thread_id = ?
         AND codex_turn_id = ?
         AND lark_message_id IS NOT NULL
-        AND route_kind <> 'steered_message'
+        AND route_kind NOT IN ('steered_message', 'doc_comment_reply_steer')
       ORDER BY received_at ASC, id ASC
       LIMIT 1
     `);
@@ -1952,6 +1952,7 @@ function assertValidRouteKind(routeKind: LarkMessageRouteKind): void {
     routeKind !== "steered_message" &&
     routeKind !== "queued_message" &&
     routeKind !== "doc_comment" &&
+    routeKind !== "doc_comment_reply_steer" &&
     routeKind !== "side_message" &&
     routeKind !== "goal_message" &&
     routeKind !== "control_message" &&

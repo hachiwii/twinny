@@ -276,6 +276,24 @@ describe("ConversationRepository", () => {
     });
     expect(repo.getLarkMessageById("om_doc_comment")).toMatchObject({ docCommentId: "comment_1" });
     expect(repo.hasProcessedDocComment("comment_1")).toBe(true);
+
+    const docCommentReplySteer = repo.insertLarkMessage({
+      larkMessageId: "om_doc_comment_reply_steer",
+      eventId: "event_doc_comment_reply_steer",
+      larkUserId: "ou_456",
+      docCommentId: "comment_2",
+      routeKind: "doc_comment_reply_steer",
+      status: "processing",
+      text: "steered doc follow-up",
+      rawEventJson: "{}"
+    });
+
+    expect(docCommentReplySteer).toMatchObject({
+      larkMessageId: "om_doc_comment_reply_steer",
+      docCommentId: "comment_2",
+      routeKind: "doc_comment_reply_steer"
+    });
+    expect(repo.hasProcessedDocComment("comment_2")).toBe(true);
   });
 
   it("lists contiguous steered messages before a processing message in the same turn", () => {
@@ -679,6 +697,19 @@ describe("ConversationRepository", () => {
       routeKind: "steered_message",
       status: "processing",
       text: "latest steer",
+      rawEventJson: "{}"
+    });
+    now = 2820;
+    repo.insertLarkMessage({
+      larkMessageId: "om_doc_reply_steer_only",
+      eventId: "event_doc_reply_steer_only",
+      larkUserId: "ou_456",
+      conversationKey: "p2p_ou_456",
+      codexThreadId: "thread-1",
+      codexTurnId: "turn-steer-only",
+      routeKind: "doc_comment_reply_steer",
+      status: "processing",
+      text: "doc reply steer",
       rawEventJson: "{}"
     });
     expect(repo.getLarkMessageUsageTargetForTurn("thread-1", "turn-steer-only")).toBeUndefined();

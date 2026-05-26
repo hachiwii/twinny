@@ -1509,10 +1509,14 @@ describe("ConversationManager", () => {
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         larkMessageId: "doc_comment:event_doc_comment_2:comment_1:reply_2",
-        routeKind: "doc_comment",
+        routeKind: "doc_comment_reply_steer",
         status: "processing",
         codexThreadId: "thread_1"
       })
+    );
+    await waitForExpect(() => expect(lark.patchCard).toHaveBeenCalled());
+    expect(JSON.stringify(vi.mocked(lark.patchCard).mock.calls)).toContain(
+      "[新增评论] <at id=ou_owner></at>: Follow-up same block"
     );
     await waitForExpect(() =>
       expect(larkDocComments.updateReaction).toHaveBeenCalledWith({
@@ -7914,7 +7918,7 @@ describe("ConversationManager", () => {
       larkMessageId: "proxy_doc_comment",
       eventId: "doc_comment:event_doc_comment:docx:doc_token",
       larkUserId: "ou_owner",
-      routeKind: "doc_comment",
+      routeKind: "doc_comment_reply_steer",
       status: "steered",
       text: "steered doc comment",
       conversationKey: "p2p_ou_guest",
@@ -8704,7 +8708,8 @@ function createRepository(initial?: ConversationRecord, options: {
             message.codexThreadId === codexThreadId &&
             message.codexTurnId === codexTurnId &&
             message.larkMessageId !== undefined &&
-            message.routeKind !== "steered_message"
+            message.routeKind !== "steered_message" &&
+            message.routeKind !== "doc_comment_reply_steer"
           )
           .sort((left, right) => left.receivedAt - right.receivedAt || left.id - right.id)[0]
       ),
@@ -8743,7 +8748,8 @@ function createRepository(initial?: ConversationRecord, options: {
       )),
       hasProcessedDocComment: vi.fn((commentId) =>
         [...larkMessages.values()].some((message) =>
-          message.routeKind === "doc_comment" && message.docCommentId === commentId
+          (message.routeKind === "doc_comment" || message.routeKind === "doc_comment_reply_steer") &&
+          message.docCommentId === commentId
         )
       ),
       create: (record) => {
@@ -9207,7 +9213,8 @@ function isUserMessageRouteKind(routeKind: LarkMessageRecord["routeKind"]): bool
     routeKind === "steered_message" ||
     routeKind === "queued_message" ||
     routeKind === "side_message" ||
-    routeKind === "doc_comment"
+    routeKind === "doc_comment" ||
+    routeKind === "doc_comment_reply_steer"
   );
 }
 

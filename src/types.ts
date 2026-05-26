@@ -68,6 +68,7 @@ export type LarkMessageRouteKind =
   | "steered_message"
   | "queued_message"
   | "doc_comment"
+  | "doc_comment_reply_steer"
   | "control_message"
   | "card_action"
   | "menu_action";
