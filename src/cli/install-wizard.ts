@@ -1027,11 +1027,7 @@ export async function checkCodexLoginStatus(
   options: CodexCommandOptions = {}
 ): Promise<{ loggedIn: boolean }> {
   const result = await (options.runCommand ?? execa)(binary, ["login", "status"], { reject: false });
-  return { loggedIn: result.exitCode === 0 && isCodexLoggedInOutput(result.stdout) };
-}
-
-export function isCodexLoggedInOutput(output: string): boolean {
-  return output.trimStart().startsWith("Logged in");
+  return { loggedIn: result.exitCode === 0 };
 }
 
 async function ensureCodexLogin(

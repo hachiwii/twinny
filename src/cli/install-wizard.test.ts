@@ -26,7 +26,6 @@ import {
   installLarkCli,
   installWizardIntro,
   installWizardLarkBrand,
-  isCodexLoggedInOutput,
   isNpxEntrypoint,
   parseCodexVersion,
   parseLarkCliProfileList,
@@ -185,7 +184,16 @@ describe("install wizard helpers", () => {
     await expect(checkCodexLoginStatus("/usr/local/bin/codex", { runCommand: runCommand as unknown as CodexCommandRunner })).resolves.toEqual({
       loggedIn: true
     });
-    expect(isCodexLoggedInOutput("Not logged in")).toBe(false);
+    await expect(checkCodexLoginStatus("/usr/local/bin/codex", {
+      runCommand: vi.fn(async () => ({ stdout: "", stderr: "Not logged in\n", exitCode: 0 })) as unknown as CodexCommandRunner
+    })).resolves.toEqual({
+      loggedIn: true
+    });
+    await expect(checkCodexLoginStatus("/usr/local/bin/codex", {
+      runCommand: vi.fn(async () => ({ stdout: "Logged in using ChatGPT\n", stderr: "", exitCode: 1 })) as unknown as CodexCommandRunner
+    })).resolves.toEqual({
+      loggedIn: false
+    });
   });
 
   it("installs Codex with npm global package", async () => {
