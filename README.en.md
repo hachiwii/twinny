@@ -66,6 +66,7 @@ im:resource
 docs:document.comment:read
 docs:document.comment:create
 docs:document.comment:write_only
+wiki:node:read
 ```
 
 Subscribe to these events/callbacks:

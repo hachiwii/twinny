@@ -105,7 +105,8 @@ describe("doctor health checks", () => {
       "docs:document.comment:read",
       "docs:document.comment:create",
       "docs:document.comment:write_only",
-      "docs:document.media:download"
+      "docs:document.media:download",
+      "wiki:node:read"
     ]));
     expect(LARK_REQUIRED_SCOPES.some((scope) => scope.startsWith("drive:drive"))).toBe(false);
 

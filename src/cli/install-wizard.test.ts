@@ -480,7 +480,8 @@ describe("install wizard helpers", () => {
       "docs:document.comment:read",
       "docs:document.comment:create",
       "docs:document.comment:write_only",
-      "docs:document.media:download"
+      "docs:document.media:download",
+      "wiki:node:read"
     ]));
     expect(importJson.scopes.tenant.some((scope) => scope.startsWith("drive:drive"))).toBe(false);
     expect(installGuideRequiredEvents).toContainEqual(expect.objectContaining({

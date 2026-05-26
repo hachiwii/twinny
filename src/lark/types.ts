@@ -30,7 +30,8 @@ export const LARK_REQUIRED_SCOPES = [
   "docs:document.comment:read",
   "docs:document.comment:create",
   "docs:document.comment:write_only",
-  "docs:document.media:download"
+  "docs:document.media:download",
+  "wiki:node:read"
 ] as const;
 
 export const LARK_OPTIONAL_SCOPES = [

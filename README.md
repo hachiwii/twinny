@@ -66,6 +66,7 @@ im:resource
 docs:document.comment:read
 docs:document.comment:create
 docs:document.comment:write_only
+wiki:node:read
 ```
 
 订阅这些事件/回调：
