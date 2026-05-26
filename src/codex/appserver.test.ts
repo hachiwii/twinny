@@ -24,7 +24,7 @@ describe("buildCodexAppServerEnv", () => {
     });
 
     expect(env).toMatchObject({
-      PATH: "/usr/bin",
+      PATH: [path.dirname(process.execPath), "/usr/bin"].join(path.delimiter),
       HOME: "/Users/example",
       LANG: "en_US.UTF-8",
       CODEX_HOME: "/tmp/twinny/profiles/guest/codex",
@@ -32,6 +32,14 @@ describe("buildCodexAppServerEnv", () => {
     });
     expect(env.TWINNY_LARK_APP_SECRET).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
+  });
+
+  it("keeps the current Node executable available for npm-style Codex shims", () => {
+    const env = buildCodexAppServerEnv("/tmp/twinny/profiles/guest/codex", {});
+
+    const pathEntries = env.PATH?.split(path.delimiter) ?? [];
+    expect(pathEntries[0]).toBe(path.dirname(process.execPath));
+    expect(pathEntries).toContain("/usr/bin");
   });
 });
 

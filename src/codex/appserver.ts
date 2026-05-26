@@ -422,7 +422,7 @@ export function buildCodexAppServerEnv(codexHome: string, source: NodeJS.Process
   copyEnv(source, env, "LC_CTYPE");
   copyEnv(source, env, "TERM");
 
-  env.PATH = env.PATH ?? defaultPath();
+  env.PATH = codexChildPath(env.PATH);
   env.CODEX_HOME = path.resolve(codexHome);
   env.NO_COLOR = source.NO_COLOR ?? "1";
   return env;
@@ -436,4 +436,10 @@ function copyEnv(source: NodeJS.ProcessEnv, target: NodeJS.ProcessEnv, key: stri
 
 function defaultPath(): string {
   return ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":");
+}
+
+function codexChildPath(sourcePath: string | undefined): string {
+  const nodeBinDir = path.dirname(process.execPath);
+  const entries = [nodeBinDir, ...(sourcePath ?? defaultPath()).split(path.delimiter)].filter(Boolean);
+  return [...new Set(entries)].join(path.delimiter);
 }
