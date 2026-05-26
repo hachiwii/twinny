@@ -165,6 +165,32 @@ describe("ConversationManager", () => {
     await waitForDelay();
   });
 
+  it("injects lark-cli profile guidance only when profile metadata exists", async () => {
+    const withoutProfileCodex = createCodex();
+    const withoutProfile = createManager({ codex: withoutProfileCodex });
+
+    withoutProfile.submitIncoming(message("m_no_profile", "hello"));
+
+    await waitForExpect(() => expect(withoutProfileCodex.startThread).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(withoutProfileCodex.startThread).mock.calls[0]![0].developerInstructions).not.toContain("--profile cli_xxx");
+
+    const withProfileCodex = createCodex();
+    const withProfile = createManager({
+      codex: withProfileCodex,
+      config: {
+        ...config,
+        larkCliProfile: { profileName: "cli_xxx" }
+      }
+    });
+
+    withProfile.submitIncoming(message("m_with_profile", "hello"));
+
+    await waitForExpect(() => expect(withProfileCodex.startThread).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(withProfileCodex.startThread).mock.calls[0]![0].developerInstructions).toContain(
+      "pass `--profile cli_xxx`"
+    );
+  });
+
   it("emits turn-end telemetry with model, effort, token deltas, and message counts", async () => {
     const telemetry = createTelemetry();
     const codex = createCodex({

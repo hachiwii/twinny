@@ -13,6 +13,7 @@ import {
   NONE_PROFILE_NAME,
   type LarkMessageRedactionConfig,
   type LarkMessageRedactionStrategy,
+  type LarkCliProfileConfig,
   type LarkBrand,
   type PermissionsConfig,
   type ProfileConfig,
@@ -95,6 +96,12 @@ const rawAuthSchema = z
   })
   .strict();
 
+const rawLarkCliProfileSchema = z
+  .object({
+    profileName: z.string()
+  })
+  .strict();
+
 type RawProfileConfig = z.infer<typeof rawProfileSchema>;
 
 export interface CreateTwinnyConfigInput {
@@ -113,6 +120,7 @@ export interface CreateTwinnyConfigInput {
   };
   permissions?: Partial<PermissionsConfig>;
   telemetry?: Partial<TelemetryConfig>;
+  larkCliProfile?: LarkCliProfileConfig;
   profiles?: Record<ProfileName, Partial<ProfileConfig>>;
 }
 
@@ -152,6 +160,7 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
       p2pDefaultProfile: normalizeProfileName(input.permissions?.p2pDefaultProfile) ?? NONE_PROFILE_NAME
     },
     telemetry: normalizeTelemetryConfig(input.telemetry),
+    larkCliProfile: normalizeLarkCliProfileConfig(input.larkCliProfile),
     owner: {
       openId: input.auth.ownerOpenId,
       displayName: input.auth.displayName
@@ -212,11 +221,13 @@ export async function readConfigStatus(options: LoadConfigOptions = {}): Promise
     }
   }
 
+  const larkCliProfile = await readLarkCliProfileConfig(paths.larkCliProfileFile);
   const parsedConfig = parseTwinnyConfigFile(rawToml, { ...options, home });
   const config = createRuntimeConfig(parsedConfig, {
     home,
     auth: auth ?? emptyAuthFile(),
-    homeIdentity: homeIdentity ?? createTwinnyHomeIdentity("0".repeat(32))
+    homeIdentity: homeIdentity ?? createTwinnyHomeIdentity("0".repeat(32)),
+    larkCliProfile
   });
   issues.push(...validateTwinnyConfig(config));
 
@@ -277,6 +288,31 @@ export function serializeTwinnyAuthFile(auth: TwinnyAuthFile): string {
     null,
     2
   ) + "\n";
+}
+
+export async function readLarkCliProfileConfig(profileFile: string): Promise<LarkCliProfileConfig | undefined> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(profileFile, "utf8");
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) {
+      return undefined;
+    }
+    throw error;
+  }
+  return normalizeLarkCliProfileConfig(rawLarkCliProfileSchema.parse(JSON.parse(raw)));
+}
+
+export async function writeLarkCliProfileConfig(profile: LarkCliProfileConfig, profileFile: string): Promise<void> {
+  const normalized = normalizeLarkCliProfileConfig(profile);
+  if (!normalized) {
+    throw new Error("lark-cli profile name is required");
+  }
+  await fs.mkdir(path.dirname(profileFile), { recursive: true });
+  await fs.writeFile(profileFile, JSON.stringify({ profileName: normalized.profileName }, null, 2) + "\n", {
+    encoding: "utf8",
+    mode: 0o600
+  });
 }
 
 export async function readTwinnyHomeIdentity(homeRandomFile: string): Promise<TwinnyHomeIdentity> {
@@ -351,7 +387,7 @@ function parseTwinnyConfigFile(rawToml: string, options: LoadConfigOptions): z.i
 
 function createRuntimeConfig(
   parsed: z.infer<typeof rawConfigSchema>,
-  runtime: { home: string; auth: TwinnyAuthFile; homeIdentity: TwinnyHomeIdentity }
+  runtime: { home: string; auth: TwinnyAuthFile; homeIdentity: TwinnyHomeIdentity; larkCliProfile?: LarkCliProfileConfig }
 ): TwinnyConfig {
   const profiles = resolveProfiles(rawProfilesToCamel(parsed.profiles), runtime.home);
   const auth = normalizeAuthFile(runtime.auth);
@@ -380,6 +416,7 @@ function createRuntimeConfig(
       posthogProjectToken: parsed.telemetry?.posthog_project_token,
       posthogHost: parsed.telemetry?.posthog_host
     }),
+    larkCliProfile: normalizeLarkCliProfileConfig(runtime.larkCliProfile),
     owner: {
       openId: auth.ownerOpenId,
       displayName: auth.displayName
@@ -555,6 +592,11 @@ function normalizeTelemetryConfig(input: Partial<TelemetryConfig> | undefined): 
     posthogProjectToken,
     posthogHost
   };
+}
+
+function normalizeLarkCliProfileConfig(input: LarkCliProfileConfig | undefined): LarkCliProfileConfig | undefined {
+  const profileName = normalizeOptionalString(input?.profileName);
+  return profileName ? { profileName } : undefined;
 }
 
 function isMessageRedactionStrategy(value: unknown): value is LarkMessageRedactionStrategy {

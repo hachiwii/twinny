@@ -13,7 +13,8 @@ import {
   readConfigStatus,
   resolveLarkAppSecret,
   resolveTwinnyHome,
-  serializeTwinnyConfig
+  serializeTwinnyConfig,
+  writeLarkCliProfileConfig
 } from "./index.js";
 
 const tempDirs: string[] = [];
@@ -132,6 +133,23 @@ describe("Twinny config loading and bootstrap", () => {
       enabled: true,
       posthogProjectToken: "ph_test",
       posthogHost: "https://posthog.example"
+    });
+  });
+
+  it("loads optional lark-cli profile metadata from Twinny home", async () => {
+    const home = await tempHome();
+    const config = createTwinnyConfig({
+      home,
+      homeRandom,
+      auth: { larkAppId: "cli_test", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner" },
+      profiles: { host: {}, guest: {} }
+    });
+
+    await bootstrapTwinnyHome(config);
+    await writeLarkCliProfileConfig({ profileName: "cli_test" }, path.join(home, "lark-cli-profile.json"));
+
+    await expect(loadTwinnyConfig({ home, env: {} })).resolves.toMatchObject({
+      larkCliProfile: { profileName: "cli_test" }
     });
   });
 

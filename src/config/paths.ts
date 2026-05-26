@@ -42,6 +42,7 @@ export function createRuntimePaths(home = resolveTwinnyHome()): RuntimePaths {
     workspacesDir: path.join(resolvedHome, "workspaces"),
     runtimeDir,
     larkAssetsFile: path.join(runtimeDir, "lark-assets.json"),
+    larkCliProfileFile: path.join(resolvedHome, "lark-cli-profile.json"),
     lockFile: path.join(runtimeDir, "twinny.lock"),
     logsDir: resolveLogsDir()
   };

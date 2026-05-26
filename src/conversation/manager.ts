@@ -8893,6 +8893,7 @@ function twinnyThreadDeveloperInstructions(
 ): string {
   return joinDeveloperInstructions(
     TWINNY_THREAD_DEVELOPER_INSTRUCTIONS,
+    larkCliProfileDeveloperInstructions(config),
     currentConversationDeveloperInstructions(config, context),
     options.mainThread ? MAIN_THREAD_DEVELOPER_INSTRUCTIONS : ""
   );
@@ -8907,6 +8908,16 @@ function sideDeveloperInstructionsForContext(config: TwinnyConfig, context: Mess
 
 function developerInstructionsForContext(config: TwinnyConfig, context: MessageContext): string {
   return twinnyThreadDeveloperInstructions(config, context, { mainThread: isMainSessionContext(context) });
+}
+
+function larkCliProfileDeveloperInstructions(config: TwinnyConfig): string {
+  const profileName = nonEmptyString(config.larkCliProfile?.profileName);
+  if (!profileName) {
+    return "";
+  }
+  return `## lark-cli Profile
+
+Unless the user explicitly asks otherwise, every time you invoke lark-cli, pass \`--profile ${profileName}\` so the command uses the lark-cli profile created for this Twinny bot.`;
 }
 
 function currentConversationDeveloperInstructions(config: TwinnyConfig, context: MessageContext): string {

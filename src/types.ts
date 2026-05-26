@@ -132,6 +132,10 @@ export interface TelemetryConfig {
   posthogHost: string;
 }
 
+export interface LarkCliProfileConfig {
+  profileName: string;
+}
+
 export interface TwinnyConfig {
   home: string;
   codex: CodexConfig;
@@ -140,6 +144,7 @@ export interface TwinnyConfig {
   homeIdentity: TwinnyHomeIdentity;
   permissions: PermissionsConfig;
   telemetry?: TelemetryConfig;
+  larkCliProfile?: LarkCliProfileConfig;
   owner: OwnerConfig;
   profiles: Record<ProfileName, ProfileConfig>;
 }
@@ -155,6 +160,7 @@ export interface RuntimePaths {
   workspacesDir: string;
   runtimeDir: string;
   larkAssetsFile: string;
+  larkCliProfileFile: string;
   lockFile: string;
   logsDir: string;
 }
