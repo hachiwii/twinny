@@ -7,6 +7,7 @@
 - 支持 Linux + systemd
 - 增加飞书文档评论监听功能 `/watch`
 - 优化安装流程
+- /fork 向会话注入一个 boundary message，使模型感知到会话发生分叉
 
 ## Bug 修复
 
