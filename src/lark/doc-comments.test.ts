@@ -135,7 +135,7 @@ describe("LarkDocClient", () => {
     );
   });
 
-  it("adds image block tokens for docx comments anchored on images", async () => {
+  it("adds docx block ids and image block tokens for docx comments", async () => {
     const request = vi.fn(async (apiPath: string) => {
       if (apiPath.endsWith("/comments/batch_query")) {
         return {
@@ -199,6 +199,7 @@ describe("LarkDocClient", () => {
         replyId: "reply_1"
       })
     ).resolves.toMatchObject({
+      quoteBlockIds: ["text_block", "image_block"],
       imageKeys: ["image_token"],
       imageRefs: [
         {
@@ -298,6 +299,9 @@ describe("LarkDocClient", () => {
             ]
           }
         };
+      }
+      if (path === "/docx/v1/documents/doc_token/blocks") {
+        return { data: { items: [] } };
       }
       repliesCalls += 1;
       if (repliesCalls === 1) {

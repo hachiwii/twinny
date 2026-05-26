@@ -26,6 +26,11 @@ class LarkDocCommentReplyNotReadyError extends Error {
   }
 }
 
+interface DocxCommentBlockRefs {
+  blockIds: string[];
+  imageRefs: LarkDocCommentImageRef[];
+}
+
 export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
   private readonly commentReadMaxRetries: number;
   private readonly commentReadRetryBaseDelayMs: number;
@@ -93,8 +98,8 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
     }
 
     const replyImageRefs = imageRefsFromReply(reply);
-    const blockImageRefs = await this.findCommentImageBlockRefsBestEffort(params.fileType, params.fileToken, params.commentId, rawComment.quote);
-    const imageRefs = dedupeImageRefs([...replyImageRefs, ...blockImageRefs]);
+    const docxBlockRefs = await this.findDocxCommentBlockRefsBestEffort(params.fileType, params.fileToken, params.commentId);
+    const imageRefs = dedupeImageRefs([...replyImageRefs, ...docxBlockRefs.imageRefs]);
 
     return {
       fileType: params.fileType,
@@ -105,6 +110,7 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
       authorOpenId: stringValue(reply.user_id) ?? stringValue(rawComment.user_id) ?? "",
       text: replyText(reply),
       quote: stringValue(rawComment.quote),
+      quoteBlockIds: docxBlockRefs.blockIds,
       imageKeys: imageRefs.map((image) => image.fileToken),
       imageRefs,
       isDone: booleanValue(rawComment.is_done),
@@ -284,16 +290,17 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
     return replies;
   }
 
-  private async findCommentImageBlockRefs(
+  private async findDocxCommentBlockRefs(
     fileType: string,
     fileToken: string,
     commentId: string
-  ): Promise<LarkDocCommentImageRef[]> {
+  ): Promise<DocxCommentBlockRefs> {
     if (fileType !== "docx") {
-      return [];
+      return emptyDocxCommentBlockRefs();
     }
 
-    const refs: LarkDocCommentImageRef[] = [];
+    const blockIds: string[] = [];
+    const imageRefs: LarkDocCommentImageRef[] = [];
     let pageToken: string | undefined;
     do {
       const raw = await this.options.openApiClient.request(
@@ -309,7 +316,14 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
       const data = getRecord(raw, "data");
       for (const block of getArray(data, "items")) {
         const commentIds = getStringArray(block, "comment_ids");
-        if (numberValue(block.block_type) !== 27 || !commentIds.includes(commentId)) {
+        if (!commentIds.includes(commentId)) {
+          continue;
+        }
+        const blockId = stringValue(block.block_id);
+        if (blockId) {
+          blockIds.push(blockId);
+        }
+        if (numberValue(block.block_type) !== 27) {
           continue;
         }
         const image = getRecord(block, "image");
@@ -317,8 +331,7 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
         if (!imageToken) {
           continue;
         }
-        const blockId = stringValue(block.block_id);
-        refs.push({
+        imageRefs.push({
           fileToken: imageToken,
           source: "doc_block",
           blockId,
@@ -328,22 +341,21 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
       }
       pageToken = booleanValue(data.has_more) ? stringValue(data.page_token) : undefined;
     } while (pageToken);
-    return refs;
+    return {
+      blockIds: dedupeStrings(blockIds),
+      imageRefs: dedupeImageRefs(imageRefs)
+    };
   }
 
-  private async findCommentImageBlockRefsBestEffort(
+  private async findDocxCommentBlockRefsBestEffort(
     fileType: string,
     fileToken: string,
-    commentId: string,
-    quote: unknown
-  ): Promise<LarkDocCommentImageRef[]> {
-    if (!isImageQuote(quote)) {
-      return [];
-    }
+    commentId: string
+  ): Promise<DocxCommentBlockRefs> {
     try {
-      return await this.findCommentImageBlockRefs(fileType, fileToken, commentId);
+      return await this.findDocxCommentBlockRefs(fileType, fileToken, commentId);
     } catch {
-      return [];
+      return emptyDocxCommentBlockRefs();
     }
   }
 }
@@ -473,8 +485,24 @@ function imageRefsFromReply(reply: Record<string, unknown>): LarkDocCommentImage
     }));
 }
 
-function isImageQuote(value: unknown): boolean {
-  return stringValue(value) === "[图片]";
+function emptyDocxCommentBlockRefs(): DocxCommentBlockRefs {
+  return {
+    blockIds: [],
+    imageRefs: []
+  };
+}
+
+function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
 }
 
 function dedupeImageRefs(refs: LarkDocCommentImageRef[]): LarkDocCommentImageRef[] {

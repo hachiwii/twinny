@@ -416,6 +416,7 @@ export interface LarkDocCommentSnapshot {
   authorName?: string;
   text: string;
   quote?: string;
+  quoteBlockIds?: string[];
   imageKeys: string[];
   imageRefs?: LarkDocCommentImageRef[];
   isDone: boolean;
@@ -468,6 +469,11 @@ export interface LarkDocCommentClient {
     contentType?: string;
   }>;
 }
+
+type DocCommentDownloadedImage = {
+  ref: LarkDocCommentImageRef;
+  file: NonNullable<IncomingLarkMessage["downloadedFiles"]>[number];
+};
 
 export interface WorkspaceManagerLike {
   ensureWorkspace(conversationKey: string): Promise<string> | string;
@@ -2257,8 +2263,13 @@ export class ConversationManager {
     snapshot: LarkDocCommentSnapshot,
     senderName: string | undefined
   ): Promise<{ text: string; downloadedFiles: NonNullable<IncomingLarkMessage["downloadedFiles"]> }> {
-    const downloadedFiles = await this.downloadDocCommentImagesBestEffort(context, comment, snapshot);
-    const resourceText = downloadedFiles.length > 0 ? formatMessageTextWithDownloadedFiles("", downloadedFiles, "doc_comment") : "";
+    const downloadedImages = await this.downloadDocCommentImagesBestEffort(context, comment, snapshot);
+    const downloadedFiles = downloadedImages.map((image) => image.file);
+    const replyImageFiles = downloadedImages
+      .filter((image) => image.ref.source === "reply")
+      .map((image) => image.file);
+    const quote = formatDocCommentQuote(snapshot, downloadedImages);
+    const resourceText = replyImageFiles.length > 0 ? formatMessageTextWithDownloadedFiles("", replyImageFiles, "doc_comment") : "";
     const lines = [
       formatXmlOpenTag("lark-doc-comment", [
         ["sender_id", comment.senderOpenId],
@@ -2267,7 +2278,7 @@ export class ConversationManager {
         ["file_token", watcher.fileToken],
         ["comment_id", comment.commentId]
       ]),
-      ...(snapshot.quote ? [`<quote>${escapeXmlText(snapshot.quote)}</quote>`] : []),
+      ...(quote ? [quote] : []),
       escapeXmlText(snapshot.text),
       ...(resourceText ? [resourceText] : []),
       "</lark-doc-comment>"
@@ -2279,14 +2290,14 @@ export class ConversationManager {
     context: MessageContext,
     comment: IncomingLarkDocCommentAdd,
     snapshot: LarkDocCommentSnapshot
-  ): Promise<NonNullable<IncomingLarkMessage["downloadedFiles"]>> {
+  ): Promise<DocCommentDownloadedImage[]> {
     const imageRefs = docCommentImageRefs(snapshot);
     if (imageRefs.length === 0 || !this.options.larkDocComments) {
       return [];
     }
     const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
     const outputDir = path.join(workspace, ".twinny", "lark_files", "doc_comments", safePathSegment(comment.commentId));
-    const files: NonNullable<IncomingLarkMessage["downloadedFiles"]> = [];
+    const images: DocCommentDownloadedImage[] = [];
     for (const imageRef of imageRefs) {
       try {
         const downloaded = await this.options.larkDocComments.downloadCommentImage({
@@ -2295,15 +2306,18 @@ export class ConversationManager {
           driveRouteToken: imageRef.driveRouteToken,
           fileName: imageRef.fileName
         });
-        files.push({
-          ...downloaded,
-          codexTag: "img"
+        images.push({
+          ref: imageRef,
+          file: {
+            ...downloaded,
+            codexTag: "img"
+          }
         });
       } catch (error) {
         this.log.warn({ error, commentId: comment.commentId, imageKey: imageRef.fileToken }, "failed to download doc comment image");
       }
     }
-    return files;
+    return images;
   }
 
   private async sendDocCommentProxyMessage(
@@ -9143,10 +9157,49 @@ function docCommentRawContext(
     watch_url: watcher.watchUrl,
     watch_mode: watcher.watchMode,
     quote: snapshot.quote,
+    quote_block_ids: snapshot.quoteBlockIds,
     raw_event: comment.raw,
     raw_comment: snapshot.rawComment,
     raw_reply: snapshot.rawReply
   };
+}
+
+function formatDocCommentQuote(
+  snapshot: LarkDocCommentSnapshot,
+  downloadedImages: DocCommentDownloadedImage[]
+): string | undefined {
+  if (!snapshot.quote) {
+    return undefined;
+  }
+  const blockIds = uniqueNonEmptyStrings(snapshot.quoteBlockIds ?? []);
+  const attributes = blockIds.length > 0 ? ` blocks="${escapeXmlAttribute(blockIds.join(","))}"` : "";
+  const docImages = downloadedImages
+    .filter((image) => image.ref.source === "doc_block")
+    .map(formatDocCommentQuoteImage);
+  const content = [escapeXmlText(snapshot.quote), ...docImages].join("\n");
+  return `<quote${attributes}>${content}</quote>`;
+}
+
+function formatDocCommentQuoteImage(image: DocCommentDownloadedImage): string {
+  const blockIdAttribute = image.ref.blockId ? ` block_id="${escapeXmlAttribute(image.ref.blockId)}"` : "";
+  return (
+    `<doc_image${blockIdAttribute}>` +
+    `<img filekey="${escapeXmlAttribute(image.file.fileKey)}" path="${escapeXmlAttribute(image.file.path)}">Saved locally</img>` +
+    "</doc_image>"
+  );
+}
+
+function uniqueNonEmptyStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
 }
 
 function docCommentImageRefs(snapshot: LarkDocCommentSnapshot): LarkDocCommentImageRef[] {

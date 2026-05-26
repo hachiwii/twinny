@@ -1376,7 +1376,8 @@ describe("ConversationManager", () => {
     vi.mocked(lark.sendTextToOpenId).mockResolvedValue({ messageId: "proxy_doc_comment", raw: {} });
     const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
       text: "@ou_bot Please fix <this> with @ou_reviewer and @ouid_extra",
-      quote: "Quoted & referenced text"
+      quote: "Quoted & referenced text",
+      quoteBlockIds: ["block_1", "block_2"]
     }));
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
@@ -1403,7 +1404,7 @@ describe("ConversationManager", () => {
     );
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        input: expect.stringContaining("<quote>Quoted &amp; referenced text</quote>")
+        input: expect.stringContaining('<quote blocks="block_1,block_2">Quoted &amp; referenced text</quote>')
       })
     );
     expect(codex.startTurn).toHaveBeenCalledWith(
@@ -1602,7 +1603,7 @@ describe("ConversationManager", () => {
     );
   });
 
-  it("downloads doc block images attached to watched doc comments", async () => {
+  it("renders doc block images inside quote without sending them as local images", async () => {
     const { repository } = createRepository(conversationRecord());
     repository.upsertLarkDocWatcher({
       fileType: "docx",
@@ -1616,6 +1617,7 @@ describe("ConversationManager", () => {
     const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
       text: "@Twinny 图里是啥",
       quote: "[图片]",
+      quoteBlockIds: ["image_block"],
       imageKeys: ["image_token"],
       imageRefs: [
         {
@@ -1645,8 +1647,14 @@ describe("ConversationManager", () => {
       fileName: "doc-image-image_block"
     });
     const input = vi.mocked(codex.startTurn).mock.calls[0]?.[0].input;
-    expect(JSON.stringify(input)).toContain("image_token.png");
-    expect(JSON.stringify(input)).toContain("localImage");
+    expect(typeof input).toBe("string");
+    if (typeof input !== "string") {
+      throw new Error("expected doc image quote input to remain text");
+    }
+    expect(input).toContain('<quote blocks="image_block">[图片]\n<doc_image block_id="image_block"><img filekey="image_token"');
+    expect(input).toContain(">Saved locally</img></doc_image></quote>");
+    expect(input).toContain("image_token.png");
+    expect(JSON.stringify(input)).not.toContain("localImage");
   });
 
   it("ignores watched doc comments unless the comment mentions the bot", async () => {
@@ -8971,6 +8979,7 @@ function larkDocCommentSnapshot(overrides: Partial<LarkDocCommentSnapshot> = {})
     authorOpenId: "ou_owner",
     authorName: "Owner",
     text: "Please inspect this",
+    quoteBlockIds: [],
     imageKeys: [],
     isDone: false,
     isSolved: false,
