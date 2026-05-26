@@ -195,6 +195,81 @@ describe("LarkDocClient", () => {
     expect(sleep).toHaveBeenCalledWith(25);
   });
 
+  it("retries comment snapshot reads when the event reply is not listed yet", async () => {
+    let repliesCalls = 0;
+    const request = vi.fn(async (path: string) => {
+      if (path.endsWith("/comments/batch_query")) {
+        return {
+          data: {
+            items: [
+              {
+                comment_id: "comment_1",
+                user_id: "ou_root",
+                quote: "quoted text",
+                is_whole: false
+              }
+            ]
+          }
+        };
+      }
+      repliesCalls += 1;
+      if (repliesCalls === 1) {
+        return {
+          data: {
+            items: [
+              {
+                reply_id: "reply_old",
+                user_id: "ou_old",
+                create_time: 3000,
+                content: { text: "old" }
+              }
+            ]
+          }
+        };
+      }
+      return {
+        data: {
+          items: [
+            {
+              reply_id: "reply_old",
+              user_id: "ou_old",
+              create_time: 3000,
+              content: { text: "old" }
+            },
+            {
+              reply_id: "reply_1",
+              user_id: "ou_reply",
+              create_time: 2000,
+              content: { text: "new" }
+            }
+          ]
+        }
+      };
+    });
+    const sleep = vi.fn(async () => undefined);
+    const client = new LarkDocClient({
+      openApiClient: createOpenApiClient({ request }),
+      commentReadMaxRetries: 2,
+      commentReadRetryBaseDelayMs: 25,
+      sleep
+    });
+
+    await expect(
+      client.getCommentSnapshot({
+        fileType: "docx",
+        fileToken: "doc_token",
+        commentId: "comment_1",
+        replyId: "reply_1"
+      })
+    ).resolves.toMatchObject({
+      replyId: "reply_1",
+      authorOpenId: "ou_reply",
+      text: "new"
+    });
+    expect(repliesCalls).toBe(2);
+    expect(sleep).toHaveBeenCalledWith(25);
+  });
+
   it("uses the whole-comment create endpoint when replying to global comments", async () => {
     const request = vi.fn(async () => ({
       data: {

@@ -18,6 +18,13 @@ export interface LarkDocClientOptions {
 const SUPPORTED_DOC_TYPES = new Set(["doc", "docx", "sheet", "slides", "bitable", "file"]);
 const DOC_COMMENT_PERMISSION_NOT_READY_CODE = 1069301;
 
+class LarkDocCommentReplyNotReadyError extends Error {
+  constructor(readonly replyId: string) {
+    super(`Lark doc comment reply is not visible yet: ${replyId}`);
+    this.name = "LarkDocCommentReplyNotReadyError";
+  }
+}
+
 export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
   private readonly commentReadMaxRetries: number;
   private readonly commentReadRetryBaseDelayMs: number;
@@ -72,8 +79,11 @@ export class LarkDocClient implements LarkDocResolver, LarkDocCommentClient {
       return null;
     }
     const replies = await this.listReplies(params.fileType, params.fileToken, params.commentId);
-    const reply = findReply(replies, params.replyId) ?? newestReply(replies);
+    const reply = params.replyId ? findReply(replies, params.replyId) : newestReply(replies);
     if (!reply) {
+      if (params.replyId) {
+        throw new LarkDocCommentReplyNotReadyError(params.replyId);
+      }
       return null;
     }
     const replyId = stringValue(reply.reply_id) ?? params.replyId;
@@ -331,7 +341,8 @@ function newestReply(replies: Record<string, unknown>[]): Record<string, unknown
 
 function isRetryableCommentReadError(error: unknown): boolean {
   // Lark can emit comment_add before a freshly mentioned bot can read that comment.
-  return error instanceof LarkOpenApiError && error.detail.code === DOC_COMMENT_PERMISSION_NOT_READY_CODE;
+  return error instanceof LarkDocCommentReplyNotReadyError ||
+    error instanceof LarkOpenApiError && error.detail.code === DOC_COMMENT_PERMISSION_NOT_READY_CODE;
 }
 
 function sleep(ms: number): Promise<void> {
