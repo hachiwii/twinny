@@ -36,8 +36,9 @@ export async function installSystemdUserService(options: InstallSystemdUserServi
       entrypoint: options.entrypoint,
       environment: options.environment
     }),
-    "utf8"
+    { encoding: "utf8", mode: 0o600 }
   );
+  fs.chmodSync(runtime.unitPath, 0o600);
   await execa("systemctl", ["--user", "daemon-reload"]);
   await execa("systemctl", ["--user", "enable", runtime.unitName]);
   console.log(`Installed ${runtime.unitName} at ${runtime.unitPath}`);

@@ -28,7 +28,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=${quoteSystemd(twinnyHome)}
+WorkingDirectory=${escapeSystemdPath(twinnyHome)}
 ExecStart=${args.map(quoteSystemd).join(" ")}
 Restart=always
 RestartSec=5
@@ -60,6 +60,10 @@ function isSystemdEnvironmentKey(key: string): boolean {
 
 function quoteSystemd(value: string): string {
   return `"${escapeSystemdText(value)}"`;
+}
+
+function escapeSystemdPath(value: string): string {
+  return value.replaceAll("%", "%%");
 }
 
 function escapeSystemdText(value: string): string {

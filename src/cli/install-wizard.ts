@@ -45,10 +45,21 @@ const sensitiveEnvPattern = /(?:SECRET|TOKEN|PASSWORD|PASS|PWD|API_KEY|ACCESS_KE
 const terminalEnvKeys = new Set([
   "_",
   "COLORTERM",
+  "CODEX_CI",
+  "CODEX_MANAGED_BY_NPM",
+  "CODEX_MANAGED_PACKAGE_ROOT",
+  "CODEX_THREAD_ID",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "LS_COLORS",
+  "LSCOLORS",
+  "MOTD_SHOWN",
   "OLDPWD",
   "PWD",
   "SHLVL",
   "SSH_AUTH_SOCK",
+  "SSH_CLIENT",
+  "SSH_CONNECTION",
+  "SSH_TTY",
   "TERM",
   "TERM_PROGRAM",
   "TERM_PROGRAM_VERSION",
@@ -392,9 +403,9 @@ export function buildEnvSelection(env: NodeJS.ProcessEnv): { options: { value: s
     options: keys.map((key) => ({
       value: key,
       label: key,
-      hint: defaultIncludeEnvKey(key) ? undefined : "默认排除"
+      hint: defaultIncludeEnvKey(key, env[key]) ? undefined : "默认排除"
     })),
-    initialValues: keys.filter(defaultIncludeEnvKey)
+    initialValues: keys.filter((key) => defaultIncludeEnvKey(key, env[key]))
   };
 }
 
@@ -412,8 +423,12 @@ export function buildServiceEnvironmentStats(
 
 export const buildLaunchEnvironmentStats = buildServiceEnvironmentStats;
 
-export function defaultIncludeEnvKey(key: string): boolean {
-  return !sensitiveEnvPattern.test(key) && !terminalEnvKeys.has(key);
+export function defaultIncludeEnvKey(key: string, value?: string): boolean {
+  return !sensitiveEnvPattern.test(key) && !terminalEnvKeys.has(key) && !envValueLooksSensitive(value);
+}
+
+function envValueLooksSensitive(value: string | undefined): boolean {
+  return Boolean(value && /:\/\/[^/\s:@]+:[^/\s@]+@/.test(value));
 }
 
 export async function readCodexDefaults(homeDir = os.homedir()): Promise<CodexDefaults> {

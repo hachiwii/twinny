@@ -42,7 +42,7 @@ describe("systemd user service helpers", () => {
       }
     });
 
-    expect(unit).toContain('WorkingDirectory="/home/tester/twinny%%home"');
+    expect(unit).toContain("WorkingDirectory=/home/tester/twinny%%home");
     expect(unit).toContain('"FOO=value%%with$$dollar"');
     expect(unit).not.toContain("bad-key");
   });

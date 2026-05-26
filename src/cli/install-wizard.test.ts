@@ -65,17 +65,22 @@ describe("install wizard helpers", () => {
 
   it("selects launch environment defaults without sensitive or terminal session variables", () => {
     const selection = buildEnvSelection({
+      CODEX_THREAD_ID: "thread",
       FOO: "bar",
+      HTTPS_PROXY: "http://user:password@proxy.example:8080",
       OPENAI_API_KEY: "secret",
       PATH: "/usr/bin",
       PWD: "/tmp",
+      SSH_CLIENT: "127.0.0.1 1 2",
       TERM: "xterm-256color",
       TWINNY_HOME: "/tmp/twinny"
     });
 
-    expect(selection.options.map((option) => option.value)).toEqual(["FOO", "OPENAI_API_KEY", "PATH", "PWD", "TERM"]);
+    expect(selection.options.map((option) => option.value)).toEqual(["CODEX_THREAD_ID", "FOO", "HTTPS_PROXY", "OPENAI_API_KEY", "PATH", "PWD", "SSH_CLIENT", "TERM"]);
     expect(selection.initialValues).toEqual(["FOO", "PATH"]);
+    expect(defaultIncludeEnvKey("HTTPS_PROXY", "http://user:password@proxy.example:8080")).toBe(false);
     expect(defaultIncludeEnvKey("OPENAI_API_KEY")).toBe(false);
+    expect(defaultIncludeEnvKey("SSH_CLIENT")).toBe(false);
     expect(defaultIncludeEnvKey("TERM")).toBe(false);
   });
 
