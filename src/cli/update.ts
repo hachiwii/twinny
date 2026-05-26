@@ -117,16 +117,19 @@ async function currentLaunchAgentUsesRunner(input: {
 
 async function defaultUpdatePackageSpec(): Promise<string> {
   const identity = await readPackageIdentity();
-  return `${identity.name}@latest`;
+  return `${identity.name}@${identity.version}`;
 }
 
-async function readPackageIdentity(): Promise<{ name: string }> {
+async function readPackageIdentity(): Promise<{ name: string; version: string }> {
   const packageJsonPath = fileURLToPath(new URL("../../package.json", import.meta.url));
-  const raw = JSON.parse(await fs.readFile(packageJsonPath, "utf8")) as { name?: unknown };
+  const raw = JSON.parse(await fs.readFile(packageJsonPath, "utf8")) as { name?: unknown; version?: unknown };
   if (typeof raw.name !== "string" || !raw.name.trim()) {
     throw new Error("package.json is missing name");
   }
-  return { name: raw.name.trim() };
+  if (typeof raw.version !== "string" || !raw.version.trim()) {
+    throw new Error("package.json is missing version");
+  }
+  return { name: raw.name.trim(), version: raw.version.trim() };
 }
 
 function childProcessErrorOutput(error: unknown): string {

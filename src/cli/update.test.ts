@@ -17,6 +17,29 @@ afterEach(async () => {
 });
 
 describe("update command", () => {
+  it("defaults to the currently executing package version", async () => {
+    const home = await configuredHome();
+    const runCommand = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const output = createOutput();
+    const identity = await readPackageIdentity();
+
+    await expect(runUpdateCommand({
+      home,
+      restart: false,
+      runCommand: runCommand as unknown as UpdateCommandRunner,
+      stdout: output.writer,
+      launchAgentPlistPath: path.join(home, "missing.plist")
+    })).resolves.toMatchObject({
+      packageSpec: `${identity.name}@${identity.version}`
+    });
+
+    expect(runCommand).toHaveBeenCalledWith(
+      "npm",
+      ["install", "--prefix", twinnyRunnerDir(home), "--omit=dev", "--no-audit", "--no-fund", `${identity.name}@${identity.version}`],
+      expect.objectContaining({ stdio: "pipe" })
+    );
+  });
+
   it("updates the home runner and restarts when LaunchAgent uses the runner", async () => {
     const home = await configuredHome();
     const plistPath = await writeLaunchAgentPlist(home, { entrypoint: twinnyRunnerBinaryPath(home) });
@@ -151,4 +174,12 @@ function createOutput(): {
     } as UpdateOptions["stdout"],
     raw: () => chunks.join("")
   };
+}
+
+async function readPackageIdentity(): Promise<{ name: string; version: string }> {
+  const raw = JSON.parse(await fs.readFile(new URL("../../package.json", import.meta.url), "utf8")) as {
+    name: string;
+    version: string;
+  };
+  return { name: raw.name, version: raw.version };
 }
