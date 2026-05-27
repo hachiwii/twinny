@@ -18,7 +18,7 @@ Use the same npm tag for follow-up commands.
 
 Run the installer in a background non-TTY shell process so stdout can be parsed as NDJSON.
 
-Node.js 22 or newer with npm is required because the entrypoint is `npx`.
+Node.js 22.18.0 or newer with npm is required because the entrypoint is `npx` and Twinny uses Node.js' built-in `node:sqlite` module.
 
 ## Recommended Command
 

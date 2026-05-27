@@ -49,19 +49,13 @@
   "publishConfig": {
     "registry": "https://registry.npmjs.org"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3"
-    ]
-  },
   "packageManager": "pnpm@10.17.1",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.18.0"
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",
     "@larksuiteoapi/node-sdk": "^1.52.0",
-    "better-sqlite3": "^12.10.0",
     "commander": "^13.1.0",
     "execa": "^9.5.2",
     "lru-cache": "^11.0.2",
@@ -74,8 +68,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^22.13.4",
+    "@types/node": "^22.18.0",
     "@types/proper-lockfile": "^4.1.4",
     "@vitest/coverage-v8": "3.2.4",
     "tsx": "^4.19.2",

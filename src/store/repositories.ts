@@ -1,7 +1,5 @@
 import path from "node:path";
 
-import type Database from "better-sqlite3";
-
 import { TwinnyError } from "../errors.js";
 import type {
   CodexThreadRecord,
@@ -20,6 +18,7 @@ import type {
   ProfileName
 } from "../types.js";
 import { assertValidConversationKey, createGroupConversationKey, createP2PConversationKey } from "../workspace/slug.js";
+import type { TwinnyDatabase, TwinnyStatement } from "./db.js";
 
 interface ConversationRow {
   id: number;
@@ -280,13 +279,13 @@ export interface ConversationRepositoryOptions {
 export class ConversationRepository {
   private readonly now: () => number;
 
-  private readonly insertConversation: Database.Statement<[InsertConversationParams]>;
-  private readonly selectByConversationKey: Database.Statement<[string], ConversationRow>;
-  private readonly selectByTypeAndChatId: Database.Statement<[ConversationType, string], ConversationRow>;
-  private readonly selectByCodexThreadId: Database.Statement<[string], ConversationRow>;
-  private readonly selectAll: Database.Statement<[], ConversationRow>;
-  private readonly updateSettings: Database.Statement<[ConversationType, string, string, number, string]>;
-  private readonly updateThread: Database.Statement<[
+  private readonly insertConversation: TwinnyStatement<[InsertConversationParams]>;
+  private readonly selectByConversationKey: TwinnyStatement<[string], ConversationRow>;
+  private readonly selectByTypeAndChatId: TwinnyStatement<[ConversationType, string], ConversationRow>;
+  private readonly selectByCodexThreadId: TwinnyStatement<[string], ConversationRow>;
+  private readonly selectAll: TwinnyStatement<[], ConversationRow>;
+  private readonly updateSettings: TwinnyStatement<[ConversationType, string, string, number, string]>;
+  private readonly updateThread: TwinnyStatement<[
     string,
     ProfileName,
     string,
@@ -294,32 +293,32 @@ export class ConversationRepository {
     number,
     string
   ]>;
-  private readonly markCodexThreadRollout: Database.Statement<[number, string, string]>;
-  private readonly deleteByKey: Database.Statement<[string]>;
-  private readonly upsertCodexThreadStatement: Database.Statement<[Record<string, unknown>]>;
-  private readonly selectCodexThreadById: Database.Statement<[string], CodexThreadRow>;
-  private readonly selectCodexThreadByConversationAndLarkThread: Database.Statement<[string, string], CodexThreadRow>;
-  private readonly replaceCodexThreadForLarkThreadStatement: Database.Statement<[Record<string, unknown>]>;
-  private readonly updateCodexThreadUsageStatement: Database.Statement<[Record<string, unknown>]>;
-  private readonly updateCodexThreadCardStatement: Database.Statement<[Record<string, unknown>]>;
-  private readonly updateCodexThreadModelSettingsStatement: Database.Statement<[string, string, number, string]>;
-  private readonly updateCodexThreadNameStatement: Database.Statement<[string, number, string]>;
-  private readonly updateCodexThreadModeStatement: Database.Statement<[CodexThreadMode, number, string, string]>;
-  private readonly updateCodexThreadStatusStatement: Database.Statement<[CodexThreadStatus, number, string, string]>;
-  private readonly updateCodexThreadGoalStatusStatement: Database.Statement<[CodexThreadGoalStatus, number | null, number, string]>;
-  private readonly selectCodexThreadWorkStats: Database.Statement<[string], CodexThreadWorkStatsRow>;
-  private readonly selectCodexThreadStatusStats: Database.Statement<[Record<string, unknown>], CodexThreadStatusStatsRow>;
-  private readonly selectConversationStatusStats: Database.Statement<[Record<string, unknown>], ConversationStatusStatsRow>;
-  private readonly insertLarkMessageStatement: Database.Statement<[Record<string, unknown>]>;
-  private readonly selectLarkMessageById: Database.Statement<[string], LarkMessageRow>;
-  private readonly selectLarkMessageByEventId: Database.Statement<[string], LarkMessageRow>;
-  private readonly selectProcessedDocCommentCount: Database.Statement<[string], { count: number }>;
-  private readonly selectLarkMessageUsageTargetForTurn: Database.Statement<[string, string], LarkMessageRow>;
-  private readonly selectLatestSteeredLarkMessageForTurn: Database.Statement<[string, string], LarkMessageRow>;
-  private readonly selectContiguousSteeredLarkMessagesBefore: Database.Statement<[Record<string, unknown>], LarkMessageRow>;
-  private readonly selectUnfinishedLarkMessages: Database.Statement<[], LarkMessageRow>;
-  private readonly updateLarkMessageUsageStatement: Database.Statement<[Record<string, unknown>]>;
-  private readonly updateLarkMessageProcessingStatement: Database.Statement<[
+  private readonly markCodexThreadRollout: TwinnyStatement<[number, string, string]>;
+  private readonly deleteByKey: TwinnyStatement<[string]>;
+  private readonly upsertCodexThreadStatement: TwinnyStatement<[Record<string, unknown>]>;
+  private readonly selectCodexThreadById: TwinnyStatement<[string], CodexThreadRow>;
+  private readonly selectCodexThreadByConversationAndLarkThread: TwinnyStatement<[string, string], CodexThreadRow>;
+  private readonly replaceCodexThreadForLarkThreadStatement: TwinnyStatement<[Record<string, unknown>]>;
+  private readonly updateCodexThreadUsageStatement: TwinnyStatement<[Record<string, unknown>]>;
+  private readonly updateCodexThreadCardStatement: TwinnyStatement<[Record<string, unknown>]>;
+  private readonly updateCodexThreadModelSettingsStatement: TwinnyStatement<[string, string, number, string]>;
+  private readonly updateCodexThreadNameStatement: TwinnyStatement<[string, number, string]>;
+  private readonly updateCodexThreadModeStatement: TwinnyStatement<[CodexThreadMode, number, string, string]>;
+  private readonly updateCodexThreadStatusStatement: TwinnyStatement<[CodexThreadStatus, number, string, string]>;
+  private readonly updateCodexThreadGoalStatusStatement: TwinnyStatement<[CodexThreadGoalStatus, number | null, number, string]>;
+  private readonly selectCodexThreadWorkStats: TwinnyStatement<[string], CodexThreadWorkStatsRow>;
+  private readonly selectCodexThreadStatusStats: TwinnyStatement<[Record<string, unknown>], CodexThreadStatusStatsRow>;
+  private readonly selectConversationStatusStats: TwinnyStatement<[Record<string, unknown>], ConversationStatusStatsRow>;
+  private readonly insertLarkMessageStatement: TwinnyStatement<[Record<string, unknown>]>;
+  private readonly selectLarkMessageById: TwinnyStatement<[string], LarkMessageRow>;
+  private readonly selectLarkMessageByEventId: TwinnyStatement<[string], LarkMessageRow>;
+  private readonly selectProcessedDocCommentCount: TwinnyStatement<[string], { count: number }>;
+  private readonly selectLarkMessageUsageTargetForTurn: TwinnyStatement<[string, string], LarkMessageRow>;
+  private readonly selectLatestSteeredLarkMessageForTurn: TwinnyStatement<[string, string], LarkMessageRow>;
+  private readonly selectContiguousSteeredLarkMessagesBefore: TwinnyStatement<[Record<string, unknown>], LarkMessageRow>;
+  private readonly selectUnfinishedLarkMessages: TwinnyStatement<[], LarkMessageRow>;
+  private readonly updateLarkMessageUsageStatement: TwinnyStatement<[Record<string, unknown>]>;
+  private readonly updateLarkMessageProcessingStatement: TwinnyStatement<[
     string | null,
     string | null,
     string | null,
@@ -327,29 +326,29 @@ export class ConversationRepository {
     number,
     string
   ]>;
-  private readonly updateLarkMessageSteeredStatement: Database.Statement<[
+  private readonly updateLarkMessageSteeredStatement: TwinnyStatement<[
     string | null,
     string | null,
     string | null,
     number,
     string
   ]>;
-  private readonly updateLarkMessageQueuedStatement: Database.Statement<[number, string]>;
-  private readonly updateQueuedLarkMessageStatement: Database.Statement<[string, string | null, number, string]>;
-  private readonly updateLarkMessageSideMetadataStatement: Database.Statement<[number | null, string | null, number, string]>;
-  private readonly updateLarkMessageRecalledStatement: Database.Statement<[number, string]>;
-  private readonly updateLarkMessageCompletedStatement: Database.Statement<[number, number, string]>;
-  private readonly updateLarkMessageFailedStatement: Database.Statement<[number, number, string]>;
-  private readonly updateLarkMessageInterruptedStatement: Database.Statement<[number, number, string]>;
-  private readonly updateLarkMessageClearedStatement: Database.Statement<[number, number, string]>;
-  private readonly upsertLarkDocWatcherStatement: Database.Statement<[Record<string, unknown>]>;
-  private readonly selectLarkDocWatcherByFileStatement: Database.Statement<[string, string], LarkDocWatcherRow>;
-  private readonly selectLarkDocWatchersByThreadStatement: Database.Statement<[string], LarkDocWatcherRow>;
-  private readonly migrateLarkDocWatchersToThreadStatement: Database.Statement<[string, number, string, string]>;
-  private readonly updateLarkDocWatcherLastCommentStatement: Database.Statement<[number, number, string, string]>;
+  private readonly updateLarkMessageQueuedStatement: TwinnyStatement<[number, string]>;
+  private readonly updateQueuedLarkMessageStatement: TwinnyStatement<[string, string | null, number, string]>;
+  private readonly updateLarkMessageSideMetadataStatement: TwinnyStatement<[number | null, string | null, number, string]>;
+  private readonly updateLarkMessageRecalledStatement: TwinnyStatement<[number, string]>;
+  private readonly updateLarkMessageCompletedStatement: TwinnyStatement<[number, number, string]>;
+  private readonly updateLarkMessageFailedStatement: TwinnyStatement<[number, number, string]>;
+  private readonly updateLarkMessageInterruptedStatement: TwinnyStatement<[number, number, string]>;
+  private readonly updateLarkMessageClearedStatement: TwinnyStatement<[number, number, string]>;
+  private readonly upsertLarkDocWatcherStatement: TwinnyStatement<[Record<string, unknown>]>;
+  private readonly selectLarkDocWatcherByFileStatement: TwinnyStatement<[string, string], LarkDocWatcherRow>;
+  private readonly selectLarkDocWatchersByThreadStatement: TwinnyStatement<[string], LarkDocWatcherRow>;
+  private readonly migrateLarkDocWatchersToThreadStatement: TwinnyStatement<[string, number, string, string]>;
+  private readonly updateLarkDocWatcherLastCommentStatement: TwinnyStatement<[number, number, string, string]>;
 
   constructor(
-    private readonly db: Database.Database,
+    private readonly db: TwinnyDatabase,
     options: ConversationRepositoryOptions = {}
   ) {
     this.now = options.now ?? Date.now;
@@ -1666,7 +1665,7 @@ export class ConversationRepository {
 
   private markLarkMessagesTerminal(
     larkMessageIds: string[],
-    statement: Database.Statement<[number, number, string]>
+    statement: TwinnyStatement<[number, number, string]>
   ): void {
     for (const messageId of larkMessageIds) {
       assertNonEmpty(messageId, "larkMessageId");
@@ -1682,7 +1681,7 @@ export class ConversationRepository {
 }
 
 export function createConversationRepository(
-  db: Database.Database,
+  db: TwinnyDatabase,
   options: ConversationRepositoryOptions = {}
 ): ConversationRepository {
   return new ConversationRepository(db, options);

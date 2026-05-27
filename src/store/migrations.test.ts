@@ -1,6 +1,6 @@
-import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
+import { TwinnyDatabase } from "./db.js";
 import { currentStoreSchemaVersion, getStoreSchemaVersion, loadStoreMigrations, runStoreMigrations } from "./migrations.js";
 
 interface SqliteNameRow {
@@ -35,7 +35,7 @@ describe("store migrations", () => {
   });
 
   it("creates the current baseline schema", () => {
-    const db = new Database(":memory:");
+    const db = new TwinnyDatabase(":memory:");
     try {
       expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
       expect(getStoreSchemaVersion(db)).toBe(currentStoreSchemaVersion);
@@ -217,7 +217,7 @@ describe("store migrations", () => {
   });
 
   it("uses user_version so repeated migration does not recreate tables", () => {
-    const db = new Database(":memory:");
+    const db = new TwinnyDatabase(":memory:");
     try {
       expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
       expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
@@ -235,7 +235,7 @@ describe("store migrations", () => {
   });
 
   it("rejects databases newer than the bundled baseline", () => {
-    const db = new Database(":memory:");
+    const db = new TwinnyDatabase(":memory:");
     try {
       db.pragma(`user_version = ${currentStoreSchemaVersion + 1}`);
 
@@ -246,7 +246,7 @@ describe("store migrations", () => {
   });
 
   it("rejects a pre-1.0 development schema that shares the baseline user_version", () => {
-    const db = new Database(":memory:");
+    const db = new TwinnyDatabase(":memory:");
     try {
       db.exec(`
         CREATE TABLE conversations (
@@ -272,7 +272,7 @@ describe("store migrations", () => {
   });
 
   it("rejects non-contiguous custom migrations", () => {
-    const db = new Database(":memory:");
+    const db = new TwinnyDatabase(":memory:");
     try {
       expect(() =>
         runStoreMigrations(db, {

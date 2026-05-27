@@ -9,7 +9,7 @@
 ## Requirements
 
 - macOS or Linux. The installer manages a macOS LaunchAgent on macOS and a systemd user service on Linux.
-- Node.js 22 or newer.
+- Node.js 22.18.0 or newer. Twinny uses Node.js' built-in `node:sqlite` module and does not require an extra SQLite native addon.
 - Codex CLI 0.130.0 or newer in `PATH`, or set `CODEX_BINARY`; the installer can install Codex automatically if it is missing.
 - A Feishu/Lark bot app with the permissions and event subscriptions listed below.
 

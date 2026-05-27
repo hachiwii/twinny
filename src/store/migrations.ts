@@ -1,9 +1,8 @@
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import type Database from "better-sqlite3";
-
 import { TwinnyError } from "../errors.js";
+import type { TwinnyDatabase } from "./db.js";
 
 export interface StoreMigration {
   version: number;
@@ -41,7 +40,7 @@ export function loadStoreMigrations(): StoreMigration[] {
   ];
 }
 
-export function getStoreSchemaVersion(db: Database.Database): number {
+export function getStoreSchemaVersion(db: TwinnyDatabase): number {
   const version = db.pragma("user_version", { simple: true });
   if (typeof version !== "number") {
     throw new TwinnyError("SQLite PRAGMA user_version returned a non-numeric value", "STORE_INVALID_VERSION");
@@ -49,7 +48,7 @@ export function getStoreSchemaVersion(db: Database.Database): number {
   return version;
 }
 
-export function runStoreMigrations(db: Database.Database, options: RunMigrationsOptions = {}): number {
+export function runStoreMigrations(db: TwinnyDatabase, options: RunMigrationsOptions = {}): number {
   const migrations = [...(options.migrations ?? loadStoreMigrations())].sort((left, right) => left.version - right.version);
   const targetVersion = migrations.at(-1)?.version ?? 0;
   const currentVersion = getStoreSchemaVersion(db);
@@ -94,7 +93,7 @@ type SqliteColumn = {
   name: string;
 };
 
-function validateSchemaBeforeMigration(db: Database.Database, currentVersion: number): void {
+function validateSchemaBeforeMigration(db: TwinnyDatabase, currentVersion: number): void {
   if (currentVersion <= 0) {
     return;
   }
@@ -128,7 +127,7 @@ function validateSchemaBeforeMigration(db: Database.Database, currentVersion: nu
   validateRequiredColumns(db, requiredColumnsByTable);
 }
 
-function validateBaselineSchema(db: Database.Database): void {
+function validateBaselineSchema(db: TwinnyDatabase): void {
   const requiredColumnsByTable = new Map<string, string[]>([
     [
       "conversations",
@@ -151,7 +150,7 @@ function validateBaselineSchema(db: Database.Database): void {
   validateRequiredColumns(db, requiredColumnsByTable);
 }
 
-function validateRequiredColumns(db: Database.Database, requiredColumnsByTable: Map<string, string[]>): void {
+function validateRequiredColumns(db: TwinnyDatabase, requiredColumnsByTable: Map<string, string[]>): void {
   for (const [tableName, requiredColumns] of requiredColumnsByTable) {
     const columns = getTableColumns(db, tableName);
     for (const columnName of requiredColumns) {
@@ -165,7 +164,7 @@ function validateRequiredColumns(db: Database.Database, requiredColumnsByTable: 
   }
 }
 
-function getTableColumns(db: Database.Database, tableName: string): Set<string> {
+function getTableColumns(db: TwinnyDatabase, tableName: string): Set<string> {
   const rows = db.prepare<[], SqliteColumn>(`PRAGMA table_info(${tableName})`).all();
   return new Set(rows.map((row) => row.name));
 }
