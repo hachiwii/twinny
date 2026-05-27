@@ -14,20 +14,20 @@ afterEach(() => {
 });
 
 describe("CLI command parsing", () => {
-  it("passes no-gui to the agent installer when set on the parent install command", async () => {
-    await runCli(["node", "twinny", "install", "--no-gui", "agent", "--start", "false"]);
+  it("passes system-daemon to the agent installer when set on the parent install command", async () => {
+    await runCli(["node", "twinny", "install", "--system-daemon", "agent", "--start", "false"]);
 
     expect(runInstallAgent).toHaveBeenCalledWith(expect.objectContaining({
-      noGui: true,
+      systemDaemon: true,
       start: false
     }));
   });
 
-  it("passes no-gui to the agent installer when set on the agent subcommand", async () => {
-    await runCli(["node", "twinny", "install", "agent", "--no-gui", "--start", "false"]);
+  it("passes system-daemon to the agent installer when set on the agent subcommand", async () => {
+    await runCli(["node", "twinny", "install", "agent", "--system-daemon", "--start", "false"]);
 
     expect(runInstallAgent).toHaveBeenCalledWith(expect.objectContaining({
-      noGui: true,
+      systemDaemon: true,
       start: false
     }));
   });

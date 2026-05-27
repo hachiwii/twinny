@@ -30,10 +30,10 @@ export async function runCli(argv: string[]): Promise<void> {
   const install = program.command("install").description("Run the Twinny install wizard.");
   install
     .option("--disable-keychain", "Store the Lark app secret in auth.json instead of macOS Keychain.")
-    .option("--no-gui", "Install the macOS service as a LaunchDaemon instead of a GUI LaunchAgent.")
-    .action(async (options: { disableKeychain?: boolean; gui?: boolean }) => {
+    .option("--system-daemon", "Install the macOS service as a sudo-managed system LaunchDaemon.")
+    .action(async (options: { disableKeychain?: boolean; systemDaemon?: boolean }) => {
       const { runInstallWizard } = await import("./install-wizard.js");
-      await runInstallWizard({ disableKeychain: Boolean(options.disableKeychain), noGui: options.gui === false });
+      await runInstallWizard({ disableKeychain: Boolean(options.disableKeychain), systemDaemon: Boolean(options.systemDaemon) });
     });
   install
     .command("agent")
@@ -44,7 +44,7 @@ export async function runCli(argv: string[]): Promise<void> {
     .option("--install-lark-cli <mode>", "lark-cli install behavior: auto or never.", "auto")
     .option("--start <value>", "Whether to start Twinny after installing: true or false.", "true")
     .option("--disable-keychain", "Store the Lark app secret in auth.json instead of macOS Keychain.")
-    .option("--no-gui", "Install the macOS service as a LaunchDaemon instead of a GUI LaunchAgent.")
+    .option("--system-daemon", "Install the macOS service as a sudo-managed system LaunchDaemon.")
     .action(async (options: {
       envMode: string;
       envKey: string[];
@@ -52,9 +52,9 @@ export async function runCli(argv: string[]): Promise<void> {
       installLarkCli: string;
       start: string;
       disableKeychain?: boolean;
-      gui?: boolean;
+      systemDaemon?: boolean;
     }, command: Command) => {
-      const parentOptions = command.parent?.opts<{ disableKeychain?: boolean; gui?: boolean }>() ?? {};
+      const parentOptions = command.parent?.opts<{ disableKeychain?: boolean; systemDaemon?: boolean }>() ?? {};
       const { runInstallAgent } = await import("./install-wizard.js");
       await runInstallAgent({
         envMode: parseChoice(options.envMode, ["default", "manual", "none"], "--env-mode"),
@@ -63,7 +63,7 @@ export async function runCli(argv: string[]): Promise<void> {
         installLarkCli: parseChoice(options.installLarkCli, ["auto", "never"], "--install-lark-cli"),
         start: parseBooleanOption(options.start, "--start"),
         disableKeychain: Boolean(options.disableKeychain || parentOptions.disableKeychain),
-        noGui: options.gui === false || parentOptions.gui === false
+        systemDaemon: Boolean(options.systemDaemon || parentOptions.systemDaemon)
       });
     });
 

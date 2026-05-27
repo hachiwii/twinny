@@ -166,7 +166,7 @@ describe("install wizard helpers", () => {
   it("stops the interactive install when the macOS GUI LaunchAgent domain is unavailable", async () => {
     const telemetry = createTelemetry();
     const assertGuiLaunchAgentAvailable = vi.fn(async () => {
-      throw new Error("当前环境没有可用的 GUI LaunchAgent (gui/503)。请使用 `twinny install --no-gui` 安装为 LaunchDaemon。");
+      throw new Error("当前环境没有可用的 GUI LaunchAgent (gui/503)。请使用 `twinny install --system-daemon` 安装为 LaunchDaemon。");
     });
 
     await expect(runInstallWizard({
@@ -175,7 +175,7 @@ describe("install wizard helpers", () => {
       stdinIsTTY: true,
       stdoutIsTTY: true,
       assertGuiLaunchAgentAvailable
-    })).rejects.toThrow(/--no-gui/);
+    })).rejects.toThrow(/--system-daemon/);
 
     expect(telemetry.capture).toHaveBeenCalledWith(
       "twinny_install_fail",
@@ -500,7 +500,7 @@ describe("install wizard helpers", () => {
     expect(secretStore.set).toHaveBeenCalledOnce();
   });
 
-  it("persists LaunchDaemon service config when agent install uses no-gui mode", async () => {
+  it("persists LaunchDaemon service config when agent install uses system-daemon mode", async () => {
     const home = await tempHome();
     const installManagedServiceMock = vi.fn(async () => undefined);
     const secretStore = {
@@ -513,7 +513,7 @@ describe("install wizard helpers", () => {
     await runAgentInstallForSecretStorage({
       home,
       platform: "darwin",
-      noGui: true,
+      systemDaemon: true,
       env: { TWINNY_HOME: home, SUDO_USER: "tester" },
       secretStore: secretStore as NonNullable<Parameters<typeof runInstallAgent>[0]>["secretStore"],
       installManagedService: installManagedServiceMock as NonNullable<Parameters<typeof runInstallAgent>[0]>["installManagedService"]
@@ -663,7 +663,7 @@ async function runAgentInstallForSecretStorage(input: {
   home: string;
   platform: NodeJS.Platform;
   disableKeychain?: boolean;
-  noGui?: boolean;
+  systemDaemon?: boolean;
   env?: NodeJS.ProcessEnv;
   secretStore?: NonNullable<Parameters<typeof runInstallAgent>[0]>["secretStore"];
   installManagedService?: NonNullable<Parameters<typeof runInstallAgent>[0]>["installManagedService"];
@@ -689,7 +689,7 @@ async function runAgentInstallForSecretStorage(input: {
     env: input.env ?? { TWINNY_HOME: input.home },
     platform: input.platform,
     disableKeychain: input.disableKeychain,
-    noGui: input.noGui,
+    systemDaemon: input.systemDaemon,
     assertGuiLaunchAgentAvailable: async () => undefined,
     telemetry: createTelemetry(),
     stdout: output.writer,

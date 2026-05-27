@@ -10,6 +10,7 @@ import { installLaunchAgent, startLaunchAgent, waitForRuntimeLockRelease } from 
 import {
   createLaunchAgentPlist,
   launchAgentLabelForHomeRandom,
+  launchDaemonPlistPathForLabel,
   launchAgentProgramArguments,
   launchAgentUsesEntrypoint
 } from "./plist.js";
@@ -89,7 +90,33 @@ describe("launchd install helpers", () => {
     expect(plist).toContain("<string>tester</string>");
   });
 
-  it("boots LaunchDaemon services in the launchd system domain", async () => {
+  it("installs LaunchDaemon plists with sudo when using the system daemon path", async () => {
+    const config = createLaunchDaemonConfig(tempDir);
+    const label = launchAgentLabelForHomeRandom(config.homeIdentity.random);
+    const runCommand = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+    await installLaunchAgent({
+      config,
+      entrypoint: path.join(tempDir, "twinny"),
+      runCommand: runCommand as unknown as NonNullable<Parameters<typeof installLaunchAgent>[0]>["runCommand"],
+      quiet: true
+    });
+
+    expect(runCommand).toHaveBeenCalledWith("sudo", ["mkdir", "-p", "/Library/LaunchDaemons"]);
+    expect(runCommand).toHaveBeenCalledWith("sudo", [
+      "install",
+      "-m",
+      "644",
+      "-o",
+      "root",
+      "-g",
+      "wheel",
+      expect.stringMatching(new RegExp(`${label}\\.plist$`)),
+      launchDaemonPlistPathForLabel(label)
+    ]);
+  });
+
+  it("boots LaunchDaemon services in the launchd system domain with sudo", async () => {
     const config = createLaunchDaemonConfig(tempDir);
     const label = launchAgentLabelForHomeRandom(config.homeIdentity.random);
     const runCommand = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
@@ -107,10 +134,10 @@ describe("launchd install helpers", () => {
       quiet: true
     });
 
-    expect(runCommand).toHaveBeenCalledWith("launchctl", ["bootstrap", "system", path.join(tempDir, `${label}.plist`)], {
+    expect(runCommand).toHaveBeenCalledWith("sudo", ["launchctl", "bootstrap", "system", path.join(tempDir, `${label}.plist`)], {
       reject: false
     });
-    expect(runCommand).toHaveBeenCalledWith("launchctl", ["kickstart", "-k", `system/${label}`]);
+    expect(runCommand).toHaveBeenCalledWith("sudo", ["launchctl", "kickstart", "-k", `system/${label}`]);
   });
 });
 

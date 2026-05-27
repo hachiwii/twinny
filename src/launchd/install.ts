@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execa } from "execa";
+import { execa, type Options as ExecaOptions } from "execa";
 import { createRuntimePaths, readConfigStatus } from "../config/index.js";
 import { waitForRuntimeLockRelease, type WaitForRuntimeLockReleaseOptions } from "../service/lock.js";
 import type { LaunchdServiceMode, TwinnyConfig } from "../types.js";
@@ -40,6 +40,8 @@ interface LaunchAgentRuntime {
   launchctlDomain: string;
   launchctlTarget: string;
   userName?: string;
+  plistRequiresSudo: boolean;
+  launchctlRequiresSudo: boolean;
   config: TwinnyConfig;
   runCommand: CommandRunner;
 }
@@ -47,18 +49,19 @@ interface LaunchAgentRuntime {
 export async function installLaunchAgent(options: InstallLaunchAgentOptions = {}): Promise<void> {
   const runtime = await resolveLaunchAgentRuntime(options);
   const plistPath = runtime.plistPath;
-  fs.mkdirSync(path.dirname(plistPath), { recursive: true });
-  fs.writeFileSync(
-    plistPath,
-    createLaunchAgentPlist({
-      label: runtime.label,
-      twinnyHome: runtime.home,
-      entrypoint: options.entrypoint,
-      userName: runtime.userName,
-      environment: options.environment
-    }),
-    "utf8"
-  );
+  const plist = createLaunchAgentPlist({
+    label: runtime.label,
+    twinnyHome: runtime.home,
+    entrypoint: options.entrypoint,
+    userName: runtime.userName,
+    environment: options.environment
+  });
+  if (runtime.plistRequiresSudo) {
+    await installPrivilegedPlist(runtime, plist);
+  } else {
+    fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+    fs.writeFileSync(plistPath, plist, "utf8");
+  }
   if (!options.quiet) {
     console.log(`Installed ${runtime.label} at ${plistPath}`);
   }
@@ -67,10 +70,12 @@ export async function installLaunchAgent(options: InstallLaunchAgentOptions = {}
 export async function uninstallLaunchAgent(options: LaunchAgentCommandOptions = {}): Promise<void> {
   const runtime = await resolveLaunchAgentRuntime(options);
   const plistPath = runtime.plistPath;
-  await runtime.runCommand("launchctl", ["bootout", runtime.launchctlDomain, plistPath], {
+  await runLaunchctl(runtime, ["bootout", runtime.launchctlDomain, plistPath], {
     reject: false
   });
-  if (fs.existsSync(plistPath)) {
+  if (runtime.plistRequiresSudo) {
+    await runtime.runCommand("sudo", ["rm", "-f", plistPath]);
+  } else if (fs.existsSync(plistPath)) {
     fs.rmSync(plistPath);
   }
   if (!options.quiet) {
@@ -84,10 +89,10 @@ export async function startLaunchAgent(options: LaunchAgentCommandOptions = {}):
   if (!fs.existsSync(plistPath)) {
     await installLaunchAgent(options);
   }
-  await runtime.runCommand("launchctl", ["bootstrap", runtime.launchctlDomain, plistPath], {
+  await runLaunchctl(runtime, ["bootstrap", runtime.launchctlDomain, plistPath], {
     reject: false
   });
-  await runtime.runCommand("launchctl", ["kickstart", "-k", runtime.launchctlTarget]);
+  await runLaunchctl(runtime, ["kickstart", "-k", runtime.launchctlTarget]);
   if (!options.quiet) {
     console.log(`Started ${runtime.label}`);
   }
@@ -95,7 +100,7 @@ export async function startLaunchAgent(options: LaunchAgentCommandOptions = {}):
 
 export async function stopLaunchAgent(options: LaunchAgentCommandOptions = {}): Promise<void> {
   const runtime = await resolveLaunchAgentRuntime(options);
-  await runtime.runCommand("launchctl", ["bootout", runtime.launchctlDomain, runtime.plistPath], {
+  await runLaunchctl(runtime, ["bootout", runtime.launchctlDomain, runtime.plistPath], {
     reject: false
   });
   await waitForRuntimeLockRelease({ home: runtime.home });
@@ -111,9 +116,9 @@ export async function restartLaunchAgent(options: LaunchAgentCommandOptions = {}
 
 export async function statusLaunchAgent(options: LaunchAgentCommandOptions = {}): Promise<void> {
   const runtime = await resolveLaunchAgentRuntime(options);
-  const result = await runtime.runCommand("launchctl", ["print", runtime.launchctlTarget], {
+  const result = await runLaunchctl(runtime, ["print", runtime.launchctlTarget], {
     reject: false
-  });
+  }, { sudo: false });
   if (result.exitCode === 0) {
     console.log(result.stdout);
     return;
@@ -143,7 +148,7 @@ export async function assertLaunchdGuiSessionAvailable(options: {
   }
   const details = [result.stderr, result.stdout].filter((value) => value.trim()).join("\n");
   throw new Error(
-    `当前环境没有可用的 GUI LaunchAgent (${domain})。请使用 \`twinny install --no-gui\` 安装为 LaunchDaemon。${details ? `\n${details}` : ""}`
+    `当前环境没有可用的 GUI LaunchAgent (${domain})。请使用 \`twinny install --system-daemon\` 安装为 LaunchDaemon。${details ? `\n${details}` : ""}`
   );
 }
 
@@ -170,6 +175,7 @@ async function resolveLaunchAgentRuntime(options: InstallLaunchAgentOptions = {}
   const mode = status.config.service.launchd.mode;
   const launchctlDomain = mode === "daemon" ? "system" : `gui/${process.getuid?.() ?? os.userInfo().uid}`;
   const userName = mode === "daemon" ? status.config.service.launchd.userName : undefined;
+  const isDaemon = mode === "daemon";
   return {
     home: status.paths.home,
     label,
@@ -178,7 +184,48 @@ async function resolveLaunchAgentRuntime(options: InstallLaunchAgentOptions = {}
     launchctlDomain,
     launchctlTarget: `${launchctlDomain}/${label}`,
     ...(userName ? { userName } : {}),
+    plistRequiresSudo: isDaemon && !options.launchDaemonDir,
+    launchctlRequiresSudo: isDaemon,
     config: status.config,
     runCommand: options.runCommand ?? execa
   };
+}
+
+async function installPrivilegedPlist(runtime: LaunchAgentRuntime, plist: string): Promise<void> {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-launchd-"));
+  const tempPlist = path.join(tempDir, path.basename(runtime.plistPath));
+  try {
+    fs.writeFileSync(tempPlist, plist, { encoding: "utf8", mode: 0o644 });
+    await runtime.runCommand("sudo", ["mkdir", "-p", path.dirname(runtime.plistPath)]);
+    await runtime.runCommand("sudo", [
+      "install",
+      "-m",
+      "644",
+      "-o",
+      "root",
+      "-g",
+      "wheel",
+      tempPlist,
+      runtime.plistPath
+    ]);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function runLaunchctl(
+  runtime: LaunchAgentRuntime,
+  args: string[],
+  options?: ExecaOptions,
+  commandOptions: { sudo?: boolean } = {}
+): ReturnType<CommandRunner> {
+  const useSudo = commandOptions.sudo ?? runtime.launchctlRequiresSudo;
+  if (useSudo) {
+    return options === undefined
+      ? runtime.runCommand("sudo", ["launchctl", ...args])
+      : runtime.runCommand("sudo", ["launchctl", ...args], options);
+  }
+  return options === undefined
+    ? runtime.runCommand("launchctl", args)
+    : runtime.runCommand("launchctl", args, options);
 }

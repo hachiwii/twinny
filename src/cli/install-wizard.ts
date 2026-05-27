@@ -156,7 +156,7 @@ export interface RunInstallAgentOptions {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   disableKeychain?: boolean;
-  noGui?: boolean;
+  systemDaemon?: boolean;
   assertGuiLaunchAgentAvailable?: AssertGuiLaunchAgentAvailableFn;
   telemetry?: TelemetryClient;
   stdout?: InstallAgentOutput;
@@ -268,7 +268,7 @@ export interface RunInstallWizardOptions {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   disableKeychain?: boolean;
-  noGui?: boolean;
+  systemDaemon?: boolean;
   assertGuiLaunchAgentAvailable?: AssertGuiLaunchAgentAvailableFn;
   telemetry?: TelemetryClient;
   stdinIsTTY?: boolean;
@@ -282,7 +282,7 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
   const terminal = installTerminalSnapshot(options);
   const home = resolveInstallHome(env);
   const homeRandom = generateTwinnyHomeRandom();
-  const service = installServiceConfig({ platform, noGui: options.noGui, env });
+  const service = installServiceConfig({ platform, systemDaemon: options.systemDaemon, env });
   const installTelemetry = createInitialInstallTelemetryState();
   const finalizeResult = createInitialFinalizeInstallResult();
   let telemetry = options.telemetry;
@@ -306,7 +306,7 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
     }
     await assertInstallGuiLaunchAgentAvailable({
       platform,
-      noGui: options.noGui,
+      systemDaemon: options.systemDaemon,
       assertGuiLaunchAgentAvailable: options.assertGuiLaunchAgentAvailable
     });
 
@@ -467,7 +467,7 @@ export async function runInstallAgent(options: RunInstallAgentOptions = {}): Pro
   const terminal = installTerminalSnapshot(options);
   const home = resolveInstallHome(env);
   const homeRandom = options.homeRandom ?? generateTwinnyHomeRandom();
-  const service = installServiceConfig({ platform, noGui: options.noGui, env });
+  const service = installServiceConfig({ platform, systemDaemon: options.systemDaemon, env });
   const installTelemetry = createInitialInstallTelemetryState();
   const finalizeResult = createInitialFinalizeInstallResult();
   const events = new InstallAgentEventWriter(options.stdout ?? process.stdout);
@@ -503,7 +503,7 @@ export async function runInstallAgent(options: RunInstallAgentOptions = {}): Pro
     progress("init", "started", { home });
     await assertInstallGuiLaunchAgentAvailable({
       platform,
-      noGui: options.noGui,
+      systemDaemon: options.systemDaemon,
       assertGuiLaunchAgentAvailable: options.assertGuiLaunchAgentAvailable
     });
     await assertInstallHomeIsEmpty(home);
@@ -728,10 +728,10 @@ class InstallAgentEventWriter {
 
 function installServiceConfig(input: {
   platform: NodeJS.Platform;
-  noGui?: boolean;
+  systemDaemon?: boolean;
   env: NodeJS.ProcessEnv;
 }): { launchd: { mode: "daemon"; userName: string } } | undefined {
-  if (input.platform !== "darwin" || !input.noGui) {
+  if (input.platform !== "darwin" || !input.systemDaemon) {
     return undefined;
   }
   return {
@@ -751,10 +751,10 @@ function installManagedServiceDisplayName(platform: NodeJS.Platform, service?: P
 
 async function assertInstallGuiLaunchAgentAvailable(input: {
   platform: NodeJS.Platform;
-  noGui?: boolean;
+  systemDaemon?: boolean;
   assertGuiLaunchAgentAvailable?: AssertGuiLaunchAgentAvailableFn;
 }): Promise<void> {
-  if (input.platform !== "darwin" || input.noGui) {
+  if (input.platform !== "darwin" || input.systemDaemon) {
     return;
   }
   try {

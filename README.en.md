@@ -8,7 +8,7 @@
 
 ## Requirements
 
-- macOS or Linux. The installer manages a macOS LaunchAgent, or a `--no-gui` LaunchDaemon, on macOS and a systemd user service on Linux.
+- macOS or Linux. The installer manages a macOS LaunchAgent, or a `--system-daemon` LaunchDaemon, on macOS and a systemd user service on Linux.
 - Node.js 22.18.0 or newer. Twinny uses Node.js' built-in `node:sqlite` module and does not require an extra SQLite native addon.
 - Codex CLI 0.130.0 or newer in `PATH`, or set `CODEX_BINARY`; the installer can install Codex automatically if it is missing.
 - A Feishu/Lark bot app with the permissions and event subscriptions listed below.
@@ -31,13 +31,13 @@ Run the interactive installer with `npx`:
 npx twinny@latest install
 ```
 
-On macOS, Twinny installs as a LaunchAgent in the current GUI session by default. In SSH, CI, or another environment without a GUI LaunchAgent, the installer exits and asks you to use no-gui mode:
+On macOS, Twinny installs as a LaunchAgent in the current GUI session by default. In SSH, CI, or another environment without a GUI LaunchAgent, the installer exits and asks you to use system daemon mode:
 
 ```sh
-npx twinny@latest install --no-gui
+npx twinny@latest install --system-daemon
 ```
 
-`--no-gui` writes the plist to `/Library/LaunchDaemons` and sets `UserName` to the current user. Later `start`, `stop`, `restart`, and `status` commands keep using LaunchDaemon based on the service settings in `config.toml`.
+`--system-daemon` writes the plist to `/Library/LaunchDaemons` through `sudo` and sets `UserName` to the current user. Later `start`, `stop`, `restart`, and `status` commands keep using LaunchDaemon based on the service settings in `config.toml`.
 
 Useful daemon commands:
 
@@ -203,8 +203,8 @@ Recognized fields:
 | `[lark.redaction].email`                | Redaction strategy for email addresses in outgoing Lark payloads. `mask` keeps the domain and masks the local part, for example `alice@example.com` becomes `a***e@example.com`; `whitespace` inserts spaces, for example `alice @ example.com`; `none` sends raw email addresses. Feishu may reject bot messages that contain raw email addresses or phone numbers. Defaults to `mask`. |
 | `[lark.redaction].chinese_phone_number` | Redaction strategy for Chinese phone numbers in outgoing Lark payloads. `mask` keeps the first 3 and last 4 digits, for example `138****5678`; `whitespace` inserts spaces, for example `138 1234 5678`; `none` sends raw phone numbers. Feishu may reject bot messages that contain raw email addresses or phone numbers. Defaults to `mask`.                                           |
 | `[permissions].p2p_default_profile`     | Profile used when an unpaired P2P user first messages Twinny. Use `none` to deny by default, or a configured profile name to auto-authorize. Defaults to `none`.                                                                                                                                                                                                                         |
-| `[service.launchd].mode`                | macOS launchd placement. `gui` uses the current `gui/<uid>` LaunchAgent by default; `daemon` uses a system LaunchDaemon. Usually written by `twinny install --no-gui`.                                                                                                                                                                                                                    |
-| `[service.launchd].user_name`           | The plist `UserName` when `mode = "daemon"`. Usually written automatically by `twinny install --no-gui` from the current user.                                                                                                                                                                                                                                                            |
+| `[service.launchd].mode`                | macOS launchd placement. `gui` uses the current `gui/<uid>` LaunchAgent by default; `daemon` uses a system LaunchDaemon. Usually written by `twinny install --system-daemon`.                                                                                                                                                                                                              |
+| `[service.launchd].user_name`           | The plist `UserName` when `mode = "daemon"`. Usually written automatically by `twinny install --system-daemon` from the current user.                                                                                                                                                                                                                                                      |
 | `[profiles.<name>].codex_home`          | `CODEX_HOME` for that profile. Absolute paths are used as-is; relative paths are resolved under `TWINNY_HOME`. `host` defaults to `~/.codex`; other profiles inherit `host` unless set.                                                                                                                                                                                                  |
 | `[profiles.<name>].default_model`       | Default model for new threads in that profile. `host` defaults to `gpt-5.5`; other profiles inherit `host` unless set.                                                                                                                                                                                                                                                                   |
 | `[profiles.<name>].default_effort`      | Default reasoning effort for new threads in that profile. Common values are `minimal`, `low`, `medium`, `high`, and `xhigh`; `host` defaults to `medium`; other profiles inherit `host` unless set.                                                                                                                                                                                      |
