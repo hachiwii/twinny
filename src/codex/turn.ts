@@ -2,6 +2,7 @@ import { TwinnyError, toErrorMessage } from "../errors.js";
 import type {
   AgentMessagePhase,
   CodexAgentMessage,
+  CodexErrorNotification,
   CodexImageGeneration,
   CodexPlanUpdate,
   CodexRequestUserInputParams,
@@ -57,6 +58,7 @@ export interface TurnStartOptions {
   onTurnStarted?: (turnId: string) => Promise<void> | void;
   onAgentMessage?: (message: CompletedAgentMessage) => Promise<void> | void;
   onImageGeneration?: (image: CodexImageGeneration) => Promise<void> | void;
+  onCodexError?: (error: CodexErrorNotification) => Promise<void> | void;
   onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
   onGoalUpdated?: (goal: ThreadGoal, turnId: string | null) => Promise<void> | void;
   onGoalCleared?: () => Promise<void> | void;
@@ -239,6 +241,7 @@ export async function startCodexTurn(
     onTurnStarted: options.onTurnStarted,
     onAgentMessage: options.onAgentMessage,
     onImageGeneration: options.onImageGeneration,
+    onCodexError: options.onCodexError,
     onTokenUsage: options.onTokenUsage,
     onGoalUpdated: options.onGoalUpdated,
     onGoalCleared: options.onGoalCleared,
@@ -347,6 +350,7 @@ export class TurnOutputAccumulator {
       onTurnStarted?: (turnId: string) => Promise<void> | void;
       onAgentMessage?: (message: CompletedAgentMessage) => Promise<void> | void;
       onImageGeneration?: (image: CodexImageGeneration) => Promise<void> | void;
+      onCodexError?: (error: CodexErrorNotification) => Promise<void> | void;
       onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
       onGoalUpdated?: (goal: ThreadGoal, turnId: string | null) => Promise<void> | void;
       onGoalCleared?: () => Promise<void> | void;
@@ -539,11 +543,12 @@ export class TurnOutputAccumulator {
     if (!codexErrorMatchesRun(params, { threadId: this.threadId, turnId: this.turnId })) {
       return;
     }
+    const error = parseCodexErrorNotification(params);
+    this.emitCodexError(error);
     if (isRetryableTurnError(params)) {
       return;
     }
-    const message = extractCodexErrorNotificationMessage(params);
-    this.completionError = new TwinnyError(message, "CODEX_TURN_FAILED", params);
+    this.completionError = new TwinnyError(error.message, "CODEX_TURN_FAILED", params);
     this.rejectWait?.(this.completionError);
   }
 
@@ -652,6 +657,10 @@ export class TurnOutputAccumulator {
       });
     this.agentMessageCallbackChain = pending.then(() => undefined);
     this.pendingAgentMessageCallbacks.push(pending);
+  }
+
+  private emitCodexError(error: CodexErrorNotification): void {
+    void Promise.resolve(this.callbacks.onCodexError?.(error)).catch(() => undefined);
   }
 
   private async resolveCompleted(): Promise<void> {
@@ -1046,15 +1055,48 @@ export function isRetryableTurnError(value: unknown): boolean {
 }
 
 export function extractCodexErrorNotificationMessage(value: unknown): string {
+  return parseCodexErrorNotification(value).message;
+}
+
+export function parseCodexErrorNotification(value: unknown): CodexErrorNotification {
   if (!isRecord(value)) {
-    return "Codex app-server reported an error";
+    return {
+      message: "Codex app-server reported an error",
+      willRetry: null,
+      codexErrorInfo: null,
+      additionalDetails: null,
+      raw: value
+    };
   }
   const nestedError = isRecord(value.error) ? value.error : undefined;
-  return stringValue(value.message) ??
-    stringValue(nestedError?.message) ??
-    stringValue(value.additionalDetails) ??
-    stringValue(value.additional_details) ??
-    "Codex app-server reported an error";
+  return {
+    threadId: stringValue(value.threadId) ?? stringValue(value.thread_id),
+    turnId: stringValue(value.turnId) ?? stringValue(value.turn_id),
+    message: stringValue(value.message) ??
+      stringValue(nestedError?.message) ??
+      stringValue(value.additionalDetails) ??
+      stringValue(value.additional_details) ??
+      "Codex app-server reported an error",
+    willRetry: typeof value.willRetry === "boolean" ? value.willRetry : null,
+    codexErrorInfo: codexErrorInfoValue(nestedError?.codexErrorInfo),
+    additionalDetails: stringValue(value.additionalDetails) ??
+      stringValue(value.additional_details) ??
+      stringValue(nestedError?.additionalDetails) ??
+      stringValue(nestedError?.additional_details) ??
+      null,
+    raw: value
+  };
+}
+
+function codexErrorInfoValue(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (isRecord(value)) {
+    const keys = Object.keys(value).filter((key) => key.length > 0).sort();
+    return keys.length > 0 ? keys.join(",") : null;
+  }
+  return null;
 }
 
 function stringValue(value: unknown): string | undefined {

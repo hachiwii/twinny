@@ -38,6 +38,7 @@ import {
 } from "../telemetry/index.js";
 import type {
   CodexAgentMessage,
+  CodexErrorNotification,
   CodexImageGeneration,
   CodexPlanUpdate,
   CodexRequestUserInputRequest,
@@ -758,6 +759,7 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool) {
       onTurnStarted,
       onAgentMessage,
       onImageGeneration,
+      onCodexError,
       onTokenUsage,
       onPlanUpdated,
       onRequestUserInput,
@@ -774,6 +776,7 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool) {
       onTurnStarted?: (turnId: string) => Promise<void> | void;
       onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
       onImageGeneration?: (image: CodexImageGeneration) => Promise<void> | void;
+      onCodexError?: (error: CodexErrorNotification) => Promise<void> | void;
       onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
       onPlanUpdated?: (plan: CodexPlanUpdate) => Promise<void> | void;
       onRequestUserInput?: (
@@ -793,6 +796,7 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool) {
         onTurnStarted,
         onAgentMessage,
         onImageGeneration,
+        onCodexError,
         onTokenUsage,
         onPlanUpdated,
         onRequestUserInput,

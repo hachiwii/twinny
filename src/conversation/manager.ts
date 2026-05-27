@@ -37,6 +37,7 @@ import type {
   CodexThreadTokenUsageUpdate,
   CodexTurnResult,
   CodexAgentMessage,
+  CodexErrorNotification,
   CodexImageGeneration,
   CodexPlanUpdate,
   CodexRequestUserInputRequest,
@@ -529,6 +530,7 @@ export interface CodexBridge {
     onTurnStarted?: (turnId: string) => Promise<void> | void;
     onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
     onImageGeneration?: (image: CodexImageGeneration) => Promise<void> | void;
+    onCodexError?: (error: CodexErrorNotification) => Promise<void> | void;
     onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
     onGoalUpdated?: (goal: ThreadGoal, turnId: string | null) => Promise<void> | void;
     onGoalCleared?: () => Promise<void> | void;
@@ -586,6 +588,7 @@ export interface CodexBridge {
     objective: string;
     onTurnStarted?: (turnId: string) => Promise<void> | void;
     onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
+    onCodexError?: (error: CodexErrorNotification) => Promise<void> | void;
     onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
     onGoalUpdated?: (goal: ThreadGoal, turnId: string | null) => Promise<void> | void;
     onGoalCleared?: () => Promise<void> | void;
@@ -601,6 +604,7 @@ export interface CodexBridge {
     cwd: string;
     onTurnStarted?: (turnId: string) => Promise<void> | void;
     onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
+    onCodexError?: (error: CodexErrorNotification) => Promise<void> | void;
     onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
     onGoalUpdated?: (goal: ThreadGoal, turnId: string | null) => Promise<void> | void;
     onGoalCleared?: () => Promise<void> | void;
@@ -849,6 +853,8 @@ interface ActiveTurn {
   resultText?: string;
   resultError?: string;
   resultErrorCode?: string | null;
+  lastCodexError?: CodexErrorNotification;
+  codexErrorCount?: number;
   generatedImagePaths: string[];
   finalAgentMessageText?: string;
   sawAgentMessagePhase?: boolean;
@@ -3600,6 +3606,7 @@ export class ConversationManager {
           onTurnStarted: (turnId) => this.handleSideTurnStarted(state, active, turnId),
           onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
           onImageGeneration: (image) => this.recordImageGenerationForActiveBestEffort(state, active, image),
+          onCodexError: (codexError) => this.recordCodexErrorForActiveBestEffort(state, active, codexError),
           onTokenUsage: (usage) => this.recordSideTokenUsageBestEffort(state, active, usage),
           onGoalUpdated: (goal, turnId) => this.recordGoalUpdateForActiveBestEffort(state, active, goal, turnId),
           onGoalCleared: () => this.recordGoalClearedForActiveBestEffort(state, active)
@@ -3623,7 +3630,7 @@ export class ConversationManager {
         );
       } catch (error) {
         if (isSideTurnCurrent(state, active) && !active.cancelRequested) {
-          active.resultError = toErrorMessage(error);
+          active.resultError = active.lastCodexError ? formatCodexErrorFailureText(active.lastCodexError) : toErrorMessage(error);
           active.resultErrorCode = errorCodeForTelemetry(error);
           this.options.telemetry?.captureError(error, {
             errorType: "turn",
@@ -3638,7 +3645,7 @@ export class ConversationManager {
           });
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
           this.log.error({ error, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation side turn failed");
-          await this.failAgentCardBestEffort(state, active, toErrorMessage(error));
+          await this.failAgentCardBestEffort(state, active, active.resultError ?? toErrorMessage(error));
           if (needsPlainFailureFallback(active)) {
             await this.replyErrorBestEffort(active.replyMessageId, error);
           }
@@ -5270,6 +5277,7 @@ export class ConversationManager {
         const callbacks = {
           onTurnStarted: (turnId: string) => this.handleTurnStarted(state, active, turnId),
           onAgentMessage: (agentMessage: CodexAgentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
+          onCodexError: (error: CodexErrorNotification) => this.recordCodexErrorForActiveBestEffort(state, active, error),
           onTokenUsage: (usage: CodexThreadTokenUsageUpdate) => this.recordThreadTokenUsageBestEffort(state, active, usage),
           onGoalUpdated: (goal: ThreadGoal, turnId: string | null) => this.recordGoalUpdateForActiveBestEffort(state, active, goal, turnId),
           onGoalCleared: () => this.recordGoalClearedForActiveBestEffort(state, active),
@@ -5317,7 +5325,7 @@ export class ConversationManager {
             );
             return;
           }
-          active.resultError = toErrorMessage(error);
+          active.resultError = active.lastCodexError ? formatCodexErrorFailureText(active.lastCodexError) : toErrorMessage(error);
           active.resultErrorCode = errorCodeForTelemetry(error);
           this.options.telemetry?.captureError(error, {
             errorType: "turn",
@@ -5554,6 +5562,7 @@ export class ConversationManager {
           onTurnStarted: (turnId) => this.handleTurnStarted(state, active, turnId),
           onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
           onImageGeneration: (image) => this.recordImageGenerationForActiveBestEffort(state, active, image),
+          onCodexError: (error) => this.recordCodexErrorForActiveBestEffort(state, active, error),
           onTokenUsage: (usage) => this.recordThreadTokenUsageBestEffort(state, active, usage),
           onGoalUpdated: (goal, turnId) => this.recordGoalUpdateForActiveBestEffort(state, active, goal, turnId),
           onGoalCleared: () => this.recordGoalClearedForActiveBestEffort(state, active),
@@ -5603,7 +5612,7 @@ export class ConversationManager {
             );
             return;
           }
-          active.resultError = toErrorMessage(failure);
+          active.resultError = active.lastCodexError ? formatCodexErrorFailureText(active.lastCodexError) : toErrorMessage(failure);
           active.resultErrorCode = errorCodeForTelemetry(failure);
           this.options.telemetry?.captureError(failure, {
             errorType: "turn",
@@ -5618,7 +5627,7 @@ export class ConversationManager {
           });
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
           this.log.error({ error: failure, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation turn failed");
-          await this.failAgentCardBestEffort(state, active, toErrorMessage(failure));
+          await this.failAgentCardBestEffort(state, active, active.resultError ?? toErrorMessage(failure));
           if (needsPlainFailureFallback(active)) {
             await this.replyErrorBestEffort(active.replyMessageId, failure);
           }
@@ -5994,7 +6003,12 @@ export class ConversationManager {
         generated_image_count: active.generatedImagePaths.length,
         queue_depth_after: state.pendingBatch.length,
         error_type: status === "failed" ? active.resultError ? "turn_error" : "unknown" : null,
-        error_code: status === "failed" ? active.resultErrorCode ?? null : null
+        error_code: status === "failed" ? active.resultErrorCode ?? null : null,
+        codex_error_info: status === "failed" ? active.lastCodexError?.codexErrorInfo ?? null : null,
+        codex_error_will_retry: status === "failed" ? active.lastCodexError?.willRetry ?? null : null,
+        codex_error_message_hash: status === "failed"
+          ? telemetry.hashId("codex_error_message", active.lastCodexError?.message ?? active.resultError)
+          : null
       },
       {
         insertId: `twinny_turn_end:${telemetry.hashId("codex_turn_instance", `${active.threadId}:${active.turnId ?? active.runId}`)}`
@@ -7332,6 +7346,69 @@ export class ConversationManager {
       }
       await this.updateAgentCardWithMessageBestEffort(state, active, agentMessage);
     });
+  }
+
+  private recordCodexErrorForActiveBestEffort(
+    state: ConversationState,
+    active: ActiveTurn,
+    error: CodexErrorNotification
+  ): void {
+    if (!isActiveTurnCurrent(state, active) || active.cancelRequested) {
+      return;
+    }
+    active.lastCodexError = error;
+    this.captureCodexErrorTelemetry(active, error);
+    if (error.willRetry !== true) {
+      return;
+    }
+    void state.controlQueue.enqueue(async () => {
+      if (!isActiveTurnCurrent(state, active) || active.cancelRequested) {
+        return;
+      }
+      const card = active.card;
+      if (!card || card.fallbackPlain) {
+        return;
+      }
+      card.messages.push({
+        id: `codex-error:${error.turnId ?? active.turnId ?? active.runId}:${card.messages.length}`,
+        text: formatCodexErrorProcessText(error),
+        processOnly: true
+      });
+      if (card.messageId) {
+        await this.patchAgentCardBestEffort(state, active, "working");
+      }
+    }).catch((patchError: unknown) => {
+      this.log.warn({ error: patchError, messageId: active.replyMessageId }, "failed to render codex error in agent card");
+    });
+  }
+
+  private captureCodexErrorTelemetry(active: ActiveTurn, error: CodexErrorNotification): void {
+    const telemetry = this.options.telemetry;
+    if (!telemetry) {
+      return;
+    }
+    const sequence = (active.codexErrorCount ?? 0) + 1;
+    active.codexErrorCount = sequence;
+    telemetry.capture(
+      "twinny_codex_error",
+      {
+        conversation_id: telemetry.hashId("conversation", active.conversationKey),
+        thread_id: telemetry.hashId("codex_thread", active.threadId),
+        turn_id: telemetry.hashId("codex_turn", error.turnId ?? active.turnId),
+        status: active.completedStatus ?? "working",
+        turn_type: active.kind === "goal" ? "goal" : active.mode === "plan" ? "plan" : "default",
+        turn_operation: active.kind,
+        will_retry: error.willRetry,
+        codex_error_info: error.codexErrorInfo,
+        codex_error_message_hash: telemetry.hashId("codex_error_message", error.message),
+        codex_error_message_length: error.message.length,
+        codex_error_additional_details_hash: telemetry.hashId("codex_error_additional_details", error.additionalDetails),
+        codex_error_additional_details_length: error.additionalDetails?.length ?? null
+      },
+      {
+        insertId: `twinny_codex_error:${telemetry.hashId("codex_turn_instance", `${active.threadId}:${error.turnId ?? active.turnId ?? active.runId}`)}:${sequence}`
+      }
+    );
   }
 
   private async recordImageGenerationForActiveBestEffort(
@@ -8791,6 +8868,28 @@ function errorCodeForTelemetry(error: unknown): string | null {
     return typeof code === "string" || typeof code === "number" ? String(code) : null;
   }
   return null;
+}
+
+function formatCodexErrorProcessText(error: CodexErrorNotification): string {
+  return `[Codex ERROR] ${formatCodexErrorFailureText(error)}`;
+}
+
+function formatCodexErrorFailureText(error: CodexErrorNotification): string {
+  const details = [
+    error.willRetry === null ? undefined : `willRetry=${error.willRetry}`,
+    error.codexErrorInfo ?? undefined,
+    error.additionalDetails ?? undefined
+  ].filter((value): value is string => Boolean(value));
+  const suffix = details.length > 0 ? ` (${details.map(truncateCodexErrorDetail).join("; ")})` : "";
+  return `${truncateCodexErrorDetail(error.message)}${suffix}`;
+}
+
+function truncateCodexErrorDetail(value: string): string {
+  const chars = Array.from(value);
+  if (chars.length <= 500) {
+    return value;
+  }
+  return `${chars.slice(0, 497).join("")}...`;
 }
 
 function formatModelAndEffort(model: string, effort: string): string {

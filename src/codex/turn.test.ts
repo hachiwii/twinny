@@ -529,7 +529,8 @@ describe("TurnOutputAccumulator", () => {
   });
 
   it("keeps waiting when Codex reports a retryable turn error", async () => {
-    const accumulator = new TurnOutputAccumulator("thread_123");
+    const codexError = vi.fn();
+    const accumulator = new TurnOutputAccumulator("thread_123", undefined, { onCodexError: codexError });
 
     accumulator.record({
       method: "turn/started",
@@ -571,6 +572,12 @@ describe("TurnOutputAccumulator", () => {
       text: "done after reconnect",
       status: "completed"
     });
+    expect(codexError).toHaveBeenCalledWith(expect.objectContaining({
+      message: "Reconnecting... 2/5",
+      willRetry: true,
+      codexErrorInfo: "responseStreamDisconnected",
+      additionalDetails: "stream disconnected before completion"
+    }));
   });
 
   it("ignores Codex errors from another thread", async () => {

@@ -5608,6 +5608,54 @@ describe("ConversationManager", () => {
     expect(lark.recallMessage).toHaveBeenCalledWith("card_m1_1");
   });
 
+  it("renders retryable Codex errors in the working process and captures telemetry", async () => {
+    const telemetry = createTelemetry();
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, telemetry, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    await turns[0]!.params.onCodexError?.({
+      threadId: "thread_1",
+      turnId: "turn_1",
+      message: "Reconnecting... 2/5",
+      willRetry: true,
+      codexErrorInfo: "responseStreamDisconnected",
+      additionalDetails: "request timed out",
+      raw: {}
+    });
+
+    await waitForExpect(() => {
+      const patched = vi.mocked(lark.patchCard).mock.calls.find(([, card]) =>
+        JSON.stringify(card).includes("[Codex ERROR] Reconnecting... 2/5")
+      )?.[1];
+      expect(JSON.stringify(patched)).toContain("willRetry=true");
+      expect(JSON.stringify(patched)).toContain("responseStreamDisconnected");
+      expect(JSON.stringify(patched)).toContain("request timed out");
+    });
+
+    const event = capturedTelemetryEvents(telemetry, "twinny_codex_error")[0]!;
+    expect(event.properties).toMatchObject({
+      conversation_id: "hashed:conversation:12",
+      thread_id: "hashed:codex_thread:8",
+      turn_id: "hashed:codex_turn:6",
+      status: "working",
+      turn_type: "default",
+      turn_operation: "normal",
+      will_retry: true,
+      codex_error_info: "responseStreamDisconnected",
+      codex_error_message_hash: "hashed:codex_error_message:19",
+      codex_error_message_length: 19,
+      codex_error_additional_details_hash: "hashed:codex_error_additional_details:17",
+      codex_error_additional_details_length: 17
+    });
+    expect(JSON.stringify(event)).not.toContain("Reconnecting... 2/5");
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+  });
+
   it("renders compact cards with fixed progress and completion text", async () => {
     const { codex, compacts } = createDeferredCompactCodex();
     const lark = createLarkResponder();

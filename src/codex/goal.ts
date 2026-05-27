@@ -1,6 +1,7 @@
 import { TwinnyError, toErrorMessage } from "../errors.js";
 import type {
   CodexAgentMessage,
+  CodexErrorNotification,
   CodexRequestUserInputRequest,
   CodexThreadMode,
   CodexThreadTokenUsageUpdate,
@@ -9,10 +10,10 @@ import type {
 import type { CodexDynamicToolCallResponse, CodexRequestUserInputResponder, CodexSetThreadNameToolRequest } from "./turn.js";
 import {
   codexErrorMatchesRun,
-  extractCodexErrorNotificationMessage,
   extractTotalTokens,
   handleTurnServerRequest,
-  isRetryableTurnError
+  isRetryableTurnError,
+  parseCodexErrorNotification
 } from "./turn.js";
 import type { CodexNotificationMessage, CodexProtocolClient, CodexRequestMessage } from "./protocol.js";
 import { resumeCodexThread, type ThreadRuntimeOptions } from "./thread.js";
@@ -58,6 +59,7 @@ export interface GoalRunOptions {
   objective?: string;
   onTurnStarted?: (turnId: string) => Promise<void> | void;
   onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
+  onCodexError?: (error: CodexErrorNotification) => Promise<void> | void;
   onTokenUsage?: (usage: CodexThreadTokenUsageUpdate) => Promise<void> | void;
   onGoalUpdated?: (goal: ThreadGoal, turnId: string | null) => Promise<void> | void;
   onGoalCleared?: () => Promise<void> | void;
@@ -405,11 +407,12 @@ class GoalOutputAccumulator {
     if (!codexErrorMatchesRun(params, { threadId: this.threadId, turnId: this.turnId })) {
       return;
     }
+    const error = parseCodexErrorNotification(params);
+    this.emitCodexError(error);
     if (isRetryableTurnError(params)) {
       return;
     }
-    const message = extractCodexErrorNotificationMessage(params);
-    this.completionError = new TwinnyError(message, "CODEX_THREAD_GOAL_FAILED", params);
+    this.completionError = new TwinnyError(error.message, "CODEX_THREAD_GOAL_FAILED", params);
     this.rejectWait?.(this.completionError);
   }
 
@@ -435,6 +438,10 @@ class GoalOutputAccumulator {
     }
     this.emittedAgentMessageIds.add(message.id);
     this.emitAgentMessage(message);
+  }
+
+  private emitCodexError(error: CodexErrorNotification): void {
+    void Promise.resolve(this.callbacks.onCodexError?.(error)).catch(() => undefined);
   }
 
   private terminalReady(): boolean {

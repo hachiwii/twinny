@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { CodexProtocolClient } from "./protocol.js";
 import { runCodexThreadGoal, type ThreadGoal } from "./goal.js";
 
@@ -138,9 +138,10 @@ describe("runCodexThreadGoal", () => {
 
   it("keeps waiting when Codex reports a retryable goal turn error", async () => {
     const protocol = new FakeGoalProtocol();
+    const codexError = vi.fn();
     const resultPromise = runCodexThreadGoal(
       protocol as unknown as CodexProtocolClient,
-      { threadId: "thread_1", objective: "calculate pi" },
+      { threadId: "thread_1", objective: "calculate pi", onCodexError: codexError },
       { completionTimeoutMs: 1_000 }
     );
 
@@ -203,6 +204,14 @@ describe("runCodexThreadGoal", () => {
       status: "completed",
       text: "3.14159"
     });
+    expect(codexError).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread_1",
+      turnId: "turn_1",
+      message: "Reconnecting... 2/5",
+      willRetry: true,
+      codexErrorInfo: "responseStreamDisconnected",
+      additionalDetails: "request timed out"
+    }));
   });
 
   it("fails with the nested Codex error message for non-retryable goal errors", async () => {

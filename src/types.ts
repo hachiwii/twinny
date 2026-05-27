@@ -38,6 +38,16 @@ export interface CodexAgentMessage {
   phase?: AgentMessagePhase | null;
 }
 
+export interface CodexErrorNotification {
+  threadId?: string;
+  turnId?: string;
+  message: string;
+  willRetry: boolean | null;
+  codexErrorInfo: string | null;
+  additionalDetails: string | null;
+  raw: unknown;
+}
+
 export interface CodexImageGeneration {
   id: string;
   status?: string;
