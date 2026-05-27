@@ -74,6 +74,166 @@ describe("runCodexThreadGoal", () => {
       text: "3.14159"
     });
   });
+
+  it("ignores Codex errors from another thread while a goal is active", async () => {
+    const protocol = new FakeGoalProtocol();
+    const resultPromise = runCodexThreadGoal(
+      protocol as unknown as CodexProtocolClient,
+      { threadId: "thread_1", objective: "calculate pi" },
+      { completionTimeoutMs: 1_000 }
+    );
+
+    await Promise.resolve();
+    protocol.emit("notification", {
+      method: "turn/started",
+      params: { threadId: "thread_1", turn: { id: "turn_1" } }
+    });
+    protocol.emit("notification", {
+      method: "error",
+      params: {
+        threadId: "thread_other",
+        turnId: "turn_other",
+        message: "other thread failed",
+        willRetry: false
+      }
+    });
+    protocol.emit("notification", {
+      method: "item/completed",
+      params: {
+        threadId: "thread_1",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "final_1", text: "3.14159", phase: "final_answer" }
+      }
+    });
+    protocol.emit("notification", {
+      method: "turn/completed",
+      params: {
+        threadId: "thread_1",
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          durationMs: 1,
+          items: [{ type: "agentMessage", id: "final_1", text: "3.14159", phase: "final_answer" }]
+        }
+      }
+    });
+    protocol.emit("notification", {
+      method: "thread/goal/updated",
+      params: {
+        threadId: "thread_1",
+        turnId: "turn_1",
+        goal: goal({
+          threadId: "thread_1",
+          objective: "calculate pi",
+          status: "complete"
+        })
+      }
+    });
+
+    await expect(resultPromise).resolves.toMatchObject({
+      status: "completed",
+      text: "3.14159"
+    });
+  });
+
+  it("keeps waiting when Codex reports a retryable goal turn error", async () => {
+    const protocol = new FakeGoalProtocol();
+    const resultPromise = runCodexThreadGoal(
+      protocol as unknown as CodexProtocolClient,
+      { threadId: "thread_1", objective: "calculate pi" },
+      { completionTimeoutMs: 1_000 }
+    );
+
+    await Promise.resolve();
+    protocol.emit("notification", {
+      method: "turn/started",
+      params: { threadId: "thread_1", turn: { id: "turn_1" } }
+    });
+    protocol.emit("notification", {
+      method: "error",
+      params: {
+        threadId: "thread_1",
+        turnId: "turn_1",
+        error: {
+          message: "Reconnecting... 2/5",
+          codexErrorInfo: {
+            responseStreamDisconnected: {
+              httpStatusCode: null
+            }
+          }
+        },
+        additionalDetails: "request timed out",
+        willRetry: true
+      }
+    });
+    protocol.emit("notification", {
+      method: "item/completed",
+      params: {
+        threadId: "thread_1",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "final_1", text: "3.14159", phase: "final_answer" }
+      }
+    });
+    protocol.emit("notification", {
+      method: "turn/completed",
+      params: {
+        threadId: "thread_1",
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          durationMs: 1,
+          items: [{ type: "agentMessage", id: "final_1", text: "3.14159", phase: "final_answer" }]
+        }
+      }
+    });
+    protocol.emit("notification", {
+      method: "thread/goal/updated",
+      params: {
+        threadId: "thread_1",
+        turnId: "turn_1",
+        goal: goal({
+          threadId: "thread_1",
+          objective: "calculate pi",
+          status: "complete"
+        })
+      }
+    });
+
+    await expect(resultPromise).resolves.toMatchObject({
+      status: "completed",
+      text: "3.14159"
+    });
+  });
+
+  it("fails with the nested Codex error message for non-retryable goal errors", async () => {
+    const protocol = new FakeGoalProtocol();
+    const resultPromise = runCodexThreadGoal(
+      protocol as unknown as CodexProtocolClient,
+      { threadId: "thread_1", objective: "calculate pi" },
+      { completionTimeoutMs: 1_000 }
+    );
+
+    await Promise.resolve();
+    protocol.emit("notification", {
+      method: "turn/started",
+      params: { threadId: "thread_1", turn: { id: "turn_1" } }
+    });
+    protocol.emit("notification", {
+      method: "error",
+      params: {
+        threadId: "thread_1",
+        turnId: "turn_1",
+        error: { message: "terminal stream failure" },
+        additionalDetails: "request timed out",
+        willRetry: false
+      }
+    });
+
+    await expect(resultPromise).rejects.toMatchObject({
+      code: "CODEX_THREAD_GOAL_FAILED",
+      message: "terminal stream failure"
+    });
+  });
 });
 
 function goal(values: Pick<ThreadGoal, "threadId" | "objective" | "status">): ThreadGoal {

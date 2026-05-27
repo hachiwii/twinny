@@ -573,13 +573,91 @@ describe("TurnOutputAccumulator", () => {
     });
   });
 
+  it("ignores Codex errors from another thread", async () => {
+    const accumulator = new TurnOutputAccumulator("thread_123");
+
+    accumulator.record({
+      method: "turn/started",
+      params: {
+        threadId: "thread_123",
+        turn: { id: "turn_1" }
+      }
+    });
+    accumulator.record({
+      method: "error",
+      params: {
+        threadId: "thread_other",
+        turnId: "turn_other",
+        message: "other thread failed",
+        willRetry: false
+      }
+    });
+    accumulator.record({
+      method: "turn/completed",
+      params: {
+        threadId: "thread_123",
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          items: [{ type: "agentMessage", id: "msg_1", text: "done" }]
+        }
+      }
+    });
+
+    await expect(accumulator.wait()).resolves.toMatchObject({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      text: "done",
+      status: "completed"
+    });
+  });
+
+  it("ignores Codex errors from another turn once the current turn is known", async () => {
+    const accumulator = new TurnOutputAccumulator("thread_123");
+
+    accumulator.record({
+      method: "turn/started",
+      params: {
+        threadId: "thread_123",
+        turn: { id: "turn_1" }
+      }
+    });
+    accumulator.record({
+      method: "error",
+      params: {
+        threadId: "thread_123",
+        turnId: "turn_2",
+        message: "other turn failed",
+        willRetry: false
+      }
+    });
+    accumulator.record({
+      method: "turn/completed",
+      params: {
+        threadId: "thread_123",
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          items: [{ type: "agentMessage", id: "msg_1", text: "done" }]
+        }
+      }
+    });
+
+    await expect(accumulator.wait()).resolves.toMatchObject({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      text: "done",
+      status: "completed"
+    });
+  });
+
   it("fails when Codex reports a non-retryable turn error", async () => {
     const accumulator = new TurnOutputAccumulator("thread_123");
 
     accumulator.record({
       method: "error",
       params: {
-        message: "stream disconnected before completion",
+        error: { message: "stream disconnected before completion" },
         willRetry: false
       }
     });

@@ -7,7 +7,13 @@ import type {
   CodexTurnResult
 } from "../types.js";
 import type { CodexDynamicToolCallResponse, CodexRequestUserInputResponder, CodexSetThreadNameToolRequest } from "./turn.js";
-import { extractTotalTokens, handleTurnServerRequest } from "./turn.js";
+import {
+  codexErrorMatchesRun,
+  extractCodexErrorNotificationMessage,
+  extractTotalTokens,
+  handleTurnServerRequest,
+  isRetryableTurnError
+} from "./turn.js";
 import type { CodexNotificationMessage, CodexProtocolClient, CodexRequestMessage } from "./protocol.js";
 import { resumeCodexThread, type ThreadRuntimeOptions } from "./thread.js";
 
@@ -396,13 +402,13 @@ class GoalOutputAccumulator {
   }
 
   private recordError(params: unknown): void {
+    if (!codexErrorMatchesRun(params, { threadId: this.threadId, turnId: this.turnId })) {
+      return;
+    }
     if (isRetryableTurnError(params)) {
       return;
     }
-    const message =
-      isRecord(params) && typeof params.message === "string"
-        ? params.message
-        : "Codex app-server reported an error";
+    const message = extractCodexErrorNotificationMessage(params);
     this.completionError = new TwinnyError(message, "CODEX_THREAD_GOAL_FAILED", params);
     this.rejectWait?.(this.completionError);
   }
@@ -580,14 +586,6 @@ function extractAgentMessage(item: unknown): CodexAgentMessage | undefined {
 
 function agentMessagePhaseValue(value: unknown): CodexAgentMessage["phase"] | undefined {
   return value === "commentary" || value === "final_answer" ? value : undefined;
-}
-
-function isRetryableTurnError(params: unknown): boolean {
-  if (!isRecord(params)) {
-    return false;
-  }
-  const message = typeof params.message === "string" ? params.message.toLowerCase() : "";
-  return message.includes("retry") || message.includes("rate limit");
 }
 
 function stringValue(value: unknown): string | undefined {

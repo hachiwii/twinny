@@ -536,13 +536,13 @@ export class TurnOutputAccumulator {
   }
 
   private recordError(params: unknown): void {
+    if (!codexErrorMatchesRun(params, { threadId: this.threadId, turnId: this.turnId })) {
+      return;
+    }
     if (isRetryableTurnError(params)) {
       return;
     }
-    const message =
-      isRecord(params) && typeof params.message === "string"
-        ? params.message
-        : "Codex app-server reported an error";
+    const message = extractCodexErrorNotificationMessage(params);
     this.completionError = new TwinnyError(message, "CODEX_TURN_FAILED", params);
     this.rejectWait?.(this.completionError);
   }
@@ -1029,8 +1029,32 @@ function isItemCompletedParams(value: unknown): value is ItemCompletedParams {
   return isRecord(value) && typeof value.threadId === "string";
 }
 
-function isRetryableTurnError(value: unknown): boolean {
+export function codexErrorMatchesRun(value: unknown, run: { threadId: string; turnId?: string }): boolean {
+  if (!isRecord(value)) {
+    return true;
+  }
+  const threadId = stringValue(value.threadId) ?? stringValue(value.thread_id);
+  if (threadId && threadId !== run.threadId) {
+    return false;
+  }
+  const turnId = stringValue(value.turnId) ?? stringValue(value.turn_id);
+  return !turnId || !run.turnId || turnId === run.turnId;
+}
+
+export function isRetryableTurnError(value: unknown): boolean {
   return isRecord(value) && value.willRetry === true;
+}
+
+export function extractCodexErrorNotificationMessage(value: unknown): string {
+  if (!isRecord(value)) {
+    return "Codex app-server reported an error";
+  }
+  const nestedError = isRecord(value.error) ? value.error : undefined;
+  return stringValue(value.message) ??
+    stringValue(nestedError?.message) ??
+    stringValue(value.additionalDetails) ??
+    stringValue(value.additional_details) ??
+    "Codex app-server reported an error";
 }
 
 function stringValue(value: unknown): string | undefined {
