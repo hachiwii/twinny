@@ -163,6 +163,30 @@ describe("install wizard helpers", () => {
     }));
   });
 
+  it("stops the interactive install when the macOS GUI LaunchAgent domain is unavailable", async () => {
+    const telemetry = createTelemetry();
+    const assertGuiLaunchAgentAvailable = vi.fn(async () => {
+      throw new Error("当前环境没有可用的 GUI LaunchAgent (gui/503)。请使用 `twinny install --no-gui` 安装为 LaunchDaemon。");
+    });
+
+    await expect(runInstallWizard({
+      platform: "darwin",
+      telemetry,
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      assertGuiLaunchAgentAvailable
+    })).rejects.toThrow(/--no-gui/);
+
+    expect(telemetry.capture).toHaveBeenCalledWith(
+      "twinny_install_fail",
+      expect.objectContaining({
+        install_status: "failed",
+        install_exit_reason: "launchd_gui_unavailable"
+      }),
+      expect.objectContaining({ codexVersion: undefined })
+    );
+  });
+
   it("detects Codex and checks login status through injectable commands", async () => {
     const runCommand = vi.fn(async (command: string, args: string[]) => {
       if (command === "which") {
@@ -476,6 +500,36 @@ describe("install wizard helpers", () => {
     expect(secretStore.set).toHaveBeenCalledOnce();
   });
 
+  it("persists LaunchDaemon service config when agent install uses no-gui mode", async () => {
+    const home = await tempHome();
+    const installManagedServiceMock = vi.fn(async () => undefined);
+    const secretStore = {
+      get: vi.fn(async () => null),
+      set: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+      has: vi.fn(async () => false)
+    };
+
+    await runAgentInstallForSecretStorage({
+      home,
+      platform: "darwin",
+      noGui: true,
+      env: { TWINNY_HOME: home, SUDO_USER: "tester" },
+      secretStore: secretStore as NonNullable<Parameters<typeof runInstallAgent>[0]>["secretStore"],
+      installManagedService: installManagedServiceMock as NonNullable<Parameters<typeof runInstallAgent>[0]>["installManagedService"]
+    });
+
+    const rawConfig = await fs.readFile(path.join(home, "config.toml"), "utf8");
+    expect(rawConfig).toContain("[service.launchd]");
+    expect(rawConfig).toContain('mode = "daemon"');
+    expect(rawConfig).toContain('user_name = "tester"');
+    expect(installManagedServiceMock).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.objectContaining({
+        service: { launchd: { mode: "daemon", userName: "tester" } }
+      })
+    }));
+  });
+
   it("emits a failed agent event when Codex is missing and auto install is disabled", async () => {
     const home = await tempHome();
     const telemetry = createTelemetry();
@@ -484,6 +538,7 @@ describe("install wizard helpers", () => {
 
     await expect(runInstallAgent({
       env: { TWINNY_HOME: home },
+      platform: "linux",
       telemetry,
       stdout: output.writer,
       installCodex: "never",
@@ -608,7 +663,10 @@ async function runAgentInstallForSecretStorage(input: {
   home: string;
   platform: NodeJS.Platform;
   disableKeychain?: boolean;
+  noGui?: boolean;
+  env?: NodeJS.ProcessEnv;
   secretStore?: NonNullable<Parameters<typeof runInstallAgent>[0]>["secretStore"];
+  installManagedService?: NonNullable<Parameters<typeof runInstallAgent>[0]>["installManagedService"];
 }): Promise<void> {
   const output = createNdjsonOutput();
   const runCommand = vi.fn(async (command: string, args: string[]) => {
@@ -628,9 +686,11 @@ async function runAgentInstallForSecretStorage(input: {
   });
 
   await runInstallAgent({
-    env: { TWINNY_HOME: input.home },
+    env: input.env ?? { TWINNY_HOME: input.home },
     platform: input.platform,
     disableKeychain: input.disableKeychain,
+    noGui: input.noGui,
+    assertGuiLaunchAgentAvailable: async () => undefined,
     telemetry: createTelemetry(),
     stdout: output.writer,
     homeRandom: "b".repeat(32),
@@ -638,7 +698,7 @@ async function runAgentInstallForSecretStorage(input: {
     secretStore: input.secretStore,
     readCodexDefaults: async () => ({ model: "gpt-5.5", effort: "medium" }),
     resolveServiceEntrypoint: async () => "/tmp/twinny-bin",
-    installManagedService: vi.fn(async () => undefined) as NonNullable<Parameters<typeof runInstallAgent>[0]>["installManagedService"],
+    installManagedService: input.installManagedService ?? (vi.fn(async () => undefined) as NonNullable<Parameters<typeof runInstallAgent>[0]>["installManagedService"]),
     startManagedService: vi.fn(async () => undefined) as NonNullable<Parameters<typeof runInstallAgent>[0]>["startManagedService"],
     uploadBundledAssets: vi.fn(async () => undefined) as NonNullable<Parameters<typeof runInstallAgent>[0]>["uploadBundledAssets"],
     validateBotCredentials: vi.fn(async () => undefined),

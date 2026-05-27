@@ -9,6 +9,7 @@ export interface CreateLaunchAgentPlistOptions {
   label?: string;
   entrypoint?: string;
   twinnyHome?: string;
+  userName?: string;
   environment?: Record<string, string | undefined>;
 }
 
@@ -19,6 +20,7 @@ export function createLaunchAgentPlist(options: CreateLaunchAgentPlistOptions = 
   const stdout = path.join(logsDir, `${label}.log`);
   const twinnyHome = options.twinnyHome ?? process.env.TWINNY_HOME ?? path.join(os.homedir(), ".twinny");
   const args = entrypoint === process.execPath ? [process.execPath, "run"] : [process.execPath, entrypoint, "run"];
+  const userNameEntry = options.userName ? `  <key>UserName</key>\n  <string>${escapeXml(options.userName)}</string>\n` : "";
   const environment = normalizeEnvironment({
     ...(options.environment ?? {}),
     TWINNY_HOME: twinnyHome
@@ -30,7 +32,7 @@ export function createLaunchAgentPlist(options: CreateLaunchAgentPlistOptions = 
 <dict>
   <key>Label</key>
   <string>${escapeXml(label)}</string>
-  <key>ProgramArguments</key>
+${userNameEntry}  <key>ProgramArguments</key>
   <array>
 ${args.map((arg) => `    <string>${escapeXml(arg)}</string>`).join("\n")}
   </array>
@@ -58,6 +60,10 @@ export function launchAgentLabelForHomeRandom(homeRandom: string): string {
 
 export function launchAgentPlistPathForLabel(label: string, homeDir = os.homedir()): string {
   return path.join(homeDir, "Library", "LaunchAgents", `${label}.plist`);
+}
+
+export function launchDaemonPlistPathForLabel(label: string): string {
+  return path.join("/Library", "LaunchDaemons", `${label}.plist`);
 }
 
 export function launchAgentProgramArguments(plist: string): string[] {

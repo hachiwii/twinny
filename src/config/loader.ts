@@ -15,10 +15,12 @@ import {
   type LarkMessageRedactionStrategy,
   type LarkCliProfileConfig,
   type LarkBrand,
+  type LaunchdServiceConfig,
   type PermissionsConfig,
   type ProfileConfig,
   type ProfileName,
   type RuntimePaths,
+  type ServiceConfig,
   type TelemetryConfig,
   type TwinnyAuthFile,
   type TwinnyConfig,
@@ -75,6 +77,18 @@ const rawConfigSchema = z
       })
       .strict()
       .optional(),
+    service: z
+      .object({
+        launchd: z
+          .object({
+            mode: z.enum(["gui", "daemon"]).optional(),
+            user_name: z.string().optional()
+          })
+          .strict()
+          .optional()
+      })
+      .strict()
+      .optional(),
     telemetry: z
       .object({
         enabled: z.boolean().optional(),
@@ -120,6 +134,9 @@ export interface CreateTwinnyConfigInput {
     messageRedaction?: Partial<LarkMessageRedactionConfig>;
   };
   permissions?: Partial<PermissionsConfig>;
+  service?: {
+    launchd?: Partial<LaunchdServiceConfig>;
+  };
   telemetry?: Partial<TelemetryConfig>;
   larkCliProfile?: LarkCliProfileConfig;
   profiles?: Record<ProfileName, Partial<ProfileConfig>>;
@@ -160,6 +177,7 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
     permissions: {
       p2pDefaultProfile: normalizeProfileName(input.permissions?.p2pDefaultProfile) ?? NONE_PROFILE_NAME
     },
+    service: normalizeServiceConfig(input.service),
     telemetry: normalizeTelemetryConfig(input.telemetry),
     larkCliProfile: normalizeLarkCliProfileConfig(input.larkCliProfile),
     owner: {
@@ -355,6 +373,9 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   if (!Number.isFinite(config.lark.maxMessageAgeSeconds) || config.lark.maxMessageAgeSeconds <= 0) {
     issues.push("lark max message age internal default must be a positive number");
   }
+  if (config.service.launchd.mode === "daemon" && !config.service.launchd.userName) {
+    issues.push("service.launchd.user_name is required when service.launchd.mode is daemon");
+  }
   for (const [key, strategy] of Object.entries(config.lark.messageRedaction)) {
     if (!isMessageRedactionStrategy(strategy)) {
       issues.push(`lark.redaction.${key} must be mask, whitespace, or none`);
@@ -414,6 +435,12 @@ function createRuntimeConfig(
     permissions: {
       p2pDefaultProfile: normalizeProfileName(parsed.permissions?.p2p_default_profile) ?? NONE_PROFILE_NAME
     },
+    service: normalizeServiceConfig({
+      launchd: {
+        mode: parsed.service?.launchd?.mode,
+        userName: parsed.service?.launchd?.user_name
+      }
+    }),
     telemetry: normalizeTelemetryConfig({
       enabled: parsed.telemetry?.enabled,
       posthogProjectToken: parsed.telemetry?.posthog_project_token,
@@ -512,6 +539,14 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
     },
     profiles
   };
+  if (config.service.launchd.mode !== "gui") {
+    document.service = {
+      launchd: {
+        mode: config.service.launchd.mode,
+        ...(config.service.launchd.userName ? { user_name: config.service.launchd.userName } : {})
+      }
+    };
+  }
   const telemetry = config.telemetry ?? normalizeTelemetryConfig(undefined);
   const hasCustomPostHogProjectToken = telemetry.posthogProjectToken !== DEFAULT_POSTHOG_PROJECT_TOKEN;
   const hasCustomPostHogHost = telemetry.posthogHost !== DEFAULT_POSTHOG_HOST;
@@ -587,6 +622,17 @@ function normalizeMessageRedactionStrategy(
   strategy: LarkMessageRedactionStrategy | undefined
 ): LarkMessageRedactionStrategy {
   return strategy ?? DEFAULT_LARK_MESSAGE_REDACTION_STRATEGY;
+}
+
+function normalizeServiceConfig(input: { launchd?: Partial<LaunchdServiceConfig> } | undefined): ServiceConfig {
+  const mode = input?.launchd?.mode === "daemon" ? "daemon" : "gui";
+  const userName = mode === "daemon" ? normalizeOptionalString(input?.launchd?.userName) : undefined;
+  return {
+    launchd: {
+      mode,
+      ...(userName ? { userName } : {})
+    }
+  };
 }
 
 function normalizeTelemetryConfig(input: Partial<TelemetryConfig> | undefined): TelemetryConfig {

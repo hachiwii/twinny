@@ -148,6 +148,17 @@ export interface LarkCliProfileConfig {
   profileName: string;
 }
 
+export type LaunchdServiceMode = "gui" | "daemon";
+
+export interface LaunchdServiceConfig {
+  mode: LaunchdServiceMode;
+  userName?: string;
+}
+
+export interface ServiceConfig {
+  launchd: LaunchdServiceConfig;
+}
+
 export interface TwinnyConfig {
   home: string;
   codex: CodexConfig;
@@ -155,6 +166,7 @@ export interface TwinnyConfig {
   auth: TwinnyAuthFile;
   homeIdentity: TwinnyHomeIdentity;
   permissions: PermissionsConfig;
+  service: ServiceConfig;
   telemetry?: TelemetryConfig;
   larkCliProfile?: LarkCliProfileConfig;
   owner: OwnerConfig;

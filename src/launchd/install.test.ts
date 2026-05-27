@@ -2,10 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createTwinnyConfig } from "../config/index.js";
 import { acquireTwinnyLock } from "../lock/index.js";
-import { waitForRuntimeLockRelease } from "./install.js";
+import { installLaunchAgent, startLaunchAgent, waitForRuntimeLockRelease } from "./install.js";
 import {
   createLaunchAgentPlist,
   launchAgentLabelForHomeRandom,
@@ -71,4 +72,59 @@ describe("launchd install helpers", () => {
     expect(launchAgentUsesEntrypoint(plist, entrypoint)).toBe(true);
     expect(launchAgentUsesEntrypoint(plist, path.join(tempDir, "other"))).toBe(false);
   });
+
+  it("writes LaunchDaemon plists with the configured user name", async () => {
+    const config = createLaunchDaemonConfig(tempDir);
+    const label = launchAgentLabelForHomeRandom(config.homeIdentity.random);
+
+    await installLaunchAgent({
+      config,
+      entrypoint: path.join(tempDir, "twinny"),
+      launchDaemonDir: tempDir,
+      quiet: true
+    });
+
+    const plist = fs.readFileSync(path.join(tempDir, `${label}.plist`), "utf8");
+    expect(plist).toContain("<key>UserName</key>");
+    expect(plist).toContain("<string>tester</string>");
+  });
+
+  it("boots LaunchDaemon services in the launchd system domain", async () => {
+    const config = createLaunchDaemonConfig(tempDir);
+    const label = launchAgentLabelForHomeRandom(config.homeIdentity.random);
+    const runCommand = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+    await installLaunchAgent({
+      config,
+      entrypoint: path.join(tempDir, "twinny"),
+      launchDaemonDir: tempDir,
+      quiet: true
+    });
+    await startLaunchAgent({
+      config,
+      launchDaemonDir: tempDir,
+      runCommand: runCommand as unknown as NonNullable<Parameters<typeof startLaunchAgent>[0]>["runCommand"],
+      quiet: true
+    });
+
+    expect(runCommand).toHaveBeenCalledWith("launchctl", ["bootstrap", "system", path.join(tempDir, `${label}.plist`)], {
+      reject: false
+    });
+    expect(runCommand).toHaveBeenCalledWith("launchctl", ["kickstart", "-k", `system/${label}`]);
+  });
 });
+
+function createLaunchDaemonConfig(homeRoot: string) {
+  return createTwinnyConfig({
+    home: path.join(homeRoot, ".twinny"),
+    homeRandom: "0123456789abcdef0123456789abcdef",
+    auth: { larkAppId: "cli_test", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner" },
+    service: {
+      launchd: {
+        mode: "daemon",
+        userName: "tester"
+      }
+    },
+    profiles: { host: {}, guest: {} }
+  });
+}

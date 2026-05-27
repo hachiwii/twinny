@@ -7,8 +7,10 @@ import { restartLaunchAgent } from "../launchd/install.js";
 import {
   launchAgentLabelForHomeRandom,
   launchAgentPlistPathForLabel,
+  launchDaemonPlistPathForLabel,
   launchAgentUsesEntrypoint
 } from "../launchd/plist.js";
+import type { LaunchdServiceMode } from "../types.js";
 
 type CommandRunner = typeof execa;
 type UpdateOutput = Pick<NodeJS.WriteStream, "write">;
@@ -49,6 +51,7 @@ export async function runUpdateCommand(options: RunUpdateCommandOptions = {}): P
 
   const launchAgentUsesRunner = await currentLaunchAgentUsesRunner({
     homeRandom: status.config.homeIdentity.random,
+    launchdMode: status.config.service.launchd.mode,
     runnerBinary,
     launchAgentPlistPath: options.launchAgentPlistPath
   });
@@ -98,11 +101,13 @@ async function installRunnerPackage(runnerDir: string, packageSpec: string, runC
 
 async function currentLaunchAgentUsesRunner(input: {
   homeRandom: string;
+  launchdMode: LaunchdServiceMode;
   runnerBinary: string;
   launchAgentPlistPath?: string;
 }): Promise<boolean> {
   const label = launchAgentLabelForHomeRandom(input.homeRandom);
-  const plistPath = input.launchAgentPlistPath ?? launchAgentPlistPathForLabel(label);
+  const plistPath = input.launchAgentPlistPath
+    ?? (input.launchdMode === "daemon" ? launchDaemonPlistPathForLabel(label) : launchAgentPlistPathForLabel(label));
   let plist: string;
   try {
     plist = await fs.readFile(plistPath, "utf8");

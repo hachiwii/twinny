@@ -22,6 +22,7 @@ const config: TwinnyConfig = {
     }
   },
   permissions: { p2pDefaultProfile: "guest" },
+  service: { launchd: { mode: "gui" } },
   telemetry: { enabled: true, posthogProjectToken: "ph_test", posthogHost: "https://posthog.example" },
   owner: { openId: "ou_owner", displayName: "Owner" },
   profiles: {

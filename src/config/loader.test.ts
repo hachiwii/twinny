@@ -101,10 +101,37 @@ describe("Twinny config loading and bootstrap", () => {
     expect(serialized).toContain("[profiles.guest]");
     expect(serialized).toContain("[permissions]");
     expect(serialized).toContain('working = "JubilantRabbit"');
+    expect(serialized).not.toContain("[service]");
     expect(serialized).not.toContain("[telemetry]");
     expect(serialized).not.toContain("[owner]");
     expect(serialized).not.toContain("[roles");
     expect(serialized).not.toContain("secret_ref");
+  });
+
+  it("round-trips LaunchDaemon service configuration", () => {
+    const config = createTwinnyConfig({
+      home: "/tmp/twinny",
+      homeRandom,
+      auth: { larkAppId: "cli_test", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner" },
+      service: {
+        launchd: {
+          mode: "daemon",
+          userName: "tester"
+        }
+      },
+      profiles: {
+        host: {},
+        guest: {}
+      }
+    });
+
+    const serialized = serializeTwinnyConfig(config);
+    const parsed = parseTwinnyConfig(serialized, { home: "/tmp/twinny" });
+
+    expect(serialized).toContain("[service.launchd]");
+    expect(serialized).toContain('mode = "daemon"');
+    expect(serialized).toContain('user_name = "tester"');
+    expect(parsed.service.launchd).toEqual({ mode: "daemon", userName: "tester" });
   });
 
   it("round-trips telemetry configuration", () => {

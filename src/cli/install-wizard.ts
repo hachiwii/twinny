@@ -20,6 +20,7 @@ import {
   type SecretStore
 } from "../config/index.js";
 import { provisionLarkAssetImageKeys } from "../app/lark-assets.js";
+import { assertLaunchdGuiSessionAvailable } from "../launchd/install.js";
 import { installManagedService, managedServiceDisplayName, startManagedService } from "../service/index.js";
 import { createTwinnyTelemetryClient, type TelemetryClient, type TelemetryProperties } from "../telemetry/index.js";
 import {
@@ -37,7 +38,7 @@ import {
 } from "../lark/index.js";
 import { TWINNY_VERSION } from "../version.js";
 import { openInstallGuidePageBestEffort, writeInstallGuidePage } from "./install-guide.js";
-import type { LarkBrand, TelemetryConfig, TwinnyConfig } from "../types.js";
+import type { LarkBrand, ServiceConfig, TelemetryConfig, TwinnyConfig } from "../types.js";
 
 const minimumCodexVersion = "0.130.0";
 export const installWizardIntro = "🐰 Twinny install";
@@ -90,6 +91,7 @@ type InstallExitReason =
   | "codex_missing"
   | "codex_install_declined"
   | "codex_login_required"
+  | "launchd_gui_unavailable"
   | "home_not_empty"
   | "install_cancelled"
   | "bot_registration_failed"
@@ -101,6 +103,7 @@ type InstallAgentOutput = Pick<NodeJS.WriteStream, "write">;
 type UploadBundledAssetsFn = typeof uploadBundledAssets;
 type InstallManagedServiceFn = typeof installManagedService;
 type StartManagedServiceFn = typeof startManagedService;
+type AssertGuiLaunchAgentAvailableFn = typeof assertLaunchdGuiSessionAvailable;
 
 type InstallAgentStep =
   | "init"
@@ -153,6 +156,8 @@ export interface RunInstallAgentOptions {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   disableKeychain?: boolean;
+  noGui?: boolean;
+  assertGuiLaunchAgentAvailable?: AssertGuiLaunchAgentAvailableFn;
   telemetry?: TelemetryClient;
   stdout?: InstallAgentOutput;
   stdinIsTTY?: boolean;
@@ -263,6 +268,8 @@ export interface RunInstallWizardOptions {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   disableKeychain?: boolean;
+  noGui?: boolean;
+  assertGuiLaunchAgentAvailable?: AssertGuiLaunchAgentAvailableFn;
   telemetry?: TelemetryClient;
   stdinIsTTY?: boolean;
   stdoutIsTTY?: boolean;
@@ -271,9 +278,11 @@ export interface RunInstallWizardOptions {
 export async function runInstallWizard(options: RunInstallWizardOptions = {}): Promise<void> {
   const startedAt = Date.now();
   const env = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
   const terminal = installTerminalSnapshot(options);
   const home = resolveInstallHome(env);
   const homeRandom = generateTwinnyHomeRandom();
+  const service = installServiceConfig({ platform, noGui: options.noGui, env });
   const installTelemetry = createInitialInstallTelemetryState();
   const finalizeResult = createInitialFinalizeInstallResult();
   let telemetry = options.telemetry;
@@ -295,6 +304,11 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
         "Twinny install wizard requires an interactive terminal. Run `twinny install` from a terminal."
       );
     }
+    await assertInstallGuiLaunchAgentAvailable({
+      platform,
+      noGui: options.noGui,
+      assertGuiLaunchAgentAvailable: options.assertGuiLaunchAgentAvailable
+    });
 
     p.intro(installWizardIntro);
     await assertInstallHomeIsEmpty(home);
@@ -306,7 +320,7 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
     const bot = botSetup.credentials;
     ownerSetup = await promptOwnerIdentity(bot);
     const owner = ownerSetup.identity;
-    serviceEnvironment = await promptServiceEnvironment(home, env, installTelemetry);
+    serviceEnvironment = await promptServiceEnvironment(home, env, installTelemetry, installManagedServiceDisplayName(platform, service));
     codexDefaults = await readCodexDefaults();
 
     config = createTwinnyConfig({
@@ -319,6 +333,7 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
         ownerOpenId: owner.openId,
         displayName: owner.displayName
       },
+      service,
       telemetry: installTelemetryConfigFromEnv(env),
       profiles: {
         host: {
@@ -335,7 +350,7 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
       environment: serviceEnvironment.environment,
       result: finalizeResult,
       telemetry: installTelemetry,
-      platform: options.platform,
+      platform,
       disableKeychain: options.disableKeychain
     });
 
@@ -448,9 +463,11 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
 export async function runInstallAgent(options: RunInstallAgentOptions = {}): Promise<void> {
   const startedAt = Date.now();
   const env = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
   const terminal = installTerminalSnapshot(options);
   const home = resolveInstallHome(env);
   const homeRandom = options.homeRandom ?? generateTwinnyHomeRandom();
+  const service = installServiceConfig({ platform, noGui: options.noGui, env });
   const installTelemetry = createInitialInstallTelemetryState();
   const finalizeResult = createInitialFinalizeInstallResult();
   const events = new InstallAgentEventWriter(options.stdout ?? process.stdout);
@@ -484,6 +501,11 @@ export async function runInstallAgent(options: RunInstallAgentOptions = {}): Pro
     });
 
     progress("init", "started", { home });
+    await assertInstallGuiLaunchAgentAvailable({
+      platform,
+      noGui: options.noGui,
+      assertGuiLaunchAgentAvailable: options.assertGuiLaunchAgentAvailable
+    });
     await assertInstallHomeIsEmpty(home);
     progress("init", "completed");
 
@@ -541,6 +563,7 @@ export async function runInstallAgent(options: RunInstallAgentOptions = {}): Pro
         ownerOpenId: owner.openId,
         displayName: owner.displayName
       },
+      service,
       telemetry: installTelemetryConfigFromEnv(env),
       profiles: {
         host: {
@@ -565,7 +588,7 @@ export async function runInstallAgent(options: RunInstallAgentOptions = {}): Pro
       installManagedService: options.installManagedService,
       uploadBundledAssets: options.uploadBundledAssets,
       onProgress: progress,
-      platform: options.platform,
+      platform,
       disableKeychain: options.disableKeychain
     });
 
@@ -703,6 +726,52 @@ class InstallAgentEventWriter {
   }
 }
 
+function installServiceConfig(input: {
+  platform: NodeJS.Platform;
+  noGui?: boolean;
+  env: NodeJS.ProcessEnv;
+}): { launchd: { mode: "daemon"; userName: string } } | undefined {
+  if (input.platform !== "darwin" || !input.noGui) {
+    return undefined;
+  }
+  return {
+    launchd: {
+      mode: "daemon",
+      userName: currentLaunchDaemonUserName(input.env)
+    }
+  };
+}
+
+function installManagedServiceDisplayName(platform: NodeJS.Platform, service?: Partial<ServiceConfig>): string {
+  if (platform === "darwin" && service?.launchd?.mode === "daemon") {
+    return "LaunchDaemon";
+  }
+  return managedServiceDisplayName(platform);
+}
+
+async function assertInstallGuiLaunchAgentAvailable(input: {
+  platform: NodeJS.Platform;
+  noGui?: boolean;
+  assertGuiLaunchAgentAvailable?: AssertGuiLaunchAgentAvailableFn;
+}): Promise<void> {
+  if (input.platform !== "darwin" || input.noGui) {
+    return;
+  }
+  try {
+    await (input.assertGuiLaunchAgentAvailable ?? assertLaunchdGuiSessionAvailable)();
+  } catch (error) {
+    throw new InstallExitError("launchd_gui_unavailable", error instanceof Error ? error.message : String(error));
+  }
+}
+
+function currentLaunchDaemonUserName(env: NodeJS.ProcessEnv): string {
+  const sudoUser = env.SUDO_USER?.trim();
+  if (sudoUser && sudoUser !== "root") {
+    return sudoUser;
+  }
+  return os.userInfo().username;
+}
+
 function createInstallTelemetryConfig(home: string, homeRandom: string, env: NodeJS.ProcessEnv): TwinnyConfig {
   return createTwinnyConfig({
     home,
@@ -771,6 +840,7 @@ function retryableInstallFailure(reason: InstallExitReason): boolean {
     "codex_missing",
     "codex_install_declined",
     "codex_login_required",
+    "launchd_gui_unavailable",
     "bot_registration_failed",
     "owner_authorization_failed",
     "error"
@@ -1374,12 +1444,13 @@ async function lookupOwnerName(bot: BotCredentials, openId: string): Promise<str
 async function promptServiceEnvironment(
   home: string,
   env: NodeJS.ProcessEnv,
-  telemetry: InstallTelemetryState
+  telemetry: InstallTelemetryState,
+  serviceDisplayName = managedServiceDisplayName()
 ): Promise<ServiceEnvironmentSelection> {
   const selection = buildEnvSelection(env);
   const choice = await cancelable(
     p.select<ServiceEnvironmentChoice>({
-      message: `导入环境变量到 ${managedServiceDisplayName()}`,
+      message: `导入环境变量到 ${serviceDisplayName}`,
       options: [
         { value: "default", label: "导入默认", hint: "推荐" },
         { value: "manual", label: "手动选择" },
@@ -1430,6 +1501,7 @@ async function finalizeInstall(input: {
 }): Promise<void> {
   const interactive = input.interactive !== false;
   const platform = input.platform ?? process.platform;
+  const serviceDisplayName = installManagedServiceDisplayName(platform, input.config.service);
   const useKeychain = platform === "darwin" && !input.disableKeychain;
   input.onProgress?.("config", "started");
   if (interactive) {
@@ -1464,7 +1536,7 @@ async function finalizeInstall(input: {
     });
     input.result.serviceInstalled = true;
     if (interactive) {
-      p.log.success(`Twinny home 和 ${managedServiceDisplayName()} 已创建`);
+      p.log.success(`Twinny home 和 ${serviceDisplayName} 已创建`);
     }
     input.onProgress?.("config", "completed");
   } catch (error) {

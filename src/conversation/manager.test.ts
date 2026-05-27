@@ -54,6 +54,7 @@ const config: TwinnyConfig = {
     }
   },
   permissions: { p2pDefaultProfile: "guest" },
+  service: { launchd: { mode: "gui" } },
   owner: { openId: "ou_owner", displayName: "Owner" },
   profiles: {
     host: { codexHome: "/tmp/twinny/profiles/host/codex", defaultModel: "gpt-5.5", defaultEffort: "medium" },

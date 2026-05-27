@@ -30,9 +30,10 @@ export async function runCli(argv: string[]): Promise<void> {
   const install = program.command("install").description("Run the Twinny install wizard.");
   install
     .option("--disable-keychain", "Store the Lark app secret in auth.json instead of macOS Keychain.")
-    .action(async (options: { disableKeychain?: boolean }) => {
+    .option("--no-gui", "Install the macOS service as a LaunchDaemon instead of a GUI LaunchAgent.")
+    .action(async (options: { disableKeychain?: boolean; gui?: boolean }) => {
       const { runInstallWizard } = await import("./install-wizard.js");
-      await runInstallWizard({ disableKeychain: Boolean(options.disableKeychain) });
+      await runInstallWizard({ disableKeychain: Boolean(options.disableKeychain), noGui: options.gui === false });
     });
   install
     .command("agent")
@@ -43,6 +44,7 @@ export async function runCli(argv: string[]): Promise<void> {
     .option("--install-lark-cli <mode>", "lark-cli install behavior: auto or never.", "auto")
     .option("--start <value>", "Whether to start Twinny after installing: true or false.", "true")
     .option("--disable-keychain", "Store the Lark app secret in auth.json instead of macOS Keychain.")
+    .option("--no-gui", "Install the macOS service as a LaunchDaemon instead of a GUI LaunchAgent.")
     .action(async (options: {
       envMode: string;
       envKey: string[];
@@ -50,6 +52,7 @@ export async function runCli(argv: string[]): Promise<void> {
       installLarkCli: string;
       start: string;
       disableKeychain?: boolean;
+      gui?: boolean;
     }) => {
       const { runInstallAgent } = await import("./install-wizard.js");
       await runInstallAgent({
@@ -58,7 +61,8 @@ export async function runCli(argv: string[]): Promise<void> {
         installCodex: parseChoice(options.installCodex, ["auto", "never"], "--install-codex"),
         installLarkCli: parseChoice(options.installLarkCli, ["auto", "never"], "--install-lark-cli"),
         start: parseBooleanOption(options.start, "--start"),
-        disableKeychain: Boolean(options.disableKeychain)
+        disableKeychain: Boolean(options.disableKeychain),
+        noGui: options.gui === false
       });
     });
 

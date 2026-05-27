@@ -40,6 +40,7 @@ Default agent-mode choices are:
 - `--install-codex auto`: install Codex CLI with npm if it is missing.
 - `--install-lark-cli auto`: install lark-cli after Twinny resources are uploaded if it is missing.
 - `--start true`: start the daemon after installation.
+- `--no-gui`: on macOS, install as a LaunchDaemon with `UserName` set to the current user. Use this when the installer reports that the current environment has no GUI LaunchAgent.
 
 Only override these when the user explicitly asks. For manual environment import, pass one `--env-key` per variable:
 

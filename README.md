@@ -8,7 +8,7 @@
 
 ## 环境要求
 
-- macOS 或 Linux。installer 在 macOS 上管理 LaunchAgent，在 Linux 上管理 systemd user service。
+- macOS 或 Linux。installer 在 macOS 上管理 LaunchAgent（或 `--no-gui` LaunchDaemon），在 Linux 上管理 systemd user service。
 - Node.js 22.18.0 或更新版本。Twinny 使用 Node.js 内置 `node:sqlite` 模块，不需要额外安装 SQLite native addon。
 - `PATH` 中有 Codex CLI 0.130.0 或更新版本，或者设置 `CODEX_BINARY`；如果缺少 Codex，installer 可以自动安装。
 - 一个已配置下方权限和事件订阅的 Feishu/Lark 机器人应用。
@@ -30,6 +30,14 @@ Read https://raw.githubusercontent.com/hachiwii/twinny/master/agent_installation
 ```sh
 npx twinny@latest install
 ```
+
+macOS 默认安装为当前 GUI session 的 LaunchAgent。如果在 SSH、CI 或其他没有 GUI LaunchAgent 的环境中安装，installer 会退出并提示改用 no-gui 模式：
+
+```sh
+npx twinny@latest install --no-gui
+```
+
+`--no-gui` 会把 plist 写入 `/Library/LaunchDaemons`，并用当前用户写入 `UserName`；后续 `start`、`stop`、`restart`、`status` 会根据 `config.toml` 中的 service 配置继续操作 LaunchDaemon。
 
 常用 daemon 命令：
 
@@ -189,6 +197,8 @@ Twinny 从 `TWINNY_HOME` 读取 `config.toml`。
 | `[lark.redaction].email` | 发往 Lark 的 payload 中邮箱地址的脱敏策略。`mask` 保留域名并遮蔽邮箱用户名，例如 `alice@example.com` 会变成 `a***e@example.com`；`whitespace` 插入空格，例如 `alice @ example.com`；`none` 发送明文邮箱。飞书可能会拦截包含明文邮箱或手机号的 bot message。默认是 `mask`。 |
 | `[lark.redaction].chinese_phone_number` | 发往 Lark 的 payload 中中国手机号的脱敏策略。`mask` 保留前 3 位和后 4 位，例如 `138****5678`；`whitespace` 插入空格，例如 `138 1234 5678`；`none` 发送明文手机号。飞书可能会拦截包含明文邮箱或手机号的 bot message。默认是 `mask`。 |
 | `[permissions].p2p_default_profile` | 未配对 P2P 用户第一次给 Twinny 发消息时使用的 profile。用 `none` 表示默认拒绝，也可以填已配置的 profile 名称来自动授权。默认是 `none`。 |
+| `[service.launchd].mode` | macOS launchd 安装位置。`gui` 使用当前 `gui/<uid>` LaunchAgent（默认）；`daemon` 使用系统 LaunchDaemon。通常由 `twinny install --no-gui` 写入。 |
+| `[service.launchd].user_name` | `mode = "daemon"` 时写入 plist 的 `UserName`。通常由 `twinny install --no-gui` 自动写入当前用户。 |
 | `[profiles.<name>].codex_home` | 该 profile 使用的 `CODEX_HOME`。绝对路径会直接使用；相对路径会以 `TWINNY_HOME` 为基准解析。`host` 默认是 `~/.codex`；其他 profile 未设置时继承 `host`。 |
 | `[profiles.<name>].default_model` | 该 profile 新 thread 的默认模型。`host` 默认是 `gpt-5.5`；其他 profile 未设置时继承 `host`。 |
 | `[profiles.<name>].default_effort` | 该 profile 新 thread 的默认推理强度。常见取值是 `minimal`、`low`、`medium`、`high` 和 `xhigh`；`host` 默认是 `medium`；其他 profile 未设置时继承 `host`。 |
