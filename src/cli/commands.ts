@@ -53,7 +53,8 @@ export async function runCli(argv: string[]): Promise<void> {
       start: string;
       disableKeychain?: boolean;
       gui?: boolean;
-    }) => {
+    }, command: Command) => {
+      const parentOptions = command.parent?.opts<{ disableKeychain?: boolean; gui?: boolean }>() ?? {};
       const { runInstallAgent } = await import("./install-wizard.js");
       await runInstallAgent({
         envMode: parseChoice(options.envMode, ["default", "manual", "none"], "--env-mode"),
@@ -61,8 +62,8 @@ export async function runCli(argv: string[]): Promise<void> {
         installCodex: parseChoice(options.installCodex, ["auto", "never"], "--install-codex"),
         installLarkCli: parseChoice(options.installLarkCli, ["auto", "never"], "--install-lark-cli"),
         start: parseBooleanOption(options.start, "--start"),
-        disableKeychain: Boolean(options.disableKeychain),
-        noGui: options.gui === false
+        disableKeychain: Boolean(options.disableKeychain || parentOptions.disableKeychain),
+        noGui: options.gui === false || parentOptions.gui === false
       });
     });
 
