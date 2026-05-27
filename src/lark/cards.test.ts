@@ -178,6 +178,33 @@ describe("renderTwinnyAgentCard", () => {
     expect(findButton(queueCard, "关闭排队")).toMatchObject({ type: "primary" });
   });
 
+  it("shows only the latest ten working process items and folds older progress", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      messages: Array.from({ length: 12 }, (_, index) => ({
+        id: `m${index + 1}`,
+        text: `step ${index + 1}`
+      }))
+    }));
+    const bodyElements = (card.body as { elements: Array<Record<string, unknown>> }).elements;
+    const historyPanel = bodyElements.find((element) => element.tag === "collapsible_panel") as
+      | { header?: unknown; elements?: Array<{ content?: string }> }
+      | undefined;
+    const visibleProgress = bodyElements
+      .filter((element) => element.tag === "markdown" && typeof element.content === "string" && element.content.startsWith("- step "))
+      .map((element) => String(element.content));
+
+    expect(historyPanel).toMatchObject({
+      header: {
+        title: {
+          tag: "plain_text",
+          content: "更多历史进度"
+        }
+      }
+    });
+    expect(historyPanel?.elements?.[0]?.content).toBe("- step 1\n- step 2");
+    expect(visibleProgress).toEqual(Array.from({ length: 10 }, (_, index) => `- step ${index + 3}`));
+  });
+
   it("submits requestUserInput answers through a form button", () => {
     const card = renderTwinnyAgentCard(createOptions({
       status: "waiting_input",

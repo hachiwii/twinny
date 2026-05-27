@@ -94,6 +94,7 @@ export interface TwinnyAgentCardRuntimeStats {
 }
 
 export const PLAN_IMPLEMENT_INSTRUCTION_FORM_NAME = "plan_implement_instruction";
+const MAX_VISIBLE_WORKING_PROCESS_ITEMS = 10;
 
 interface ParsedPlanMarkdown {
   rawText: string;
@@ -742,24 +743,30 @@ function workingProcessElements(messages: TwinnyAgentCardMessage[]): LarkCardEle
   if (rendered.length === 0) {
     return [progressPlaceholderElement()];
   }
+  const historyCount = Math.max(0, rendered.length - MAX_VISIBLE_WORKING_PROCESS_ITEMS);
+  const historical = rendered.slice(0, historyCount);
+  const visible = rendered.slice(historyCount);
   const elements: LarkCardElement[] = [];
-  for (let index = 0; index < rendered.length; index += 1) {
+  if (historical.length > 0) {
+    elements.push(processPanel(historical, "更多历史进度"));
+  }
+  for (let index = 0; index < visible.length; index += 1) {
     if (index > 0) {
       elements.push({ tag: "hr", margin: "4px 0px 4px 0px" });
     }
-    elements.push(markdownElement(`- ${rendered[index]}`));
+    elements.push(markdownElement(`- ${visible[index]}`));
   }
   return elements;
 }
 
-function processPanel(renderedMessages: string[]): LarkCardElement {
+function processPanel(renderedMessages: string[], title = "工作过程"): LarkCardElement {
   return {
     tag: "collapsible_panel",
     expanded: false,
     header: {
       title: {
         tag: "plain_text",
-        content: "工作过程"
+        content: title
       },
       vertical_align: "center",
       icon: {
