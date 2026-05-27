@@ -61,7 +61,7 @@
   "dependencies": {
     "@clack/prompts": "^1.4.0",
     "@larksuiteoapi/node-sdk": "^1.52.0",
-    "better-sqlite3": "^11.10.0",
+    "better-sqlite3": "^12.10.0",
     "commander": "^13.1.0",
     "execa": "^9.5.2",
     "lru-cache": "^11.0.2",
