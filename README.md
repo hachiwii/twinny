@@ -45,7 +45,7 @@ npx twinny@latest uninstall
 
 如果不使用默认 home，给任意命令加上 `TWINNY_HOME=/path/to/home`。
 
-secret 会存放在 `config.toml` 之外。macOS 安装使用系统 Keychain。Linux 安装默认使用 `TWINNY_HOME/runtime/secrets.json` 下的 `0600` JSON secret 文件，除非 service environment 中提供了 `TWINNY_LARK_APP_SECRET`。
+secret 会存放在 `config.toml` 之外。非 macOS 安装默认把 Lark `app_secret` 写入 `TWINNY_HOME/auth.json` 的 `lark_app_secret` 字段。macOS 安装默认使用系统 Keychain；如果加 `--disable-keychain` 或 Keychain 写入失败，也会写入 `auth.json`。启动时优先读取 `auth.json`，然后才回退到 `TWINNY_LARK_APP_SECRET` 和旧 secret store（macOS Keychain，其他平台 `runtime/secrets.json`）。
 
 ## 飞书/Lark 应用配置
 

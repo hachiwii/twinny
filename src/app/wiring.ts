@@ -132,9 +132,9 @@ export class TwinnyRuntime {
       dbOpened = true;
 
       const appSecretAccount = this.config.homeIdentity.keychainAccounts.larkAppSecret;
-      const appSecret = await resolveLarkAppSecret(appSecretAccount, this.secretStore);
+      const appSecret = await resolveLarkAppSecret(appSecretAccount, this.secretStore, process.env, this.config.auth.larkAppSecret);
       if (!appSecret) {
-        throw new Error(`Lark app secret is missing: keychain:${appSecretAccount}`);
+        throw new Error(`Lark app secret is missing: auth.json lark_app_secret or keychain:${appSecretAccount}`);
       }
       this.codexPool = new ProfileCodexAppServerPool({
         binary: this.config.codex.binary,

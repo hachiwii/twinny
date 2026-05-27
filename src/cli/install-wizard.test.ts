@@ -339,6 +339,7 @@ describe("install wizard helpers", () => {
         FOO: "bar",
         OPENAI_API_KEY: "secret"
       },
+      platform: "linux",
       telemetry,
       stdout: output.writer,
       homeRandom: "a".repeat(32),
@@ -410,6 +411,8 @@ describe("install wizard helpers", () => {
     await expect(fs.readFile(path.join(home, "install-guide", "index.html"), "utf8")).resolves.toContain(
       "https://open.larkoffice.com/app/cli_agent/auth"
     );
+    await expect(fs.readFile(path.join(home, "auth.json"), "utf8")).resolves.toContain("\"lark_app_secret\": \"app_secret\"");
+    expect(secretStore.set).not.toHaveBeenCalled();
     expect(installManagedServiceMock).toHaveBeenCalledWith(expect.objectContaining({
       entrypoint: "/tmp/twinny-bin"
     }));
@@ -430,6 +433,47 @@ describe("install wizard helpers", () => {
       }),
       expect.objectContaining({ codexVersion: "0.133.0" })
     );
+  });
+
+  it("stores the app secret in auth.json on macOS when keychain is disabled", async () => {
+    const home = await tempHome();
+    const secretStore = {
+      get: vi.fn(async () => null),
+      set: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+      has: vi.fn(async () => false)
+    };
+
+    await runAgentInstallForSecretStorage({
+      home,
+      platform: "darwin",
+      disableKeychain: true,
+      secretStore: secretStore as NonNullable<Parameters<typeof runInstallAgent>[0]>["secretStore"]
+    });
+
+    await expect(fs.readFile(path.join(home, "auth.json"), "utf8")).resolves.toContain("\"lark_app_secret\": \"app_secret\"");
+    expect(secretStore.set).not.toHaveBeenCalled();
+  });
+
+  it("falls back to auth.json when macOS keychain storage fails", async () => {
+    const home = await tempHome();
+    const secretStore = {
+      get: vi.fn(async () => null),
+      set: vi.fn(async () => {
+        throw new Error("keychain unavailable");
+      }),
+      delete: vi.fn(async () => undefined),
+      has: vi.fn(async () => false)
+    };
+
+    await runAgentInstallForSecretStorage({
+      home,
+      platform: "darwin",
+      secretStore: secretStore as NonNullable<Parameters<typeof runInstallAgent>[0]>["secretStore"]
+    });
+
+    await expect(fs.readFile(path.join(home, "auth.json"), "utf8")).resolves.toContain("\"lark_app_secret\": \"app_secret\"");
+    expect(secretStore.set).toHaveBeenCalledOnce();
   });
 
   it("emits a failed agent event when Codex is missing and auto install is disabled", async () => {
@@ -558,4 +602,76 @@ function createNdjsonOutput(): {
     raw: () => chunks.join(""),
     events: () => chunks.join("").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
   };
+}
+
+async function runAgentInstallForSecretStorage(input: {
+  home: string;
+  platform: NodeJS.Platform;
+  disableKeychain?: boolean;
+  secretStore?: NonNullable<Parameters<typeof runInstallAgent>[0]>["secretStore"];
+}): Promise<void> {
+  const output = createNdjsonOutput();
+  const runCommand = vi.fn(async (command: string, args: string[]) => {
+    if (command === "which" && args[0] === "codex") {
+      return { stdout: "/usr/local/bin/codex\n", stderr: "", exitCode: 0 };
+    }
+    if (command === "/usr/local/bin/codex" && args[0] === "--version") {
+      return { stdout: "codex-cli 0.133.0", stderr: "", exitCode: 0 };
+    }
+    if (command === "/usr/local/bin/codex" && args.join(" ") === "login status") {
+      return { stdout: "Logged in using ChatGPT", stderr: "", exitCode: 0 };
+    }
+    if (command === "which" && args[0] === "lark-cli") {
+      return { stdout: "", stderr: "", exitCode: 1 };
+    }
+    throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+  });
+
+  await runInstallAgent({
+    env: { TWINNY_HOME: input.home },
+    platform: input.platform,
+    disableKeychain: input.disableKeychain,
+    telemetry: createTelemetry(),
+    stdout: output.writer,
+    homeRandom: "b".repeat(32),
+    runCommand: runCommand as unknown as CodexCommandRunner,
+    secretStore: input.secretStore,
+    readCodexDefaults: async () => ({ model: "gpt-5.5", effort: "medium" }),
+    resolveServiceEntrypoint: async () => "/tmp/twinny-bin",
+    installManagedService: vi.fn(async () => undefined) as NonNullable<Parameters<typeof runInstallAgent>[0]>["installManagedService"],
+    startManagedService: vi.fn(async () => undefined) as NonNullable<Parameters<typeof runInstallAgent>[0]>["startManagedService"],
+    uploadBundledAssets: vi.fn(async () => undefined) as NonNullable<Parameters<typeof runInstallAgent>[0]>["uploadBundledAssets"],
+    validateBotCredentials: vi.fn(async () => undefined),
+    installLarkCli: "never",
+    start: false,
+    auth: {
+      requestAppRegistration: vi.fn(async () => ({
+        deviceCode: "bot_device",
+        userCode: "BOT-CODE",
+        verificationUri: "https://open.feishu.cn/page/cli",
+        verificationUriComplete: "https://open.feishu.cn/page/cli?user_code=BOT-CODE",
+        expiresIn: 600,
+        interval: 1
+      })),
+      pollAppRegistration: vi.fn(async () => ({
+        appId: "cli_agent",
+        appSecret: "app_secret",
+        brand: "feishu" as const
+      })),
+      requestDeviceAuthorization: vi.fn(async () => ({
+        deviceCode: "owner_device",
+        userCode: "OWNER-CODE",
+        verificationUri: "https://open.feishu.cn/oauth",
+        verificationUriComplete: "https://open.feishu.cn/oauth?user_code=OWNER-CODE",
+        expiresIn: 600,
+        interval: 1
+      })),
+      pollDeviceToken: vi.fn(async () => ({
+        accessToken: "owner_token",
+        expiresIn: 7200,
+        refreshExpiresIn: 7200
+      })),
+      getBrowserUserInfo: vi.fn(async () => ({ openId: "ou_owner", name: "Owner" }))
+    }
+  });
 }

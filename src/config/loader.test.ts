@@ -153,6 +153,32 @@ describe("Twinny config loading and bootstrap", () => {
     });
   });
 
+  it("round-trips an optional lark app secret in auth.json", async () => {
+    const home = await tempHome();
+    const config = createTwinnyConfig({
+      home,
+      homeRandom,
+      auth: {
+        larkAppId: "cli_test",
+        larkAppSecret: "from-auth",
+        larkBrand: "feishu",
+        ownerOpenId: "ou_owner",
+        displayName: "Owner"
+      },
+      profiles: { host: {}, guest: {} }
+    });
+
+    await bootstrapTwinnyHome(config);
+
+    const loaded = await loadTwinnyConfig({ home, env: {} });
+    const rawAuth = await fs.readFile(path.join(home, "auth.json"), "utf8");
+    const rawConfig = await fs.readFile(path.join(home, "config.toml"), "utf8");
+
+    expect(loaded.auth.larkAppSecret).toBe("from-auth");
+    expect(JSON.parse(rawAuth)).toMatchObject({ lark_app_secret: "from-auth" });
+    expect(rawConfig).not.toContain("from-auth");
+  });
+
   it("serializes telemetry only when disabled or overridden", () => {
     const disabled = createTwinnyConfig({
       home: "/tmp/twinny",
@@ -206,16 +232,17 @@ describe("Twinny config loading and bootstrap", () => {
 });
 
 describe("secrets", () => {
-  it("resolves the per-home lark app secret account with env override", async () => {
+  it("resolves the lark app secret from auth, env, or secret store", async () => {
     const store = new MemorySecretStore();
     const account = `twinny.home.${homeRandom}.lark.app_secret`;
     await store.set(account, "from-store");
 
     await expect(resolveLarkAppSecret(account, store, {})).resolves.toBe("from-store");
     await expect(resolveLarkAppSecret(account, store, { TWINNY_LARK_APP_SECRET: "from-env" })).resolves.toBe("from-env");
+    await expect(resolveLarkAppSecret(account, store, { TWINNY_LARK_APP_SECRET: "from-env" }, "from-auth")).resolves.toBe("from-auth");
   });
 
-  it("stores Linux secrets in a 0600 JSON file by default", async () => {
+  it("stores file-backed secrets in a 0600 JSON file", async () => {
     const home = await tempHome();
     const paths = {
       secretsFile: path.join(home, "runtime", "secrets.json")

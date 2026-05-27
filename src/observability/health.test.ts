@@ -46,6 +46,10 @@ describe("doctor health checks", () => {
       value: "super-secret-value",
       detail: "present"
     });
+    await expect(resolveDoctorLarkAppSecret(account, store, "auth-secret-value")).resolves.toEqual({
+      value: "auth-secret-value",
+      detail: "present"
+    });
   });
 
   it("checks Lark bot open_id through a separate doctor item", async () => {

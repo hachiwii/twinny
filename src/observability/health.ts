@@ -45,7 +45,7 @@ export async function runDoctorChecks(): Promise<HealthSnapshot> {
   const secretStore = createDefaultSecretStore({ paths: configStatus.paths });
   let appSecret: string | undefined;
   await checkAsync(checks, "lark app_secret", async () => {
-    const secret = await resolveDoctorLarkAppSecret(config.homeIdentity.keychainAccounts.larkAppSecret, secretStore);
+    const secret = await resolveDoctorLarkAppSecret(config.homeIdentity.keychainAccounts.larkAppSecret, secretStore, config.auth.larkAppSecret);
     appSecret = secret.value;
     return secret.detail;
   });
@@ -186,11 +186,12 @@ export async function checkLarkRequiredScopes(
 
 export async function resolveDoctorLarkAppSecret(
   account: string,
-  secretStore: SecretStore
+  secretStore: SecretStore,
+  authAppSecret?: string
 ): Promise<{ value: string; detail: "present" }> {
-  const value = await resolveLarkAppSecret(account, secretStore);
+  const value = await resolveLarkAppSecret(account, secretStore, process.env, authAppSecret);
   if (!value) {
-    throw new Error(`missing keychain:${account}`);
+    throw new Error(`missing auth.json lark_app_secret or keychain:${account}`);
   }
   return {
     value,

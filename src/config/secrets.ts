@@ -197,8 +197,13 @@ export function larkAppSecretAccountForHomeRandom(homeRandom: string): string {
 export async function resolveLarkAppSecret(
   account: string,
   secretStore: SecretStore,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  authAppSecret?: string | null
 ): Promise<string | null> {
+  const authSecret = authAppSecret?.trim();
+  if (authSecret) {
+    return authSecret;
+  }
   if (env.TWINNY_LARK_APP_SECRET) {
     return env.TWINNY_LARK_APP_SECRET;
   }

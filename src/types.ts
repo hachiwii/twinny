@@ -102,6 +102,7 @@ export interface OwnerConfig {
 
 export interface TwinnyAuthFile {
   larkAppId: string;
+  larkAppSecret?: string;
   larkBrand: LarkBrand;
   ownerOpenId: string;
   displayName: string;

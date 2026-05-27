@@ -90,6 +90,7 @@ const rawConfigSchema = z
 const rawAuthSchema = z
   .object({
     lark_app_id: z.string(),
+    lark_app_secret: z.string().optional(),
     lark_brand: z.enum(["feishu", "lark"]).optional(),
     owner_open_id: z.string(),
     displayName: z.string()
@@ -265,6 +266,7 @@ export async function readTwinnyAuthFile(authFile: string): Promise<TwinnyAuthFi
   const parsed = rawAuthSchema.parse(JSON.parse(await fs.readFile(authFile, "utf8")));
   return normalizeAuthFile({
     larkAppId: parsed.lark_app_id,
+    larkAppSecret: parsed.lark_app_secret,
     larkBrand: parsed.lark_brand,
     ownerOpenId: parsed.owner_open_id,
     displayName: parsed.displayName
@@ -281,6 +283,7 @@ export function serializeTwinnyAuthFile(auth: TwinnyAuthFile): string {
   return JSON.stringify(
     {
       lark_app_id: normalized.larkAppId,
+      ...(normalized.larkAppSecret ? { lark_app_secret: normalized.larkAppSecret } : {}),
       lark_brand: normalized.larkBrand,
       owner_open_id: normalized.ownerOpenId,
       displayName: normalized.displayName
@@ -527,8 +530,10 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
 }
 
 function normalizeAuthFile(input: TwinnyAuthFileInput): TwinnyAuthFile {
+  const larkAppSecret = normalizeOptionalString(input.larkAppSecret);
   return {
     larkAppId: input.larkAppId.trim(),
+    ...(larkAppSecret ? { larkAppSecret } : {}),
     larkBrand: normalizeLarkBrand(input.larkBrand),
     ownerOpenId: input.ownerOpenId.trim(),
     displayName: input.displayName.trim()

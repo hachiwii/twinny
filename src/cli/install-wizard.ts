@@ -15,6 +15,7 @@ import {
   resolveBundledLogoPath,
   resolveTwinnyHome,
   createDefaultSecretStore,
+  writeTwinnyAuthFile,
   writeLarkCliProfileConfig,
   type SecretStore
 } from "../config/index.js";
@@ -150,6 +151,8 @@ export type InstallAgentEvent =
 
 export interface RunInstallAgentOptions {
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  disableKeychain?: boolean;
   telemetry?: TelemetryClient;
   stdout?: InstallAgentOutput;
   stdinIsTTY?: boolean;
@@ -258,6 +261,8 @@ interface InstallTelemetryState {
 
 export interface RunInstallWizardOptions {
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  disableKeychain?: boolean;
   telemetry?: TelemetryClient;
   stdinIsTTY?: boolean;
   stdoutIsTTY?: boolean;
@@ -329,7 +334,9 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
       appSecret: bot.appSecret,
       environment: serviceEnvironment.environment,
       result: finalizeResult,
-      telemetry: installTelemetry
+      telemetry: installTelemetry,
+      platform: options.platform,
+      disableKeychain: options.disableKeychain
     });
 
     const shouldStart = await cancelable(
@@ -557,7 +564,9 @@ export async function runInstallAgent(options: RunInstallAgentOptions = {}): Pro
       resolveServiceEntrypoint: options.resolveServiceEntrypoint,
       installManagedService: options.installManagedService,
       uploadBundledAssets: options.uploadBundledAssets,
-      onProgress: progress
+      onProgress: progress,
+      platform: options.platform,
+      disableKeychain: options.disableKeychain
     });
 
     progress("install_guide", "started");
@@ -1416,23 +1425,38 @@ async function finalizeInstall(input: {
     status: "started" | "completed" | "skipped",
     detail?: Record<string, unknown>
   ) => void;
+  platform?: NodeJS.Platform;
+  disableKeychain?: boolean;
 }): Promise<void> {
   const interactive = input.interactive !== false;
+  const platform = input.platform ?? process.platform;
+  const useKeychain = platform === "darwin" && !input.disableKeychain;
   input.onProgress?.("config", "started");
   if (interactive) {
     p.log.info("初始化 Twinny home");
   }
   try {
     const entrypoint = await (input.resolveServiceEntrypoint ?? resolveServiceEntrypoint)(input.config.home);
-    const bootstrap = await bootstrapTwinnyHome(input.config);
+    const paths = createRuntimePaths(input.config.home);
+    const configForAuth = useKeychain ? input.config : configWithLarkAppSecret(input.config, input.appSecret);
+    const bootstrap = await bootstrapTwinnyHome(configForAuth);
     input.result.homeCreated = true;
     input.result.wroteHomeRandom = bootstrap.wroteHomeRandom;
     input.result.wroteConfig = bootstrap.wroteConfig;
     input.result.wroteAuth = bootstrap.wroteAuth;
-    await (input.secretStore ?? createDefaultSecretStore({ paths: createRuntimePaths(input.config.home) })).set(
-      input.config.homeIdentity.keychainAccounts.larkAppSecret,
-      input.appSecret
-    );
+    if (useKeychain) {
+      try {
+        await (input.secretStore ?? createDefaultSecretStore({ paths })).set(
+          input.config.homeIdentity.keychainAccounts.larkAppSecret,
+          input.appSecret
+        );
+      } catch {
+        await writeTwinnyAuthFile(configWithLarkAppSecret(input.config, input.appSecret).auth, paths.authFile);
+        if (interactive) {
+          p.log.warn("macOS Keychain 写入失败，已改写入 auth.json");
+        }
+      }
+    }
     await (input.installManagedService ?? installManagedService)({
       config: input.config,
       entrypoint,
@@ -1597,6 +1621,16 @@ export async function detectLarkCliBinary(options: {
     options.telemetry && (options.telemetry.larkCliDetectResult = "error");
     throw error;
   }
+}
+
+function configWithLarkAppSecret(config: TwinnyConfig, appSecret: string): TwinnyConfig {
+  return {
+    ...config,
+    auth: {
+      ...config.auth,
+      larkAppSecret: appSecret
+    }
+  };
 }
 
 export async function installLarkCli(options: {

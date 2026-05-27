@@ -45,7 +45,7 @@ npx twinny@latest uninstall
 
 Use `TWINNY_HOME=/path/to/home` with any command when you are not using the default home.
 
-Secrets are stored outside `config.toml`. macOS installs use the system Keychain. Linux installs use a `0600` JSON secret file under `TWINNY_HOME/runtime/secrets.json`, unless `TWINNY_LARK_APP_SECRET` is provided in the service environment.
+Secrets are stored outside `config.toml`. Non-macOS installs store the Lark `app_secret` in the `lark_app_secret` field in `TWINNY_HOME/auth.json`. macOS installs use the system Keychain by default; with `--disable-keychain`, or if the Keychain write fails, the installer stores the secret in `auth.json` instead. On startup, Twinny reads `auth.json` first, then falls back to `TWINNY_LARK_APP_SECRET` and the legacy secret store (macOS Keychain, `runtime/secrets.json` on other platforms).
 
 ## Feishu/Lark App Configuration
 
