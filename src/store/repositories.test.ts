@@ -155,6 +155,69 @@ describe("ConversationRepository", () => {
     expect(tables).toEqual(["conversations", "lark_doc_watcher", "lark_messages", "threads"]);
   });
 
+  it("defaults, updates, and lists codex thread workspaces", () => {
+    const repo = createConversationRepository(db, { now: () => now });
+    const workspace = path.join(tempDir, "workspaces", "p2p_ou_456");
+    const conversationWorkspace = path.join(tempDir, "workspaces", "conversation-new");
+    const topicWorkspace = path.join(tempDir, "workspaces", "topic");
+    const topicWorkspaceNew = path.join(tempDir, "workspaces", "topic-new");
+    const profileCodexHome = path.join(tempDir, "profiles", "owner", "codex");
+
+    repo.create({
+      conversationKey: "p2p_ou_456",
+      type: "p2p",
+      chatId: "ou_456",
+      name: "Owner User",
+      profile: "owner",
+      codexThreadId: "thread-main",
+      workspace,
+      profileCodexHome
+    });
+
+    now = 1100;
+    const mainThread = repo.upsertCodexThread({
+      codexThreadId: "thread-main",
+      conversationKey: "p2p_ou_456",
+      profile: "owner"
+    });
+    expect(mainThread.workspace).toBe(workspace);
+
+    now = 1200;
+    const topicThread = repo.upsertCodexThread({
+      codexThreadId: "thread-topic",
+      conversationKey: "p2p_ou_456",
+      workspace: topicWorkspace,
+      profile: "owner",
+      larkThreadId: "topic-1"
+    });
+    expect(topicThread.workspace).toBe(topicWorkspace);
+
+    now = 1300;
+    expect(repo.updateConversationWorkspace("p2p_ou_456", conversationWorkspace)).toMatchObject({
+      workspace: conversationWorkspace,
+      updatedAt: 1300
+    });
+    expect(repo.getCodexThreadById("thread-main")).toMatchObject({
+      workspace: conversationWorkspace,
+      updatedAt: 1300
+    });
+    expect(repo.getCodexThreadById("thread-topic")).toMatchObject({
+      workspace: topicWorkspace,
+      updatedAt: 1200
+    });
+
+    now = 1400;
+    expect(repo.updateCodexThreadWorkspace("thread-topic", topicWorkspaceNew)).toMatchObject({
+      workspace: topicWorkspaceNew,
+      updatedAt: 1400
+    });
+    expect(repo.getByConversationKey("p2p_ou_456")).toMatchObject({
+      workspace: conversationWorkspace
+    });
+    expect(repo.listRecentThreadWorkspaces(0, 10)).toEqual([topicWorkspaceNew, conversationWorkspace]);
+    expect(repo.listRecentThreadWorkspaces(1350, 10)).toEqual([topicWorkspaceNew]);
+  });
+
   it("upserts Lark doc watchers by file and records latest comment time", () => {
     const repo = createConversationRepository(db, { now: () => now });
 

@@ -129,6 +129,7 @@ export interface RenderTwinnyStatusCardOptions {
   topic: {
     id?: string;
     name?: string;
+    workspace?: string;
     mode: CodexThreadMode;
     model: string;
     contextTokens: number;
@@ -251,6 +252,7 @@ export function renderTwinnyStatusCard(options: RenderTwinnyStatusCardOptions): 
     ...statusSection("话题", "command_outlined", [
       ["ID", options.topic.id ?? "未创建"],
       ["名称", options.topic.name ?? "未创建"],
+      ["Workspace", options.topic.workspace ?? "未创建"],
       ["模式", options.topic.mode],
       ["模型", options.topic.model],
       ["上下文窗口", formatStatusContext(options.topic.contextTokens, options.topic.contextWindow)],

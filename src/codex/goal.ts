@@ -56,6 +56,7 @@ export interface ThreadGoalClearParams {
 
 export interface GoalRunOptions {
   threadId: string;
+  cwd: string;
   objective?: string;
   onTurnStarted?: (turnId: string) => Promise<void> | void;
   onAgentMessage?: (message: CodexAgentMessage) => Promise<void> | void;
@@ -526,7 +527,7 @@ function goalOptionsAsTurnOptions(options: GoalRunOptions): {
 } {
   return {
     threadId: options.threadId,
-    cwd: "",
+    cwd: options.cwd,
     mode: "default",
     onRequestUserInput: options.onRequestUserInput,
     onSetThreadName: options.onSetThreadName

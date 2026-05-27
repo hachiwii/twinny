@@ -53,6 +53,7 @@ interface CodexThreadRow {
   id: number;
   thread_id: string;
   conversation_key: string;
+  workspace: string;
   name: string;
   lark_thread_id: string | null;
   profile: ProfileName;
@@ -145,6 +146,7 @@ interface LarkDocWatcherRow {
 export interface UpsertCodexThreadInput {
   codexThreadId: string;
   conversationKey: string;
+  workspace?: string;
   profile: ProfileName;
   name?: string;
   model?: string;
@@ -177,6 +179,7 @@ export interface InsertLarkMessageInput {
 export interface UpdateCodexThreadTokenUsageInput {
   codexThreadId: string;
   conversationKey: string;
+  workspace?: string;
   profile: ProfileName;
   inputTokens: number;
   outputTokens: number;
@@ -206,6 +209,7 @@ export interface UpdateCodexThreadGoalStatusInput {
 export interface UpdateCodexThreadCardInput {
   codexThreadId: string;
   conversationKey: string;
+  workspace?: string;
   profile: ProfileName;
   model?: string;
   effort?: string;
@@ -239,6 +243,7 @@ export interface ReplaceCodexThreadForLarkThreadInput {
   conversationKey: string;
   larkThreadId: string;
   codexThreadId: string;
+  workspace?: string;
   profile: ProfileName;
   model?: string;
   effort?: string;
@@ -285,6 +290,7 @@ export class ConversationRepository {
   private readonly selectByCodexThreadId: TwinnyStatement<[string], ConversationRow>;
   private readonly selectAll: TwinnyStatement<[], ConversationRow>;
   private readonly updateSettings: TwinnyStatement<[ConversationType, string, string, number, string]>;
+  private readonly updateConversationWorkspaceStatement: TwinnyStatement<[string, number, string]>;
   private readonly updateThread: TwinnyStatement<[
     string,
     ProfileName,
@@ -302,6 +308,7 @@ export class ConversationRepository {
   private readonly updateCodexThreadUsageStatement: TwinnyStatement<[Record<string, unknown>]>;
   private readonly updateCodexThreadCardStatement: TwinnyStatement<[Record<string, unknown>]>;
   private readonly updateCodexThreadModelSettingsStatement: TwinnyStatement<[string, string, number, string]>;
+  private readonly updateCodexThreadWorkspaceStatement: TwinnyStatement<[string, number, string]>;
   private readonly updateCodexThreadNameStatement: TwinnyStatement<[string, number, string]>;
   private readonly updateCodexThreadModeStatement: TwinnyStatement<[CodexThreadMode, number, string, string]>;
   private readonly updateCodexThreadStatusStatement: TwinnyStatement<[CodexThreadStatus, number, string, string]>;
@@ -309,6 +316,7 @@ export class ConversationRepository {
   private readonly selectCodexThreadWorkStats: TwinnyStatement<[string], CodexThreadWorkStatsRow>;
   private readonly selectCodexThreadStatusStats: TwinnyStatement<[Record<string, unknown>], CodexThreadStatusStatsRow>;
   private readonly selectConversationStatusStats: TwinnyStatement<[Record<string, unknown>], ConversationStatusStatsRow>;
+  private readonly selectRecentThreadWorkspacesStatement: TwinnyStatement<[number, number], { workspace: string }>;
   private readonly insertLarkMessageStatement: TwinnyStatement<[Record<string, unknown>]>;
   private readonly selectLarkMessageById: TwinnyStatement<[string], LarkMessageRow>;
   private readonly selectLarkMessageByEventId: TwinnyStatement<[string], LarkMessageRow>;
@@ -399,6 +407,12 @@ export class ConversationRepository {
           updated_at = ?
       WHERE conversation_key = ?
     `);
+    this.updateConversationWorkspaceStatement = this.db.prepare(`
+      UPDATE conversations
+      SET workspace = ?,
+          updated_at = ?
+      WHERE conversation_key = ?
+    `);
     this.updateThread = this.db.prepare(`
       UPDATE conversations
       SET thread_id = ?,
@@ -422,6 +436,7 @@ export class ConversationRepository {
       INSERT INTO threads (
         thread_id,
         conversation_key,
+        workspace,
         name,
         lark_thread_id,
         profile,
@@ -437,6 +452,7 @@ export class ConversationRepository {
       ) VALUES (
         @codexThreadId,
         @conversationKey,
+        COALESCE(@workspace, (SELECT workspace FROM conversations WHERE conversation_key = @conversationKey), ''),
         COALESCE(@name, '新会话'),
         @larkThreadId,
         @profile,
@@ -452,6 +468,7 @@ export class ConversationRepository {
       )
       ON CONFLICT(thread_id) DO UPDATE SET
         conversation_key = excluded.conversation_key,
+        workspace = COALESCE(@workspace, threads.workspace),
         name = COALESCE(@name, threads.name),
         lark_thread_id = COALESCE(excluded.lark_thread_id, threads.lark_thread_id),
         profile = excluded.profile,
@@ -479,6 +496,7 @@ export class ConversationRepository {
           profile = @profile,
           model = @model,
           effort = @effort,
+          workspace = COALESCE(@workspace, workspace),
           input_tokens = 0,
           output_tokens = 0,
           cached_input_tokens = 0,
@@ -498,6 +516,7 @@ export class ConversationRepository {
       INSERT INTO threads (
         thread_id,
         conversation_key,
+        workspace,
         name,
         lark_thread_id,
         profile,
@@ -517,6 +536,7 @@ export class ConversationRepository {
       ) VALUES (
         @codexThreadId,
         @conversationKey,
+        COALESCE(@workspace, (SELECT workspace FROM conversations WHERE conversation_key = @conversationKey), ''),
         COALESCE(@name, '新会话'),
         NULL,
         @profile,
@@ -536,6 +556,7 @@ export class ConversationRepository {
       )
       ON CONFLICT(thread_id) DO UPDATE SET
         conversation_key = excluded.conversation_key,
+        workspace = COALESCE(@workspace, threads.workspace),
         name = COALESCE(@name, threads.name),
         profile = excluded.profile,
         model = COALESCE(excluded.model, threads.model),
@@ -555,6 +576,7 @@ export class ConversationRepository {
       INSERT INTO threads (
         thread_id,
         conversation_key,
+        workspace,
         name,
         lark_thread_id,
         profile,
@@ -568,6 +590,7 @@ export class ConversationRepository {
       ) VALUES (
         @codexThreadId,
         @conversationKey,
+        COALESCE(@workspace, (SELECT workspace FROM conversations WHERE conversation_key = @conversationKey), ''),
         COALESCE(@name, '新会话'),
         @larkThreadId,
         @profile,
@@ -581,6 +604,7 @@ export class ConversationRepository {
       )
       ON CONFLICT(thread_id) DO UPDATE SET
         conversation_key = excluded.conversation_key,
+        workspace = COALESCE(@workspace, threads.workspace),
         name = COALESCE(@name, threads.name),
         lark_thread_id = COALESCE(excluded.lark_thread_id, threads.lark_thread_id),
         profile = excluded.profile,
@@ -594,6 +618,12 @@ export class ConversationRepository {
       UPDATE threads
       SET model = ?,
           effort = ?,
+          updated_at = ?
+      WHERE thread_id = ?
+    `);
+    this.updateCodexThreadWorkspaceStatement = this.db.prepare(`
+      UPDATE threads
+      SET workspace = ?,
           updated_at = ?
       WHERE thread_id = ?
     `);
@@ -729,6 +759,18 @@ export class ConversationRepository {
           AND route_kind <> 'side_message'
         GROUP BY thread_id, codex_turn_id
       )
+    `);
+    this.selectRecentThreadWorkspacesStatement = this.db.prepare(`
+      SELECT workspace
+      FROM (
+        SELECT workspace, MAX(updated_at) AS latest_updated_at
+        FROM threads
+        WHERE updated_at >= ?
+          AND workspace <> ''
+        GROUP BY workspace
+      )
+      ORDER BY latest_updated_at DESC
+      LIMIT ?
     `);
     this.insertLarkMessageStatement = this.db.prepare(`
       INSERT INTO lark_messages (
@@ -1045,14 +1087,16 @@ export class ConversationRepository {
       const profile = updateProfile ?? existing.profile;
       const profileCodexHome = updateProfileCodexHome ?? existing.profileCodexHome;
       const workspace = update.workspace ?? existing.workspace;
+      const now = this.now();
       this.updateThread.run(
         update.codexThreadId,
         profile,
         profileCodexHome,
         workspace,
-        this.now(),
+        now,
         conversationKey
       );
+      this.updateCodexThreadWorkspaceStatement.run(workspace, now, update.codexThreadId);
       return this.requireByConversationKey(conversationKey);
     });
 
@@ -1084,6 +1128,19 @@ export class ConversationRepository {
     return updateSettings();
   }
 
+  updateConversationWorkspace(conversationKey: string, workspace: string): ConversationRecord {
+    assertValidConversationKey(conversationKey);
+    assertAbsolutePath(workspace, "workspace");
+    const updateWorkspace = this.db.transaction(() => {
+      const existing = this.requireByConversationKey(conversationKey);
+      const now = this.now();
+      this.updateConversationWorkspaceStatement.run(workspace, now, conversationKey);
+      this.updateCodexThreadWorkspaceStatement.run(workspace, now, existing.codexThreadId);
+      return this.requireByConversationKey(conversationKey);
+    });
+    return updateWorkspace();
+  }
+
   markThreadHasRollout(conversationKey: string, codexThreadId: string): void {
     assertValidConversationKey(conversationKey);
     assertNonEmpty(codexThreadId, "codexThreadId");
@@ -1104,6 +1161,7 @@ export class ConversationRepository {
     this.upsertCodexThreadStatement.run({
       codexThreadId: input.codexThreadId,
       conversationKey: input.conversationKey,
+      workspace: input.workspace ?? null,
       name: input.name ?? null,
       larkThreadId: input.larkThreadId ?? null,
       profile,
@@ -1137,12 +1195,13 @@ export class ConversationRepository {
   replaceCodexThreadForLarkThread(
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; profile: ProfileName; model?: string; effort?: string; codexThreadHasRollout?: boolean }
+    update: { codexThreadId: string; profile: ProfileName; workspace?: string; model?: string; effort?: string; codexThreadHasRollout?: boolean }
   ): CodexThreadRecord {
     const input = {
       conversationKey,
       larkThreadId,
       codexThreadId: update.codexThreadId,
+      workspace: update.workspace,
       profile: update.profile,
       model: update.model,
       effort: update.effort,
@@ -1163,6 +1222,7 @@ export class ConversationRepository {
         this.upsertCodexThreadStatement.run({
           codexThreadId: input.codexThreadId,
           conversationKey: input.conversationKey,
+          workspace: input.workspace ?? null,
           name: null,
           larkThreadId: input.larkThreadId,
           profile,
@@ -1185,6 +1245,9 @@ export class ConversationRepository {
   updateCodexThreadTokenUsage(input: UpdateCodexThreadTokenUsageInput): CodexThreadRecord {
     assertNonEmpty(input.codexThreadId, "codexThreadId");
     assertValidConversationKey(input.conversationKey);
+    if (input.workspace !== undefined) {
+      assertAbsolutePath(input.workspace, "workspace");
+    }
     const profile = resolveRequiredInputProfile(input);
     assertValidProfile(profile);
     assertNonNegativeFinite(input.inputTokens, "inputTokens");
@@ -1201,6 +1264,7 @@ export class ConversationRepository {
     this.updateCodexThreadUsageStatement.run({
       codexThreadId: input.codexThreadId,
       conversationKey: input.conversationKey,
+      workspace: input.workspace ?? null,
       name: null,
       profile,
       model: null,
@@ -1222,6 +1286,9 @@ export class ConversationRepository {
   updateCodexThreadCard(input: UpdateCodexThreadCardInput): CodexThreadRecord {
     assertNonEmpty(input.codexThreadId, "codexThreadId");
     assertValidConversationKey(input.conversationKey);
+    if (input.workspace !== undefined) {
+      assertAbsolutePath(input.workspace, "workspace");
+    }
     const profile = resolveRequiredInputProfile(input);
     assertValidProfile(profile);
     if (input.model !== undefined) {
@@ -1246,6 +1313,7 @@ export class ConversationRepository {
     this.updateCodexThreadCardStatement.run({
       codexThreadId: input.codexThreadId,
       conversationKey: input.conversationKey,
+      workspace: input.workspace ?? null,
       name: input.name ?? null,
       profile,
       model: input.model ?? null,
@@ -1273,6 +1341,16 @@ export class ConversationRepository {
       throw new TwinnyError(`Codex thread ${input.codexThreadId} was not found`, "CODEX_THREAD_NOT_FOUND");
     }
     return this.requireCodexThreadById(input.codexThreadId);
+  }
+
+  updateCodexThreadWorkspace(codexThreadId: string, workspace: string): CodexThreadRecord {
+    assertNonEmpty(codexThreadId, "codexThreadId");
+    assertAbsolutePath(workspace, "workspace");
+    const result = this.updateCodexThreadWorkspaceStatement.run(workspace, this.now(), codexThreadId);
+    if (result.changes === 0) {
+      throw new TwinnyError(`Codex thread ${codexThreadId} was not found`, "CODEX_THREAD_NOT_FOUND");
+    }
+    return this.requireCodexThreadById(codexThreadId);
   }
 
   updateCodexThreadName(codexThreadId: string, name: string): CodexThreadRecord | undefined {
@@ -1363,6 +1441,12 @@ export class ConversationRepository {
       totalTokens: Math.trunc(row?.total_tokens ?? 0),
       totalWorkDurationMs: Math.trunc(row?.total_work_duration_ms ?? 0)
     };
+  }
+
+  listRecentThreadWorkspaces(since: number, limit = 10): string[] {
+    assertNonNegativeFinite(since, "since");
+    assertPositiveInteger(limit, "limit");
+    return this.selectRecentThreadWorkspacesStatement.all(Math.trunc(since), Math.trunc(limit)).map((row) => row.workspace);
   }
 
   insertLarkMessage(input: InsertLarkMessageInput): LarkMessageRecord {
@@ -1720,6 +1804,7 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     id: row.id,
     codexThreadId: row.thread_id,
     conversationKey: row.conversation_key,
+    workspace: row.workspace,
     name: row.name,
     larkThreadId: row.lark_thread_id ?? undefined,
     profile: row.profile,
@@ -1823,6 +1908,9 @@ function validateNewConversation(input: NewConversationRecord): void {
 function validateCodexThreadInput(input: UpsertCodexThreadInput): void {
   assertNonEmpty(input.codexThreadId, "codexThreadId");
   assertValidConversationKey(input.conversationKey);
+  if (input.workspace !== undefined) {
+    assertAbsolutePath(input.workspace, "workspace");
+  }
   assertValidProfile(resolveRequiredInputProfile(input));
   if (input.name !== undefined) {
     assertNonEmpty(input.name, "name");
@@ -1845,6 +1933,9 @@ function validateReplaceCodexThreadForLarkThread(input: ReplaceCodexThreadForLar
   assertValidConversationKey(input.conversationKey);
   assertNonEmpty(input.larkThreadId, "larkThreadId");
   assertNonEmpty(input.codexThreadId, "codexThreadId");
+  if (input.workspace !== undefined) {
+    assertAbsolutePath(input.workspace, "workspace");
+  }
   assertValidProfile(resolveRequiredInputProfile(input));
   if (input.model !== undefined) {
     assertNonEmpty(input.model, "model");
@@ -2063,5 +2154,11 @@ function assertNonEmpty(value: string, field: string): void {
 function assertNonNegativeFinite(value: number, field: string): void {
   if (!Number.isFinite(value) || value < 0) {
     throw new TwinnyError(`${field} must be a non-negative finite number`, "CODEX_THREAD_TOKEN_USAGE_INVALID");
+  }
+}
+
+function assertPositiveInteger(value: number, field: string): void {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new TwinnyError(`${field} must be a positive integer`, "CONVERSATION_FIELD_INVALID");
   }
 }

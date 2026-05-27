@@ -211,6 +211,9 @@ export class CodexAppServer extends EventEmitter {
   }
 
   async startTurn(options: TurnStartOptions): Promise<import("../types.js").CodexTurnResult> {
+    if (options.cwd) {
+      await this.prepareThreadWorkspace(options.cwd);
+    }
     return startCodexTurn(this.protocol, options, { requestTimeoutMs: this.options.requestTimeoutMs });
   }
 
@@ -221,7 +224,10 @@ export class CodexAppServer extends EventEmitter {
     return compactCodexThread(this.protocol, options, { requestTimeoutMs: this.options.requestTimeoutMs });
   }
 
-  async steerTurn(options: { threadId: string; turnId: string; text?: string; input?: CodexTurnInput }): Promise<void> {
+  async steerTurn(options: { threadId: string; turnId: string; text?: string; input?: CodexTurnInput; cwd?: string }): Promise<void> {
+    if (options.cwd) {
+      await this.prepareThreadWorkspace(options.cwd);
+    }
     await steerCodexTurn(this.protocol, options);
   }
 
@@ -246,6 +252,9 @@ export class CodexAppServer extends EventEmitter {
   }
 
   async runGoal(options: GoalRunOptions): Promise<import("../types.js").CodexTurnResult> {
+    if (options.cwd) {
+      await this.prepareThreadWorkspace(options.cwd);
+    }
     return runCodexThreadGoal(this.protocol, options, { requestTimeoutMs: this.options.requestTimeoutMs });
   }
 

@@ -220,6 +220,7 @@ export interface CodexThreadRecord {
   id: number;
   codexThreadId: string;
   conversationKey: string;
+  workspace: string;
   name: string;
   larkThreadId?: string;
   profile: ProfileName;

@@ -18,8 +18,8 @@ describe("store migrations", () => {
   it("loads the bundled store migrations", () => {
     const migrations = loadStoreMigrations();
 
-    expect(currentStoreSchemaVersion).toBe(3);
-    expect(migrations).toHaveLength(3);
+    expect(currentStoreSchemaVersion).toBe(4);
+    expect(migrations).toHaveLength(4);
     expect(migrations[0]).toMatchObject({
       version: 1,
       name: "0001_initial"
@@ -31,6 +31,10 @@ describe("store migrations", () => {
     expect(migrations[2]).toMatchObject({
       version: 3,
       name: "0003_lark_message_doc_comment_id"
+    });
+    expect(migrations[3]).toMatchObject({
+      version: 4,
+      name: "0004_thread_workspace"
     });
   });
 
@@ -115,7 +119,8 @@ describe("store migrations", () => {
         { name: "goal_status", type: "TEXT", notnull: 1, pk: 0 },
         { name: "goal_updated_at", type: "INTEGER", notnull: 0, pk: 0 },
         { name: "model", type: "TEXT", notnull: 0, pk: 0 },
-        { name: "effort", type: "TEXT", notnull: 0, pk: 0 }
+        { name: "effort", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "workspace", type: "TEXT", notnull: 1, pk: 0 }
       ]);
 
       const threadIndexes = db
@@ -229,6 +234,66 @@ describe("store migrations", () => {
         .all()
         .map((row) => row.name);
       expect(tables).toEqual(["conversations", "lark_doc_watcher", "lark_messages", "threads"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("backfills thread workspace from conversations when upgrading to version 4", () => {
+    const db = new TwinnyDatabase(":memory:");
+    const migrations = loadStoreMigrations();
+    try {
+      expect(runStoreMigrations(db, { migrations: migrations.slice(0, 3) })).toBe(3);
+
+      db.exec(`
+        INSERT INTO conversations (
+          conversation_key,
+          type,
+          chat_id,
+          name,
+          profile,
+          thread_id,
+          workspace,
+          profile_codex_home,
+          created_at,
+          updated_at,
+          response_mode
+        ) VALUES (
+          'p2p_ou_guest',
+          'p2p',
+          'ou_guest',
+          'Guest User',
+          'guest',
+          'thread_1',
+          '/tmp/twinny/workspaces/p2p_ou_guest',
+          '/tmp/twinny/profiles/guest/codex',
+          100,
+          100,
+          'all'
+        );
+
+        INSERT INTO threads (
+          thread_id,
+          conversation_key,
+          profile,
+          created_at,
+          updated_at
+        ) VALUES
+          ('thread_1', 'p2p_ou_guest', 'guest', 100, 100),
+          ('thread_orphan', 'p2p_missing', 'guest', 100, 200);
+      `);
+
+      expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
+
+      const rows = db
+        .prepare<[], { thread_id: string; workspace: string }>(
+          "SELECT thread_id, workspace FROM threads ORDER BY thread_id ASC"
+        )
+        .all();
+      expect(rows).toEqual([
+        { thread_id: "thread_1", workspace: "/tmp/twinny/workspaces/p2p_ou_guest" },
+        { thread_id: "thread_orphan", workspace: "" }
+      ]);
     } finally {
       db.close();
     }

@@ -126,7 +126,7 @@ describe("CodexAppServer", () => {
         status: "completed",
         durationMs: 3
       });
-      await expect(server.runGoal({ threadId: "thread-existing", objective: "finish goal" })).resolves.toMatchObject({
+      await expect(server.runGoal({ threadId: "thread-existing", cwd: workspace, objective: "finish goal" })).resolves.toMatchObject({
         threadId: "thread-existing",
         turnId: "goal-turn-1",
         text: "goal completed",

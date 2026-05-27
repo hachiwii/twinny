@@ -26,7 +26,7 @@ describe("runCodexThreadGoal", () => {
     const protocol = new FakeGoalProtocol();
     const resultPromise = runCodexThreadGoal(
       protocol as unknown as CodexProtocolClient,
-      { threadId: "thread_1", objective: "calculate pi" },
+      { threadId: "thread_1", cwd: "/tmp/twinny/workspaces/p2p_ou_1", objective: "calculate pi" },
       { completionTimeoutMs: 1_000 }
     );
 
@@ -79,7 +79,7 @@ describe("runCodexThreadGoal", () => {
     const protocol = new FakeGoalProtocol();
     const resultPromise = runCodexThreadGoal(
       protocol as unknown as CodexProtocolClient,
-      { threadId: "thread_1", objective: "calculate pi" },
+      { threadId: "thread_1", cwd: "/tmp/twinny/workspaces/p2p_ou_1", objective: "calculate pi" },
       { completionTimeoutMs: 1_000 }
     );
 
@@ -141,7 +141,7 @@ describe("runCodexThreadGoal", () => {
     const codexError = vi.fn();
     const resultPromise = runCodexThreadGoal(
       protocol as unknown as CodexProtocolClient,
-      { threadId: "thread_1", objective: "calculate pi", onCodexError: codexError },
+      { threadId: "thread_1", cwd: "/tmp/twinny/workspaces/p2p_ou_1", objective: "calculate pi", onCodexError: codexError },
       { completionTimeoutMs: 1_000 }
     );
 
@@ -218,7 +218,7 @@ describe("runCodexThreadGoal", () => {
     const protocol = new FakeGoalProtocol();
     const resultPromise = runCodexThreadGoal(
       protocol as unknown as CodexProtocolClient,
-      { threadId: "thread_1", objective: "calculate pi" },
+      { threadId: "thread_1", cwd: "/tmp/twinny/workspaces/p2p_ou_1", objective: "calculate pi" },
       { completionTimeoutMs: 1_000 }
     );
 

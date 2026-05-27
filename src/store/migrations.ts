@@ -14,11 +14,12 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 3;
+export const currentStoreSchemaVersion = 4;
 
 const baselineMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const larkDocWatcherMigrationFile = fileURLToPath(new URL("../../migrations/0002_lark_doc_watcher.sql", import.meta.url));
 const larkMessageDocCommentIdMigrationFile = fileURLToPath(new URL("../../migrations/0003_lark_message_doc_comment_id.sql", import.meta.url));
+const threadWorkspaceMigrationFile = fileURLToPath(new URL("../../migrations/0004_thread_workspace.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -36,6 +37,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 3,
       name: "0003_lark_message_doc_comment_id",
       sql: fs.readFileSync(larkMessageDocCommentIdMigrationFile, "utf8")
+    },
+    {
+      version: 4,
+      name: "0004_thread_workspace",
+      sql: fs.readFileSync(threadWorkspaceMigrationFile, "utf8")
     }
   ];
 }
@@ -123,6 +129,21 @@ function validateSchemaBeforeMigration(db: TwinnyDatabase, currentVersion: numbe
       "last_comment_received_at"
     ]);
   }
+  if (currentVersion >= 4) {
+    requiredColumnsByTable.set("threads", [
+      "thread_id",
+      "conversation_key",
+      "profile",
+      "thread_has_rollout",
+      "mode",
+      "status",
+      "name",
+      "goal_status",
+      "model",
+      "effort",
+      "workspace"
+    ]);
+  }
 
   validateRequiredColumns(db, requiredColumnsByTable);
 }
@@ -135,7 +156,7 @@ function validateBaselineSchema(db: TwinnyDatabase): void {
     ],
     [
       "threads",
-      ["thread_id", "conversation_key", "profile", "thread_has_rollout", "mode", "status", "name", "goal_status", "model", "effort"]
+      ["thread_id", "conversation_key", "profile", "thread_has_rollout", "mode", "status", "name", "goal_status", "model", "effort", "workspace"]
     ],
     [
       "lark_messages",

@@ -453,6 +453,137 @@ describe("ConversationManager", () => {
     await waitForDelay();
   });
 
+  it("lists cached workspaces and selects one with /workspace", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-manager-workspace-"));
+    try {
+      const firstWorkspace = path.join(tempDir, "first");
+      const secondWorkspace = path.join(tempDir, "second");
+      fs.mkdirSync(firstWorkspace);
+      fs.mkdirSync(secondWorkspace);
+      const store = createRepository(conversationRecord());
+      const { repository } = store;
+      vi.mocked(repository.listRecentThreadWorkspaces).mockReturnValue([firstWorkspace, secondWorkspace]);
+      const codex = createCodex();
+      const lark = createLarkResponder();
+      const manager = createManager({ repository, codex, lark });
+
+      manager.submitIncoming(message("m_workspace_list", "/workspace"));
+
+      await waitForExpect(() =>
+        expect(lark.replyMarkdown).toHaveBeenCalledWith(
+          "m_workspace_list",
+          `1. \`${firstWorkspace}\`\n2. \`${secondWorkspace}\``
+        )
+      );
+      expect(codex.startTurn).not.toHaveBeenCalled();
+
+      manager.submitIncoming(message("m_workspace_select", "/workspace 2"));
+
+      await waitForExpect(() =>
+        expect(lark.replyText).toHaveBeenCalledWith(
+          "m_workspace_select",
+          [
+            `已设置 conversation workspace：${secondWorkspace}`,
+            "主会话 thread 已同步：thread_1"
+          ].join("\n")
+        )
+      );
+      expect(store.row?.workspace).toBe(secondWorkspace);
+      expect(repository.getCodexThreadById("thread_1")).toMatchObject({ workspace: secondWorkspace });
+      expect(codex.startTurn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects missing workspace directories", async () => {
+    const missingWorkspace = path.join(os.tmpdir(), `twinny-missing-workspace-${Date.now()}`);
+    fs.rmSync(missingWorkspace, { recursive: true, force: true });
+    const { repository } = createRepository(conversationRecord());
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, lark });
+
+    manager.submitIncoming(message("m_workspace_missing", `/workspace ${missingWorkspace}`));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith(
+        "m_workspace_missing",
+        `workspace 路径不存在：${missingWorkspace}`
+      )
+    );
+  });
+
+  it("shares workspace selection lists between /workspace and /cd on the same thread", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-manager-cd-"));
+    try {
+      const topicWorkspace = path.join(tempDir, "topic");
+      fs.mkdirSync(topicWorkspace);
+      const conversation = groupConversationRecord();
+      const { repository } = createRepository(conversation, {
+        codexThreads: [
+          codexThreadRecord({
+            id: 20,
+            codexThreadId: "thread_topic",
+            conversationKey: "group_oc_group",
+            larkThreadId: "topic_thread",
+            workspace: "/tmp/twinny/workspaces/group_oc_group/topic",
+            profile: "guest"
+          })
+        ]
+      });
+      vi.mocked(repository.listRecentThreadWorkspaces).mockReturnValue([topicWorkspace]);
+      const codex = createCodex();
+      const lark = createLarkResponder();
+      const manager = createManager({ repository, codex, lark });
+      const topicContext = {
+        chatType: "topic_group" as const,
+        larkThreadId: "topic_thread",
+        larkRootMessageId: "topic_root"
+      };
+
+      manager.submitIncoming(groupMessage("m_topic_workspace_list", "/workspace", topicContext));
+
+      await waitForExpect(() =>
+        expect(lark.replyMarkdown).toHaveBeenCalledWith("m_topic_workspace_list", `1. \`${topicWorkspace}\``)
+      );
+
+      manager.submitIncoming(groupMessage("m_topic_cd_select", "/cd 1", topicContext));
+
+      await waitForExpect(() =>
+        expect(lark.replyText).toHaveBeenCalledWith(
+          "m_topic_cd_select",
+          `已设置当前 thread workspace：${topicWorkspace}`
+        )
+      );
+      expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
+        workspace: conversation.workspace
+      });
+      expect(repository.getCodexThreadById("thread_group")).toMatchObject({
+        workspace: conversation.workspace
+      });
+      expect(repository.getCodexThreadById("thread_topic")).toMatchObject({
+        workspace: topicWorkspace
+      });
+      expect(codex.startTurn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects /cd on the main thread", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, lark });
+
+    manager.submitIncoming(message("m_cd_main", "/cd"));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith("m_cd_main", "主会话请使用 /workspace 设置 workspace。")
+    );
+    expect(repository.listRecentThreadWorkspaces).not.toHaveBeenCalled();
+    expect(repository.updateCodexThreadWorkspace).not.toHaveBeenCalled();
+  });
+
   it("adds the active turn duration when token usage refreshes a bound thread card", async () => {
     let now = 1_000;
     const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -3184,6 +3315,7 @@ describe("ConversationManager", () => {
     expect(repository.updateCodexThreadCard).toHaveBeenLastCalledWith({
       conversationKey: "group_oc_group",
       codexThreadId: "thread_empty",
+      workspace: "/tmp/twinny/workspaces/group_oc_group",
       profile: "host",
       larkThreadId: "topic_thread_empty",
       creatorOpenId: "ou_guest",
@@ -3246,6 +3378,7 @@ describe("ConversationManager", () => {
       expect(repository.updateCodexThreadCard).toHaveBeenCalledWith({
         conversationKey: "group_oc_group",
         codexThreadId: "thread_initial",
+        workspace: "/tmp/twinny/workspaces/group_oc_group",
         profile: "host",
         larkThreadId: cardThreadId,
         creatorOpenId: "ou_guest",
@@ -3791,6 +3924,7 @@ describe("ConversationManager", () => {
     expect(repository.upsertCodexThread).toHaveBeenCalledWith({
       conversationKey: "p2p_ou_guest",
       codexThreadId: "thread_1_side_1",
+      workspace: "/tmp/twinny/workspaces/p2p_ou_guest",
       profile: "guest",
       model: "gpt-5.5",
       effort: "medium"
@@ -8671,6 +8805,7 @@ function createRepository(initial?: ConversationRecord, options: {
   const putCodexThread = (input: {
     codexThreadId: string;
     conversationKey: string;
+    workspace?: string;
     profile: ProfileName;
     model?: string;
     effort?: string;
@@ -8686,6 +8821,7 @@ function createRepository(initial?: ConversationRecord, options: {
       id: existing?.id ?? nextCodexThreadId++,
       codexThreadId: input.codexThreadId,
       conversationKey: input.conversationKey,
+      workspace: input.workspace ?? existing?.workspace ?? row?.workspace ?? "/tmp/twinny/workspaces/p2p_ou_guest",
       name: input.name ?? existing?.name ?? "新会话",
       larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
       profile: input.profile,
@@ -8703,7 +8839,7 @@ function createRepository(initial?: ConversationRecord, options: {
   const replaceCodexThreadForLarkThread = (
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; profile: ProfileName; model?: string; effort?: string; codexThreadHasRollout?: boolean }
+    update: { codexThreadId: string; profile: ProfileName; workspace?: string; model?: string; effort?: string; codexThreadHasRollout?: boolean }
   ): CodexThreadRecord => {
     const existing = getCodexThreadByLarkThread(conversationKey, larkThreadId);
     if (existing) {
@@ -8713,6 +8849,7 @@ function createRepository(initial?: ConversationRecord, options: {
       id: existing?.id ?? nextCodexThreadId++,
       codexThreadId: update.codexThreadId,
       conversationKey,
+      workspace: update.workspace ?? existing?.workspace ?? row?.workspace ?? "/tmp/twinny/workspaces/p2p_ou_guest",
       name: existing?.name ?? "新会话",
       larkThreadId,
       profile: update.profile,
@@ -8731,6 +8868,7 @@ function createRepository(initial?: ConversationRecord, options: {
     putCodexThread({
       codexThreadId: row.codexThreadId,
       conversationKey: row.conversationKey,
+      workspace: row.workspace,
       profile: row.profile,
       codexThreadHasRollout: options.mainThreadHasRollout ?? true
     });
@@ -8812,6 +8950,7 @@ function createRepository(initial?: ConversationRecord, options: {
         putCodexThread({
           codexThreadId: row.codexThreadId,
           conversationKey: row.conversationKey,
+          workspace: row.workspace,
           profile: row.profile,
           codexThreadHasRollout: false
         });
@@ -8822,6 +8961,11 @@ function createRepository(initial?: ConversationRecord, options: {
           throw new Error("missing conversation");
         }
         Object.assign(row, update, { updatedAt: Date.now() });
+        const thread = codexThreads.get(update.codexThreadId);
+        if (thread) {
+          thread.workspace = update.workspace ?? row.workspace;
+          thread.updatedAt = row.updatedAt;
+        }
         return row;
       },
       updateConversationSettings: (_key, update) => {
@@ -8829,6 +8973,19 @@ function createRepository(initial?: ConversationRecord, options: {
           throw new Error("missing conversation");
         }
         Object.assign(row, update, { updatedAt: Date.now() });
+        return row;
+      },
+      updateConversationWorkspace: (_key, workspace) => {
+        if (!row) {
+          throw new Error("missing conversation");
+        }
+        row.workspace = workspace;
+        row.updatedAt = Date.now();
+        const thread = codexThreads.get(row.codexThreadId);
+        if (thread) {
+          thread.workspace = workspace;
+          thread.updatedAt = row.updatedAt;
+        }
         return row;
       },
       markThreadHasRollout: (_key, codexThreadId) => {
@@ -8846,6 +9003,7 @@ function createRepository(initial?: ConversationRecord, options: {
           ...existing,
           codexThreadId: input.codexThreadId,
           conversationKey: input.conversationKey,
+          workspace: input.workspace ?? existing?.workspace ?? row?.workspace ?? "/tmp/twinny/workspaces/p2p_ou_guest",
           profile: input.profile,
           inputTokens: input.inputTokens,
           outputTokens: input.outputTokens,
@@ -8867,6 +9025,7 @@ function createRepository(initial?: ConversationRecord, options: {
           ...existing,
           codexThreadId: input.codexThreadId,
           conversationKey: input.conversationKey,
+          workspace: input.workspace ?? existing?.workspace ?? row?.workspace ?? "/tmp/twinny/workspaces/p2p_ou_guest",
           name: input.name ?? existing?.name ?? "新会话",
           larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
           profile: input.profile,
@@ -8887,6 +9046,15 @@ function createRepository(initial?: ConversationRecord, options: {
         }
         existing.model = input.model;
         existing.effort = input.effort;
+        existing.updatedAt = Date.now();
+        return existing;
+      }),
+      updateCodexThreadWorkspace: vi.fn((codexThreadId, workspace) => {
+        const existing = codexThreads.get(codexThreadId);
+        if (!existing) {
+          throw new Error("missing codex thread");
+        }
+        existing.workspace = workspace;
         existing.updatedAt = Date.now();
         return existing;
       }),
@@ -9018,6 +9186,21 @@ function createRepository(initial?: ConversationRecord, options: {
           totalWorkDurationMs: [...turns.values()].reduce((sum, turn) =>
             sum + (turn.terminalAt && turn.terminalAt > turn.startedAt ? turn.terminalAt - turn.startedAt : 0), 0)
         };
+      }),
+      listRecentThreadWorkspaces: vi.fn((_since, limit = 10) => {
+        const seen = new Set<string>();
+        const result: string[] = [];
+        for (const thread of [...codexThreads.values()].sort((left, right) => right.updatedAt - left.updatedAt)) {
+          if (!thread.workspace || seen.has(thread.workspace)) {
+            continue;
+          }
+          seen.add(thread.workspace);
+          result.push(thread.workspace);
+          if (result.length >= limit) {
+            break;
+          }
+        }
+        return result;
       }),
       insertLarkMessage: vi.fn((input) => {
         const existing = larkMessagesByEventId.get(input.eventId);
@@ -9264,10 +9447,12 @@ function isUserMessageRouteKind(routeKind: LarkMessageRecord["routeKind"]): bool
 }
 
 function codexThreadRecord(overrides: Partial<CodexThreadRecord> = {}): CodexThreadRecord {
+  const conversationKey = overrides.conversationKey ?? "p2p_ou_guest";
   const record: CodexThreadRecord = {
     id: 1,
     codexThreadId: "thread_1",
-    conversationKey: "p2p_ou_guest",
+    conversationKey,
+    workspace: `/tmp/twinny/workspaces/${conversationKey}`,
     name: "新会话",
     profile: "guest",
     mode: "default",

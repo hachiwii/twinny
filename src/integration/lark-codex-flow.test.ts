@@ -2085,6 +2085,7 @@ function adaptConversationRepository(repository: StoreConversationRepository): M
     create: repository.create.bind(repository),
     updateThreadBinding: repository.updateThreadBinding.bind(repository),
     updateConversationSettings: repository.updateConversationSettings.bind(repository),
+    updateConversationWorkspace: repository.updateConversationWorkspace.bind(repository),
     markThreadHasRollout: repository.markThreadHasRollout.bind(repository),
     getCodexThreadById: repository.getCodexThreadById.bind(repository),
     getCodexThreadByConversationAndLarkThread: repository.getCodexThreadByConversationAndLarkThread.bind(repository),
@@ -2101,12 +2102,14 @@ function adaptConversationRepository(repository: StoreConversationRepository): M
     clearCodexThreadGoalStatus: repository.clearCodexThreadGoalStatus.bind(repository),
     updateCodexThreadCard: repository.updateCodexThreadCard.bind(repository),
     updateCodexThreadModelSettings: repository.updateCodexThreadModelSettings.bind(repository),
+    updateCodexThreadWorkspace: repository.updateCodexThreadWorkspace.bind(repository),
     updateCodexThreadName: repository.updateCodexThreadName.bind(repository),
     updateCodexThreadMode: repository.updateCodexThreadMode.bind(repository),
     updateCodexThreadStatus: repository.updateCodexThreadStatus.bind(repository),
     getCodexThreadWorkStats: repository.getCodexThreadWorkStats.bind(repository),
     getCodexThreadStatusStats: repository.getCodexThreadStatusStats.bind(repository),
     getConversationStatusStats: repository.getConversationStatusStats.bind(repository),
+    listRecentThreadWorkspaces: repository.listRecentThreadWorkspaces.bind(repository),
     insertLarkMessage: repository.insertLarkMessage.bind(repository),
     hasProcessedDocComment: repository.hasProcessedDocComment.bind(repository),
     markLarkMessageQueued: repository.markLarkMessageQueued.bind(repository),
@@ -2210,10 +2213,11 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool): CodexBridge {
     },
     runGoal: async ({ profile, ...options }) => pool.get(profile).runGoal(options),
     resumeGoal: async ({ profile, ...options }) => pool.get(profile).resumeGoal(options),
-    steerTurn: async ({ profile, threadId, turnId, input }) => {
+    steerTurn: async ({ profile, threadId, turnId, input, cwd }) => {
       await pool.get(profile).steerTurn({
         threadId,
         turnId,
+        cwd,
         ...(typeof input === "string" ? { text: input } : { input })
       });
     },

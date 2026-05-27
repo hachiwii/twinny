@@ -655,6 +655,7 @@ export function adaptConversationRepository(repository: ConversationRepository) 
     create: repository.create.bind(repository),
     updateThreadBinding: repository.updateThreadBinding.bind(repository),
     updateConversationSettings: repository.updateConversationSettings.bind(repository),
+    updateConversationWorkspace: repository.updateConversationWorkspace.bind(repository),
     markThreadHasRollout: repository.markThreadHasRollout.bind(repository),
     getCodexThreadById: repository.getCodexThreadById.bind(repository),
     getCodexThreadByConversationAndLarkThread: repository.getCodexThreadByConversationAndLarkThread.bind(repository),
@@ -671,12 +672,14 @@ export function adaptConversationRepository(repository: ConversationRepository) 
     clearCodexThreadGoalStatus: repository.clearCodexThreadGoalStatus.bind(repository),
     updateCodexThreadCard: repository.updateCodexThreadCard.bind(repository),
     updateCodexThreadModelSettings: repository.updateCodexThreadModelSettings.bind(repository),
+    updateCodexThreadWorkspace: repository.updateCodexThreadWorkspace.bind(repository),
     updateCodexThreadName: repository.updateCodexThreadName.bind(repository),
     updateCodexThreadMode: repository.updateCodexThreadMode.bind(repository),
     updateCodexThreadStatus: repository.updateCodexThreadStatus.bind(repository),
     getCodexThreadWorkStats: repository.getCodexThreadWorkStats.bind(repository),
     getCodexThreadStatusStats: repository.getCodexThreadStatusStats.bind(repository),
     getConversationStatusStats: repository.getConversationStatusStats.bind(repository),
+    listRecentThreadWorkspaces: repository.listRecentThreadWorkspaces.bind(repository),
     insertLarkMessage: repository.insertLarkMessage.bind(repository),
     hasProcessedDocComment: repository.hasProcessedDocComment.bind(repository),
     markLarkMessageQueued: repository.markLarkMessageQueued.bind(repository),
@@ -869,16 +872,19 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool) {
       profile,
       threadId,
       turnId,
-      input
+      input,
+      cwd
     }: {
       profile: ProfileName;
       threadId: string;
       turnId: string;
       input: CodexTurnInput;
+      cwd: string;
     }): Promise<void> => {
       await pool.get(profile).steerTurn({
         threadId,
         turnId,
+        cwd,
         ...(typeof input === "string" ? { text: input } : { input })
       });
     },
