@@ -36,6 +36,7 @@ export interface TurnStartParams {
   input: CodexUserInput[];
   cwd: string;
   approvalPolicy: "never";
+  sandboxPolicy?: CodexSandboxPolicy;
   collaborationMode?: {
     mode: CodexThreadMode;
     settings: {
@@ -46,12 +47,17 @@ export interface TurnStartParams {
   };
 }
 
+export type CodexSandboxPolicy = { type: "dangerFullAccess" };
+
+export const DANGER_FULL_ACCESS_SANDBOX_POLICY: CodexSandboxPolicy = { type: "dangerFullAccess" };
+
 export interface TurnStartOptions {
   threadId: string;
   text?: string;
   input?: CodexTurnInput;
   currentThreadName?: string;
   cwd: string;
+  sandboxPolicy?: CodexSandboxPolicy;
   mode?: CodexThreadMode;
   model?: string;
   effort?: string;
@@ -244,6 +250,9 @@ export function buildTurnStartParams(options: TurnStartOptions): TurnStartParams
     cwd: options.cwd,
     approvalPolicy: "never"
   };
+  if (options.sandboxPolicy) {
+    params.sandboxPolicy = options.sandboxPolicy;
+  }
   if (options.mode) {
     params.collaborationMode = {
       mode: options.mode,

@@ -5,6 +5,7 @@ import {
   buildTurnInterruptParams,
   buildTurnStartParams,
   buildTurnSteerParams,
+  DANGER_FULL_ACCESS_SANDBOX_POLICY,
   dynamicToolTextResponse,
   handleTurnServerRequest,
   startCodexTurn,
@@ -24,6 +25,20 @@ describe("codex turn payloads", () => {
       input: [{ type: "text", text: "hello", text_elements: [] }],
       cwd: "/tmp/twinny/workspaces/p2p_ou_1",
       approvalPolicy: "never"
+    });
+  });
+
+  it("builds an explicit sandbox policy override when supplied", () => {
+    expect(
+      buildTurnStartParams({
+        threadId: "thread_123",
+        text: "hello",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        sandboxPolicy: DANGER_FULL_ACCESS_SANDBOX_POLICY
+      })
+    ).toMatchObject({
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "dangerFullAccess" }
     });
   });
 

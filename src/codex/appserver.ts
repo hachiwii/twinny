@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 import { execa } from "execa";
 import { ensureGuestWorkspaceTrust, ensureProjectTrust } from "../profiles/index.js";
-import { GUEST_PROFILE_NAME, type CodexThreadNameUpdate, type ProfileName } from "../types.js";
+import { GUEST_PROFILE_NAME, HOST_PROFILE_NAME, type CodexThreadNameUpdate, type ProfileName } from "../types.js";
 import { CodexProtocolClient, createInitializeParams, type CodexNotificationMessage, type InitializeResponse } from "./protocol.js";
 import { parseCodexThreadNameUpdatedNotification } from "./thread-name.js";
 import {
@@ -30,6 +30,7 @@ import {
 } from "./thread.js";
 import {
   compactCodexThread,
+  DANGER_FULL_ACCESS_SANDBOX_POLICY,
   interruptCodexTurn,
   startCodexTurn,
   steerCodexTurn,
@@ -220,7 +221,9 @@ export class CodexAppServer extends EventEmitter {
     if (options.cwd) {
       await this.prepareThreadWorkspace(options.cwd);
     }
-    return startCodexTurn(this.protocol, options, { requestTimeoutMs: this.options.requestTimeoutMs });
+    return startCodexTurn(this.protocol, this.buildTurnStartOptions(options), {
+      requestTimeoutMs: this.options.requestTimeoutMs
+    });
   }
 
   async compactThread(options: ThreadCompactStartOptions & { cwd?: string }): Promise<import("../types.js").CodexTurnResult> {
@@ -302,6 +305,16 @@ export class CodexAppServer extends EventEmitter {
       return;
     }
     await ensureProjectTrust(this.options.codexHome, cwd);
+  }
+
+  private buildTurnStartOptions(options: TurnStartOptions): TurnStartOptions {
+    if (this.options.profile !== HOST_PROFILE_NAME) {
+      return options;
+    }
+    return {
+      ...options,
+      sandboxPolicy: DANGER_FULL_ACCESS_SANDBOX_POLICY
+    };
   }
 
   private profileName(): ProfileName {

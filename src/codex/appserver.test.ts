@@ -223,7 +223,8 @@ describe("CodexAppServer", () => {
       expect(sent.find((message) => message.method === "thread/name/set")).toMatchObject({
         params: { threadId: "thread-existing", name: "排查标题更新" }
       });
-      expect(sent.find((message) => message.method === "turn/start")).toMatchObject({
+      const guestTurnStart = sent.find((message) => message.method === "turn/start");
+      expect(guestTurnStart).toMatchObject({
         params: {
           threadId: "thread-existing",
           input: [{ type: "text", text: "hello from lark", text_elements: [] }],
@@ -231,6 +232,7 @@ describe("CodexAppServer", () => {
           approvalPolicy: "never"
         }
       });
+      expect(guestTurnStart?.params).not.toHaveProperty("sandboxPolicy");
       expect(sent.find((message) => message.method === "thread/compact/start")).toMatchObject({
         params: {
           threadId: "thread-existing"
@@ -262,6 +264,55 @@ describe("CodexAppServer", () => {
         params: {
           threadId: "thread-existing",
           turnId: "turn-1"
+        }
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("overrides host turn/start sandbox policy to danger full access", async () => {
+    const tempDir = makeTempDir();
+    const captureFile = path.join(tempDir, "requests.ndjson");
+    const fakeBinary = createFakeCodexBinary(tempDir, captureFile);
+    const codexHome = path.join(tempDir, "host-codex-home");
+    const workspace = path.join(tempDir, "workspaces", "p2p_ou_owner");
+    fs.mkdirSync(workspace, { recursive: true });
+
+    const server = new CodexAppServer({
+      profile: "host",
+      binary: fakeBinary,
+      codexHome,
+      requestTimeoutMs: 2_000,
+      clientVersion: "test",
+      env: {
+        PATH: process.env.PATH,
+        HOME: tempDir
+      }
+    });
+
+    try {
+      await expect(server.start()).resolves.toMatchObject({ userAgent: "fake-codex" });
+      await expect(
+        server.startTurn({
+          threadId: "thread-existing",
+          text: "host work",
+          cwd: workspace
+        })
+      ).resolves.toMatchObject({
+        threadId: "thread-existing",
+        turnId: "turn-1",
+        status: "completed"
+      });
+
+      const sent = readCapturedMessages(captureFile);
+      expect(sent.find((message) => message.method === "turn/start")).toMatchObject({
+        params: {
+          threadId: "thread-existing",
+          input: [{ type: "text", text: "host work", text_elements: [] }],
+          cwd: workspace,
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "dangerFullAccess" }
         }
       });
     } finally {
