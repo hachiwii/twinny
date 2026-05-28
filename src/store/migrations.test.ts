@@ -18,8 +18,8 @@ describe("store migrations", () => {
   it("loads the bundled store migrations", () => {
     const migrations = loadStoreMigrations();
 
-    expect(currentStoreSchemaVersion).toBe(7);
-    expect(migrations).toHaveLength(7);
+    expect(currentStoreSchemaVersion).toBe(4);
+    expect(migrations).toHaveLength(4);
     expect(migrations[0]).toMatchObject({
       version: 1,
       name: "0001_initial"
@@ -35,18 +35,6 @@ describe("store migrations", () => {
     expect(migrations[3]).toMatchObject({
       version: 4,
       name: "0004_thread_workspace"
-    });
-    expect(migrations[4]).toMatchObject({
-      version: 5,
-      name: "0005_thread_category"
-    });
-    expect(migrations[5]).toMatchObject({
-      version: 6,
-      name: "0006_thread_fork_source"
-    });
-    expect(migrations[6]).toMatchObject({
-      version: 7,
-      name: "0007_drop_side_persistent_fields"
     });
   });
 
@@ -311,11 +299,11 @@ describe("store migrations", () => {
     }
   });
 
-  it("drops persisted side thread fields when upgrading to version 7", () => {
+  it("drops persisted side thread fields when upgrading to version 4", () => {
     const db = new TwinnyDatabase(":memory:");
     const migrations = loadStoreMigrations();
     try {
-      expect(runStoreMigrations(db, { migrations: migrations.slice(0, 4) })).toBe(4);
+      expect(runStoreMigrations(db, { migrations: migrations.slice(0, 3) })).toBe(3);
 
       db.exec(`
         INSERT INTO conversations (
@@ -350,13 +338,12 @@ describe("store migrations", () => {
           lark_thread_id,
           profile,
           created_at,
-          updated_at,
-          workspace
+          updated_at
         ) VALUES
-          ('thread_main', 'group_oc_group', NULL, 'guest', 100, 100, '/tmp/twinny/workspaces/group_oc_group'),
-          ('thread_topic', 'group_oc_group', 'topic_1', 'guest', 100, 110, '/tmp/twinny/workspaces/group_oc_group'),
-          ('thread_side', 'group_oc_group', NULL, 'guest', 100, 120, '/tmp/twinny/workspaces/group_oc_group'),
-          ('thread_previous', 'group_oc_group', NULL, 'guest', 100, 130, '/tmp/twinny/workspaces/group_oc_group');
+          ('thread_main', 'group_oc_group', NULL, 'guest', 100, 100),
+          ('thread_topic', 'group_oc_group', 'topic_1', 'guest', 100, 110),
+          ('thread_side', 'group_oc_group', NULL, 'guest', 100, 120),
+          ('thread_previous', 'group_oc_group', NULL, 'guest', 100, 130);
 
         INSERT INTO lark_messages (
           event_id,
@@ -403,6 +390,17 @@ describe("store migrations", () => {
         .prepare<[], { thread_id: string }>("SELECT thread_id FROM lark_messages WHERE event_id = 'event_side'")
         .get();
       expect(sideMessage).toEqual({ thread_id: "thread_main" });
+
+      const workspaces = db
+        .prepare<[], { thread_id: string; workspace: string }>(
+          "SELECT thread_id, workspace FROM threads ORDER BY thread_id ASC"
+        )
+        .all();
+      expect(workspaces).toEqual([
+        { thread_id: "thread_main", workspace: "/tmp/twinny/workspaces/group_oc_group" },
+        { thread_id: "thread_previous", workspace: "/tmp/twinny/workspaces/group_oc_group" },
+        { thread_id: "thread_topic", workspace: "/tmp/twinny/workspaces/group_oc_group" }
+      ]);
     } finally {
       db.close();
     }
