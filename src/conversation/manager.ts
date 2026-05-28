@@ -141,6 +141,17 @@ If lark-cli is not installed or not configured, ask the user for confirmation be
 const MAIN_THREAD_DEVELOPER_INSTRUCTIONS = `# Main Conversation Thread
 
 Do not modify the current thread name. Do not call twinny.set_thread_name or any other thread-name update tool for this main conversation thread, even if generic tool instructions say to keep thread names updated.`;
+const FORK_BOUNDARY_PROMPT = `Fork conversation boundary.
+
+This thread was forked from an earlier Codex thread. Everything before this boundary is inherited history from the parent thread. It is reference context only, not the active task for this fork.
+
+Do not continue, execute, or complete any instructions, plans, tool calls, approvals, edits, or requests from before this boundary unless the user explicitly repeats or confirms them after this boundary.
+
+Local workspace state may have changed since the parent thread history was recorded. Files, git state, dependencies, services, credentials, configuration, and external systems may no longer match what appears in the inherited history. Re-check current state when it matters instead of relying only on previous observations.
+
+Treat the user's latest instructions after this boundary as authoritative. Use the inherited history only to understand background, decisions, and context that are still relevant to the new request.
+
+This fork is a new active conversation. If the inherited thread name does not match the current task in this fork, update the thread name to reflect the user's latest request.`;
 const SIDE_BOUNDARY_PROMPT = `Side conversation boundary.
 
 Everything before this boundary is inherited history from the parent thread. It is reference context only. It is not your current task.
@@ -190,6 +201,7 @@ export interface ConversationRepository {
   updateConversationWorkspace(conversationKey: string, workspace: string): Promise<ConversationRecord> | ConversationRecord;
   markThreadHasRollout(conversationKey: string, codexThreadId: string): Promise<void> | void;
   getCodexThreadById(codexThreadId: string): Promise<CodexThreadRecord | undefined> | CodexThreadRecord | undefined;
+  hasUserMessageForCodexThread(codexThreadId: string, excludeLarkMessageIds?: readonly string[]): Promise<boolean> | boolean;
   getCodexThreadByConversationAndLarkThread(
     conversationKey: string,
     larkThreadId: string
@@ -227,7 +239,14 @@ export interface ConversationRepository {
   replaceCodexThreadForLarkThread?(
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; profile: ProfileName; workspace?: string; model?: string; effort?: string; codexThreadHasRollout?: boolean }
+    update: {
+      codexThreadId: string;
+      profile: ProfileName;
+      workspace?: string;
+      model?: string;
+      effort?: string;
+      codexThreadHasRollout?: boolean;
+    }
   ): Promise<CodexThreadRecord> | CodexThreadRecord;
   updateCodexThreadTokenUsage(input: {
     codexThreadId: string;
@@ -1076,6 +1095,7 @@ export class ConversationManager {
   private readonly threadIdleWatchers = new Map<string, Set<ThreadIdleWatcher>>();
   private readonly threadWaitEdges = new Map<string, Set<string>>();
   private readonly lastTurnSnapshots = new Map<string, ThreadWaitSnapshot>();
+  private readonly threadRuntimeById = new Map<string, { hasUserMessage?: boolean }>();
   private readonly log: Logger;
   private shuttingDown = false;
 
@@ -3726,6 +3746,7 @@ export class ConversationManager {
 
     const runTurn = async (): Promise<void> => {
       try {
+        this.markThreadRuntimeHasUserMessage(active.threadId);
         const result = await this.options.codex.startTurn({
           profile: params.profile,
           threadId: active.threadId,
@@ -5807,20 +5828,25 @@ export class ConversationManager {
     }
     const activeMessages = [...(params.associatedMessages ?? []), ...params.messages];
     const anchor = params.messages[params.messages.length - 1]!;
-    await this.markPendingMessagesProcessingBestEffort(params.messages, {
-      conversationKey: context.conversationKey,
-      codexThreadId: params.threadId
-    });
     const [modelSettings, threadTokenUsage] = await Promise.all([
       this.readCodexTurnModelSettingsBestEffort(params.profile, params.threadId),
       this.readThreadTokenUsageBestEffort(params.threadId)
     ]);
     const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
+    const prependForkBoundary = await this.shouldPrependForkBoundary(
+      threadRecord,
+      params.messages.map((message) => message.messageId)
+    );
+    await this.markPendingMessagesProcessingBestEffort(params.messages, {
+      conversationKey: context.conversationKey,
+      codexThreadId: params.threadId
+    });
     const hasDocComment = activeMessages.some((message) => message.docComment);
     if (hasDocComment && threadRecord?.mode === "plan") {
       await this.setThreadModeBestEffort(context.conversationKey, params.threadId, "default");
     }
     const currentThreadName = isMainSessionContext(context) ? undefined : threadRecord?.name ?? "";
+    const input = inputWithForkBoundaryForFirstMessage(params.input, prependForkBoundary);
     const mode = hasDocComment && threadRecord?.mode === "plan" ? "default" : threadRecord?.mode ?? "default";
     const startedAt = Date.now();
     const initialCardMessages = [
@@ -5875,10 +5901,11 @@ export class ConversationManager {
 
     const runTurn = async (allowMissingThreadReplacement: boolean): Promise<void> => {
       try {
+        this.markThreadRuntimeHasUserMessage(active.threadId);
         const result = await this.options.codex.startTurn({
           profile: params.profile,
           threadId: active.threadId,
-          input: params.input,
+          input,
           currentThreadName,
           cwd: params.workspace,
           approvalPolicy: "never",
@@ -7062,6 +7089,42 @@ export class ConversationManager {
     } catch (error) {
       this.log.warn({ error, codexThreadId: params.codexThreadId }, "failed to record codex thread");
     }
+  }
+
+  private async shouldPrependForkBoundary(
+    thread: CodexThreadRecord | undefined,
+    excludeLarkMessageIds: readonly string[] = []
+  ): Promise<boolean> {
+    if (!thread?.forkedFromCodexThreadId) {
+      return false;
+    }
+
+    const runtime = this.threadRuntimeFor(thread.codexThreadId);
+    if (runtime.hasUserMessage === undefined) {
+      try {
+        runtime.hasUserMessage = await this.options.repository.hasUserMessageForCodexThread(
+          thread.codexThreadId,
+          excludeLarkMessageIds
+        );
+      } catch (error) {
+        this.log.warn({ error, codexThreadId: thread.codexThreadId }, "failed to read codex thread user message state");
+        runtime.hasUserMessage = true;
+      }
+    }
+    return !runtime.hasUserMessage;
+  }
+
+  private markThreadRuntimeHasUserMessage(codexThreadId: string): void {
+    this.threadRuntimeFor(codexThreadId).hasUserMessage = true;
+  }
+
+  private threadRuntimeFor(codexThreadId: string): { hasUserMessage?: boolean } {
+    let runtime = this.threadRuntimeById.get(codexThreadId);
+    if (!runtime) {
+      runtime = {};
+      this.threadRuntimeById.set(codexThreadId, runtime);
+    }
+    return runtime;
   }
 
   private async setThreadModeBestEffort(
@@ -11703,6 +11766,27 @@ function parseJsonObject(value: string): unknown {
 function formatPendingMessageForCodexInput(message: PendingMessage): CodexTurnInput {
   const rendered = formatPendingMessageForCodex(message);
   return replaceDownloadedImagesWithLocalInputs(rendered, message.original.downloadedFiles ?? [], message.original.messageType);
+}
+
+function inputWithForkBoundaryForFirstMessage(
+  input: CodexTurnInput,
+  prependBoundary: boolean
+): CodexTurnInput {
+  if (!prependBoundary) {
+    return input;
+  }
+  return prependCodexTextToInput(`${FORK_BOUNDARY_PROMPT}\n\n`, input);
+}
+
+function prependCodexTextToInput(text: string, input: CodexTurnInput): CodexTurnInput {
+  if (typeof input === "string") {
+    return `${text}${input}`;
+  }
+
+  const merged: CodexUserInput[] = [];
+  appendCodexTextInput(merged, text);
+  appendCodexInput(merged, input);
+  return merged;
 }
 
 function formatPendingMessagesForCodexInput(messages: PendingMessage[]): CodexTurnInput {

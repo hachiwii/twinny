@@ -2003,6 +2003,53 @@ describe("ConversationManager", () => {
     expect(lark.recallMessage).not.toHaveBeenCalledWith("card_ou_guest_1");
   });
 
+  it("prepends the fork boundary before the first watched doc comment in a forked thread", async () => {
+    const { repository } = createRepository(groupConversationRecord(), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_parent",
+          conversationKey: "group_oc_group",
+          larkThreadId: "topic_parent"
+        }),
+        codexThreadRecord({
+          codexThreadId: "thread_forked",
+          conversationKey: "group_oc_group",
+          larkThreadId: "topic_forked",
+          forkedFromCodexThreadId: "thread_parent"
+        })
+      ]
+    });
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_forked",
+      watchMode: "owner",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
+    const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
+      commentId: "comment_fork",
+      replyId: "reply_fork",
+      text: "Review this forked doc path"
+    }));
+    const codex = createCodex();
+    const manager = createManager({ repository, codex, larkDocComments });
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_fork_doc",
+      commentId: "comment_fork",
+      replyId: "reply_fork"
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    const input = vi.mocked(codex.startTurn).mock.calls[0]![0].input;
+    expect(input).toEqual(expect.stringContaining("Fork conversation boundary."));
+    expect(input).toEqual(expect.stringContaining("Review this forked doc path"));
+    expect(repository.hasUserMessageForCodexThread).toHaveBeenCalledWith(
+      "thread_forked",
+      ["doc_comment:event_fork_doc:comment_fork:reply_fork"]
+    );
+  });
+
   it("sends watched doc comments as turn cards while preserving images for Codex", async () => {
     const { repository } = createRepository(conversationRecord(), {
       codexThreads: [codexThreadRecord({ codexThreadId: "thread_1" })]
@@ -4349,10 +4396,13 @@ describe("ConversationManager", () => {
     );
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        threadId: "thread_forked",
-        input: wrappedMessage("try alternate path", "reply_fork_1", "ou_guest")
+        threadId: "thread_forked"
       })
     );
+    const forkInput = vi.mocked(codex.startTurn).mock.calls[0]![0].input;
+    expect(forkInput).toEqual(expect.stringContaining("Fork conversation boundary."));
+    expect(forkInput).toEqual(expect.stringContaining(wrappedMessage("try alternate path", "reply_fork_1", "ou_guest")));
+    expect(repository.hasUserMessageForCodexThread).toHaveBeenCalledWith("thread_forked", ["reply_fork_1"]);
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_fork"]);
   });
 
@@ -4470,10 +4520,12 @@ describe("ConversationManager", () => {
     });
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        threadId: "thread_topic_fork",
-        input: wrappedMessage("nested work", "reply_topic_fork_1", "ou_guest")
+        threadId: "thread_topic_fork"
       })
     );
+    const nestedForkInput = vi.mocked(codex.startTurn).mock.calls[0]![0].input;
+    expect(nestedForkInput).toEqual(expect.stringContaining("Fork conversation boundary."));
+    expect(nestedForkInput).toEqual(expect.stringContaining(wrappedMessage("nested work", "reply_topic_fork_1", "ou_guest")));
   });
 
   it("runs /side as an ephemeral default-mode turn with a numbered temporary card", async () => {
@@ -9575,7 +9627,14 @@ function createRepository(initial?: ConversationRecord, options: {
   const replaceCodexThreadForLarkThread = (
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; profile: ProfileName; workspace?: string; model?: string; effort?: string; codexThreadHasRollout?: boolean }
+    update: {
+      codexThreadId: string;
+      profile: ProfileName;
+      workspace?: string;
+      model?: string;
+      effort?: string;
+      codexThreadHasRollout?: boolean;
+    }
   ): CodexThreadRecord => {
     const existing = getCodexThreadByLarkThread(conversationKey, larkThreadId);
     if (existing) {
@@ -9743,6 +9802,21 @@ function createRepository(initial?: ConversationRecord, options: {
           thread.updatedAt = Date.now();
         }
       },
+      hasUserMessageForCodexThread: vi.fn((codexThreadId, excludeLarkMessageIds = []) => {
+        const excluded = new Set(excludeLarkMessageIds);
+        return [...larkMessages.values()].some((message) =>
+          message.codexThreadId === codexThreadId &&
+          !excluded.has(message.larkMessageId ?? "") &&
+          (
+            message.routeKind === "message" ||
+            message.routeKind === "goal_message" ||
+            message.routeKind === "steered_message" ||
+            message.routeKind === "queued_message" ||
+            message.routeKind === "doc_comment" ||
+            message.routeKind === "doc_comment_reply_steer"
+          )
+        );
+      }),
       upsertCodexThread: vi.fn(putCodexThread),
       replaceCodexThreadForLarkThread: vi.fn(replaceCodexThreadForLarkThread),
       updateCodexThreadTokenUsage: vi.fn((input) => {

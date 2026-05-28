@@ -2088,6 +2088,7 @@ function adaptConversationRepository(repository: StoreConversationRepository): M
     updateConversationWorkspace: repository.updateConversationWorkspace.bind(repository),
     markThreadHasRollout: repository.markThreadHasRollout.bind(repository),
     getCodexThreadById: repository.getCodexThreadById.bind(repository),
+    hasUserMessageForCodexThread: repository.hasUserMessageForCodexThread.bind(repository),
     getCodexThreadByConversationAndLarkThread: repository.getCodexThreadByConversationAndLarkThread.bind(repository),
     listCodexThreadsByConversation: repository.listCodexThreadsByConversation.bind(repository),
     countUnfinishedLarkMessagesByThread: repository.countUnfinishedLarkMessagesByThread.bind(repository),

@@ -309,6 +309,7 @@ export class ConversationRepository {
   private readonly selectCodexThreadByConversationAndLarkThread: TwinnyStatement<[string, string], CodexThreadRow>;
   private readonly selectCodexThreadsByConversation: TwinnyStatement<[string], CodexThreadRow>;
   private readonly countUnfinishedLarkMessagesByThreadStatement: TwinnyStatement<[string], { count: number }>;
+  private readonly selectCodexThreadHasUserMessage: TwinnyStatement<[string], { has_user_message: 0 | 1 }>;
   private readonly replaceCodexThreadForLarkThreadStatement: TwinnyStatement<[Record<string, unknown>]>;
   private readonly updateCodexThreadUsageStatement: TwinnyStatement<[Record<string, unknown>]>;
   private readonly updateCodexThreadCardStatement: TwinnyStatement<[Record<string, unknown>]>;
@@ -508,6 +509,21 @@ export class ConversationRepository {
       FROM lark_messages
       WHERE thread_id = ?
         AND status IN ('queued', 'processing')
+    `);
+    this.selectCodexThreadHasUserMessage = this.db.prepare(`
+      SELECT EXISTS (
+        SELECT 1
+        FROM lark_messages
+        WHERE thread_id = ?
+          AND route_kind IN (
+            'message',
+            'goal_message',
+            'steered_message',
+            'queued_message',
+            'doc_comment',
+            'doc_comment_reply_steer'
+          )
+      ) AS has_user_message
     `);
     this.replaceCodexThreadForLarkThreadStatement = this.db.prepare(`
       UPDATE threads
@@ -1231,10 +1247,43 @@ export class ConversationRepository {
     return Math.max(0, this.countUnfinishedLarkMessagesByThreadStatement.get(codexThreadId)?.count ?? 0);
   }
 
+  hasUserMessageForCodexThread(codexThreadId: string, excludeLarkMessageIds: readonly string[] = []): boolean {
+    assertNonEmpty(codexThreadId, "codexThreadId");
+    const excludedIds = [...new Set(excludeLarkMessageIds.filter((id) => id.length > 0))];
+    if (excludedIds.length > 0) {
+      const placeholders = excludedIds.map(() => "?").join(", ");
+      const statement = this.db.prepare<unknown[], { has_user_message: 0 | 1 }>(`
+        SELECT EXISTS (
+          SELECT 1
+          FROM lark_messages
+          WHERE thread_id = ?
+            AND route_kind IN (
+              'message',
+              'goal_message',
+              'steered_message',
+              'queued_message',
+              'doc_comment',
+              'doc_comment_reply_steer'
+            )
+            AND (lark_message_id IS NULL OR lark_message_id NOT IN (${placeholders}))
+        ) AS has_user_message
+      `);
+      return statement.get(codexThreadId, ...excludedIds)?.has_user_message === 1;
+    }
+    return this.selectCodexThreadHasUserMessage.get(codexThreadId)?.has_user_message === 1;
+  }
+
   replaceCodexThreadForLarkThread(
     conversationKey: string,
     larkThreadId: string,
-    update: { codexThreadId: string; profile: ProfileName; workspace?: string; model?: string; effort?: string; codexThreadHasRollout?: boolean }
+    update: {
+      codexThreadId: string;
+      profile: ProfileName;
+      workspace?: string;
+      model?: string;
+      effort?: string;
+      codexThreadHasRollout?: boolean;
+    }
   ): CodexThreadRecord {
     const input = {
       conversationKey,

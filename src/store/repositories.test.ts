@@ -951,6 +951,73 @@ describe("ConversationRepository", () => {
     expect(repo.getCodexThreadByConversationAndLarkThread("group_oc_group", "om_root")).toEqual(replacement);
   });
 
+  it("detects user messages for a Codex thread from lark messages", () => {
+    const repo = createConversationRepository(db, { now: () => now });
+
+    repo.upsertCodexThread({
+      codexThreadId: "thread-topic-1",
+      conversationKey: "group_oc_group",
+      larkThreadId: "om_root",
+      profile: "guest"
+    });
+    expect(repo.hasUserMessageForCodexThread("thread-topic-1")).toBe(false);
+
+    repo.insertLarkMessage({
+      larkMessageId: "om_control",
+      eventId: "event_control",
+      larkUserId: "ou_456",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread-topic-1",
+      routeKind: "control_message",
+      status: "processing",
+      text: "/status"
+    });
+    repo.insertLarkMessage({
+      larkMessageId: "om_side",
+      eventId: "event_side",
+      larkUserId: "ou_456",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread-topic-1",
+      routeKind: "side_message",
+      status: "processing",
+      text: "side question"
+    });
+    expect(repo.hasUserMessageForCodexThread("thread-topic-1")).toBe(false);
+
+    repo.insertLarkMessage({
+      larkMessageId: "om_message",
+      eventId: "event_message",
+      larkUserId: "ou_456",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread-topic-1",
+      routeKind: "message",
+      status: "processing",
+      text: "first real message"
+    });
+    expect(repo.hasUserMessageForCodexThread("thread-topic-1")).toBe(true);
+    expect(repo.hasUserMessageForCodexThread("thread-topic-1", ["om_message"])).toBe(false);
+
+    repo.upsertCodexThread({
+      codexThreadId: "thread-topic-2",
+      conversationKey: "group_oc_group",
+      larkThreadId: "om_root_2",
+      profile: "guest"
+    });
+    repo.insertLarkMessage({
+      larkMessageId: "om_doc",
+      eventId: "event_doc",
+      larkUserId: "ou_456",
+      docCommentId: "comment_1",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread-topic-2",
+      routeKind: "doc_comment",
+      status: "processing",
+      text: "doc comment"
+    });
+    expect(repo.hasUserMessageForCodexThread("thread-topic-2")).toBe(true);
+    expect(repo.hasUserMessageForCodexThread("thread-topic-2", ["om_doc"])).toBe(false);
+  });
+
   it("rejects mismatched or unsafe conversation keys", () => {
     const repo = createConversationRepository(db);
     const workspace = path.join(tempDir, "workspaces", "p2p_ou_789");
