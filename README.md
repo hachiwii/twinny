@@ -8,7 +8,7 @@
 
 ## 环境要求
 
-- macOS 或 Linux。installer 在 macOS 上管理 LaunchAgent（或 `--system-daemon` LaunchDaemon），在 Linux 上管理 systemd user service。
+- macOS、Linux、WSL2 或 Windows。installer 在 macOS 上管理 LaunchAgent（或 `--system-daemon` LaunchDaemon），在 Linux/启用 systemd 的 WSL2 上管理 systemd user service，在 Windows 上管理用户级计划任务。
 - Node.js 22.18.0 或更新版本。Twinny 使用 Node.js 内置 `node:sqlite` 模块，不需要额外安装 SQLite native addon。
 - `PATH` 中有 Codex CLI 0.130.0 或更新版本，或者设置 `CODEX_BINARY`；如果缺少 Codex，installer 可以自动安装。
 - 一个已配置下方权限和事件订阅的 Feishu/Lark 机器人应用。
@@ -39,7 +39,9 @@ npx twinny@latest install --system-daemon
 
 `--system-daemon` 会通过 `sudo` 把 plist 写入 `/Library/LaunchDaemons`，并用当前用户写入 `UserName`；后续 `start`、`stop`、`restart`、`status` 会根据 `config.toml` 中的 service 配置继续操作 LaunchDaemon。
 
-常用 daemon 命令：
+Windows 原生安装会创建用户级 Task Scheduler 任务，随用户登录启动。WSL2 如果没有启用 systemd，installer 不会安装托管服务；这种环境需要用 `TWINNY_HOME=/path/to/home twinny run` 前台运行，或先启用 WSL systemd 后重新安装。
+
+常用服务命令：
 
 ```sh
 npx twinny@latest doctor
@@ -53,7 +55,7 @@ npx twinny@latest uninstall
 
 如果不使用默认 home，给任意命令加上 `TWINNY_HOME=/path/to/home`。
 
-secret 会存放在 `config.toml` 之外。非 macOS 安装默认把 Lark `app_secret` 写入 `TWINNY_HOME/auth.json` 的 `lark_app_secret` 字段。macOS 安装默认使用系统 Keychain；如果加 `--disable-keychain` 或 Keychain 写入失败，也会写入 `auth.json`。启动时优先读取 `auth.json`，然后才回退到 `TWINNY_LARK_APP_SECRET` 和旧 secret store（macOS Keychain，其他平台 `runtime/secrets.json`）。
+secret 会存放在 `config.toml` 之外。非 macOS 安装（包括 Windows）默认把 Lark `app_secret` 写入 `TWINNY_HOME/auth.json` 的 `lark_app_secret` 字段。macOS 安装默认使用系统 Keychain；如果加 `--disable-keychain` 或 Keychain 写入失败，也会写入 `auth.json`。启动时优先读取 `auth.json`，然后才回退到 `TWINNY_LARK_APP_SECRET` 和旧 secret store（macOS Keychain，其他平台 `runtime/secrets.json`）。
 
 ## 飞书/Lark 应用配置
 
@@ -197,7 +199,7 @@ Twinny 从 `TWINNY_HOME` 读取 `config.toml`。
 
 | 字段 | 含义和取值 |
 | --- | --- |
-| `[codex].binary` | Codex CLI 可执行文件路径或命令名。默认是 `codex`。如果 LaunchAgent 不能通过 `PATH` 找到 Codex，建议使用绝对路径。 |
+| `[codex].binary` | Codex CLI 可执行文件路径或命令名。默认是 `codex`。如果托管服务不能通过 `PATH` 找到 Codex，建议使用绝对路径。Windows 上通常是 `codex.cmd`。 |
 | `[lark.reaction].working` | Twinny 工作中给 Lark 消息添加的 emoji type。默认是 `JubilantRabbit`。 |
 | `[lark.reaction].queued` | 消息进入队列时添加的 Lark emoji type。默认是 `OneSecond`。 |
 | `[lark.redaction].email` | 发往 Lark 的 payload 中邮箱地址的脱敏策略。`mask` 保留域名并遮蔽邮箱用户名，例如 `alice@example.com` 会变成 `a***e@example.com`；`whitespace` 插入空格，例如 `alice @ example.com`；`none` 发送明文邮箱。飞书可能会拦截包含明文邮箱或手机号的 bot message。默认是 `mask`。 |
@@ -266,7 +268,7 @@ Twinny 不会收集或上传对话内容和凭据。这包括 Lark 消息正文�
 
 Telemetry 可能包含：
 
-- 安装和启动生命周期状态、启动耗时、LaunchAgent 配置状态；
+- 安装和启动生命周期状态、启动耗时、托管服务配置状态；
 - 运行时健康信号，例如 heartbeat、uptime、队列和 active turn 数量、内存使用量、Lark/Codex ready 状态；
 - 消息路由元数据，例如 conversation type、message 或 action type、route kind、queue depth、resource count；
 - turn 元数据，例如状态、类型、模型、reasoning effort、token 数、耗时、生成图片数量，以及失败时的 error code/category；

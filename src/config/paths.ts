@@ -17,6 +17,9 @@ export function expandHomePath(input: string, homeDir = os.homedir()): string {
   if (input.startsWith("~/")) {
     return path.join(homeDir, input.slice(2));
   }
+  if (input.startsWith("~\\")) {
+    return path.join(homeDir, input.slice(2));
+  }
   return input;
 }
 
@@ -51,6 +54,9 @@ export function createRuntimePaths(home = resolveTwinnyHome()): RuntimePaths {
 function resolveLogsDir(): string {
   if (process.platform === "darwin") {
     return path.join(os.homedir(), "Library", "Logs", "twinny");
+  }
+  if (process.platform === "win32") {
+    return path.join(process.env.LOCALAPPDATA?.trim() || path.join(os.homedir(), "AppData", "Local"), "Twinny", "logs");
   }
   return path.join(process.env.XDG_STATE_HOME?.trim() || path.join(os.homedir(), ".local", "state"), "twinny", "logs");
 }

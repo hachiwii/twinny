@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 import { execa } from "execa";
 import { ensureGuestWorkspaceTrust, ensureProjectTrust } from "../profiles/index.js";
+import { commandForPlatform } from "../platform/commands.js";
 import { GUEST_PROFILE_NAME, HOST_PROFILE_NAME, type CodexThreadNameUpdate, type ProfileName } from "../types.js";
 import { CodexProtocolClient, createInitializeParams, type CodexNotificationMessage, type InitializeResponse } from "./protocol.js";
 import { parseCodexThreadNameUpdatedNotification } from "./thread-name.js";
@@ -141,7 +142,8 @@ export class CodexAppServer extends EventEmitter {
       return this.initializeResponse;
     }
 
-    const child = spawn(this.options.binary, ["app-server", "--listen", "stdio://"], {
+    const invocation = commandForPlatform(this.options.binary, ["app-server", "--listen", "stdio://"]);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: this.options.cwd ?? process.cwd(),
       env: buildCodexAppServerEnv(this.options.codexHome, this.options.env ?? process.env),
       stdio: ["pipe", "pipe", "pipe"]
@@ -335,7 +337,8 @@ export class CodexAppServer extends EventEmitter {
 
   private async readCodexBinaryVersionBestEffort(): Promise<string> {
     try {
-      const result = await execa(this.options.binary, ["--version"], {
+      const invocation = commandForPlatform(this.options.binary, ["--version"]);
+      const result = await execa(invocation.command, invocation.args, {
         env: buildCodexAppServerEnv(this.options.codexHome, this.options.env ?? process.env),
         reject: false,
         timeout: 1000
@@ -457,13 +460,16 @@ export function buildCodexAppServerEnv(codexHome: string, source: NodeJS.Process
     }
   }
 
-  env.PATH = codexChildPath(env.PATH);
+  env.PATH = codexChildPath(env.PATH ?? env.Path);
   env.CODEX_HOME = path.resolve(codexHome);
   env.NO_COLOR = source.NO_COLOR ?? "1";
   return env;
 }
 
 function defaultPath(): string {
+  if (process.platform === "win32") {
+    return process.env.PATH ?? process.env.Path ?? "";
+  }
   return ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":");
 }
 

@@ -21,7 +21,16 @@ import {
 } from "../config/index.js";
 import { provisionLarkAssetImageKeys } from "../app/lark-assets.js";
 import { assertLaunchdGuiSessionAvailable } from "../launchd/install.js";
-import { installManagedService, managedServiceDisplayName, startManagedService } from "../service/index.js";
+import { commandForPlatform, resolveExecutable } from "../platform/commands.js";
+import { twinnyRunnerBinaryPath, twinnyRunnerDir } from "../platform/runner.js";
+import {
+  installManagedService,
+  managedServiceDisplayName,
+  managedServiceDisplayNameForKind,
+  resolveManagedServiceKind,
+  startManagedService,
+  type ManagedServiceKind
+} from "../service/index.js";
 import { createTwinnyTelemetryClient, type TelemetryClient, type TelemetryProperties } from "../telemetry/index.js";
 import {
   buildLarkVerificationUrl,
@@ -309,18 +318,19 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
       systemDaemon: options.systemDaemon,
       assertGuiLaunchAgentAvailable: options.assertGuiLaunchAgentAvailable
     });
+    const serviceKind = await resolveManagedServiceKind({ platform });
 
     p.intro(installWizardIntro);
     await assertInstallHomeIsEmpty(home);
-    codex = await promptCodexSetup(env, installTelemetry);
+    codex = await promptCodexSetup(env, installTelemetry, { platform });
     p.log.success(`Codex ${codex.version} (${codex.binary})`);
-    await ensureCodexLogin(codex.binary, installTelemetry);
+    await ensureCodexLogin(codex.binary, installTelemetry, { platform });
 
     botSetup = await promptBotCredentials();
     const bot = botSetup.credentials;
     ownerSetup = await promptOwnerIdentity(bot);
     const owner = ownerSetup.identity;
-    serviceEnvironment = await promptServiceEnvironment(home, env, installTelemetry, installManagedServiceDisplayName(platform, service));
+    serviceEnvironment = await promptServiceEnvironment(home, env, installTelemetry, installManagedServiceDisplayName(platform, service, serviceKind));
     codexDefaults = await readCodexDefaults();
 
     config = createTwinnyConfig({
@@ -351,33 +361,39 @@ export async function runInstallWizard(options: RunInstallWizardOptions = {}): P
       result: finalizeResult,
       telemetry: installTelemetry,
       platform,
+      serviceKind,
       disableKeychain: options.disableKeychain
     });
 
-    const shouldStart = await cancelable(
-      p.confirm({
-        message: "安装完成。现在启动 Twinny？",
-        initialValue: true
-      })
-    );
-    startedAfterInstall = shouldStart;
-    try {
-      if (shouldStart) {
-        const s = p.spinner();
-        s.start("启动 Twinny");
-        try {
-          await startManagedService({ home });
-          s.stop("Twinny 已启动");
-          p.log.success("🐰 安装完成，现在在飞书里愉快使用 CodeX 吧 🎉");
-        } catch (error) {
-          s.error("Twinny 启动失败");
-          throw error;
-        }
-      } else {
-        p.log.info(`稍后可执行：TWINNY_HOME=${shellQuote(home)} twinny start`);
-      }
-    } finally {
+    if (serviceKind === "manual") {
+      p.log.info(`当前 WSL2 环境没有可用的 systemd user service。稍后可执行：TWINNY_HOME=${shellQuote(home)} twinny run`);
       await openInstallGuidePageBestEffort(bot.appId);
+    } else {
+      const shouldStart = await cancelable(
+        p.confirm({
+          message: "安装完成。现在启动 Twinny？",
+          initialValue: true
+        })
+      );
+      startedAfterInstall = shouldStart;
+      try {
+        if (shouldStart) {
+          const s = p.spinner();
+          s.start("启动 Twinny");
+          try {
+            await startManagedService({ home, platform });
+            s.stop("Twinny 已启动");
+            p.log.success("🐰 安装完成，现在在飞书里愉快使用 CodeX 吧 🎉");
+          } catch (error) {
+            s.error("Twinny 启动失败");
+            throw error;
+          }
+        } else {
+          p.log.info(`稍后可执行：TWINNY_HOME=${shellQuote(home)} twinny start`);
+        }
+      } finally {
+        await openInstallGuidePageBestEffort(bot.appId);
+      }
     }
     telemetry.capture(
       "twinny_install",
@@ -506,6 +522,7 @@ export async function runInstallAgent(options: RunInstallAgentOptions = {}): Pro
       systemDaemon: options.systemDaemon,
       assertGuiLaunchAgentAvailable: options.assertGuiLaunchAgentAvailable
     });
+    const serviceKind = await resolveManagedServiceKind({ platform, runCommand: options.runCommand });
     await assertInstallHomeIsEmpty(home);
     progress("init", "completed");
 
@@ -513,6 +530,7 @@ export async function runInstallAgent(options: RunInstallAgentOptions = {}): Pro
     codex = await detectOrInstallCodexForAgent(env, installTelemetry, {
       installCodex,
       runCommand: options.runCommand,
+      platform,
       progress
     });
     progress("codex_detection", "completed", { version: codex.version });
@@ -520,6 +538,7 @@ export async function runInstallAgent(options: RunInstallAgentOptions = {}): Pro
     progress("codex_login", "started");
     await ensureCodexLogin(codex.binary, installTelemetry, {
       runCommand: options.runCommand,
+      platform,
       interactive: false
     });
     progress("codex_login", "completed");
@@ -589,6 +608,7 @@ export async function runInstallAgent(options: RunInstallAgentOptions = {}): Pro
       uploadBundledAssets: options.uploadBundledAssets,
       onProgress: progress,
       platform,
+      serviceKind,
       disableKeychain: options.disableKeychain
     });
 
@@ -597,13 +617,13 @@ export async function runInstallAgent(options: RunInstallAgentOptions = {}): Pro
     guideFileUrl = guidePage.fileUrl;
     progress("install_guide", "completed", { file_url: guideFileUrl });
 
-    startedAfterInstall = options.start ?? true;
+    startedAfterInstall = serviceKind === "manual" ? false : options.start ?? true;
     if (startedAfterInstall) {
       progress("start", "started");
-      await (options.startManagedService ?? startManagedService)({ home });
+      await (options.startManagedService ?? startManagedService)({ home, platform });
       progress("start", "completed");
     } else {
-      progress("start", "skipped");
+      progress("start", "skipped", serviceKind === "manual" ? { reason: "manual_service" } : undefined);
     }
 
     telemetry.capture(
@@ -742,9 +762,16 @@ function installServiceConfig(input: {
   };
 }
 
-function installManagedServiceDisplayName(platform: NodeJS.Platform, service?: Partial<ServiceConfig>): string {
+function installManagedServiceDisplayName(
+  platform: NodeJS.Platform,
+  service?: Partial<ServiceConfig>,
+  serviceKind?: ManagedServiceKind
+): string {
   if (platform === "darwin" && service?.launchd?.mode === "daemon") {
     return "LaunchDaemon";
+  }
+  if (serviceKind) {
+    return managedServiceDisplayNameForKind(serviceKind);
   }
   return managedServiceDisplayName(platform);
 }
@@ -983,6 +1010,7 @@ export async function assertInstallHomeIsEmpty(home: string): Promise<void> {
 
 interface CodexCommandOptions {
   runCommand?: CommandRunner;
+  platform?: NodeJS.Platform;
 }
 
 export async function detectCodexBinary(
@@ -990,13 +1018,15 @@ export async function detectCodexBinary(
   options: CodexCommandOptions = {}
 ): Promise<CodexDetection> {
   const runCommand = options.runCommand ?? execa;
+  const platform = options.platform ?? process.platform;
   const binary = env.CODEX_BINARY?.trim()
     ? path.resolve(expandHomePath(env.CODEX_BINARY.trim()))
-    : (await runCommand("which", ["codex"], { reject: false })).stdout.trim().split("\n")[0] ?? "";
+    : await resolveExecutable("codex", { env, platform, runCommand });
   if (!binary) {
     throw new CodexNotFoundError(`codex was not found in PATH. Install Codex ${minimumCodexVersion}+ or set CODEX_BINARY.`);
   }
-  const result = await runCommand(binary, ["--version"], { reject: false });
+  const invocation = commandForPlatform(binary, ["--version"], platform);
+  const result = await runCommand(invocation.command, invocation.args, { reject: false });
   if (result.exitCode !== 0) {
     throw new Error(`failed to run ${binary} --version: ${result.stderr || `exit ${result.exitCode}`}`);
   }
@@ -1007,9 +1037,13 @@ export async function detectCodexBinary(
   return { binary, version };
 }
 
-async function promptCodexSetup(env: NodeJS.ProcessEnv, telemetry: InstallTelemetryState): Promise<CodexDetection> {
+async function promptCodexSetup(
+  env: NodeJS.ProcessEnv,
+  telemetry: InstallTelemetryState,
+  options: CodexCommandOptions = {}
+): Promise<CodexDetection> {
   try {
-    const codex = await detectCodexBinary(env);
+    const codex = await detectCodexBinary(env, options);
     telemetry.codexDetectResult = "found";
     return codex;
   } catch (error) {
@@ -1035,7 +1069,7 @@ async function promptCodexSetup(env: NodeJS.ProcessEnv, telemetry: InstallTeleme
   }
   telemetry.codexInstallChoice = "accepted";
   await installCodexCli({ telemetry });
-  const codex = await detectCodexBinary(env);
+  const codex = await detectCodexBinary(env, options);
   telemetry.codexDetectResult = "found";
   return codex;
 }
@@ -1046,6 +1080,7 @@ async function detectOrInstallCodexForAgent(
   options: {
     installCodex: InstallAgentAutoPreference;
     runCommand?: CommandRunner;
+    platform?: NodeJS.Platform;
     progress: (
       step: InstallAgentStep,
       status: "started" | "completed" | "skipped",
@@ -1054,7 +1089,7 @@ async function detectOrInstallCodexForAgent(
   }
 ): Promise<CodexDetection> {
   try {
-    const codex = await detectCodexBinary(env, { runCommand: options.runCommand });
+    const codex = await detectCodexBinary(env, { runCommand: options.runCommand, platform: options.platform });
     telemetry.codexDetectResult = "found";
     return codex;
   } catch (error) {
@@ -1077,7 +1112,7 @@ async function detectOrInstallCodexForAgent(
   options.progress("codex_install", "started");
   await installCodexCli({ telemetry, runCommand: options.runCommand, interactive: false });
   options.progress("codex_install", "completed");
-  const codex = await detectCodexBinary(env, { runCommand: options.runCommand });
+  const codex = await detectCodexBinary(env, { runCommand: options.runCommand, platform: options.platform });
   telemetry.codexDetectResult = "found";
   return codex;
 }
@@ -1106,7 +1141,8 @@ export async function checkCodexLoginStatus(
   binary: string,
   options: CodexCommandOptions = {}
 ): Promise<{ loggedIn: boolean }> {
-  const result = await (options.runCommand ?? execa)(binary, ["login", "status"], { reject: false });
+  const invocation = commandForPlatform(binary, ["login", "status"], options.platform);
+  const result = await (options.runCommand ?? execa)(invocation.command, invocation.args, { reject: false });
   return { loggedIn: result.exitCode === 0 };
 }
 
@@ -1116,7 +1152,7 @@ async function ensureCodexLogin(
   options: CodexCommandOptions & { interactive?: boolean } = {}
 ): Promise<void> {
   try {
-    const status = await checkCodexLoginStatus(binary, { runCommand: options.runCommand });
+    const status = await checkCodexLoginStatus(binary, { runCommand: options.runCommand, platform: options.platform });
     if (status.loggedIn) {
       telemetry.codexLoginResult = "logged_in";
       if (options.interactive !== false) {
@@ -1497,18 +1533,21 @@ async function finalizeInstall(input: {
     detail?: Record<string, unknown>
   ) => void;
   platform?: NodeJS.Platform;
+  serviceKind?: ManagedServiceKind;
   disableKeychain?: boolean;
 }): Promise<void> {
   const interactive = input.interactive !== false;
   const platform = input.platform ?? process.platform;
-  const serviceDisplayName = installManagedServiceDisplayName(platform, input.config.service);
+  const serviceDisplayName = installManagedServiceDisplayName(platform, input.config.service, input.serviceKind);
   const useKeychain = platform === "darwin" && !input.disableKeychain;
   input.onProgress?.("config", "started");
   if (interactive) {
     p.log.info("初始化 Twinny home");
   }
   try {
-    const entrypoint = await (input.resolveServiceEntrypoint ?? resolveServiceEntrypoint)(input.config.home);
+    const entrypoint = input.resolveServiceEntrypoint
+      ? await input.resolveServiceEntrypoint(input.config.home)
+      : await resolveServiceEntrypoint(input.config.home, { platform });
     const paths = createRuntimePaths(input.config.home);
     const configForAuth = useKeychain ? input.config : configWithLarkAppSecret(input.config, input.appSecret);
     const bootstrap = await bootstrapTwinnyHome(configForAuth);
@@ -1532,7 +1571,9 @@ async function finalizeInstall(input: {
     await (input.installManagedService ?? installManagedService)({
       config: input.config,
       entrypoint,
-      environment: input.environment
+      environment: input.environment,
+      platform,
+      runCommand: input.runCommand
     });
     input.result.serviceInstalled = true;
     if (interactive) {
@@ -1567,13 +1608,14 @@ async function finalizeInstall(input: {
 
   input.onProgress?.("lark_cli", "started");
   const larkCliSetup = interactive
-    ? await promptLarkCliProfileSetup(input.config, input.appSecret, input.telemetry)
+    ? await promptLarkCliProfileSetup(input.config, input.appSecret, input.telemetry, { platform })
     : await setupLarkCliProfileForAgent({
       config: input.config,
       appSecret: input.appSecret,
       telemetry: input.telemetry,
       installPreference: input.larkCliInstallPreference ?? "auto",
-      runCommand: input.runCommand
+      runCommand: input.runCommand,
+      platform
     });
   input.result.larkCliProfilePersisted = larkCliSetup.profilePersisted;
   input.onProgress?.("lark_cli", larkCliSetup.profilePersisted ? "completed" : "skipped");
@@ -1601,9 +1643,10 @@ async function uploadBundledAssets(
 async function promptLarkCliProfileSetup(
   config: TwinnyConfig,
   appSecret: string,
-  telemetry: InstallTelemetryState
+  telemetry: InstallTelemetryState,
+  options: { platform?: NodeJS.Platform } = {}
 ): Promise<LarkCliProfileSetupResult> {
-  let binary = await detectLarkCliBinary({ telemetry });
+  let binary = await detectLarkCliBinary({ telemetry, platform: options.platform });
   if (!binary) {
     const shouldInstall = await cancelable(
       p.confirm({
@@ -1619,7 +1662,7 @@ async function promptLarkCliProfileSetup(
     }
     telemetry.larkCliInstallChoice = "accepted";
     await installLarkCli({ telemetry });
-    binary = await detectLarkCliBinary({ telemetry });
+    binary = await detectLarkCliBinary({ telemetry, platform: options.platform });
     if (!binary) {
       throw new Error("lark-cli install completed, but lark-cli was not found in PATH");
     }
@@ -1634,7 +1677,8 @@ async function promptLarkCliProfileSetup(
     brand: config.auth.larkBrand,
     home: config.home,
     telemetry,
-    config
+    config,
+    platform: options.platform
   });
   if (profileSetup.profileName) {
     p.log.success(
@@ -1652,8 +1696,9 @@ async function setupLarkCliProfileForAgent(input: {
   telemetry: InstallTelemetryState;
   installPreference: InstallAgentAutoPreference;
   runCommand?: CommandRunner;
+  platform?: NodeJS.Platform;
 }): Promise<LarkCliProfileSetupResult> {
-  let binary = await detectLarkCliBinary({ telemetry: input.telemetry, runCommand: input.runCommand });
+  let binary = await detectLarkCliBinary({ telemetry: input.telemetry, runCommand: input.runCommand, platform: input.platform });
   if (!binary) {
     if (input.installPreference === "never") {
       input.telemetry.larkCliInstallChoice = "declined";
@@ -1662,7 +1707,7 @@ async function setupLarkCliProfileForAgent(input: {
     }
     input.telemetry.larkCliInstallChoice = "accepted";
     await installLarkCli({ telemetry: input.telemetry, runCommand: input.runCommand, interactive: false });
-    binary = await detectLarkCliBinary({ telemetry: input.telemetry, runCommand: input.runCommand });
+    binary = await detectLarkCliBinary({ telemetry: input.telemetry, runCommand: input.runCommand, platform: input.platform });
     if (!binary) {
       throw new Error("lark-cli install completed, but lark-cli was not found in PATH");
     }
@@ -1676,17 +1721,23 @@ async function setupLarkCliProfileForAgent(input: {
     home: input.config.home,
     runCommand: input.runCommand,
     telemetry: input.telemetry,
-    config: input.config
+    config: input.config,
+    platform: input.platform
   });
 }
 
 export async function detectLarkCliBinary(options: {
   runCommand?: CommandRunner;
   telemetry?: InstallTelemetryState;
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
 } = {}): Promise<string | undefined> {
   try {
-    const result = await (options.runCommand ?? execa)("which", ["lark-cli"], { reject: false });
-    const binary = result.stdout.trim().split("\n")[0] || undefined;
+    const binary = await resolveExecutable("lark-cli", {
+      env: options.env,
+      platform: options.platform,
+      runCommand: options.runCommand
+    });
     options.telemetry && (options.telemetry.larkCliDetectResult = binary ? "found" : "missing");
     return binary;
   } catch (error) {
@@ -1766,9 +1817,11 @@ export async function ensureLarkCliProfile(input: {
   runCommand?: CommandRunner;
   telemetry?: InstallTelemetryState;
   config?: TwinnyConfig;
+  platform?: NodeJS.Platform;
 }): Promise<LarkCliProfileSetupResult> {
   const runCommand = input.runCommand ?? execa;
-  const listResult = await runCommand(input.binary, ["profile", "list"], { reject: false });
+  const listInvocation = commandForPlatform(input.binary, ["profile", "list"], input.platform);
+  const listResult = await runCommand(listInvocation.command, listInvocation.args, { reject: false });
   if (listResult.exitCode !== 0) {
     input.telemetry && (input.telemetry.larkCliProfileListResult = "error");
     const output = childProcessErrorOutput(listResult);
@@ -1790,9 +1843,14 @@ export async function ensureLarkCliProfile(input: {
   }
 
   input.telemetry && (input.telemetry.larkCliProfileListResult = "profile_missing");
-  const addResult = await runCommand(
+  const addInvocation = commandForPlatform(
     input.binary,
     ["profile", "add", "--name", input.appId, "--app-id", input.appId, "--app-secret-stdin", "--brand", input.brand],
+    input.platform
+  );
+  const addResult = await runCommand(
+    addInvocation.command,
+    addInvocation.args,
     {
       input: `${input.appSecret}\n`,
       reject: false
@@ -1842,15 +1900,16 @@ function createOpenApiClient(credentials: BotCredentials): LarkOpenApiClient {
 interface ResolveServiceEntrypointOptions {
   entrypoint?: string;
   runNpmInstall?: typeof execa;
+  platform?: NodeJS.Platform;
 }
 
 export async function resolveServiceEntrypoint(home: string, options: ResolveServiceEntrypointOptions = {}): Promise<string> {
-  const entrypoint = path.resolve(options.entrypoint ?? process.argv[1] ?? process.execPath);
+  const entrypoint = resolveEntrypointPath(options.entrypoint ?? process.argv[1] ?? process.execPath, options.platform);
   if (!isNpxEntrypoint(entrypoint)) {
     return entrypoint;
   }
   const identity = await readPackageIdentity();
-  const runnerDir = path.join(home, "runner");
+  const runnerDir = twinnyRunnerDir(home);
   try {
     await (options.runNpmInstall ?? execa)("npm", ["install", "--prefix", runnerDir, "--omit=dev", "--no-audit", "--no-fund", `${identity.name}@${identity.version}`], {
       stdio: "pipe"
@@ -1864,11 +1923,18 @@ export async function resolveServiceEntrypoint(home: string, options: ResolveSer
       { cause: error }
     );
   }
-  return path.join(runnerDir, "node_modules", ".bin", "twinny");
+  return twinnyRunnerBinaryPath(home, options.platform);
 }
 
 export function isNpxEntrypoint(entrypoint: string): boolean {
-  return entrypoint.split(path.sep).includes("_npx");
+  return entrypoint.split(/[\\/]/).includes("_npx");
+}
+
+function resolveEntrypointPath(entrypoint: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === "win32" && (/^[A-Za-z]:[\\/]/.test(entrypoint) || /^\\\\/.test(entrypoint))) {
+    return entrypoint;
+  }
+  return path.resolve(entrypoint);
 }
 
 async function readPackageIdentity(): Promise<{ name: string; version: string }> {

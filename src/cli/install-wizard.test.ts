@@ -240,6 +240,7 @@ describe("install wizard helpers", () => {
 
   it("detects npx entrypoints", () => {
     expect(isNpxEntrypoint(path.join(os.tmpdir(), "_npx", "abc", "node_modules", ".bin", "twinny"))).toBe(true);
+    expect(isNpxEntrypoint("C:\\Users\\tester\\AppData\\Local\\npm-cache\\_npx\\abc\\node_modules\\.bin\\twinny.cmd")).toBe(true);
     expect(isNpxEntrypoint("/usr/local/bin/twinny")).toBe(false);
   });
 
@@ -263,6 +264,20 @@ describe("install wizard helpers", () => {
       ["install", "--prefix", path.join(home, "runner"), "--omit=dev", "--no-audit", "--no-fund", `${packageJson.name}@${packageJson.version}`],
       expect.objectContaining({ stdio: "pipe" })
     );
+  });
+
+  it("uses the Windows npm command shim for npx runner services", async () => {
+    const home = await tempHome();
+    const entrypoint = "C:\\Users\\tester\\AppData\\Local\\npm-cache\\_npx\\abc\\node_modules\\.bin\\twinny.cmd";
+    const runNpmInstallMock = vi.fn(async () => undefined);
+
+    const result = await resolveServiceEntrypoint(home, {
+      entrypoint,
+      platform: "win32",
+      runNpmInstall: runNpmInstallMock as unknown as NpmInstallRunner
+    });
+
+    expect(result).toBe(path.join(home, "runner", "node_modules", ".bin", "twinny.cmd"));
   });
 
   it("detects and installs lark-cli with non-TTY commands", async () => {
@@ -441,7 +456,7 @@ describe("install wizard helpers", () => {
     expect(installManagedServiceMock).toHaveBeenCalledWith(expect.objectContaining({
       entrypoint: "/tmp/twinny-bin"
     }));
-    expect(startManagedServiceMock).toHaveBeenCalledWith({ home });
+    expect(startManagedServiceMock).toHaveBeenCalledWith({ home, platform: "linux" });
     expect(runCommand).toHaveBeenCalledWith(
       "/usr/local/bin/lark-cli",
       ["profile", "add", "--name", "cli_agent", "--app-id", "cli_agent", "--app-secret-stdin", "--brand", "feishu"],
@@ -473,6 +488,25 @@ describe("install wizard helpers", () => {
       home,
       platform: "darwin",
       disableKeychain: true,
+      secretStore: secretStore as NonNullable<Parameters<typeof runInstallAgent>[0]>["secretStore"]
+    });
+
+    await expect(fs.readFile(path.join(home, "auth.json"), "utf8")).resolves.toContain("\"lark_app_secret\": \"app_secret\"");
+    expect(secretStore.set).not.toHaveBeenCalled();
+  });
+
+  it("stores the app secret in auth.json on Windows", async () => {
+    const home = await tempHome();
+    const secretStore = {
+      get: vi.fn(async () => null),
+      set: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+      has: vi.fn(async () => false)
+    };
+
+    await runAgentInstallForSecretStorage({
+      home,
+      platform: "win32",
       secretStore: secretStore as NonNullable<Parameters<typeof runInstallAgent>[0]>["secretStore"]
     });
 
@@ -679,7 +713,7 @@ async function runAgentInstallForSecretStorage(input: {
 }): Promise<void> {
   const output = createNdjsonOutput();
   const runCommand = vi.fn(async (command: string, args: string[]) => {
-    if (command === "which" && args[0] === "codex") {
+    if ((command === "which" || command === "where") && args[0] === "codex") {
       return { stdout: "/usr/local/bin/codex\n", stderr: "", exitCode: 0 };
     }
     if (command === "/usr/local/bin/codex" && args[0] === "--version") {
@@ -688,7 +722,7 @@ async function runAgentInstallForSecretStorage(input: {
     if (command === "/usr/local/bin/codex" && args.join(" ") === "login status") {
       return { stdout: "Logged in using ChatGPT", stderr: "", exitCode: 0 };
     }
-    if (command === "which" && args[0] === "lark-cli") {
+    if ((command === "which" || command === "where") && args[0] === "lark-cli") {
       return { stdout: "", stderr: "", exitCode: 1 };
     }
     throw new Error(`unexpected command: ${command} ${args.join(" ")}`);

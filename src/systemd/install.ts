@@ -92,8 +92,12 @@ export async function tailSystemdUserServiceLogs(options: SystemdUserServiceComm
   await execa("journalctl", ["--user", "-u", runtime.unitName, "-f"], { stdio: "inherit" });
 }
 
-function getSystemdUserServiceDir(env: NodeJS.ProcessEnv = process.env): string {
+export function getSystemdUserServiceDir(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), ".config"), "systemd", "user");
+}
+
+export function systemdUserServicePathForHomeRandom(homeRandom: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(getSystemdUserServiceDir(env), systemdUnitNameForHomeRandom(homeRandom));
 }
 
 async function resolveSystemdUserServiceRuntime(
@@ -109,7 +113,7 @@ async function resolveSystemdUserServiceRuntime(
   return {
     home: status.paths.home,
     unitName,
-    unitPath: path.join(getSystemdUserServiceDir(options.env), unitName),
+    unitPath: systemdUserServicePathForHomeRandom(status.config.homeIdentity.random, options.env),
     config: status.config
   };
 }

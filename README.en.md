@@ -8,7 +8,7 @@
 
 ## Requirements
 
-- macOS or Linux. The installer manages a macOS LaunchAgent, or a `--system-daemon` LaunchDaemon, on macOS and a systemd user service on Linux.
+- macOS, Linux, WSL2, or Windows. The installer manages a macOS LaunchAgent, or a `--system-daemon` LaunchDaemon, on macOS, a systemd user service on Linux/WSL2 with systemd enabled, and a user-level scheduled task on Windows.
 - Node.js 22.18.0 or newer. Twinny uses Node.js' built-in `node:sqlite` module and does not require an extra SQLite native addon.
 - Codex CLI 0.130.0 or newer in `PATH`, or set `CODEX_BINARY`; the installer can install Codex automatically if it is missing.
 - A Feishu/Lark bot app with the permissions and event subscriptions listed below.
@@ -39,7 +39,9 @@ npx twinny@latest install --system-daemon
 
 `--system-daemon` writes the plist to `/Library/LaunchDaemons` through `sudo` and sets `UserName` to the current user. Later `start`, `stop`, `restart`, and `status` commands keep using LaunchDaemon based on the service settings in `config.toml`.
 
-Useful daemon commands:
+Native Windows installs create a user-level Task Scheduler task that starts when the user logs in. If WSL2 does not have systemd enabled, the installer does not create a managed service; run Twinny in the foreground with `TWINNY_HOME=/path/to/home twinny run`, or enable WSL systemd and reinstall.
+
+Useful service commands:
 
 ```sh
 npx twinny@latest doctor
@@ -53,7 +55,7 @@ npx twinny@latest uninstall
 
 Use `TWINNY_HOME=/path/to/home` with any command when you are not using the default home.
 
-Secrets are stored outside `config.toml`. Non-macOS installs store the Lark `app_secret` in the `lark_app_secret` field in `TWINNY_HOME/auth.json`. macOS installs use the system Keychain by default; with `--disable-keychain`, or if the Keychain write fails, the installer stores the secret in `auth.json` instead. On startup, Twinny reads `auth.json` first, then falls back to `TWINNY_LARK_APP_SECRET` and the legacy secret store (macOS Keychain, `runtime/secrets.json` on other platforms).
+Secrets are stored outside `config.toml`. Non-macOS installs, including Windows, store the Lark `app_secret` in the `lark_app_secret` field in `TWINNY_HOME/auth.json`. macOS installs use the system Keychain by default; with `--disable-keychain`, or if the Keychain write fails, the installer stores the secret in `auth.json` instead. On startup, Twinny reads `auth.json` first, then falls back to `TWINNY_LARK_APP_SECRET` and the legacy secret store (macOS Keychain, `runtime/secrets.json` on other platforms).
 
 ## Feishu/Lark App Configuration
 
@@ -201,7 +203,7 @@ Recognized fields:
 
 | Field                                   | Meaning and values                                                                                                                                                                                                                                                                                                                                                                       |
 | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[codex].binary`                        | Codex CLI executable path or command name. Defaults to `codex`. Use an absolute path when the LaunchAgent cannot find Codex through `PATH`.                                                                                                                                                                                                                                              |
+| `[codex].binary`                        | Codex CLI executable path or command name. Defaults to `codex`. Use an absolute path when the managed service cannot find Codex through `PATH`. On Windows this is usually `codex.cmd`.                                                                                                                                                                                                   |
 | `[lark.reaction].working`               | Lark emoji type added while Twinny is working. Defaults to `JubilantRabbit`.                                                                                                                                                                                                                                                                                                             |
 | `[lark.reaction].queued`                | Lark emoji type added to queued messages. Defaults to `OneSecond`.                                                                                                                                                                                                                                                                                                                       |
 | `[lark.redaction].email`                | Redaction strategy for email addresses in outgoing Lark payloads. `mask` keeps the domain and masks the local part, for example `alice@example.com` becomes `a***e@example.com`; `whitespace` inserts spaces, for example `alice @ example.com`; `none` sends raw email addresses. Feishu may reject bot messages that contain raw email addresses or phone numbers. Defaults to `mask`. |
@@ -271,7 +273,7 @@ Twinny does not collect or upload conversation content or credentials. This incl
 
 Telemetry may include:
 
-- install and launch lifecycle status, startup duration, and LaunchAgent setup state;
+- install and launch lifecycle status, startup duration, and managed service setup state;
 - runtime health signals such as heartbeat, uptime, queue and active-turn counts, memory usage, and Lark/Codex readiness;
 - message routing metadata such as conversation type, message or action type, route kind, queue depth, and resource counts;
 - turn metadata such as status, type, model, reasoning effort, token counts, duration, generated image count, and error code/category when a turn fails;

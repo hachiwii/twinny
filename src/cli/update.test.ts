@@ -4,11 +4,13 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bootstrapTwinnyHome, createTwinnyConfig } from "../config/index.js";
 import { createLaunchAgentPlist, launchAgentLabelForHomeRandom } from "../launchd/plist.js";
+import { createWindowsTaskLauncher, windowsTaskLauncherPath } from "../windows/task.js";
 import { runUpdateCommand, twinnyRunnerBinaryPath, twinnyRunnerDir } from "./update.js";
 
 type UpdateOptions = NonNullable<Parameters<typeof runUpdateCommand>[0]>;
 type UpdateCommandRunner = NonNullable<UpdateOptions["runCommand"]>;
 type RestartLaunchAgent = NonNullable<UpdateOptions["restartLaunchAgent"]>;
+type RestartManagedService = NonNullable<UpdateOptions["restartManagedService"]>;
 
 const tempDirs: string[] = [];
 
@@ -25,6 +27,7 @@ describe("update command", () => {
 
     await expect(runUpdateCommand({
       home,
+      platform: "darwin",
       restart: false,
       runCommand: runCommand as unknown as UpdateCommandRunner,
       stdout: output.writer,
@@ -49,6 +52,7 @@ describe("update command", () => {
 
     await expect(runUpdateCommand({
       home,
+      platform: "darwin",
       packageSpec: "twinny@latest",
       runCommand: runCommand as unknown as UpdateCommandRunner,
       restartLaunchAgent: restartLaunchAgent as unknown as RestartLaunchAgent,
@@ -81,6 +85,7 @@ describe("update command", () => {
 
     await expect(runUpdateCommand({
       home,
+      platform: "darwin",
       restart: false,
       packageSpec: "twinny@next",
       runCommand: runCommand as unknown as UpdateCommandRunner,
@@ -106,6 +111,7 @@ describe("update command", () => {
 
     await expect(runUpdateCommand({
       home,
+      platform: "darwin",
       packageSpec: "twinny@latest",
       runCommand: runCommand as unknown as UpdateCommandRunner,
       restartLaunchAgent: restartLaunchAgent as unknown as RestartLaunchAgent,
@@ -118,6 +124,34 @@ describe("update command", () => {
 
     expect(restartLaunchAgent).not.toHaveBeenCalled();
     expect(output.raw()).toContain("does not use the Twinny runner");
+  });
+
+  it("restarts Windows scheduled task installations that use the runner", async () => {
+    const home = await configuredHome();
+    const runnerBinary = twinnyRunnerBinaryPath(home, "win32");
+    const launcherPath = windowsTaskLauncherPath(home);
+    await fs.mkdir(path.dirname(launcherPath), { recursive: true });
+    await fs.writeFile(launcherPath, createWindowsTaskLauncher({
+      twinnyHome: home,
+      entrypoint: runnerBinary
+    }), "utf8");
+    const runCommand = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const restartManagedService = vi.fn(async () => undefined);
+
+    await expect(runUpdateCommand({
+      home,
+      platform: "win32",
+      packageSpec: "twinny@latest",
+      runCommand: runCommand as unknown as UpdateCommandRunner,
+      restartManagedService: restartManagedService as unknown as RestartManagedService,
+      stdout: createOutput().writer
+    })).resolves.toMatchObject({
+      runnerBinary,
+      managedServiceUsesRunner: true,
+      restarted: true
+    });
+
+    expect(restartManagedService).toHaveBeenCalledWith({ home, platform: "win32" });
   });
 });
 

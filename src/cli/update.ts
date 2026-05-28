@@ -10,11 +10,18 @@ import {
   launchDaemonPlistPathForLabel,
   launchAgentUsesEntrypoint
 } from "../launchd/plist.js";
+import { twinnyRunnerBinaryPath, twinnyRunnerDir } from "../platform/runner.js";
+import { resolveManagedServiceKind, restartManagedService, type ManagedServiceKind } from "../service/index.js";
+import { systemdUserServicePathForHomeRandom } from "../systemd/install.js";
 import type { LaunchdServiceMode } from "../types.js";
+import { windowsTaskUsesEntrypoint } from "../windows/task.js";
+
+export { twinnyRunnerBinaryPath, twinnyRunnerDir } from "../platform/runner.js";
 
 type CommandRunner = typeof execa;
 type UpdateOutput = Pick<NodeJS.WriteStream, "write">;
 type RestartLaunchAgentFn = typeof restartLaunchAgent;
+type RestartManagedServiceFn = typeof restartManagedService;
 
 export interface RunUpdateCommandOptions {
   home?: string;
@@ -22,8 +29,11 @@ export interface RunUpdateCommandOptions {
   packageSpec?: string;
   runCommand?: CommandRunner;
   restartLaunchAgent?: RestartLaunchAgentFn;
+  restartManagedService?: RestartManagedServiceFn;
   stdout?: UpdateOutput;
+  platform?: NodeJS.Platform;
   launchAgentPlistPath?: string;
+  serviceFilePath?: string;
 }
 
 export interface UpdateRunnerResult {
@@ -31,6 +41,7 @@ export interface UpdateRunnerResult {
   runnerDir: string;
   runnerBinary: string;
   packageSpec: string;
+  managedServiceUsesRunner: boolean;
   launchAgentUsesRunner: boolean;
   restarted: boolean;
 }
@@ -44,46 +55,47 @@ export async function runUpdateCommand(options: RunUpdateCommandOptions = {}): P
 
   const home = status.paths.home;
   const runnerDir = twinnyRunnerDir(home);
-  const runnerBinary = twinnyRunnerBinaryPath(home);
+  const platform = options.platform ?? process.platform;
+  const runnerBinary = twinnyRunnerBinaryPath(home, platform);
   const packageSpec = options.packageSpec ?? await defaultUpdatePackageSpec();
   await installRunnerPackage(runnerDir, packageSpec, options.runCommand ?? execa);
   output.write(`Updated Twinny runner: ${runnerBinary}\n`);
 
-  const launchAgentUsesRunner = await currentLaunchAgentUsesRunner({
+  const serviceKind = await resolveManagedServiceKind({ platform });
+  const managedServiceUsesRunner = await currentManagedServiceUsesRunner({
+    kind: serviceKind,
+    home,
     homeRandom: status.config.homeIdentity.random,
     launchdMode: status.config.service.launchd.mode,
     runnerBinary,
-    launchAgentPlistPath: options.launchAgentPlistPath
+    serviceFilePath: options.serviceFilePath ?? options.launchAgentPlistPath
   });
+  const launchAgentUsesRunner = managedServiceUsesRunner;
   const shouldRestart = options.restart ?? true;
   if (!shouldRestart) {
     output.write("Skipped restart. Run `twinny restart` when you are ready to use the updated runner.\n");
-    return { home, runnerDir, runnerBinary, packageSpec, launchAgentUsesRunner, restarted: false };
+    return { home, runnerDir, runnerBinary, packageSpec, managedServiceUsesRunner, launchAgentUsesRunner, restarted: false };
   }
-  if (!launchAgentUsesRunner) {
-    output.write("Skipped restart because the current LaunchAgent does not use the Twinny runner.\n");
-    output.write("Re-run `twinny install` with npx if you want LaunchAgent updates to use this runner.\n");
-    return { home, runnerDir, runnerBinary, packageSpec, launchAgentUsesRunner, restarted: false };
+  if (!managedServiceUsesRunner) {
+    output.write(`Skipped restart because the current ${managedServiceLabel(serviceKind)} does not use the Twinny runner.\n`);
+    output.write("Re-run `twinny install` with npx if you want managed service updates to use this runner.\n");
+    return { home, runnerDir, runnerBinary, packageSpec, managedServiceUsesRunner, launchAgentUsesRunner, restarted: false };
   }
 
   output.write("Restarting Twinny...\n");
   try {
-    await (options.restartLaunchAgent ?? restartLaunchAgent)({ home });
+    if (options.restartLaunchAgent) {
+      await options.restartLaunchAgent({ home });
+    } else {
+      await (options.restartManagedService ?? restartManagedService)({ home, platform });
+    }
   } catch (error) {
     throw new Error(`Twinny runner was updated, but restart failed: ${error instanceof Error ? error.message : String(error)}`, {
       cause: error
     });
   }
   output.write("Twinny restarted.\n");
-  return { home, runnerDir, runnerBinary, packageSpec, launchAgentUsesRunner, restarted: true };
-}
-
-export function twinnyRunnerDir(home: string): string {
-  return path.join(home, "runner");
-}
-
-export function twinnyRunnerBinaryPath(home: string): string {
-  return path.join(twinnyRunnerDir(home), "node_modules", ".bin", "twinny");
+  return { home, runnerDir, runnerBinary, packageSpec, managedServiceUsesRunner, launchAgentUsesRunner, restarted: true };
 }
 
 async function installRunnerPackage(runnerDir: string, packageSpec: string, runCommand: CommandRunner): Promise<void> {
@@ -118,6 +130,61 @@ async function currentLaunchAgentUsesRunner(input: {
     throw error;
   }
   return launchAgentUsesEntrypoint(plist, input.runnerBinary);
+}
+
+async function currentManagedServiceUsesRunner(input: {
+  kind: ManagedServiceKind;
+  home: string;
+  homeRandom: string;
+  launchdMode: LaunchdServiceMode;
+  runnerBinary: string;
+  serviceFilePath?: string;
+}): Promise<boolean> {
+  if (input.kind === "launchd") {
+    return currentLaunchAgentUsesRunner({
+      homeRandom: input.homeRandom,
+      launchdMode: input.launchdMode,
+      runnerBinary: input.runnerBinary,
+      launchAgentPlistPath: input.serviceFilePath
+    });
+  }
+  if (input.kind === "systemd") {
+    return textFileIncludes(input.serviceFilePath ?? systemdUserServicePathForHomeRandom(input.homeRandom), input.runnerBinary);
+  }
+  if (input.kind === "windows-task") {
+    return windowsTaskUsesEntrypoint({
+      home: input.home,
+      entrypoint: input.runnerBinary,
+      launcherPath: input.serviceFilePath
+    });
+  }
+  return false;
+}
+
+async function textFileIncludes(filePath: string, expected: string): Promise<boolean> {
+  let content: string;
+  try {
+    content = await fs.readFile(filePath, "utf8");
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) {
+      return false;
+    }
+    throw error;
+  }
+  return content.includes(path.resolve(expected));
+}
+
+function managedServiceLabel(kind: ManagedServiceKind): string {
+  switch (kind) {
+    case "launchd":
+      return "LaunchAgent";
+    case "systemd":
+      return "systemd user service";
+    case "windows-task":
+      return "Windows scheduled task";
+    case "manual":
+      return "foreground runner";
+  }
 }
 
 async function defaultUpdatePackageSpec(): Promise<string> {

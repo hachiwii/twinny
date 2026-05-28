@@ -20,16 +20,42 @@ import {
   type InstallSystemdUserServiceOptions,
   type SystemdUserServiceCommandOptions
 } from "../systemd/install.js";
+import { isSystemdUserAvailable, isWsl2, type PlatformDetectionOptions } from "../platform/detect.js";
+import {
+  installWindowsTask,
+  restartWindowsTask,
+  startWindowsTask,
+  statusWindowsTask,
+  stopWindowsTask,
+  tailWindowsTaskLogs,
+  uninstallWindowsTask,
+  type InstallWindowsTaskOptions,
+  type WindowsTaskCommandOptions
+} from "../windows/task.js";
+import {
+  installManualService,
+  restartManualService,
+  startManualService,
+  statusManualService,
+  stopManualService,
+  tailManualServiceLogs,
+  uninstallManualService
+} from "./manual.js";
 
-export type ManagedServiceKind = "launchd" | "systemd";
+export type ManagedServiceKind = "launchd" | "systemd" | "windows-task" | "manual";
 
-export interface ManagedServiceCommandOptions extends LaunchAgentCommandOptions, SystemdUserServiceCommandOptions {
+export interface ManagedServiceCommandOptions
+  extends LaunchAgentCommandOptions,
+    SystemdUserServiceCommandOptions,
+    WindowsTaskCommandOptions,
+    PlatformDetectionOptions {
   platform?: NodeJS.Platform;
 }
 
 export interface InstallManagedServiceOptions
   extends Omit<InstallLaunchAgentOptions, "home">,
     Omit<InstallSystemdUserServiceOptions, "home">,
+    Omit<InstallWindowsTaskOptions, "home">,
     ManagedServiceCommandOptions {}
 
 export function managedServiceKindForPlatform(platform: NodeJS.Platform = process.platform): ManagedServiceKind {
@@ -39,67 +65,158 @@ export function managedServiceKindForPlatform(platform: NodeJS.Platform = proces
   if (platform === "linux") {
     return "systemd";
   }
+  if (platform === "win32") {
+    return "windows-task";
+  }
   throw new Error(
-    `Twinny managed service is not supported on ${platform}. Supported service managers: macOS launchd, Linux systemd user services. Use \`twinny run\` to run in the foreground.`
+    `Twinny managed service is not supported on ${platform}. Supported service managers: macOS launchd, Linux systemd user services, Windows Task Scheduler. Use \`twinny run\` to run in the foreground.`
   );
 }
 
+export async function resolveManagedServiceKind(options: ManagedServiceCommandOptions = {}): Promise<ManagedServiceKind> {
+  const platform = options.platform ?? process.platform;
+  const kind = managedServiceKindForPlatform(platform);
+  if (kind !== "systemd") {
+    return kind;
+  }
+  if (!(await isWsl2(options))) {
+    return kind;
+  }
+  return await isSystemdUserAvailable(options) ? "systemd" : "manual";
+}
+
 export function managedServiceDisplayName(platform: NodeJS.Platform = process.platform): string {
-  return managedServiceKindForPlatform(platform) === "launchd" ? "LaunchAgent" : "systemd user service";
+  return managedServiceDisplayNameForKind(managedServiceKindForPlatform(platform));
+}
+
+export function managedServiceDisplayNameForKind(kind: ManagedServiceKind): string {
+  switch (kind) {
+    case "launchd":
+      return "LaunchAgent";
+    case "systemd":
+      return "systemd user service";
+    case "windows-task":
+      return "Windows scheduled task";
+    case "manual":
+      return "foreground run";
+  }
 }
 
 export async function installManagedService(options: InstallManagedServiceOptions = {}): Promise<void> {
-  if (managedServiceKindForPlatform(options.platform) === "launchd") {
-    await installLaunchAgent(options);
-    return;
+  switch (await resolveManagedServiceKind(options)) {
+    case "launchd":
+      await installLaunchAgent(options);
+      return;
+    case "systemd":
+      await installSystemdUserService(options);
+      return;
+    case "windows-task":
+      await installWindowsTask(options);
+      return;
+    case "manual":
+      await installManualService();
+      return;
   }
-  await installSystemdUserService(options);
 }
 
 export async function uninstallManagedService(options: ManagedServiceCommandOptions = {}): Promise<void> {
-  if (managedServiceKindForPlatform(options.platform) === "launchd") {
-    await uninstallLaunchAgent(options);
-    return;
+  switch (await resolveManagedServiceKind(options)) {
+    case "launchd":
+      await uninstallLaunchAgent(options);
+      return;
+    case "systemd":
+      await uninstallSystemdUserService(options);
+      return;
+    case "windows-task":
+      await uninstallWindowsTask(options);
+      return;
+    case "manual":
+      await uninstallManualService();
+      return;
   }
-  await uninstallSystemdUserService(options);
 }
 
 export async function startManagedService(options: ManagedServiceCommandOptions = {}): Promise<void> {
-  if (managedServiceKindForPlatform(options.platform) === "launchd") {
-    await startLaunchAgent(options);
-    return;
+  switch (await resolveManagedServiceKind(options)) {
+    case "launchd":
+      await startLaunchAgent(options);
+      return;
+    case "systemd":
+      await startSystemdUserService(options);
+      return;
+    case "windows-task":
+      await startWindowsTask(options);
+      return;
+    case "manual":
+      await startManualService();
+      return;
   }
-  await startSystemdUserService(options);
 }
 
 export async function stopManagedService(options: ManagedServiceCommandOptions = {}): Promise<void> {
-  if (managedServiceKindForPlatform(options.platform) === "launchd") {
-    await stopLaunchAgent(options);
-    return;
+  switch (await resolveManagedServiceKind(options)) {
+    case "launchd":
+      await stopLaunchAgent(options);
+      return;
+    case "systemd":
+      await stopSystemdUserService(options);
+      return;
+    case "windows-task":
+      await stopWindowsTask(options);
+      return;
+    case "manual":
+      await stopManualService();
+      return;
   }
-  await stopSystemdUserService(options);
 }
 
 export async function restartManagedService(options: ManagedServiceCommandOptions = {}): Promise<void> {
-  if (managedServiceKindForPlatform(options.platform) === "launchd") {
-    await restartLaunchAgent(options);
-    return;
+  switch (await resolveManagedServiceKind(options)) {
+    case "launchd":
+      await restartLaunchAgent(options);
+      return;
+    case "systemd":
+      await restartSystemdUserService(options);
+      return;
+    case "windows-task":
+      await restartWindowsTask(options);
+      return;
+    case "manual":
+      await restartManualService();
+      return;
   }
-  await restartSystemdUserService(options);
 }
 
 export async function statusManagedService(options: ManagedServiceCommandOptions = {}): Promise<void> {
-  if (managedServiceKindForPlatform(options.platform) === "launchd") {
-    await statusLaunchAgent(options);
-    return;
+  switch (await resolveManagedServiceKind(options)) {
+    case "launchd":
+      await statusLaunchAgent(options);
+      return;
+    case "systemd":
+      await statusSystemdUserService(options);
+      return;
+    case "windows-task":
+      await statusWindowsTask(options);
+      return;
+    case "manual":
+      await statusManualService();
+      return;
   }
-  await statusSystemdUserService(options);
 }
 
 export async function tailManagedServiceLogs(options: ManagedServiceCommandOptions = {}): Promise<void> {
-  if (managedServiceKindForPlatform(options.platform) === "launchd") {
-    await tailLaunchAgentLogs(options);
-    return;
+  switch (await resolveManagedServiceKind(options)) {
+    case "launchd":
+      await tailLaunchAgentLogs(options);
+      return;
+    case "systemd":
+      await tailSystemdUserServiceLogs(options);
+      return;
+    case "windows-task":
+      await tailWindowsTaskLogs(options);
+      return;
+    case "manual":
+      await tailManualServiceLogs();
+      return;
   }
-  await tailSystemdUserServiceLogs(options);
 }

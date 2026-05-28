@@ -39,8 +39,10 @@ Default agent-mode choices are:
 - `--env-mode default`: import all recommended launch environment variables.
 - `--install-codex auto`: install Codex CLI with npm if it is missing.
 - `--install-lark-cli auto`: install lark-cli after Twinny resources are uploaded if it is missing.
-- `--start true`: start the daemon after installation.
+- `--start true`: start the managed service after installation. In WSL2 without systemd, the installer cannot start a managed service and reports the foreground `twinny run` command instead.
 - `--system-daemon`: on macOS, install as a sudo-managed LaunchDaemon with `UserName` set to the current user. Use this when the installer reports that the current environment has no GUI LaunchAgent.
+
+On native Windows, the installer creates a user-level Task Scheduler task. On Linux and WSL2 with systemd enabled, it creates a systemd user service.
 
 Only override these when the user explicitly asks. For manual environment import, pass one `--env-key` per variable:
 
