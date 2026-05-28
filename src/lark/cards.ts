@@ -1195,17 +1195,21 @@ function elapsedElement(
   runtimeStats: TwinnyAgentCardRuntimeStats | undefined,
   mode?: CodexThreadMode
 ): LarkCardElement {
-  return {
-    tag: "div",
-    text: {
-      tag: "plain_text",
-      content: elapsedText(elapsedMs, runtimeStats, mode),
+  return markdownElement(
+    elapsedRichText(elapsedMs, runtimeStats, mode),
+    {
       text_size: "notation",
-      text_align: "left",
-      text_color: "grey"
-    },
-    margin: "4px 0px 4px 0px"
-  };
+      margin: "4px 0px 4px 0px"
+    }
+  );
+}
+
+function elapsedRichText(
+  elapsedMs: number,
+  runtimeStats: TwinnyAgentCardRuntimeStats | undefined,
+  mode?: CodexThreadMode
+): string {
+  return `<font color='grey'>${escapeInlineRichText(elapsedText(elapsedMs, runtimeStats, mode))} · With [Twinny](https://github.com/hachiwii/twinny)</font>`;
 }
 
 function elapsedText(
@@ -1520,6 +1524,13 @@ function safeFormKey(value: string): string {
 
 function escapeMarkdown(value: string): string {
   return value.replace(/\*/g, "\\*").replace(/_/g, "\\_");
+}
+
+function escapeInlineRichText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function resumeListTable(items: TwinnyResumeListItem[]): string {

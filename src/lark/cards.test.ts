@@ -48,26 +48,6 @@ function findButton(card: Record<string, unknown>, label: string): Record<string
   return undefined;
 }
 
-function findTextElement(card: Record<string, unknown>, content: string): Record<string, unknown> | undefined {
-  const queue: unknown[] = [(card.body as { elements: unknown[] }).elements];
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (Array.isArray(current)) {
-      queue.push(...current);
-      continue;
-    }
-    if (current && typeof current === "object") {
-      const element = current as Record<string, unknown>;
-      const text = element.text as { content?: string } | undefined;
-      if (text?.content === content) {
-        return element;
-      }
-      queue.push(...Object.values(element));
-    }
-  }
-  return undefined;
-}
-
 function findElementByTag(card: Record<string, unknown>, tag: string): Record<string, unknown> | undefined {
   return findElementsByTag(card, tag)[0];
 }
@@ -457,7 +437,7 @@ describe("renderTwinnyAgentCard", () => {
     expect(JSON.stringify(card)).not.toContain("暂无进度");
   });
 
-  it("adds model, context, and compact token usage to the plain-text elapsed footer", () => {
+  it("adds model, context, compact token usage, and Twinny link to the rich elapsed footer", () => {
     const card = renderTwinnyAgentCard(createOptions({
       elapsedMs: 150_000,
       runtimeStats: {
@@ -470,16 +450,19 @@ describe("renderTwinnyAgentCard", () => {
         outputTokens: 1_210
       }
     }));
-    const footer = "已工作 2m30s · gpt-5.5 xhigh · 57% · ↑ 327 K (90% Cached) ↓ 1.21 K";
+    const footer = "<font color='grey'>已工作 2m30s · gpt-5.5 xhigh · 57% · ↑ 327 K (90% Cached) ↓ 1.21 K · With [Twinny](https://github.com/hachiwii/twinny)</font>";
+    const footerElement = findElementsByTag(card, "markdown").find((element) => element.content === footer);
 
     expect(JSON.stringify(card)).toContain(footer);
-    expect(findTextElement(card, footer)).toMatchObject({
-      tag: "div",
-      text: expect.objectContaining({
-        tag: "plain_text",
-        text_color: "grey"
-      })
+    expect(footerElement).toMatchObject({
+      tag: "markdown",
+      content: footer,
+      text_align: "left",
+      text_size: "notation",
+      margin: "4px 0px 4px 0px"
     });
+    expect(footerElement).not.toHaveProperty("text");
+    expect(footerElement).not.toHaveProperty("text_color");
     expect(JSON.stringify(card)).not.toContain("**↑**");
     expect(JSON.stringify(card)).not.toContain("**↓**");
   });
@@ -490,7 +473,9 @@ describe("renderTwinnyAgentCard", () => {
       mode: "plan"
     }));
 
-    expect(JSON.stringify(card)).toContain("已工作 2m30s · Plan Mode");
+    expect(JSON.stringify(card)).toContain(
+      "<font color='grey'>已工作 2m30s · Plan Mode · With [Twinny](https://github.com/hachiwii/twinny)</font>"
+    );
   });
 
   it("shows service restart recovery copy in paused-card subtitle", () => {
