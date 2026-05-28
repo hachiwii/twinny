@@ -8,6 +8,7 @@ import {
   renderTwinnyResumeListCard,
   renderTwinnyStatusCard,
   renderTwinnyThreadSummaryCard,
+  renderTwinnyWorkspaceSelectionMarkdown,
   type RenderTwinnyAgentCardOptions
 } from "./cards.js";
 
@@ -817,11 +818,13 @@ describe("renderTwinnyStatusCard", () => {
     expect(((card.body as { elements: unknown[] }).elements.at(-1) as Record<string, unknown>).tag).toBe("column_set");
   });
 
-  it("renders a hidden status card with only the hidden title", () => {
+  it("renders a hidden status card with only hidden body text", () => {
     const card = renderHiddenTwinnyStatusCard();
 
-    expect(JSON.stringify(card)).toContain("已隐藏的状态卡片");
-    expect((card.body as { elements: unknown[] }).elements).toEqual([]);
+    expect(card.header).toBeUndefined();
+    expect((card.body as { elements: Array<{ content?: string }> }).elements).toEqual([
+      expect.objectContaining({ tag: "markdown", content: "状态卡片已隐藏" })
+    ]);
   });
 });
 
@@ -844,7 +847,9 @@ describe("renderTwinnyResumeListCard", () => {
 
     expect(card.header).toBeUndefined();
     const serialized = JSON.stringify(card);
-    expect(serialized).toContain("| 序号 | thread_id | name | 工作目录 |");
+    expect(serialized).toContain("/resume <thread_id|序号> 恢复本机 Codex 会话。");
+    expect(serialized).toContain("默认使用原会话 cwd；追加 `local` 使用当前会话 cwd。");
+    expect(serialized).toContain("| 序号 | thread_id | name | cwd |");
     expect(serialized).toContain("thread_external");
     expect(findButton(card, "上一页")).toBeUndefined();
     expect(findButton(card, "下一页")).toMatchObject({
@@ -868,20 +873,53 @@ describe("renderTwinnyResumeListCard", () => {
 });
 
 describe("renderTwinnyResumeHistoryCard", () => {
-  it("renders a title without a colored header template", () => {
+  it("shows the latest ten messages and folds earlier history", () => {
     const card = renderTwinnyResumeHistoryCard({
-      messages: [
-        { role: "user", text: "hello" },
-        { role: "assistant", text: "working\nfinal" }
-      ]
+      messages: Array.from({ length: 12 }, (_, index) => ({
+        role: index % 2 === 0 ? "user" : "assistant",
+        text: `message ${index + 1}`
+      }))
     });
 
-    expect(card.header).toMatchObject({ title: { content: "历史消息" } });
-    expect((card.header as Record<string, unknown>).template).toBeUndefined();
+    expect(card.header).toBeUndefined();
+    const bodyElements = (card.body as { elements: Array<Record<string, unknown>> }).elements;
+    const historyPanel = bodyElements[0] as { header?: unknown; elements?: Array<{ content?: string }> };
+    expect(historyPanel).toMatchObject({
+      tag: "collapsible_panel",
+      header: {
+        title: {
+          tag: "plain_text",
+          content: "显示更多历史消息"
+        }
+      }
+    });
+    expect(historyPanel.elements?.[0]?.content).toContain("**User:** message 1");
+    expect(historyPanel.elements?.[0]?.content).toContain("**Assistant:** message 2");
     const serialized = JSON.stringify(card);
-    expect(serialized).toContain("- **User: **hello");
-    expect(serialized).toContain("- **Assistant: **working");
-    expect(serialized).toContain("final");
+    expect(serialized).not.toContain("**User: **");
+    expect(serialized).toContain("**User:** message 3");
+    expect(serialized).toContain("**Assistant:** message 12");
+  });
+});
+
+describe("renderTwinnyWorkspaceSelectionMarkdown", () => {
+  it("renders workspace choices as the shared markdown table style", () => {
+    const markdown = renderTwinnyWorkspaceSelectionMarkdown({
+      command: "/workspace",
+      target: "conversation",
+      currentWorkspace: "/tmp/current",
+      workspaces: ["/tmp/first", "/tmp/second"]
+    });
+
+    expect(markdown).toBe([
+      "/workspace <路径|序号> 设置当前 conversation 的 cwd。",
+      "当前 conversation cwd：`/tmp/current`",
+      "",
+      "| 序号 | cwd |",
+      "| --- | --- |",
+      "| 1 | /tmp/first |",
+      "| 2 | /tmp/second |"
+    ].join("\n"));
   });
 });
 

@@ -23,6 +23,7 @@ import {
   renderTwinnyResumeListCard,
   renderTwinnyStatusCard,
   renderTwinnyThreadSummaryCard,
+  renderTwinnyWorkspaceSelectionCard,
   type LarkCardElement,
   type LarkCardJson,
   type TwinnyAgentCardStatus,
@@ -116,13 +117,15 @@ const UNRECOVERABLE_CONTROL_MESSAGE_RECOVERY_TEXT = "上一条控制命令在 Tw
 const MAIN_THREAD_NAME = "主会话";
 const TWINNY_CODEX_THREAD_NAME_PREFIX = "[twinny]";
 const DOC_COMMENT_AGENT_CARD_SUBTITLE = "文档评论触发";
-const RESUME_LIST_PAGE_SIZE = 20;
+const RESUME_LIST_PAGE_SIZE = 10;
 const RESUME_CODEX_PAGE_SIZE = 100;
 const LARK_SINGLE_MESSAGE_UPDATE_FREQUENCY_LIMIT_CODE = 230020;
 const AGENT_CARD_TIMER_INTERVAL_MS = 10_000;
 const NON_TERMINAL_AGENT_CARD_RATE_LIMIT_FALLBACK_THRESHOLD = 3;
 const COMPLETED_AGENT_CARD_PATCH_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000] as const;
-const RESUME_HISTORY_MESSAGE_LIMIT = 20;
+const RESUME_HISTORY_VISIBLE_MESSAGE_LIMIT = 10;
+const RESUME_HISTORY_COLLAPSED_MESSAGE_LIMIT = 20;
+const RESUME_HISTORY_MESSAGE_LIMIT = RESUME_HISTORY_VISIBLE_MESSAGE_LIMIT + RESUME_HISTORY_COLLAPSED_MESSAGE_LIMIT;
 const RESUME_BROWSER_TTL_MS = 60 * 60 * 1000;
 const RESUME_CODEX_SOURCE_KINDS: ThreadSourceKind[] = [
   "cli",
@@ -3333,7 +3336,8 @@ export class ConversationManager {
           browserId: command.browserId,
           items: [],
           hasPreviousPage: false,
-          hasNextPage: false
+          hasNextPage: false,
+          pageSize: RESUME_LIST_PAGE_SIZE
         }));
         return;
       }
@@ -3607,7 +3611,10 @@ export class ConversationManager {
         cwd: item.cwd
       })),
       hasPreviousPage: browser.currentPageIndex > 0,
-      hasNextPage: browser.currentPageIndex < browser.pages.length - 1 || browser.buffer.length > 0 || !browser.exhausted
+      hasNextPage: browser.currentPageIndex < browser.pages.length - 1 || browser.buffer.length > 0 || !browser.exhausted,
+      profile: browser.profile,
+      pageNumber: browser.currentPageIndex + 1,
+      pageSize: RESUME_LIST_PAGE_SIZE
     });
   }
 
@@ -4481,7 +4488,8 @@ export class ConversationManager {
       await this.replyWorkspaceSelectionList(
         message.messageId,
         resolved.threadId,
-        "当前 conversation workspace",
+        "/workspace",
+        "conversation",
         conversation?.workspace ?? resolved.workspace
       );
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -4527,7 +4535,8 @@ export class ConversationManager {
       await this.replyWorkspaceSelectionList(
         message.messageId,
         resolved.threadId,
-        "当前 thread workspace",
+        "/cd",
+        "thread",
         resolved.workspace
       );
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -4546,24 +4555,21 @@ export class ConversationManager {
   private async replyWorkspaceSelectionList(
     messageId: string,
     codexThreadId: string,
-    currentLabel: string,
+    command: "/workspace" | "/cd",
+    target: "conversation" | "thread",
     currentWorkspace: string
   ): Promise<void> {
     const since = Date.now() - WORKSPACE_SELECTION_LOOKBACK_MS;
     const workspaces = await this.options.repository.listRecentThreadWorkspaces(since, WORKSPACE_SELECTION_LIMIT);
     this.workspaceSelectionsByThread.set(codexThreadId, workspaces);
-    const currentLine = `${currentLabel}：${formatInlineCode(currentWorkspace)}`;
-    if (workspaces.length === 0) {
-      await this.replyControlMarkdownBestEffort(messageId, `${currentLine}\n\n最近 30 天没有可选 workspace。`);
-      return;
-    }
-    await this.replyControlMarkdownBestEffort(
+    await this.replyControlCardBestEffort(
       messageId,
-      [
-        currentLine,
-        "",
-        workspaces.map((workspace, index) => `${index + 1}. ${formatInlineCode(workspace)}`).join("\n")
-      ].join("\n")
+      renderTwinnyWorkspaceSelectionCard({
+        command,
+        target,
+        currentWorkspace,
+        workspaces
+      })
     );
   }
 
@@ -8749,11 +8755,11 @@ export class ConversationManager {
     }
   }
 
-  private async replyControlMarkdownBestEffort(messageId: string, markdown: string): Promise<void> {
+  private async replyControlCardBestEffort(messageId: string, card: LarkCardJson): Promise<void> {
     try {
-      await this.options.lark.replyMarkdown(messageId, markdown);
+      await this.options.lark.replyCard(messageId, card);
     } catch (error) {
-      this.log.warn({ error, messageId }, "failed to send lark control markdown reply");
+      this.log.warn({ error, messageId }, "failed to send lark control card reply");
     }
   }
 
@@ -10330,11 +10336,11 @@ function parseResumeCommand(
     return { kind: "list" };
   }
   if (parts.length > 2) {
-    return { kind: "invalid", message: "用法：/resume [1-20|thread_id] [session|local]" };
+    return { kind: "invalid", message: "用法：/resume [1-10|thread_id] [session|local]" };
   }
   const [target, modeText] = parts as [string, string | undefined];
   if (target === "session" || target === "local") {
-    return { kind: "invalid", message: "用法：/resume [1-20|thread_id] [session|local]" };
+    return { kind: "invalid", message: "用法：/resume [1-10|thread_id] [session|local]" };
   }
   const cwdMode = modeText === undefined ? "session" : parseResumeCwdMode(modeText);
   if (!cwdMode) {
@@ -10343,7 +10349,7 @@ function parseResumeCommand(
   if (/^\d+$/.test(target)) {
     const index = Number(target);
     if (index < 1 || index > RESUME_LIST_PAGE_SIZE) {
-      return { kind: "invalid", message: "序号必须是 1-20。" };
+      return { kind: "invalid", message: "序号必须是 1-10。" };
     }
     return { kind: "select", selector: { kind: "index", index }, cwdMode };
   }
@@ -10654,10 +10660,6 @@ async function validateWorkspaceDirectory(workspace: string): Promise<WorkspaceC
     throw error;
   }
   return { kind: "workspace", workspace };
-}
-
-function formatInlineCode(value: string): string {
-  return `\`${value.replace(/`/g, "\\`")}\``;
 }
 
 function isNodeErrnoException(error: unknown): error is NodeJS.ErrnoException {

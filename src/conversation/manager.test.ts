@@ -472,17 +472,15 @@ describe("ConversationManager", () => {
 
       manager.submitIncoming(message("m_workspace_list", "/workspace"));
 
-      await waitForExpect(() =>
-        expect(lark.replyMarkdown).toHaveBeenCalledWith(
-          "m_workspace_list",
-          [
-            "当前 conversation workspace：`/tmp/twinny/workspaces/p2p_ou_guest`",
-            "",
-            `1. \`${firstWorkspace}\``,
-            `2. \`${secondWorkspace}\``
-          ].join("\n")
-        )
-      );
+      await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("m_workspace_list", expect.any(Object)));
+      const listCard = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
+      const serializedListCard = JSON.stringify(listCard);
+      expect(listCard.header).toBeUndefined();
+      expect(serializedListCard).toContain("/workspace <路径|序号> 设置当前 conversation 的 cwd。");
+      expect(serializedListCard).toContain("当前 conversation cwd：`/tmp/twinny/workspaces/p2p_ou_guest`");
+      expect(serializedListCard).toContain("| 序号 | cwd |");
+      expect(serializedListCard).toContain(`| 1 | ${firstWorkspace} |`);
+      expect(serializedListCard).toContain(`| 2 | ${secondWorkspace} |`);
       expect(codex.startTurn).not.toHaveBeenCalled();
 
       manager.submitIncoming(message("m_workspace_select", "/workspace 2"));
@@ -551,29 +549,29 @@ describe("ConversationManager", () => {
 
       manager.submitIncoming(groupMessage("m_topic_workspace_list", "/workspace", topicContext));
 
-      await waitForExpect(() =>
-        expect(lark.replyMarkdown).toHaveBeenCalledWith(
-          "m_topic_workspace_list",
-          [
-            "当前 conversation workspace：`/tmp/twinny/workspaces/group_oc_group`",
-            "",
-            `1. \`${topicWorkspace}\``
-          ].join("\n")
-        )
-      );
+      await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("m_topic_workspace_list", expect.any(Object)));
+      const workspaceCard = vi.mocked(lark.replyCard).mock.calls.find(([messageId]) => messageId === "m_topic_workspace_list")?.[1] as
+        | Record<string, unknown>
+        | undefined;
+      expect(workspaceCard?.header).toBeUndefined();
+      const serializedWorkspaceCard = JSON.stringify(workspaceCard);
+      expect(serializedWorkspaceCard).toContain("/workspace <路径|序号> 设置当前 conversation 的 cwd。");
+      expect(serializedWorkspaceCard).toContain("当前 conversation cwd：`/tmp/twinny/workspaces/group_oc_group`");
+      expect(serializedWorkspaceCard).toContain("| 序号 | cwd |");
+      expect(serializedWorkspaceCard).toContain(`| 1 | ${topicWorkspace} |`);
 
       manager.submitIncoming(groupMessage("m_topic_cd_list", "/cd", topicContext));
 
-      await waitForExpect(() =>
-        expect(lark.replyMarkdown).toHaveBeenCalledWith(
-          "m_topic_cd_list",
-          [
-            "当前 thread workspace：`/tmp/twinny/workspaces/group_oc_group/topic`",
-            "",
-            `1. \`${topicWorkspace}\``
-          ].join("\n")
-        )
-      );
+      await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("m_topic_cd_list", expect.any(Object)));
+      const cdCard = vi.mocked(lark.replyCard).mock.calls.find(([messageId]) => messageId === "m_topic_cd_list")?.[1] as
+        | Record<string, unknown>
+        | undefined;
+      expect(cdCard?.header).toBeUndefined();
+      const serializedCdCard = JSON.stringify(cdCard);
+      expect(serializedCdCard).toContain("/cd <路径|序号> 设置当前 thread 的 cwd。");
+      expect(serializedCdCard).toContain("当前 thread cwd：`/tmp/twinny/workspaces/group_oc_group/topic`");
+      expect(serializedCdCard).toContain("| 序号 | cwd |");
+      expect(serializedCdCard).toContain(`| 1 | ${topicWorkspace} |`);
 
       manager.submitIncoming(groupMessage("m_topic_cd_select", "/cd 1", topicContext));
 
@@ -3287,7 +3285,7 @@ describe("ConversationManager", () => {
     }));
   });
 
-  it("hides a default /status card by patching it to a hidden title", async () => {
+  it("hides a default /status card by patching it to hidden body text", async () => {
     const row = conversationRecord({ codexThreadId: "thread_status" });
     const { repository } = createRepository(row);
     const codex = createCodex();
@@ -3312,7 +3310,8 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(lark.patchCard).toHaveBeenCalledWith("card_m1_1", expect.any(Object)));
     const patched = vi.mocked(lark.patchCard).mock.calls[0]![1] as Record<string, unknown>;
-    expect(JSON.stringify(patched)).toContain("已隐藏的状态卡片");
+    expect(patched.header).toBeUndefined();
+    expect(JSON.stringify(patched)).toContain("状态卡片已隐藏");
     expect(lark.deleteEphemeralMessage).not.toHaveBeenCalled();
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
       eventId: "event_status_hide",
@@ -4559,7 +4558,10 @@ describe("ConversationManager", () => {
     const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
     const serialized = JSON.stringify(card);
     expect(card.header).toBeUndefined();
-    expect(serialized).toContain("| 序号 | thread_id | name | 工作目录 |");
+    expect(serialized).toContain("/resume <thread_id|序号> 恢复本机 Codex 会话。");
+    expect(serialized).toContain("当前 profile：`host`");
+    expect(serialized).toContain("第 1 页，每页 10 个。");
+    expect(serialized).toContain("| 序号 | thread_id | name | cwd |");
     expect(serialized).toContain("thread_external");
     expect(serialized).not.toContain("thread_group");
     expect(serialized).not.toContain("thread_twinny");
@@ -4602,8 +4604,8 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
     const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
     const firstPage = JSON.stringify(card);
-    expect(firstPage).toContain("thread_external_20");
-    expect(firstPage).not.toContain("thread_external_21");
+    expect(firstPage).toContain("thread_external_10");
+    expect(firstPage).not.toContain("thread_external_11");
 
     manager.submitCardAction({
       eventId: "event_resume_next",
@@ -4617,9 +4619,9 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(lark.patchCard).toHaveBeenCalledWith("card_resume_list", expect.any(Object)));
     const secondPage = JSON.stringify(vi.mocked(lark.patchCard).mock.calls.at(-1)![1]);
-    expect(secondPage).toContain("thread_external_21");
-    expect(secondPage).toContain("thread_external_25");
-    expect(secondPage).not.toContain("thread_external_20");
+    expect(secondPage).toContain("thread_external_11");
+    expect(secondPage).toContain("thread_external_20");
+    expect(secondPage).not.toContain("thread_external_10");
     expect(codex.listThreads).toHaveBeenCalledTimes(1);
   });
 
@@ -4638,19 +4640,25 @@ describe("ConversationManager", () => {
         name: "External Thread",
         cwd: "/tmp/session-workspace",
         turns: includeTurns
-          ? [
-            {
-              id: "turn_1",
+          ? Array.from({ length: 35 }, (_, index) => {
+            const number = index + 1;
+            return {
+              id: `turn_${number}`,
               itemsView: "full" as const,
               status: "completed",
-              startedAt: 1,
-              completedAt: 2,
+              startedAt: number,
+              completedAt: number,
               items: [
-                { type: "userMessage" as const, id: "user_1", content: [{ type: "text", text: "old user", text_elements: [] }] },
-                { type: "agentMessage" as const, id: "agent_1", text: "old assistant", phase: "final_answer" }
+                number % 2 === 1
+                  ? {
+                      type: "userMessage" as const,
+                      id: `user_${number}`,
+                      content: [{ type: "text", text: `history ${number}`, text_elements: [] }]
+                    }
+                  : { type: "agentMessage" as const, id: `agent_${number}`, text: `history ${number}`, phase: "final_answer" }
               ]
-            }
-          ]
+            };
+          })
           : []
       }))
     });
@@ -4696,10 +4704,26 @@ describe("ConversationManager", () => {
       includeTurns: true
     });
     const historyCard = vi.mocked(lark.replyCard).mock.calls[1]![1] as Record<string, unknown>;
-    expect(historyCard.header).toMatchObject({ title: { content: "历史消息" } });
-    expect((historyCard.header as Record<string, unknown>).template).toBeUndefined();
-    expect(JSON.stringify(historyCard)).toContain("**User: **old user");
-    expect(JSON.stringify(historyCard)).toContain("**Assistant: **old assistant");
+    expect(historyCard.header).toBeUndefined();
+    const bodyElements = (historyCard.body as { elements: Array<Record<string, unknown>> }).elements;
+    const historyPanel = bodyElements[0] as { header?: unknown; elements?: Array<{ content?: string }> };
+    const visibleHistory = bodyElements[1] as { content?: string };
+    expect(historyPanel).toMatchObject({
+      tag: "collapsible_panel",
+      header: {
+        title: {
+          tag: "plain_text",
+          content: "显示更多历史消息"
+        }
+      }
+    });
+    expect(historyPanel.elements?.[0]?.content).toContain("**Assistant:** history 6");
+    expect(historyPanel.elements?.[0]?.content).toContain("**User:** history 25");
+    expect(historyPanel.elements?.[0]?.content).not.toContain("history 5");
+    expect(visibleHistory.content).toContain("**Assistant:** history 26");
+    expect(visibleHistory.content).toContain("**User:** history 35");
+    expect(visibleHistory.content).not.toContain("history 25");
+    expect(JSON.stringify(historyCard)).not.toContain("**User: **");
     expect(repository.getCodexThreadById("thread_resume_fork")).toMatchObject({
       codexThreadId: "thread_resume_fork",
       larkThreadId: "topic_resume",

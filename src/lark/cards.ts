@@ -192,6 +192,9 @@ export interface RenderTwinnyResumeListCardOptions {
   items: TwinnyResumeListItem[];
   hasPreviousPage: boolean;
   hasNextPage: boolean;
+  profile?: ProfileName;
+  pageNumber?: number;
+  pageSize?: number;
 }
 
 export interface TwinnyResumeHistoryMessage {
@@ -201,6 +204,13 @@ export interface TwinnyResumeHistoryMessage {
 
 export interface RenderTwinnyResumeHistoryCardOptions {
   messages: TwinnyResumeHistoryMessage[];
+}
+
+export interface RenderTwinnyWorkspaceSelectionMarkdownOptions {
+  command: "/workspace" | "/cd";
+  target: "conversation" | "thread";
+  currentWorkspace: string;
+  workspaces: string[];
 }
 
 export interface RenderTwinnyBannerCardOptions {
@@ -220,6 +230,7 @@ const STATUS_HEADER: Record<TwinnyAgentCardStatus, { title: string; subtitle?: s
   interrupted_plan: { title: "计划被拒绝", template: "grey" },
   accepted_plan: { title: "计划已确认", template: "turquoise" }
 };
+const RESUME_HISTORY_VISIBLE_MESSAGE_LIMIT = 10;
 
 export function renderTwinnyAgentCard(options: RenderTwinnyAgentCardOptions): LarkCardJson {
   const header = STATUS_HEADER[options.status];
@@ -357,8 +368,16 @@ export function renderTwinnyStatusCard(options: RenderTwinnyStatusCardOptions): 
 }
 
 export function renderTwinnyResumeListCard(options: RenderTwinnyResumeListCardOptions): LarkCardJson {
-  const table = resumeListTable(options.items);
-  const elements = [markdownElement(table)];
+  const pageLine = options.pageNumber && options.pageSize
+    ? `第 ${options.pageNumber} 页，每页 ${options.pageSize} 个。`
+    : undefined;
+  const content = selectionMarkdown([
+    "/resume <thread_id|序号> 恢复本机 Codex 会话。",
+    "默认使用原会话 cwd；追加 `local` 使用当前会话 cwd。",
+    options.profile ? `当前 profile：${inlineCode(options.profile)}` : undefined,
+    pageLine
+  ], resumeListTable(options.items));
+  const elements = [markdownElement(content)];
   const actionButtons = resumeListActionButtonsElement(options);
   if (actionButtons) {
     elements.push(actionButtons);
@@ -390,11 +409,7 @@ export function renderTwinnyResumeListCard(options: RenderTwinnyResumeListCardOp
 }
 
 export function renderTwinnyResumeHistoryCard(options: RenderTwinnyResumeHistoryCardOptions): LarkCardJson {
-  const content = options.messages.length > 0
-    ? options.messages
-      .map((message) => `- **${message.role === "user" ? "User" : "Assistant"}: **${escapeListItemMarkdown(message.text)}`)
-      .join("\n")
-    : "暂无历史消息";
+  const elements = resumeHistoryElements(options.messages);
   return {
     schema: "2.0",
     config: {
@@ -416,14 +431,7 @@ export function renderTwinnyResumeHistoryCard(options: RenderTwinnyResumeHistory
       horizontal_align: "left",
       vertical_align: "top",
       padding: "12px 12px 12px 12px",
-      elements: [markdownElement(content)]
-    },
-    header: {
-      title: {
-        tag: "plain_text",
-        content: "历史消息"
-      },
-      padding: "12px 12px 12px 12px"
+      elements
     }
   };
 }
@@ -445,22 +453,25 @@ export function renderHiddenTwinnyStatusCard(): LarkCardJson {
     },
     body: {
       direction: "vertical",
-      horizontal_spacing: "0px",
-      vertical_spacing: "0px",
+      horizontal_spacing: "8px",
+      vertical_spacing: "8px",
       horizontal_align: "left",
       vertical_align: "top",
-      padding: "0px 0px 0px 0px",
-      elements: []
-    },
-    header: {
-      title: {
-        tag: "plain_text",
-        content: "已隐藏的状态卡片"
-      },
-      template: "grey",
-      padding: "12px 12px 12px 12px"
+      padding: "12px 12px 12px 12px",
+      elements: [markdownElement("状态卡片已隐藏")]
     }
   };
+}
+
+export function renderTwinnyWorkspaceSelectionMarkdown(options: RenderTwinnyWorkspaceSelectionMarkdownOptions): string {
+  return selectionMarkdown([
+    `${options.command} <路径|序号> 设置当前 ${options.target} 的 cwd。`,
+    `当前 ${options.target} cwd：${inlineCode(options.currentWorkspace)}`
+  ], workspaceSelectionTable(options.workspaces));
+}
+
+export function renderTwinnyWorkspaceSelectionCard(options: RenderTwinnyWorkspaceSelectionMarkdownOptions): LarkCardJson {
+  return renderMarkdownOnlyCard(renderTwinnyWorkspaceSelectionMarkdown(options));
 }
 
 export function renderTwinnyThreadSummaryCard(options: RenderTwinnyThreadSummaryCardOptions): LarkCardJson {
@@ -579,6 +590,33 @@ export function renderTwinnyBannerCard(options: RenderTwinnyBannerCardOptions = 
 
 function compactCardTitle(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function renderMarkdownOnlyCard(content: string): LarkCardJson {
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      style: {
+        text_size: {
+          normal_v2: {
+            default: "normal",
+            pc: "normal",
+            mobile: "heading"
+          }
+        }
+      }
+    },
+    body: {
+      direction: "vertical",
+      horizontal_spacing: "8px",
+      vertical_spacing: "8px",
+      horizontal_align: "left",
+      vertical_align: "top",
+      padding: "12px 12px 12px 12px",
+      elements: [markdownElement(content)]
+    }
+  };
 }
 
 function threadSummaryHeaderTemplate(status: CodexThreadStatus): string {
@@ -1533,28 +1571,101 @@ function escapeInlineRichText(value: string): string {
     .replace(/>/g, "&gt;");
 }
 
+function selectionMarkdown(lines: Array<string | undefined>, table: string): string {
+  return [
+    ...lines.filter((line): line is string => typeof line === "string" && line.length > 0),
+    "",
+    table
+  ].join("\n");
+}
+
 function resumeListTable(items: TwinnyResumeListItem[]): string {
-  const rows = [
-    "| 序号 | thread_id | name | 工作目录 |",
-    "| --- | --- | --- | --- |"
-  ];
   if (items.length === 0) {
-    rows.push("| - | - | - | 暂无可恢复的 Codex thread |");
-    return rows.join("\n");
+    return markdownTable(["序号", "thread_id", "name", "cwd"], [["-", "-", "-", "暂无可恢复的 Codex thread"]]);
   }
-  for (const item of items) {
-    rows.push([
+  return markdownTable(
+    ["序号", "thread_id", "name", "cwd"],
+    items.map((item) => [
       String(item.index),
-      tableCell(item.threadId),
-      tableCell(item.name || "未命名"),
-      tableCell(item.cwd || "未知")
-    ].join(" | ").replace(/^/, "| ").replace(/$/, " |"));
+      item.threadId,
+      item.name || "未命名",
+      item.cwd || "未知"
+    ])
+  );
+}
+
+function workspaceSelectionTable(workspaces: string[]): string {
+  if (workspaces.length === 0) {
+    return markdownTable(["序号", "cwd"], [["-", "最近 30 天没有可选 cwd"]]);
   }
-  return rows.join("\n");
+  return markdownTable(
+    ["序号", "cwd"],
+    workspaces.map((workspace, index) => [String(index + 1), workspace])
+  );
+}
+
+function markdownTable(headers: string[], rows: string[][]): string {
+  return [
+    `| ${headers.map(tableCell).join(" | ")} |`,
+    `| ${headers.map(() => "---").join(" | ")} |`,
+    ...rows.map((row) => `| ${row.map(tableCell).join(" | ")} |`)
+  ].join("\n");
+}
+
+function resumeHistoryElements(messages: TwinnyResumeHistoryMessage[]): LarkCardElement[] {
+  if (messages.length === 0) {
+    return [markdownElement("暂无历史消息")];
+  }
+  const visibleStart = Math.max(0, messages.length - RESUME_HISTORY_VISIBLE_MESSAGE_LIMIT);
+  const olderMessages = messages.slice(0, visibleStart);
+  const visibleMessages = messages.slice(visibleStart);
+  return [
+    ...(olderMessages.length > 0 ? [resumeHistoryPanel(olderMessages)] : []),
+    markdownElement(formatResumeHistoryMessages(visibleMessages))
+  ];
+}
+
+function resumeHistoryPanel(messages: TwinnyResumeHistoryMessage[]): LarkCardElement {
+  return {
+    tag: "collapsible_panel",
+    expanded: false,
+    header: {
+      title: {
+        tag: "plain_text",
+        content: "显示更多历史消息"
+      },
+      vertical_align: "center",
+      icon: {
+        tag: "standard_icon",
+        token: "down-small-ccm_outlined",
+        color: "",
+        size: "16px 16px"
+      },
+      icon_position: "right",
+      icon_expanded_angle: -180
+    },
+    border: {
+      color: "grey",
+      corner_radius: "5px"
+    },
+    vertical_spacing: "8px",
+    padding: "8px 8px 8px 8px",
+    elements: [markdownElement(formatResumeHistoryMessages(messages))]
+  };
+}
+
+function formatResumeHistoryMessages(messages: TwinnyResumeHistoryMessage[]): string {
+  return messages
+    .map((message) => `- **${message.role === "user" ? "User" : "Assistant"}:** ${escapeListItemMarkdown(message.text)}`)
+    .join("\n");
 }
 
 function tableCell(value: string): string {
   return value.replace(/\s+/g, " ").trim().replace(/\|/g, "\\|");
+}
+
+function inlineCode(value: string): string {
+  return `\`${value.replace(/`/g, "\\`")}\``;
 }
 
 function escapeListItemMarkdown(value: string): string {
