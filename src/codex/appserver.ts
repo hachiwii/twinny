@@ -420,27 +420,16 @@ function waitForChildExit(child: ChildProcessWithoutNullStreams, timeoutMs: numb
 
 export function buildCodexAppServerEnv(codexHome: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  copyEnv(source, env, "PATH");
-  copyEnv(source, env, "HOME");
-  copyEnv(source, env, "USER");
-  copyEnv(source, env, "LOGNAME");
-  copyEnv(source, env, "SHELL");
-  copyEnv(source, env, "TMPDIR");
-  copyEnv(source, env, "LANG");
-  copyEnv(source, env, "LC_ALL");
-  copyEnv(source, env, "LC_CTYPE");
-  copyEnv(source, env, "TERM");
+  for (const [key, value] of Object.entries(source)) {
+    if (value !== undefined) {
+      env[key] = value;
+    }
+  }
 
   env.PATH = codexChildPath(env.PATH);
   env.CODEX_HOME = path.resolve(codexHome);
   env.NO_COLOR = source.NO_COLOR ?? "1";
   return env;
-}
-
-function copyEnv(source: NodeJS.ProcessEnv, target: NodeJS.ProcessEnv, key: string): void {
-  if (source[key] !== undefined) {
-    target[key] = source[key];
-  }
 }
 
 function defaultPath(): string {
