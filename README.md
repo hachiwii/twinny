@@ -57,11 +57,11 @@ secret 会存放在 `config.toml` 之外。非 macOS 安装默认把 Lark `app_s
 
 ## 飞书/Lark 应用配置
 
-你需要在飞书/Lark 开发者后台申请这些 API 权限：
+你需要在飞书/Lark 开发者后台申请这些必要 API 权限：
 
 ```text
 im:message.p2p_msg:readonly
-im:message.group_msg
+im:message.group_at_msg:readonly
 im:message:readonly
 im:message:send_as_bot
 im:message:update
@@ -71,12 +71,15 @@ im:chat:read
 im:chat:create
 im:chat:update
 im:resource
+contact:user.base:readonly
 docs:document.comment:read
 docs:document.comment:create
 docs:document.comment:write_only
 docs:document.media:download
 wiki:node:read
 ```
+
+推荐同时申请 `im:message.group_msg`。它允许 `/activate owner` 和 `/activate all` 在群聊中接收非 @ 消息；如果只使用 `owner_at` 或 `all_at`，基础的 `im:message.group_at_msg:readonly` 已足够。安装指引页面的导入 JSON 会预填这个推荐权限，便于后续切换群响应模式。
 
 订阅这些事件/回调：
 

@@ -1,6 +1,7 @@
 import { toErrorMessage } from "../errors.js";
 import {
   LARK_BOT_MENU_EVENT,
+  LARK_CONTACT_USER_BASE_SCOPE,
   LARK_DOC_COMMENT_ADD_EVENT,
   LARK_GROUP_ALL_MESSAGES_SCOPE,
   LARK_GROUP_MENTION_SCOPE,
@@ -66,7 +67,8 @@ export const LARK_NECESSARY_FEATURE_SCOPES = [
   "im:message:recall",
   "im:message.reactions:write_only",
   "im:chat:read",
-  "im:resource"
+  "im:resource",
+  LARK_CONTACT_USER_BASE_SCOPE
 ] as const;
 
 export const LARK_GROUP_NON_AT_FEATURE_SCOPES = [

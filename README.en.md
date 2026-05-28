@@ -57,11 +57,11 @@ Secrets are stored outside `config.toml`. Non-macOS installs store the Lark `app
 
 ## Feishu/Lark App Configuration
 
-You need to grant these API permissions in the Feishu/Lark developer console:
+You need to grant these required API permissions in the Feishu/Lark developer console:
 
 ```text
 im:message.p2p_msg:readonly
-im:message.group_msg
+im:message.group_at_msg:readonly
 im:message:readonly
 im:message:send_as_bot
 im:message:update
@@ -71,11 +71,15 @@ im:chat:read
 im:chat:create
 im:chat:update
 im:resource
+contact:user.base:readonly
 docs:document.comment:read
 docs:document.comment:create
 docs:document.comment:write_only
+docs:document.media:download
 wiki:node:read
 ```
+
+Recommended: also grant `im:message.group_msg`. It lets `/activate owner` and `/activate all` receive non-@ group messages. If you only use `owner_at` or `all_at`, the required `im:message.group_at_msg:readonly` scope is enough. The install guide page pre-fills this recommended scope in its import JSON so you can switch group response modes later.
 
 Subscribe to these events/callbacks:
 

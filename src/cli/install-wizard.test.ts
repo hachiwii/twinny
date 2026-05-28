@@ -3,12 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TelemetryClient } from "../telemetry/index.js";
-import { LARK_DOC_COMMENT_ADD_EVENT, LARK_REQUIRED_SCOPES } from "../lark/index.js";
+import { LARK_DOC_COMMENT_ADD_EVENT, LARK_GROUP_ALL_MESSAGES_SCOPE, LARK_REQUIRED_SCOPES } from "../lark/index.js";
 import {
   buildInstallGuideHtml,
   buildInstallGuideScopeImportJson,
   installGuideBotMenuActions,
   installGuideRequiredEvents,
+  installGuideScopeImportScopes,
   writeInstallGuidePage
 } from "./install-guide.js";
 import {
@@ -564,12 +565,16 @@ describe("install wizard helpers", () => {
     );
   });
 
-  it("builds the install guide permission import JSON from doctor scopes", () => {
+  it("builds the install guide permission import JSON from required and recommended scopes", () => {
     expect(JSON.parse(buildInstallGuideScopeImportJson())).toEqual({
       scopes: {
-        tenant: [...LARK_REQUIRED_SCOPES]
+        tenant: [...installGuideScopeImportScopes]
       }
     });
+    expect(installGuideScopeImportScopes).toEqual(expect.arrayContaining([
+      ...LARK_REQUIRED_SCOPES,
+      LARK_GROUP_ALL_MESSAGES_SCOPE
+    ]));
   });
 
   it("documents the Lark doc comment watch requirements", () => {
@@ -580,6 +585,7 @@ describe("install wizard helpers", () => {
       "docs:document.comment:create",
       "docs:document.comment:write_only",
       "docs:document.media:download",
+      "contact:user.base:readonly",
       "wiki:node:read"
     ]));
     expect(importJson.scopes.tenant.some((scope) => scope.startsWith("drive:drive"))).toBe(false);
@@ -599,6 +605,9 @@ describe("install wizard helpers", () => {
     expect(html).toContain("<h3>事件</h3>");
     expect(html).toContain("<h3>回调</h3>");
     expect(html).toContain("接收消息和文档评论");
+    expect(html).toContain("推荐权限");
+    expect(html).toContain(LARK_GROUP_ALL_MESSAGES_SCOPE);
+    expect(html).toContain("/activate owner");
     expect(html).toContain(LARK_DOC_COMMENT_ADD_EVENT);
     expect(html).toContain("接收 /watch 文档中 @ 机器人的新增评论");
     expect(html.match(/<table class="config-table">/g)).toHaveLength(2);

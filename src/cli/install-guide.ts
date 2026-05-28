@@ -9,6 +9,7 @@ import {
   LARK_BOT_MENU_EVENT,
   LARK_CARD_ACTION_TRIGGER_EVENT,
   LARK_DOC_COMMENT_ADD_EVENT,
+  LARK_GROUP_ALL_MESSAGES_SCOPE,
   LARK_MESSAGE_RECEIVE_EVENT,
   LARK_MESSAGE_RECALLED_EVENT,
   LARK_REQUIRED_SCOPES
@@ -82,7 +83,12 @@ export interface InstallGuidePageResult {
   fileUrl: string;
 }
 
-export function buildInstallGuideScopeImportJson(scopes: readonly string[] = LARK_REQUIRED_SCOPES): string {
+export const installGuideScopeImportScopes = [
+  ...LARK_REQUIRED_SCOPES,
+  LARK_GROUP_ALL_MESSAGES_SCOPE
+] as const;
+
+export function buildInstallGuideScopeImportJson(scopes: readonly string[] = installGuideScopeImportScopes): string {
   return JSON.stringify({ scopes: { tenant: [...scopes] } }, null, 2);
 }
 
@@ -480,6 +486,7 @@ export function buildInstallGuideHtml(
           <button class="copy-button" type="button" data-copy-target="scope-json">复制 JSON</button>
         </div>
         <pre><code id="scope-json">${escapeHtml(scopeImportJson)}</code></pre>
+        <p class="note">导入 JSON 包含必要权限，并预填推荐权限 <span class="tag">${escapeHtml(LARK_GROUP_ALL_MESSAGES_SCOPE)}</span>。它允许 /activate owner 和 /activate all 在群聊中接收非 @ 消息，便于后续切换群响应模式。</p>
       </section>
 
       <section class="step">

@@ -114,6 +114,7 @@ describe("doctor health checks", () => {
 
   it("keeps doc comment watch permissions narrow in the default doctor scope check", async () => {
     expect(LARK_REQUIRED_SCOPES).toEqual(expect.arrayContaining([
+      "contact:user.base:readonly",
       "docs:document.comment:read",
       "docs:document.comment:create",
       "docs:document.comment:write_only",
@@ -163,6 +164,29 @@ describe("doctor health checks", () => {
       checkLarkRequiredScopes(config, "secret", {
         openApiClient: { request },
         requiredScopes: ["im:message.group_at_msg:readonly"]
+      })
+    ).resolves.toBe("1 required scopes granted");
+  });
+
+  it("accepts the contact base scope alternative for user name lookup", async () => {
+    const config = createTwinnyConfig({
+      home: fs.mkdtempSync(path.join(os.tmpdir(), "twinny-contact-scope-check-")),
+      homeRandom: "0123456789abcdef0123456789abcdef",
+      auth: { larkAppId: "cli_app", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner User" }
+    });
+    tempDirs.push(config.home);
+    const request = vi.fn(async () => ({
+      data: {
+        scopes: [
+          { scope_name: "contact:contact.base:readonly", grant_status: 1 }
+        ]
+      }
+    }));
+
+    await expect(
+      checkLarkRequiredScopes(config, "secret", {
+        openApiClient: { request },
+        requiredScopes: ["contact:user.base:readonly"]
       })
     ).resolves.toBe("1 required scopes granted");
   });

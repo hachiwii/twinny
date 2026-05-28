@@ -14,6 +14,7 @@ export const LARK_CARD_ACTION_TRIGGER_EVENT = "card.action.trigger" as const;
 export const LARK_DOC_COMMENT_ADD_EVENT = "drive.notice.comment_add_v1" as const;
 export const LARK_GROUP_MENTION_SCOPE = "im:message.group_at_msg:readonly" as const;
 export const LARK_GROUP_ALL_MESSAGES_SCOPE = "im:message.group_msg" as const;
+export const LARK_CONTACT_USER_BASE_SCOPE = "contact:user.base:readonly" as const;
 
 export const LARK_REQUIRED_SCOPES = [
   "im:message.p2p_msg:readonly",
@@ -27,6 +28,7 @@ export const LARK_REQUIRED_SCOPES = [
   "im:chat:create",
   "im:chat:update",
   "im:resource",
+  LARK_CONTACT_USER_BASE_SCOPE,
   "docs:document.comment:read",
   "docs:document.comment:create",
   "docs:document.comment:write_only",
@@ -44,6 +46,9 @@ export const LARK_REQUIRED_SCOPE_ALTERNATIVES: Readonly<Record<string, readonly 
     "im:message.group_at_msg.include_bot:readonly",
     LARK_GROUP_ALL_MESSAGES_SCOPE,
     "im:message.group_msg:readonly"
+  ],
+  [LARK_CONTACT_USER_BASE_SCOPE]: [
+    "contact:contact.base:readonly"
   ]
 };
 
