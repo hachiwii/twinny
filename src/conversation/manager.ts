@@ -101,6 +101,7 @@ const COMPACT_COMPLETED_TEXT = "完成上下文压缩";
 const SIDE_SHUTDOWN_ERROR = "Twinny 服务退出";
 const UNRECOVERABLE_CONTROL_MESSAGE_RECOVERY_TEXT = "上一条控制命令在 Twinny daemon 重启前中断，已终止；请重新执行。";
 const MAIN_THREAD_NAME = "主会话";
+const TWINNY_CODEX_THREAD_NAME_PREFIX = "[twinny]";
 const DOC_COMMENT_AGENT_CARD_SUBTITLE = "文档评论触发";
 const TWINNY_THREAD_DEVELOPER_INSTRUCTIONS = `# Twinny Lark Context
 
@@ -1758,6 +1759,13 @@ export class ConversationManager {
       name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
       codexThreadHasRollout: recoveredThreadId !== undefined
     });
+    if (recoveredThreadId === undefined && isMainSessionContext(context)) {
+      this.syncMainConversationThreadNameToCodexBestEffort(
+        profile,
+        threadId,
+        conversationNameForRecord(conversation)
+      );
+    }
     return conversation;
   }
 
@@ -2654,6 +2662,9 @@ export class ConversationManager {
         name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
         codexThreadHasRollout: false
       });
+      if (isMainSessionContext(context)) {
+        this.syncMainConversationThreadNameToCodexBestEffort(profile, thread.threadId, groupInfo.name);
+      }
     }
 
     const featureWarning = isNonAtResponseMode(parsed.responseMode)
@@ -2736,6 +2747,7 @@ export class ConversationManager {
       name: MAIN_THREAD_NAME,
       codexThreadHasRollout: false
     });
+    this.syncMainConversationThreadNameToCodexBestEffort(parsed.profile, thread.threadId, parsed.guestOpenId);
     await this.replyControlBestEffort(message.messageId, `已授权 ${parsed.guestOpenId} 使用 profile=${parsed.profile}。`);
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
@@ -4756,6 +4768,7 @@ export class ConversationManager {
     const existing = await this.options.repository.findByConversationKey(context.conversationKey);
     const profile = existing?.profile ?? profileForSender(this.options.config, message.senderOpenId);
     const workspace = existing?.workspace ?? await this.options.workspaces.ensureWorkspace(context.conversationKey);
+    let mainConversationName = existing ? conversationNameForRecord(existing) : undefined;
     const thread = await this.options.codex.startThread({
       profile,
       cwd: workspace,
@@ -4774,14 +4787,15 @@ export class ConversationManager {
         replaceExistingLarkThread: true
       });
     } else if (existing) {
-      await this.options.repository.updateThreadBinding(context.conversationKey, {
+      const conversation = await this.options.repository.updateThreadBinding(context.conversationKey, {
         codexThreadId: thread.threadId,
         profile,
         profileCodexHome: this.options.profiles.codexHomeFor(profile),
         workspace
       });
+      mainConversationName = conversationNameForRecord(conversation);
     } else {
-      await this.options.repository.create({
+      const conversation = await this.options.repository.create({
         conversationKey: context.conversationKey,
         type: context.type,
         chatId: context.type === "p2p" ? message.senderOpenId : message.chatId,
@@ -4792,6 +4806,7 @@ export class ConversationManager {
         workspace,
         profileCodexHome: this.options.profiles.codexHomeFor(profile)
       });
+      mainConversationName = conversationNameForRecord(conversation);
     }
     if (!context.larkThreadId) {
       await this.recordCodexThreadBestEffort({
@@ -4802,6 +4817,11 @@ export class ConversationManager {
         name: MAIN_THREAD_NAME,
         codexThreadHasRollout: false
       });
+      this.syncMainConversationThreadNameToCodexBestEffort(
+        profile,
+        thread.threadId,
+        mainConversationName ?? context.conversationKey
+      );
     }
     return thread.threadId;
   }
@@ -6058,7 +6078,7 @@ export class ConversationManager {
     active: ActiveTurn,
     request: CodexSetThreadNameToolRequest
   ): Promise<CodexDynamicToolCallResponse> {
-    const name = normalizeThreadName(request.name);
+    const name = normalizeTwinnyThreadName(request.name);
     if (!name) {
       return dynamicToolTextResponse(false, "Invalid thread name: expected a non-empty name string.");
     }
@@ -6076,7 +6096,7 @@ export class ConversationManager {
         return dynamicToolTextResponse(true, `Main session thread name is fixed to: ${MAIN_THREAD_NAME}`);
       }
       await this.applyThreadNameUpdate(active.threadId, name);
-      this.syncCodexThreadNameBestEffort(active.profile, active.threadId, name);
+      this.syncTwinnyThreadNameToCodexBestEffort(active.profile, active.threadId, name);
       await this.updateAgentCardWithThreadNameBestEffort(state, active, request.callId, name);
       return dynamicToolTextResponse(true, `Thread name updated to: ${name}`);
     });
@@ -6634,7 +6654,7 @@ export class ConversationManager {
   }
 
   private async handleCodexThreadNameUpdated(update: CodexThreadNameUpdate): Promise<void> {
-    const name = normalizeThreadName(update.name);
+    const name = normalizeTwinnyThreadName(update.name);
     if (!name) {
       return;
     }
@@ -6670,6 +6690,22 @@ export class ConversationManager {
         additionalWorkDurationMs: activeTurnWorkDurationMs(threadId, this.findActiveTurn(threadId))
       })
     );
+  }
+
+  private syncTwinnyThreadNameToCodexBestEffort(profile: ProfileName, threadId: string, name: string): void {
+    const codexName = codexThreadNameForTwinnyName(name);
+    if (!codexName) {
+      return;
+    }
+    this.syncCodexThreadNameBestEffort(profile, threadId, codexName);
+  }
+
+  private syncMainConversationThreadNameToCodexBestEffort(
+    profile: ProfileName,
+    threadId: string,
+    conversationName: string
+  ): void {
+    this.syncCodexThreadNameBestEffort(profile, threadId, mainConversationCodexThreadName(conversationName));
   }
 
   private syncCodexThreadNameBestEffort(profile: ProfileName, threadId: string, name: string): void {
@@ -7117,6 +7153,11 @@ export class ConversationManager {
   ): Promise<ActiveThreadResolution> {
     const larkThreadId = params.context.larkThreadId;
     if (!larkThreadId && binding.created) {
+      this.syncMainConversationThreadNameToCodexBestEffort(
+        params.profile,
+        binding.conversation.codexThreadId,
+        conversationNameForRecord(binding.conversation)
+      );
       return {
         threadId: binding.conversation.codexThreadId,
         workspace: binding.conversation.workspace,
@@ -7142,6 +7183,11 @@ export class ConversationManager {
           name: MAIN_THREAD_NAME,
           codexThreadHasRollout: false
         });
+        this.syncMainConversationThreadNameToCodexBestEffort(
+          params.profile,
+          binding.conversation.codexThreadId,
+          conversationNameForRecord(binding.conversation)
+        );
         return {
           threadId: binding.conversation.codexThreadId,
           workspace: binding.conversation.workspace,
@@ -7174,6 +7220,7 @@ export class ConversationManager {
       profile: params.profile,
       workspace: params.workspace,
       conversationKey: params.context.conversationKey,
+      conversationName: conversationNameForRecord(binding.conversation),
       context: params.context,
       larkThreadId
     });
@@ -7181,7 +7228,14 @@ export class ConversationManager {
 
   private async resumeThreadRecord(
     thread: CodexThreadRecord,
-    params: { profile: ProfileName; workspace: string; conversationKey: string; context: MessageContext; larkThreadId?: string }
+    params: {
+      profile: ProfileName;
+      workspace: string;
+      conversationKey: string;
+      conversationName: string;
+      context: MessageContext;
+      larkThreadId?: string;
+    }
   ): Promise<ActiveThreadResolution> {
     const workspace = thread.workspace || params.workspace;
     if (!thread.codexThreadHasRollout) {
@@ -7208,6 +7262,13 @@ export class ConversationManager {
           codexThreadHasRollout: true,
           previousThreadId: thread.codexThreadId
         });
+      }
+      if (!params.larkThreadId) {
+        this.syncMainConversationThreadNameToCodexBestEffort(
+          params.profile,
+          resumed.threadId,
+          params.conversationName
+        );
       }
       return { threadId: resumed.threadId, workspace, replacedMissingThread: false };
     } catch (error) {
@@ -7277,7 +7338,7 @@ export class ConversationManager {
       await this.migrateLarkDocWatchersBestEffort(params.previousThreadId, params.codexThreadId);
       return;
     }
-    await this.options.repository.updateThreadBinding(params.conversationKey, {
+    const conversation = await this.options.repository.updateThreadBinding(params.conversationKey, {
       codexThreadId: params.codexThreadId,
       profile: params.profile,
       profileCodexHome: this.options.profiles.codexHomeFor(params.profile),
@@ -7293,6 +7354,11 @@ export class ConversationManager {
       name: MAIN_THREAD_NAME,
       codexThreadHasRollout: params.codexThreadHasRollout
     });
+    this.syncMainConversationThreadNameToCodexBestEffort(
+      params.profile,
+      params.codexThreadId,
+      conversationNameForRecord(conversation)
+    );
     await this.migrateLarkDocWatchersBestEffort(params.previousThreadId, params.codexThreadId);
   }
 
@@ -9425,6 +9491,24 @@ function parsedCommandTitleText(command: ParsedCommand): string | undefined {
 function normalizeThreadName(value: string): string | undefined {
   const compact = compactInlineText(value);
   return compact || undefined;
+}
+
+function normalizeTwinnyThreadName(value: string): string | undefined {
+  return normalizeThreadName(stripTwinnyCodexThreadNamePrefix(value));
+}
+
+function stripTwinnyCodexThreadNamePrefix(value: string): string {
+  return compactInlineText(value).replace(/^\[twinny\]\s*/iu, "");
+}
+
+function codexThreadNameForTwinnyName(name: string): string | undefined {
+  const normalized = normalizeTwinnyThreadName(name);
+  return normalized ? `${TWINNY_CODEX_THREAD_NAME_PREFIX} ${normalized}` : undefined;
+}
+
+function mainConversationCodexThreadName(conversationName: string): string {
+  return codexThreadNameForTwinnyName(`${conversationName} ${MAIN_THREAD_NAME}`) ??
+    `${TWINNY_CODEX_THREAD_NAME_PREFIX} ${MAIN_THREAD_NAME}`;
 }
 
 function truncateGoalTitle(content: string): string {
@@ -11942,4 +12026,8 @@ function conversationNameForMessage(config: TwinnyConfig, profile: ProfileName, 
     return config.owner.displayName.trim() || message.senderName?.trim() || message.senderOpenId;
   }
   return message.senderName?.trim() || message.senderOpenId;
+}
+
+function conversationNameForRecord(conversation: ConversationRecord): string {
+  return nonEmptyString(conversation.name) ?? nonEmptyString(conversation.chatId) ?? conversation.conversationKey;
 }

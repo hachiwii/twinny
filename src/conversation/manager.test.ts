@@ -712,7 +712,7 @@ describe("ConversationManager", () => {
     const lark = createLarkResponder();
     const manager = createManager({ repository, lark });
 
-    manager.submitCodexThreadNameUpdated({ threadId: "thread_named", name: "  新标题\n来自 Codex  " });
+    manager.submitCodexThreadNameUpdated({ threadId: "thread_named", name: "  [twinny] 新标题\n来自 Codex  " });
 
     await waitForExpect(() =>
       expect(repository.updateCodexThreadName).toHaveBeenCalledWith("thread_named", "新标题 来自 Codex")
@@ -763,6 +763,51 @@ describe("ConversationManager", () => {
     expect(params.input).toBe(wrappedMessage("hello", "m1"));
     expect(params.currentThreadName).toBeUndefined();
     expect(repository.getCodexThreadById("thread_1")).toMatchObject({ name: "主会话" });
+  });
+
+  it("syncs a prefixed Codex thread name when creating a main conversation", async () => {
+    const { repository } = createRepository();
+    const codex = createCodex({
+      setThreadName: vi.fn(async () => undefined)
+    });
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "hello", { senderName: "Guest User" }));
+
+    await waitForExpect(() =>
+      expect(codex.setThreadName).toHaveBeenCalledWith({
+        profile: "guest",
+        threadId: "thread_1",
+        name: "[twinny] Guest User 主会话"
+      })
+    );
+    await waitForExpect(() =>
+      expect(repository.getCodexThreadById("thread_1")).toMatchObject({ name: "主会话" })
+    );
+  });
+
+  it("syncs a prefixed Codex thread name when resuming a main conversation", async () => {
+    const { repository } = createRepository(conversationRecord({ name: "Stored User" }), {
+      mainThreadHasRollout: true
+    });
+    const codex = createCodex({
+      setThreadName: vi.fn(async () => undefined),
+      resumeThread: vi.fn(async ({ threadId }) => ({ threadId }))
+    });
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "hello"));
+
+    await waitForExpect(() =>
+      expect(codex.resumeThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_1" }))
+    );
+    await waitForExpect(() =>
+      expect(codex.setThreadName).toHaveBeenCalledWith({
+        profile: "guest",
+        threadId: "thread_1",
+        name: "[twinny] Stored User 主会话"
+      })
+    );
   });
 
   it("passes the current thread name when starting a branch Codex turn", async () => {
@@ -826,8 +871,8 @@ describe("ConversationManager", () => {
         threadId: "thread_topic",
         turnId: "turn_1",
         callId: "call_1",
-        name: "  新标题\n来自工具  ",
-        rawArguments: { name: "  新标题\n来自工具  " }
+        name: "  [twinny] 新标题\n来自工具  ",
+        rawArguments: { name: "  [twinny] 新标题\n来自工具  " }
       });
 
       expect(response).toEqual({
@@ -839,7 +884,7 @@ describe("ConversationManager", () => {
         expect(codex.setThreadName).toHaveBeenCalledWith({
           profile: "guest",
           threadId: "thread_topic",
-          name: "新标题 来自工具"
+          name: "[twinny] 新标题 来自工具"
         })
       );
       await waitForExpect(() =>
@@ -881,6 +926,7 @@ describe("ConversationManager", () => {
     try {
       manager.submitIncoming(message("m1", "hello"));
       await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+      vi.mocked(codex.setThreadName!).mockClear();
 
       const response = await turnParams?.onSetThreadName?.({
         requestId: "req_1",
@@ -916,7 +962,7 @@ describe("ConversationManager", () => {
     });
     const manager = createManager({ repository, codex, lark });
 
-    manager.submitCodexThreadNameUpdated({ threadId: "thread_pending_name", name: "  Codex 生成标题  " });
+    manager.submitCodexThreadNameUpdated({ threadId: "thread_pending_name", name: "  [twinny] Codex 生成标题  " });
     await waitForExpect(() =>
       expect(repository.updateCodexThreadName).toHaveBeenCalledWith("thread_pending_name", "Codex 生成标题")
     );
@@ -969,7 +1015,7 @@ describe("ConversationManager", () => {
     manager.submitIncoming(groupMessage("g_thread_inflight_name", "/thread", { senderOpenId: "ou_guest" }));
     await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
 
-    manager.submitCodexThreadNameUpdated({ threadId: "thread_inflight_name", name: "Codex 补发标题" });
+    manager.submitCodexThreadNameUpdated({ threadId: "thread_inflight_name", name: "[twinny] Codex 补发标题" });
     await waitForExpect(() =>
       expect(repository.updateCodexThreadName).toHaveBeenCalledWith("thread_inflight_name", "Codex 补发标题")
     );
