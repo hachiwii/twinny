@@ -14,24 +14,26 @@ afterEach(() => {
 });
 
 describe("buildCodexAppServerEnv", () => {
-  it("uses a small allowlist and always sets profile-specific CODEX_HOME", () => {
+  it("inherits daemon environment and always sets profile-specific CODEX_HOME", () => {
     const env = buildCodexAppServerEnv("/tmp/twinny/profiles/guest/codex", {
       PATH: "/usr/bin",
       HOME: "/Users/example",
       LANG: "en_US.UTF-8",
       TWINNY_LARK_APP_SECRET: "secret",
-      OPENAI_API_KEY: "also-secret"
+      OPENAI_API_KEY: "also-secret",
+      CODEX_HOME: "/tmp/source-codex-home",
+      NO_COLOR: "0"
     });
 
     expect(env).toMatchObject({
       PATH: [path.dirname(process.execPath), "/usr/bin"].join(path.delimiter),
       HOME: "/Users/example",
       LANG: "en_US.UTF-8",
+      TWINNY_LARK_APP_SECRET: "secret",
+      OPENAI_API_KEY: "also-secret",
       CODEX_HOME: "/tmp/twinny/profiles/guest/codex",
-      NO_COLOR: "1"
+      NO_COLOR: "0"
     });
-    expect(env.TWINNY_LARK_APP_SECRET).toBeUndefined();
-    expect(env.OPENAI_API_KEY).toBeUndefined();
   });
 
   it("keeps the current Node executable available for npm-style Codex shims", () => {
@@ -61,7 +63,7 @@ describe("CodexAppServer", () => {
       env: {
         PATH: process.env.PATH,
         HOME: tempDir,
-        TWINNY_LARK_APP_SECRET: "must-not-leak"
+        TWINNY_LARK_APP_SECRET: "inherited-secret"
       }
     });
     const threadNameUpdated = onceThreadNameUpdated(server);
@@ -73,7 +75,7 @@ describe("CodexAppServer", () => {
         codexHome: path.resolve(codexHome),
         platformFamily: "unix",
         platformOs: "macos",
-        hasLarkSecret: false
+        hasLarkSecret: true
       });
       expect(server.readCodexVersion()).toBe("fake-codex 1.2.3");
 
