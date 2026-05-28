@@ -155,6 +155,7 @@ export const TWINNY_DYNAMIC_TOOL_SPECS: DynamicToolSpec[] = [
 export interface CodexThread {
   id: string;
   name?: string | null;
+  preview?: string | null;
   cwd?: string;
   path?: string | null;
   createdAt?: number;

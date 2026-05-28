@@ -119,6 +119,7 @@ const TWINNY_CODEX_THREAD_NAME_PREFIX = "[twinny]";
 const DOC_COMMENT_AGENT_CARD_SUBTITLE = "文档评论触发";
 const RESUME_LIST_PAGE_SIZE = 10;
 const RESUME_CODEX_PAGE_SIZE = 100;
+const RESUME_THREAD_PREVIEW_NAME_LIMIT = 20;
 const LARK_SINGLE_MESSAGE_UPDATE_FREQUENCY_LIMIT_CODE = 230020;
 const AGENT_CARD_TIMER_INTERVAL_MS = 10_000;
 const NON_TERMINAL_AGENT_CARD_RATE_LIMIT_FALLBACK_THRESHOLD = 3;
@@ -3577,7 +3578,7 @@ export class ConversationManager {
     }
     return {
       threadId,
-      name: nonEmptyString(typeof thread?.name === "string" ? thread.name : undefined) ?? "未命名",
+      name: resumeThreadDisplayName(thread),
       cwd,
       updatedAt: typeof thread?.updatedAt === "number" ? thread.updatedAt : undefined
     };
@@ -10368,6 +10369,18 @@ function parseResumeCommand(
 
 function parseResumeCwdMode(value: string): ResumeCwdMode | undefined {
   return value === "session" || value === "local" ? value : undefined;
+}
+
+function resumeThreadDisplayName(thread: CodexThread | undefined): string {
+  const name = nonEmptyString(typeof thread?.name === "string" ? thread.name : undefined);
+  if (name) {
+    return name;
+  }
+  const preview = nonEmptyString(typeof thread?.preview === "string" ? thread.preview.replace(/\s+/g, " ") : undefined);
+  if (preview) {
+    return `${Array.from(preview).slice(0, RESUME_THREAD_PREVIEW_NAME_LIMIT).join("")}...`;
+  }
+  return "未命名";
 }
 
 function parseTwinnyCardAction(value: Record<string, unknown>): ParsedCardActionCommand | undefined {

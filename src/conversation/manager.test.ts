@@ -4605,7 +4605,15 @@ describe("ConversationManager", () => {
         data: [
           { id: "thread_group", name: "managed", cwd: "/tmp/managed", updatedAt: 3 },
           { id: "thread_twinny", name: "[twinny] internal", cwd: "/tmp/internal", updatedAt: 2 },
-          { id: "thread_external", name: "External", cwd: "/tmp/external", updatedAt: 1 }
+          { id: "thread_external", name: "External", cwd: "/tmp/external", updatedAt: 1 },
+          {
+            id: "thread_preview",
+            name: null,
+            preview: "012345678901234567890123456789",
+            cwd: "/tmp/preview",
+            updatedAt: 0
+          },
+          { id: "thread_unnamed", name: null, preview: "", cwd: "/tmp/unnamed", updatedAt: 0 }
         ],
         nextCursor: null,
         backwardsCursor: null
@@ -4627,6 +4635,8 @@ describe("ConversationManager", () => {
     expect(serialized).toContain("第 1 页，每页 10 个。");
     expect(serialized).toContain("| 序号 | thread_id | name | cwd |");
     expect(serialized).toContain("thread_external");
+    expect(serialized).toContain("01234567890123456789...");
+    expect(serialized).toContain("未命名");
     expect(serialized).not.toContain("thread_group");
     expect(serialized).not.toContain("thread_twinny");
     expect(codex.listThreads).toHaveBeenCalledWith(expect.objectContaining({
