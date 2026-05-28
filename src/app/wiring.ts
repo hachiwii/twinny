@@ -967,7 +967,7 @@ function adaptLarkSender(
     replyText: async (
       messageId: string,
       text: string,
-      options?: { replyInThread?: boolean }
+      options?: { replyInThread?: boolean; uuid?: string }
     ): Promise<{ messageId?: string; raw?: unknown }> => {
       return sender.replyText(messageId, text, options);
     },
@@ -991,11 +991,11 @@ function adaptLarkSender(
     replyImage: async (messageId: string, imageKey: string): Promise<{ messageId?: string }> => {
       return sender.replyImage(messageId, imageKey);
     },
-    sendTextToOpenId: async (openId: string, text: string) => {
-      return sender.sendTextToOpenId(openId, text);
+    sendTextToOpenId: async (openId: string, text: string, options?: { uuid?: string }) => {
+      return sender.sendTextToOpenId(openId, text, options);
     },
-    sendTextToChatId: async (chatId: string, text: string) => {
-      return sender.sendTextToChatId(chatId, text);
+    sendTextToChatId: async (chatId: string, text: string, options?: { uuid?: string }) => {
+      return sender.sendTextToChatId(chatId, text, options);
     },
     sendPostToOpenId: async (openId: string, content: Parameters<LarkMessageSender["sendPostToOpenId"]>[1]) => {
       return sender.sendPostToOpenId(openId, content);

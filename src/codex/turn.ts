@@ -150,6 +150,12 @@ export interface CodexSendThreadRefToolRequest extends CodexDynamicToolRequestBa
   targetThreadId: string;
 }
 
+export interface CodexTellThreadToolRequest extends CodexDynamicToolRequestBase {
+  tool: "tell_thread";
+  targetThreadId: string;
+  message: string;
+}
+
 export interface CodexCreateConversationToolRequest extends CodexDynamicToolRequestBase {
   tool: "create_conversation";
   name: string;
@@ -162,6 +168,7 @@ export type CodexTwinnyDynamicToolRequest =
   | CodexListThreadsToolRequest
   | CodexWaitForThreadToolRequest
   | CodexSendThreadRefToolRequest
+  | CodexTellThreadToolRequest
   | CodexCreateConversationToolRequest;
 
 export interface CodexDynamicToolCallResponse {
@@ -1042,6 +1049,26 @@ function parseTwinnyDynamicToolRequest(
         callId: params.callId,
         tool: "send_thread_ref",
         targetThreadId,
+        rawArguments: params.arguments
+      };
+    }
+    case "tell_thread": {
+      if (!isRecord(params.arguments)) {
+        return "Invalid tell_thread arguments: expected an object.";
+      }
+      const targetThreadId = trimmedString(params.arguments.thread_id);
+      const message = trimmedString(params.arguments.msg);
+      if (!targetThreadId || !message) {
+        return "Invalid tell_thread arguments: thread_id and msg are required.";
+      }
+      return {
+        requestId,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        callId: params.callId,
+        tool: "tell_thread",
+        targetThreadId,
+        message,
         rawArguments: params.arguments
       };
     }

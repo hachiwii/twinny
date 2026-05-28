@@ -569,6 +569,7 @@ export class ConversationRepository {
             'goal_message',
             'steered_message',
             'queued_message',
+            'thread_message',
             'doc_comment',
             'doc_comment_reply_steer'
           )
@@ -765,7 +766,7 @@ export class ConversationRepository {
           SELECT COUNT(*)
           FROM lark_messages
           WHERE thread_id = @codexThreadId
-            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'side_message', 'doc_comment', 'doc_comment_reply_steer')
+            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'thread_message', 'side_message', 'doc_comment', 'doc_comment_reply_steer')
         ) AS user_message_count,
         COUNT(*) AS turn_count,
         COALESCE(SUM(CASE
@@ -797,7 +798,7 @@ export class ConversationRepository {
           SELECT COUNT(*)
           FROM lark_messages
           WHERE conversation_key = @conversationKey
-            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'side_message', 'doc_comment', 'doc_comment_reply_steer')
+            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'thread_message', 'side_message', 'doc_comment', 'doc_comment_reply_steer')
         ) AS user_message_count,
         (
           SELECT COALESCE(SUM(input_tokens), 0)
@@ -1324,7 +1325,7 @@ export class ConversationRepository {
       SELECT MAX(received_at) AS received_at
       FROM lark_messages
       WHERE thread_id = ?
-        AND route_kind IN ('message', 'doc_comment')
+        AND route_kind IN ('message', 'thread_message', 'doc_comment')
         ${excludeClause}
     `).get(parentCodexThreadId, ...excludedIds);
     if (latestUserMessage?.received_at === undefined || latestUserMessage.received_at === null) {
@@ -1363,6 +1364,7 @@ export class ConversationRepository {
               'goal_message',
               'steered_message',
               'queued_message',
+              'thread_message',
               'doc_comment',
               'doc_comment_reply_steer'
             )
@@ -2238,6 +2240,7 @@ function assertValidRouteKind(routeKind: LarkMessageRouteKind): void {
     routeKind !== "message" &&
     routeKind !== "steered_message" &&
     routeKind !== "queued_message" &&
+    routeKind !== "thread_message" &&
     routeKind !== "doc_comment" &&
     routeKind !== "doc_comment_reply_steer" &&
     routeKind !== "side_message" &&

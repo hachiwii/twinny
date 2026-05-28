@@ -736,8 +736,8 @@ export interface LarkResponder {
   replyPost(messageId: string, content: LarkPostContent, options?: LarkReplyOptions): Promise<LarkReplyResult | void>;
   replyFile(messageId: string, fileKey: string): Promise<{ messageId?: string } | void>;
   replyImage(messageId: string, imageKey: string): Promise<{ messageId?: string } | void>;
-  sendTextToOpenId(openId: string, text: string): Promise<LarkSendMessageResult | void>;
-  sendTextToChatId(chatId: string, text: string): Promise<LarkSendMessageResult | void>;
+  sendTextToOpenId(openId: string, text: string, options?: { uuid?: string }): Promise<LarkSendMessageResult | void>;
+  sendTextToChatId(chatId: string, text: string, options?: { uuid?: string }): Promise<LarkSendMessageResult | void>;
   sendPostToOpenId(openId: string, content: LarkPostContent): Promise<LarkSendMessageResult | void>;
   sendPostToChatId(chatId: string, content: LarkPostContent): Promise<LarkSendMessageResult | void>;
   sendCardToOpenId(
@@ -927,6 +927,9 @@ interface PendingMessage {
   original: IncomingLarkMessage;
   queueBoundary: boolean;
   control?: "plan_on" | "plan_off" | "compact" | "goal_set";
+  forceQueueWhenActive?: boolean;
+  excludeFromParticipants?: boolean;
+  skipQueuedRefresh?: boolean;
   queuedReaction?: LarkReactionHandle | null;
   docComment?: PendingDocCommentContext;
   docQueuedReaction?: LarkDocCommentReactionHandle | null;
@@ -1724,8 +1727,10 @@ export class ConversationManager {
     }
     const parsed = parseQueuedAwareSlashCommand(normalized.text);
     const text = record.status === "queued" && (normalized.resources?.length ?? 0) > 0 ? normalized.text : record.text;
+    const isThreadMessage = record.routeKind === "thread_message";
     return toPendingMessage(normalized, text, {
       queueBoundary:
+        isThreadMessage ||
         parsed.kind === "compact" ||
         parsed.kind === "goal" ||
         (record.status === "queued" &&
@@ -1739,7 +1744,10 @@ export class ConversationManager {
             ? "plan_off"
             : parsed.kind === "compact"
               ? "compact"
-              : undefined
+              : undefined,
+      forceQueueWhenActive: isThreadMessage,
+      excludeFromParticipants: isThreadMessage,
+      skipQueuedRefresh: isThreadMessage
     });
   }
 
@@ -1794,8 +1802,10 @@ export class ConversationManager {
     }
     const parsed = parseQueuedAwareSlashCommand(normalized.text);
     const text = (record.status === "queued" && (normalized.resources?.length ?? 0) > 0) ? normalized.text : record.text;
+    const isThreadMessage = record.routeKind === "thread_message";
     return toPendingMessage(normalized, text, {
       queueBoundary:
+        isThreadMessage ||
         parsed.kind === "compact" ||
         parsed.kind === "goal" ||
         (record.status === "queued" &&
@@ -1809,7 +1819,10 @@ export class ConversationManager {
             ? "plan_off"
             : parsed.kind === "compact"
               ? "compact"
-              : undefined
+              : undefined,
+      forceQueueWhenActive: isThreadMessage,
+      excludeFromParticipants: isThreadMessage,
+      skipQueuedRefresh: isThreadMessage
     });
   }
 
@@ -5618,6 +5631,10 @@ export class ConversationManager {
       return true;
     }
 
+    if (active && message.forceQueueWhenActive) {
+      return false;
+    }
+
     if (active?.waiting) {
       const canInterruptWaitingTurn =
         state.pendingBatch.length === 0 && message.original.senderOpenId === active.triggerOpenId;
@@ -5686,6 +5703,9 @@ export class ConversationManager {
       return false;
     }
     const first = state.pendingBatch[0]!;
+    if (first.forceQueueWhenActive) {
+      return false;
+    }
     if (!first.docComment && first.original.senderOpenId !== active.triggerOpenId) {
       return false;
     }
@@ -5939,6 +5959,9 @@ export class ConversationManager {
   ): Promise<PendingMessage | undefined> {
     if (pending.docComment) {
       return this.refreshDocCommentPendingMessageBeforeStart(context, pending);
+    }
+    if (pending.skipQueuedRefresh) {
+      return pending;
     }
     const reader = this.options.larkMessages;
     if (!reader) {
@@ -6844,6 +6867,8 @@ export class ConversationManager {
           return await this.handleWaitForThreadToolCall(active, request);
         case "send_thread_ref":
           return await this.handleSendThreadRefToolCall(active, request);
+        case "tell_thread":
+          return await this.handleTellThreadToolCall(active, request);
         case "create_conversation":
           return await this.handleCreateConversationToolCall(active, request);
       }
@@ -7007,6 +7032,102 @@ export class ConversationManager {
       thread_id: target.codexThreadId,
       lark_thread_id: target.larkThreadId,
       destination: { type: destination.type, id: destination.id }
+    });
+  }
+
+  private async handleTellThreadToolCall(
+    active: ActiveTurn,
+    request: Extract<CodexTwinnyDynamicToolRequest, { tool: "tell_thread" }>
+  ): Promise<CodexDynamicToolCallResponse> {
+    const conversation = await this.options.repository.findByConversationKey(active.conversationKey);
+    const target = await this.options.repository.getCodexThreadById(request.targetThreadId);
+    if (!conversation || !target || target.conversationKey !== active.conversationKey) {
+      return dynamicToolErrorResponse("THREAD_NOT_MANAGED", `Thread ${request.targetThreadId} is not in the current conversation.`);
+    }
+
+    const targetCategory = threadCategoryForList(target, conversation);
+    if (targetCategory === "previous_main" || (targetCategory !== "main" && !target.larkThreadId)) {
+      return dynamicToolErrorResponse(
+        "THREAD_NOT_DELIVERABLE",
+        "Target thread must be the current conversation main thread or a normal thread with a lark_thread_id."
+      );
+    }
+
+    const targetContext = createMessageContextForThread(conversation, target);
+    const targetState = this.getState(targetContext.stateKey);
+    const sourceLabel = active.threadId === conversation.codexThreadId ? MAIN_THREAD_NAME : active.threadId;
+    const larkText = formatThreadMessageProxyText(sourceLabel, request.message);
+    const uuid = createLarkUuid("twinny-tell-thread", request.callId, request.targetThreadId);
+    const sent = target.larkThreadId
+      ? await this.options.lark.replyText(target.cardMessageId ?? target.larkThreadId, larkText, {
+          replyInThread: true,
+          uuid
+        })
+      : conversation.type === "p2p"
+        ? await this.options.lark.sendTextToOpenId(conversation.chatId, larkText, { uuid })
+        : await this.options.lark.sendTextToChatId(conversation.chatId, larkText, { uuid });
+    const proxyMessageId = nonEmptyString(sent?.messageId);
+    if (!proxyMessageId) {
+      return dynamicToolErrorResponse("LARK_MESSAGE_SEND_FAILED", "Lark proxy message response did not include message_id.");
+    }
+
+    const createTime = Date.now();
+    const proxyMessage: IncomingLarkMessage = {
+      eventId: `thread_message:${request.callId}:${proxyMessageId}`,
+      messageId: proxyMessageId,
+      chatId: conversation.chatId,
+      chatType: targetContext.type,
+      messageType: "text",
+      senderOpenId: active.triggerOpenId,
+      senderName: sourceLabel,
+      larkGroupId: isGroupConversationType(targetContext.type) ? conversation.chatId : undefined,
+      larkThreadId: target.larkThreadId,
+      text: larkText,
+      createTime,
+      raw: threadMessageRawContext({
+        conversation,
+        sourceThreadId: active.threadId,
+        sourceLabel,
+        target,
+        messageId: proxyMessageId,
+        text: larkText,
+        createTime,
+        larkThreadId: target.larkThreadId ? extractLarkMessageThreadId(sent?.raw) ?? target.larkThreadId : undefined
+      })
+    };
+    const pending = toPendingMessage(proxyMessage, larkText, {
+      queueBoundary: true,
+      forceQueueWhenActive: true,
+      excludeFromParticipants: true,
+      skipQueuedRefresh: true
+    });
+
+    const status = await targetState.controlQueue.enqueue(async () => {
+      const initialStatus = this.willProcessPendingMessageImmediately(targetState, pending) ? "processing" : "queued";
+      await this.options.repository.insertLarkMessage({
+        larkMessageId: proxyMessage.messageId,
+        eventId: proxyMessage.eventId,
+        larkUserId: proxyMessage.senderOpenId,
+        larkGroupId: proxyMessage.larkGroupId,
+        larkThreadId: proxyMessage.larkThreadId,
+        conversationKey: target.conversationKey,
+        codexThreadId: target.codexThreadId,
+        routeKind: "thread_message",
+        status: initialStatus,
+        text: proxyMessage.text,
+        larkCreateTime: proxyMessage.createTime,
+        rawEventJson: safeJsonStringify(proxyMessage.raw)
+      });
+      await this.schedulePendingMessage(targetState, targetContext, pending);
+      return initialStatus;
+    });
+
+    return dynamicToolJsonResponse(true, {
+      ok: true,
+      thread_id: target.codexThreadId,
+      lark_thread_id: target.larkThreadId ?? null,
+      lark_message_id: proxyMessageId,
+      status
     });
   }
 
@@ -11086,6 +11207,43 @@ function threadCategoryForList(thread: CodexThreadRecord, conversation: Conversa
   return "previous_main";
 }
 
+function formatThreadMessageProxyText(sourceLabel: string, message: string): string {
+  return `收到来自 ${sourceLabel} 的消息：\n\n${message}`;
+}
+
+function threadMessageRawContext(input: {
+  conversation: ConversationRecord;
+  sourceThreadId: string;
+  sourceLabel: string;
+  target: CodexThreadRecord;
+  messageId: string;
+  text: string;
+  createTime: number;
+  larkThreadId?: string;
+}): Record<string, unknown> {
+  return {
+    kind: "thread_message",
+    conversation_key: input.conversation.conversationKey,
+    source: {
+      thread_id: input.sourceThreadId,
+      label: input.sourceLabel
+    },
+    target: {
+      thread_id: input.target.codexThreadId,
+      lark_thread_id: input.target.larkThreadId ?? null
+    },
+    message: {
+      message_id: input.messageId,
+      create_time: String(input.createTime),
+      chat_id: input.conversation.chatId,
+      chat_type: input.larkThreadId && input.conversation.type !== "p2p" ? "topic_group" : input.conversation.type,
+      message_type: "text",
+      ...(input.larkThreadId ? { thread_id: input.larkThreadId } : {}),
+      content: JSON.stringify({ text: input.text })
+    }
+  };
+}
+
 function dynamicToolErrorResponse(
   code: string,
   message: string,
@@ -12382,7 +12540,14 @@ function canUpdateActiveGoalWithMessage(
 function toPendingMessage(
   message: IncomingLarkMessage,
   text: string,
-  options: { queueBoundary?: boolean; control?: PendingMessage["control"]; docComment?: PendingDocCommentContext } = {}
+  options: {
+    queueBoundary?: boolean;
+    control?: PendingMessage["control"];
+    docComment?: PendingDocCommentContext;
+    forceQueueWhenActive?: boolean;
+    excludeFromParticipants?: boolean;
+    skipQueuedRefresh?: boolean;
+  } = {}
 ): PendingMessage {
   return {
     messageId: message.messageId,
@@ -12390,6 +12555,9 @@ function toPendingMessage(
     original: message,
     queueBoundary: options.queueBoundary ?? false,
     control: options.control,
+    forceQueueWhenActive: options.forceQueueWhenActive,
+    excludeFromParticipants: options.excludeFromParticipants,
+    skipQueuedRefresh: options.skipQueuedRefresh,
     docComment: options.docComment
   };
 }
@@ -12612,7 +12780,7 @@ function activeTurnMentionOpenIds(active: ActiveTurn): string[] {
   const seen = new Set<string>();
   const openIds: string[] = [];
   for (const message of active.messagesById.values()) {
-    if (message.docComment) {
+    if (message.docComment || message.excludeFromParticipants) {
       continue;
     }
     const openId = nonEmptyString(message.original.senderOpenId);

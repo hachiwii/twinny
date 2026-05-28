@@ -1014,6 +1014,25 @@ describe("ConversationRepository", () => {
     expect(repo.hasUserMessageForCodexThread("thread-topic-1", ["om_message"])).toBe(false);
 
     repo.upsertCodexThread({
+      codexThreadId: "thread-topic-proxy",
+      conversationKey: "group_oc_group",
+      larkThreadId: "om_proxy_root",
+      profile: "guest"
+    });
+    repo.insertLarkMessage({
+      larkMessageId: "om_proxy",
+      eventId: "event_proxy",
+      larkUserId: "ou_456",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread-topic-proxy",
+      routeKind: "thread_message",
+      status: "processing",
+      text: "proxy message"
+    });
+    expect(repo.hasUserMessageForCodexThread("thread-topic-proxy")).toBe(true);
+    expect(repo.hasUserMessageForCodexThread("thread-topic-proxy", ["om_proxy"])).toBe(false);
+
+    repo.upsertCodexThread({
       codexThreadId: "thread-topic-2",
       conversationKey: "group_oc_group",
       larkThreadId: "om_root_2",
@@ -1143,6 +1162,33 @@ describe("ConversationRepository", () => {
 
     expect(repo.listCreatedThreadsSinceLatestUserMessage("thread-parent").map((thread) => thread.codexThreadId)).toEqual([
       "thread-after-doc"
+    ]);
+
+    now = 1600;
+    repo.insertLarkMessage({
+      larkMessageId: "om_proxy_parent",
+      eventId: "event_proxy_parent",
+      larkUserId: "ou_456",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread-parent",
+      routeKind: "thread_message",
+      status: "completed",
+      text: "proxy parent message"
+    });
+
+    now = 1700;
+    repo.upsertCodexThread({
+      codexThreadId: "thread-after-proxy",
+      conversationKey: "group_oc_group",
+      larkThreadId: "topic_after_proxy",
+      profile: "guest",
+      parentCodexThreadId: "thread-parent",
+      createMethod: "fresh",
+      createRequestText: "proxy follow up branch"
+    });
+
+    expect(repo.listCreatedThreadsSinceLatestUserMessage("thread-parent").map((thread) => thread.codexThreadId)).toEqual([
+      "thread-after-proxy"
     ]);
   });
 

@@ -70,6 +70,7 @@ export type LarkMessageRouteKind =
   | "goal_message"
   | "steered_message"
   | "queued_message"
+  | "thread_message"
   | "doc_comment"
   | "doc_comment_reply_steer"
   | "control_message"

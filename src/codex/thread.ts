@@ -117,6 +117,23 @@ export const SEND_THREAD_REF_TOOL_SPEC: DynamicToolSpec = {
   deferLoading: false
 };
 
+export const TELL_THREAD_TOOL_SPEC: DynamicToolSpec = {
+  namespace: "twinny",
+  name: "tell_thread",
+  description:
+    "Send a text message to another Twinny-managed thread in the current conversation. The target thread receives the message through its Lark thread, or the conversation chat for the main thread. If the target is active, the message is queued for its next turn.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["thread_id", "msg"],
+    properties: {
+      thread_id: { type: "string", minLength: 1 },
+      msg: { type: "string", minLength: 1 }
+    }
+  },
+  deferLoading: false
+};
+
 export const CREATE_CONVERSATION_TOOL_SPEC: DynamicToolSpec = {
   namespace: "twinny",
   name: "create_conversation",
@@ -149,6 +166,7 @@ export const TWINNY_DYNAMIC_TOOL_SPECS: DynamicToolSpec[] = [
   LIST_THREADS_TOOL_SPEC,
   WAIT_FOR_THREAD_TOOL_SPEC,
   SEND_THREAD_REF_TOOL_SPEC,
+  TELL_THREAD_TOOL_SPEC,
   CREATE_CONVERSATION_TOOL_SPEC
 ];
 

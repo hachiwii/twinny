@@ -241,6 +241,45 @@ describe("handleTurnServerRequest", () => {
       success: true,
       contentItems: [{ type: "inputText", text: "list_threads:call_list" }]
     });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-tell",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_tell",
+          namespace: "twinny",
+          tool: "tell_thread",
+          arguments: { thread_id: "thread_target", msg: "please check this" }
+        }
+      }
+    );
+
+    await Promise.resolve();
+
+    expect(onDynamicToolCall).toHaveBeenLastCalledWith({
+      requestId: "req-tell",
+      threadId: "thread_123",
+      turnId: "turn_1",
+      callId: "call_tell",
+      tool: "tell_thread",
+      targetThreadId: "thread_target",
+      message: "please check this",
+      rawArguments: { thread_id: "thread_target", msg: "please check this" }
+    });
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-tell", {
+      success: true,
+      contentItems: [{ type: "inputText", text: "tell_thread:call_tell" }]
+    });
   });
 
   it("validates Twinny dynamic tool arguments before dispatch", () => {
@@ -275,6 +314,37 @@ describe("handleTurnServerRequest", () => {
       contentItems: [{
         type: "inputText",
         text: "Invalid wait_for_thread arguments: thread_id is required and timeout_ms must be 1000..3600000."
+      }]
+    });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-tell",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_tell",
+          namespace: "twinny",
+          tool: "tell_thread",
+          arguments: { thread_id: "thread_target", msg: "   " }
+        }
+      }
+    );
+
+    expect(onDynamicToolCall).not.toHaveBeenCalled();
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-tell", {
+      success: false,
+      contentItems: [{
+        type: "inputText",
+        text: "Invalid tell_thread arguments: thread_id and msg are required."
       }]
     });
   });

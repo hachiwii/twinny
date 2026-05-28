@@ -1244,6 +1244,272 @@ describe("ConversationManager", () => {
     }
   });
 
+  it("sends tell_thread proxy messages into target threads without adding completion participants", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_1",
+          cardMessageId: "card_topic",
+          name: "Target"
+        })
+      ]
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "proxy_msg",
+      raw: { data: { thread_id: "topic_1" } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    const payload = dynamicToolPayload(await turns[0]!.params.onDynamicToolCall!({
+      requestId: "req_tell",
+      threadId: "thread_main",
+      turnId: "turn_1",
+      callId: "call_tell",
+      tool: "tell_thread",
+      targetThreadId: "thread_topic",
+      message: "please check this",
+      rawArguments: { thread_id: "thread_topic", msg: "please check this" }
+    }));
+
+    expect(payload).toMatchObject({
+      ok: true,
+      thread_id: "thread_topic",
+      lark_thread_id: "topic_1",
+      lark_message_id: "proxy_msg",
+      status: "processing"
+    });
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "card_topic",
+      "收到来自 主会话 的消息：\n\nplease check this",
+      { replyInThread: true, uuid: expect.stringMatching(UUID_PATTERN) }
+    );
+    expect(repository.getLarkMessageById("proxy_msg")).toMatchObject({
+      larkMessageId: "proxy_msg",
+      eventId: "thread_message:call_tell:proxy_msg",
+      larkUserId: "ou_guest",
+      larkGroupId: "oc_group",
+      larkThreadId: "topic_1",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread_topic",
+      routeKind: "thread_message",
+      text: "收到来自 主会话 的消息：\n\nplease check this"
+    });
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        threadId: "thread_topic",
+        input: expect.stringContaining("please check this")
+      })
+    );
+
+    vi.mocked(lark.getMessageReadOpenIds).mockClear();
+    turns[1]!.resolve(completed("thread_topic", "turn_2"));
+    await waitForExpect(() => expect(repository.getLarkMessageById("proxy_msg")).toMatchObject({ status: "completed" }));
+    expect(lark.getMessageReadOpenIds).not.toHaveBeenCalled();
+
+    turns[0]!.resolve(completed("thread_main", "turn_1"));
+    await waitForDelay();
+  });
+
+  it("queues tell_thread proxy messages while the target thread is active", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_1",
+          cardMessageId: "card_topic",
+          name: "Target"
+        })
+      ]
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "proxy_queued",
+      raw: { data: { thread_id: "topic_1" } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("topic_msg", "target work", { chatType: "topic_group", larkThreadId: "topic_1" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    const payload = dynamicToolPayload(await turns[1]!.params.onDynamicToolCall!({
+      requestId: "req_tell",
+      threadId: "thread_main",
+      turnId: "turn_2",
+      callId: "call_tell_queued",
+      tool: "tell_thread",
+      targetThreadId: "thread_topic",
+      message: "queued follow up",
+      rawArguments: { thread_id: "thread_topic", msg: "queued follow up" }
+    }));
+
+    expect(payload).toMatchObject({
+      ok: true,
+      thread_id: "thread_topic",
+      lark_message_id: "proxy_queued",
+      status: "queued"
+    });
+    expect(repository.getLarkMessageById("proxy_queued")).toMatchObject({
+      routeKind: "thread_message",
+      status: "queued",
+      text: "收到来自 主会话 的消息：\n\nqueued follow up"
+    });
+    expect(lark.addQueuedReaction).toHaveBeenCalledWith("proxy_queued");
+    expect(codex.startTurn).toHaveBeenCalledTimes(2);
+
+    turns[0]!.resolve(completed("thread_topic", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        threadId: "thread_topic",
+        input: expect.stringContaining("queued follow up")
+      })
+    );
+
+    turns[2]!.resolve(completed("thread_topic", "turn_3"));
+    turns[1]!.resolve(completed("thread_main", "turn_2"));
+    await waitForDelay();
+  });
+
+  it("rejects tell_thread for other conversations and previous main threads", async () => {
+    const turn = deferred<CodexTurnResult>();
+    let turnParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
+    const codex = createCodex({
+      startTurn: vi.fn((params) => {
+        turnParams = params;
+        void params.onTurnStarted?.("turn_1");
+        return turn.promise;
+      })
+    });
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_other",
+          conversationKey: "group_oc_other",
+          category: "thread",
+          larkThreadId: "topic_other"
+        }),
+        codexThreadRecord({
+          codexThreadId: "thread_previous",
+          conversationKey: "group_oc_group",
+          category: "previous_main"
+        })
+      ]
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    try {
+      manager.submitIncoming(groupMessage("g1", "hello"));
+      await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+      const otherPayload = dynamicToolPayload(await turnParams?.onDynamicToolCall?.({
+        requestId: "req_tell_other",
+        threadId: "thread_main",
+        turnId: "turn_1",
+        callId: "call_tell_other",
+        tool: "tell_thread",
+        targetThreadId: "thread_other",
+        message: "no",
+        rawArguments: { thread_id: "thread_other", msg: "no" }
+      }));
+      expect(otherPayload).toMatchObject({
+        ok: false,
+        error: { code: "THREAD_NOT_MANAGED" }
+      });
+
+      const previousPayload = dynamicToolPayload(await turnParams?.onDynamicToolCall?.({
+        requestId: "req_tell_previous",
+        threadId: "thread_main",
+        turnId: "turn_1",
+        callId: "call_tell_previous",
+        tool: "tell_thread",
+        targetThreadId: "thread_previous",
+        message: "no",
+        rawArguments: { thread_id: "thread_previous", msg: "no" }
+      }));
+      expect(previousPayload).toMatchObject({
+        ok: false,
+        error: { code: "THREAD_NOT_DELIVERABLE" }
+      });
+      expect(lark.replyText).not.toHaveBeenCalled();
+      expect(lark.sendTextToChatId).not.toHaveBeenCalled();
+    } finally {
+      turn.resolve(completed("thread_main", "turn_1"));
+      await turn.promise;
+      await waitForDelay();
+    }
+  });
+
+  it("recovers queued tell_thread proxy messages without refreshing or adding completion participants", async () => {
+    const proxyText = "收到来自 主会话 的消息：\n\nrecover this";
+    const proxyRecord = larkMessageRecord({
+      larkMessageId: "proxy_recovered",
+      eventId: "thread_message:call_recovered:proxy_recovered",
+      larkUserId: "ou_guest",
+      larkGroupId: "oc_group",
+      larkThreadId: "topic_1",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread_topic",
+      routeKind: "thread_message",
+      status: "queued",
+      text: proxyText,
+      rawEventJson: JSON.stringify(rawReceiveEvent("proxy_recovered", proxyText, {
+        chat_id: "oc_group",
+        chat_type: "topic_group",
+        thread_id: "topic_1"
+      }))
+    });
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      larkMessages: [proxyRecord],
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_1",
+          cardMessageId: "card_topic",
+          name: "Target"
+        })
+      ]
+    });
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const larkMessages = createLarkMessageReader(new Error("thread_message should not be refreshed"));
+    const manager = createManager({ repository, codex, lark, larkMessages, config: cardModeConfig() });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    expect(larkMessages.getMessage).not.toHaveBeenCalled();
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_topic",
+        input: expect.stringContaining("recover this")
+      })
+    );
+
+    vi.mocked(lark.getMessageReadOpenIds).mockClear();
+    turns[0]!.resolve(completed("thread_topic", "turn_1"));
+    await waitForExpect(() => expect(repository.getLarkMessageById("proxy_recovered")).toMatchObject({ status: "completed" }));
+    expect(lark.getMessageReadOpenIds).not.toHaveBeenCalled();
+  });
+
   it("creates a new Twinny conversation group from an owner-profile dynamic tool call", async () => {
     const turn = deferred<CodexTurnResult>();
     let turnParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
@@ -10494,6 +10760,7 @@ function createRepository(initial?: ConversationRecord, options: {
             message.routeKind === "goal_message" ||
             message.routeKind === "steered_message" ||
             message.routeKind === "queued_message" ||
+            message.routeKind === "thread_message" ||
             message.routeKind === "doc_comment" ||
             message.routeKind === "doc_comment_reply_steer"
           )
@@ -10505,7 +10772,7 @@ function createRepository(initial?: ConversationRecord, options: {
           .filter((message) =>
             message.codexThreadId === parentCodexThreadId &&
             !excluded.has(message.larkMessageId ?? "") &&
-            (message.routeKind === "message" || message.routeKind === "doc_comment")
+            (message.routeKind === "message" || message.routeKind === "thread_message" || message.routeKind === "doc_comment")
           )
           .sort((left, right) => right.receivedAt - left.receivedAt || right.id - left.id)[0];
         if (!latestUserMessage) {
@@ -10974,6 +11241,7 @@ function isUserMessageRouteKind(routeKind: LarkMessageRecord["routeKind"]): bool
     routeKind === "goal_message" ||
     routeKind === "steered_message" ||
     routeKind === "queued_message" ||
+    routeKind === "thread_message" ||
     routeKind === "side_message" ||
     routeKind === "doc_comment" ||
     routeKind === "doc_comment_reply_steer"
