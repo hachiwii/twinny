@@ -8,6 +8,7 @@ import {
   isPositionInTextRanges,
   markdownCodeRanges,
   markdownLines,
+  renderLocalPathMarkdownLinksAsCode,
   type TextRange
 } from "../markdown.js";
 import {
@@ -8550,7 +8551,7 @@ export class ConversationManager {
     active: ActiveTurn,
     agentMessage: CodexAgentMessage
   ): Promise<void> {
-    const text = agentMessage.text.trim();
+    const text = renderLocalPathMarkdownLinksAsCode(agentMessage.text.trim());
     if (text.length === 0) {
       return;
     }
@@ -9070,18 +9071,19 @@ export class ConversationManager {
     if (text.length === 0) {
       return;
     }
+    const markdown = renderLocalPathMarkdownLinksAsCode(text);
     try {
       const parseCodexMentions = agentMessage.phase === "final_answer";
-      const outbound = await this.prepareAgentReplyForLark(text, active.workspace, { parseCodexMentions });
+      const outbound = await this.prepareAgentReplyForLark(markdown, active.workspace, { parseCodexMentions });
       if (outbound === undefined) {
-        if (parseCodexMentions && hasCodexMentionSyntax(text)) {
-          const result = await this.options.lark.replyPost(messageId, postContentForCodexMentionText(text));
+        if (parseCodexMentions && hasCodexMentionSyntax(markdown)) {
+          const result = await this.options.lark.replyPost(messageId, postContentForCodexMentionText(markdown));
           if (result?.messageId) {
             active.lastAgentReplyMessageId = result.messageId;
           }
           return;
         }
-        const result = await this.options.lark.replyMarkdown(messageId, text);
+        const result = await this.options.lark.replyMarkdown(messageId, markdown);
         if (result?.messageId) {
           active.lastAgentReplyMessageId = result.messageId;
         }
@@ -9183,10 +9185,11 @@ export class ConversationManager {
     workspace: string,
     generatedImagePaths: string[] = []
   ): Promise<PreparedAgentCardReply> {
+    const larkMarkdown = renderLocalPathMarkdownLinksAsCode(text);
     const elements: LarkCardElement[] = [];
     const files: PreparedLarkFileReply[] = [];
     const pendingText: string[] = [];
-    const hasSendToLarkDirective = containsSendToLarkDirective(text);
+    const hasSendToLarkDirective = containsSendToLarkDirective(larkMarkdown);
     const flushText = (): void => {
       const markdown = renderCodexMentionTagsForCardMarkdown(pendingText.join("\n").trim());
       pendingText.splice(0);
@@ -9195,8 +9198,8 @@ export class ConversationManager {
       }
     };
 
-    const codeRanges = markdownCodeRanges(text);
-    for (const line of markdownLines(text)) {
+    const codeRanges = markdownCodeRanges(larkMarkdown);
+    for (const line of markdownLines(larkMarkdown)) {
       const directive = parseSendToLarkDirective(line.text, line.start, codeRanges);
       if (directive.kind === "none") {
         pendingText.push(line.text);
@@ -9264,7 +9267,7 @@ export class ConversationManager {
     return {
       elements: elements.length > 0 ? elements : [markdownElement("")],
       files,
-      summaryText: renderCodexMentionTagsAsPlainText(text)
+      summaryText: renderCodexMentionTagsAsPlainText(larkMarkdown)
     };
   }
 }

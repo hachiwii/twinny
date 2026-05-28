@@ -49,6 +49,44 @@ export function isPositionInTextRanges(position: number, ranges: TextRange[]): b
   return false;
 }
 
+export function renderLocalPathMarkdownLinksAsCode(markdown: string): string {
+  if (!markdown.includes("](")) {
+    return markdown;
+  }
+
+  const codeRanges = markdownCodeRanges(markdown);
+  let rendered = "";
+  let cursor = 0;
+  let index = 0;
+  while (index < markdown.length) {
+    if (markdown[index] !== "[" || isPositionInTextRanges(index, codeRanges) || markdown[index - 1] === "!") {
+      index += 1;
+      continue;
+    }
+
+    const link = parseInlineMarkdownLinkAt(markdown, index);
+    if (!link) {
+      index += 1;
+      continue;
+    }
+
+    if (!isLocalPathMarkdownLinkTarget(link.target)) {
+      index = link.end;
+      continue;
+    }
+
+    rendered += markdown.slice(cursor, index);
+    rendered += markdownCodeSpan(link.target);
+    cursor = link.end;
+    index = link.end;
+  }
+
+  if (cursor === 0) {
+    return markdown;
+  }
+  return rendered + markdown.slice(cursor);
+}
+
 function markdownCodeBlockRanges(markdown: string): TextRange[] {
   const ranges: TextRange[] = [];
   let fence: MarkdownFence | undefined;
@@ -165,6 +203,107 @@ function countBackticks(markdown: string, start: number): number {
     index += 1;
   }
   return index - start;
+}
+
+interface InlineMarkdownLink {
+  target: string;
+  end: number;
+}
+
+function parseInlineMarkdownLinkAt(markdown: string, start: number): InlineMarkdownLink | undefined {
+  const labelEnd = findClosingMarkdownLinkLabel(markdown, start);
+  if (labelEnd === -1 || markdown[labelEnd + 1] !== "(") {
+    return undefined;
+  }
+
+  const destination = parseMarkdownLinkDestination(markdown, labelEnd + 1);
+  return destination ? { target: destination.target, end: destination.end } : undefined;
+}
+
+function findClosingMarkdownLinkLabel(markdown: string, start: number): number {
+  let depth = 1;
+  let index = start + 1;
+  while (index < markdown.length) {
+    const char = markdown[index];
+    if (char === "\\") {
+      index += 2;
+      continue;
+    }
+    if (char === "[") {
+      depth += 1;
+    } else if (char === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+    index += 1;
+  }
+  return -1;
+}
+
+function parseMarkdownLinkDestination(markdown: string, openParenIndex: number): InlineMarkdownLink | undefined {
+  let depth = 0;
+  let index = openParenIndex + 1;
+  while (index < markdown.length) {
+    const char = markdown[index];
+    if (char === "\\") {
+      index += 2;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+      index += 1;
+      continue;
+    }
+    if (char === ")") {
+      if (depth > 0) {
+        depth -= 1;
+        index += 1;
+        continue;
+      }
+      const target = extractMarkdownLinkTarget(markdown.slice(openParenIndex + 1, index));
+      return target ? { target, end: index + 1 } : undefined;
+    }
+    index += 1;
+  }
+  return undefined;
+}
+
+function extractMarkdownLinkTarget(rawDestination: string): string | undefined {
+  const trimmed = rawDestination.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+
+  if (trimmed.startsWith("<")) {
+    const close = trimmed.indexOf(">");
+    const target = close === -1 ? "" : trimmed.slice(1, close);
+    return target.length > 0 ? target : undefined;
+  }
+
+  const whitespace = trimmed.search(/\s/);
+  return whitespace === -1 ? trimmed : trimmed.slice(0, whitespace);
+}
+
+function isLocalPathMarkdownLinkTarget(target: string): boolean {
+  const trimmed = target.trim();
+  if (trimmed.length === 0 || trimmed.startsWith("#")) {
+    return false;
+  }
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)) {
+    return false;
+  }
+  if (/^(?:mailto|tel|sms|news|urn):/i.test(trimmed)) {
+    return false;
+  }
+  return true;
+}
+
+function markdownCodeSpan(value: string): string {
+  const longestBacktickRun = Math.max(0, ...Array.from(value.matchAll(/`+/g), (match) => match[0]!.length));
+  const marker = "`".repeat(longestBacktickRun + 1);
+  return longestBacktickRun > 0 ? `${marker} ${value} ${marker}` : `${marker}${value}${marker}`;
 }
 
 function rangeContainingOrAfter(position: number, ranges: TextRange[]): TextRange | undefined {

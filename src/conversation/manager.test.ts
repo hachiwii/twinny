@@ -7083,15 +7083,16 @@ describe("ConversationManager", () => {
   });
 
   it("uses agent message phase to keep commentary in card progress and final_answer as the result", async () => {
+    const workingNotes = "working notes [manager.ts](/tmp/twinny/src/conversation/manager.ts:41)";
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
         await onTurnStarted?.("turn_1");
-        await onAgentMessage?.({ id: "agent_1", text: "working notes", phase: "commentary" });
+        await onAgentMessage?.({ id: "agent_1", text: workingNotes, phase: "commentary" });
         await onAgentMessage?.({ id: "agent_2", text: "final answer", phase: "final_answer" });
         return {
           threadId,
           turnId: "turn_1",
-          text: "working notes\n\nfinal answer",
+          text: `${workingNotes}\n\nfinal answer`,
           status: "completed" as const
         };
       })
@@ -7120,7 +7121,8 @@ describe("ConversationManager", () => {
     expect(finalCard.config).toMatchObject({
       summary: { content: "final answer" }
     });
-    expect(JSON.stringify(processPanel)).toContain("working notes");
+    expect(JSON.stringify(processPanel)).toContain("working notes `/tmp/twinny/src/conversation/manager.ts:41`");
+    expect(JSON.stringify(processPanel)).not.toContain("[manager.ts](/tmp/twinny/src/conversation/manager.ts:41)");
     expect(JSON.stringify(processPanel)).not.toContain("final answer");
     expect(JSON.stringify(finalContent)).toContain("final answer");
     expect(JSON.stringify(finalContent)).not.toContain("working notes");
@@ -7385,6 +7387,50 @@ describe("ConversationManager", () => {
     });
   });
 
+  it("renders local path markdown links as inline code in final card output", async () => {
+    const finalText = "Changed [manager.ts](/tmp/twinny/src/conversation/manager.ts:42) and [docs](https://example.com).";
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: finalText,
+          phase: "final_answer"
+        });
+        return {
+          threadId,
+          turnId: "turn_1",
+          text: finalText,
+          status: "completed" as const
+        };
+      })
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() =>
+      expect(lark.replyCard).toHaveBeenNthCalledWith(
+        2,
+        "m1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+
+    const finalCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const serialized = JSON.stringify(finalCard);
+    expect(serialized).toContain("Changed `/tmp/twinny/src/conversation/manager.ts:42` and [docs](https://example.com).");
+    expect(serialized).not.toContain("[manager.ts](/tmp/twinny/src/conversation/manager.ts:42)");
+    expect(finalCard.config).toMatchObject({
+      summary: { content: expect.stringContaining("`/tmp/twinny/src/conversation/manager.ts:42`") }
+    });
+  });
+
   it("keeps Codex Lark mention tags inside markdown code in fallback plain final_answer messages", async () => {
     const finalText = [
       "```",
@@ -7411,6 +7457,32 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(lark.replyMarkdown).toHaveBeenCalledWith("m1", finalText));
 
     expect(lark.replyPost).not.toHaveBeenCalled();
+  });
+
+  it("renders local path markdown links as inline code in fallback plain replies", async () => {
+    const finalText = "See [manager.ts](/tmp/twinny/src/conversation/manager.ts:42) and [docs](https://example.com).";
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: finalText,
+          phase: "final_answer"
+        });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
+    const manager = createManager({ codex, lark });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() =>
+      expect(lark.replyMarkdown).toHaveBeenCalledWith(
+        "m1",
+        "See `/tmp/twinny/src/conversation/manager.ts:42` and [docs](https://example.com)."
+      )
+    );
   });
 
   it("sets finished agent card summary to the first 100 final output characters", async () => {
