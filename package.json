@@ -50,6 +50,11 @@
     "registry": "https://registry.npmjs.org"
   },
   "packageManager": "pnpm@10.17.1",
+  "pnpm": {
+    "overrides": {
+      "axios": "1.16.1"
+    }
+  },
   "engines": {
     "node": ">=22.18.0"
   },
