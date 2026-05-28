@@ -4,6 +4,7 @@ export * from "./cards.js";
 export * from "./contact.js";
 export * from "./doc-comments.js";
 export * from "./events.js";
+export * from "./feature-config.js";
 export * from "./files.js";
 export * from "./filters.js";
 export * from "./messages.js";

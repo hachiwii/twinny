@@ -1,5 +1,6 @@
 import { toErrorMessage } from "../errors.js";
-import { renderTwinnyBannerCard, type LarkCardJson } from "../lark/cards.js";
+import { markdownElement, renderTwinnyBannerCard, type LarkCardJson } from "../lark/cards.js";
+import { formatLarkFeatureCheckIssueText, type LarkFeatureCheckResult } from "../lark/feature-config.js";
 import { TWINNY_VERSION } from "../version.js";
 import type { LarkLogger } from "../lark/index.js";
 
@@ -36,6 +37,16 @@ export class TwinnySystemNotifier {
     );
   }
 
+  async notifyMissingLarkConfiguration(results: readonly LarkFeatureCheckResult[]): Promise<void> {
+    const missing = results
+      .map((result) => formatLarkFeatureCheckIssueText(result, { usage: "startup" }))
+      .filter((text): text is string => Boolean(text));
+    if (missing.length === 0) {
+      return;
+    }
+    await this.sendCard("lark_configuration_missing", renderMissingLarkConfigurationCard(missing));
+  }
+
   private async sendCard(kind: string, card: LarkCardJson): Promise<void> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -47,4 +58,34 @@ export class TwinnySystemNotifier {
       clearTimeout(timeout);
     }
   }
+}
+
+function renderMissingLarkConfigurationCard(items: readonly string[]): LarkCardJson {
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      summary: {
+        content: "Twinny Lark 配置未完成"
+      }
+    },
+    header: {
+      title: {
+        tag: "plain_text",
+        content: "Twinny Lark 配置未完成"
+      },
+      template: "red"
+    },
+    body: {
+      direction: "vertical",
+      horizontal_spacing: "8px",
+      vertical_spacing: "8px",
+      horizontal_align: "left",
+      vertical_align: "top",
+      padding: "12px 12px 12px 12px",
+      elements: [
+        markdownElement(items.join("\n\n---\n\n"))
+      ]
+    }
+  };
 }

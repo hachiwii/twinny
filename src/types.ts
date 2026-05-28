@@ -459,6 +459,7 @@ export interface CodexThreadTokenUsageUpdate {
 export interface HealthCheck {
   name: string;
   ok: boolean;
+  skipped?: boolean;
   detail?: string;
 }
 

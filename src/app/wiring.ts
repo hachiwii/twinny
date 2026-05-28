@@ -20,6 +20,7 @@ import {
   LarkBotDirectory,
   LarkChatDirectory,
   LarkUserDirectory,
+  LarkFeatureConfigurationChecker,
   LarkOpenApiClient,
   resolveLarkEndpoints,
   resolveLarkEventDomain,
@@ -171,12 +172,21 @@ export class TwinnyRuntime {
       const larkFiles = new LarkFileDownloader({ openApiClient });
       const larkDocs = new LarkDocClient({ openApiClient });
       const assetImageKeys = await this.provisionLarkAssetImageKeys(larkFiles);
+      const larkFeatureConfig = new LarkFeatureConfigurationChecker({
+        appId: this.config.auth.larkAppId,
+        openApiClient,
+        logger: this.log
+      });
       const systemNotifier = new TwinnySystemNotifier({
         ownerOpenId: this.config.owner.openId,
         sender: larkSender,
         logger: this.log
       });
       this.systemNotifier = systemNotifier;
+      const startupFeatureChecks = await larkFeatureConfig.checkAllFeatureSets();
+      await systemNotifier.notifyMissingLarkConfiguration(
+        startupFeatureChecks.filter((result) => result.key === "necessary")
+      );
       const repository = createConversationRepository(this.db);
       const workspaceManager = WorkspaceManager.fromRuntimePaths(this.paths);
       const conversation = new ConversationManager({
@@ -196,6 +206,7 @@ export class TwinnyRuntime {
         larkMessages,
         larkDocs,
         larkDocComments: larkDocs,
+        larkFeatureConfig,
         botOpenId,
         assetImageKeys,
         profiles: { codexHomeFor: (profile) => getProfileCodexHome(this.config, profile) },

@@ -34,6 +34,11 @@ import {
 import { isLarkMessageUnavailableError } from "../lark/messages.js";
 import { logger as defaultLogger } from "../observability/logs.js";
 import { DEFAULT_PROFILE_EFFORT, DEFAULT_PROFILE_MODEL } from "../config/loader.js";
+import {
+  formatLarkFeatureCheckIssueText,
+  type LarkFeatureCheckResult,
+  type LarkFeatureSetKey
+} from "../lark/feature-config.js";
 import type {
   CodexThreadTokenUsageUpdate,
   CodexTurnResult,
@@ -487,6 +492,10 @@ export interface LarkDocCommentClient {
   }>;
 }
 
+export interface LarkFeatureConfigurationStatusProvider {
+  checkFeatureSet(key: LarkFeatureSetKey): Promise<LarkFeatureCheckResult>;
+}
+
 type DocCommentDownloadedImage = {
   ref: LarkDocCommentImageRef;
   file: NonNullable<IncomingLarkMessage["downloadedFiles"]>[number];
@@ -689,6 +698,7 @@ export interface ConversationManagerOptions {
   larkMessages?: LarkMessageReader;
   larkDocs?: LarkDocResolver;
   larkDocComments?: LarkDocCommentClient;
+  larkFeatureConfig?: LarkFeatureConfigurationStatusProvider;
   botOpenId?: string;
   assetImageKeys?: {
     logoImageKey?: string;
@@ -2646,15 +2656,20 @@ export class ConversationManager {
       });
     }
 
+    const featureWarning = isNonAtResponseMode(parsed.responseMode)
+      ? await this.resolveLarkFeatureConfigurationWarning("group_non_at", "group_non_at")
+      : undefined;
+    const replyLines = [
+      `已激活群聊：${groupInfo.name}`,
+      `响应模式：${parsed.responseMode}`,
+      `Profile：${profile}`
+    ];
+    if (featureWarning) {
+      replyLines.push("", featureWarning);
+    }
+
     await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
-    await this.replyControlBestEffort(
-      message.messageId,
-      [
-        `已激活群聊：${groupInfo.name}`,
-        `响应模式：${parsed.responseMode}`,
-        `Profile：${profile}`
-      ].filter(Boolean).join("\n")
-    );
+    await this.replyControlBestEffort(message.messageId, replyLines.join("\n"));
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
@@ -2793,6 +2808,22 @@ export class ConversationManager {
       name: nonEmptyString(message.chatName) ?? nonEmptyString(existing?.name) ?? message.chatId,
       groupMessageType: resolvedGroupMessageType
     };
+  }
+
+  private async resolveLarkFeatureConfigurationWarning(
+    key: LarkFeatureSetKey,
+    usage: "group_non_at" | "doc_watch"
+  ): Promise<string | undefined> {
+    const checker = this.options.larkFeatureConfig;
+    if (!checker) {
+      return undefined;
+    }
+    try {
+      return formatLarkFeatureCheckIssueText(await checker.checkFeatureSet(key), { usage });
+    } catch (error) {
+      this.log.warn({ error, key }, "failed to check Lark feature configuration");
+      return undefined;
+    }
   }
 
   private async handleNewSessionMenuAction(
@@ -3030,11 +3061,15 @@ export class ConversationManager {
       watchMode: parsed.watchMode,
       watchUrl: target.watchUrl
     });
+    const featureWarning = parsed.watchMode === "none"
+      ? undefined
+      : await this.resolveLarkFeatureConfigurationWarning("doc_watch", "doc_watch");
+    const replyText = parsed.watchMode === "none"
+      ? `已关闭 ${target.fileType}/${target.fileToken} 的文档评论监听。`
+      : `已监听 ${target.fileType}/${target.fileToken}，mode=${parsed.watchMode}。`;
     await this.replyControlBestEffort(
       message.messageId,
-      parsed.watchMode === "none"
-        ? `已关闭 ${target.fileType}/${target.fileToken} 的文档评论监听。`
-        : `已监听 ${target.fileType}/${target.fileToken}，mode=${parsed.watchMode}。`
+      featureWarning ? `${replyText}\n\n${featureWarning}` : replyText
     );
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
@@ -9436,6 +9471,10 @@ function parseActivateCommand(
     return { kind: "invalid", message: "profile none 为保留名，不能用于 /activate。" };
   }
   return { kind: "valid", responseMode: mode, profile: profile };
+}
+
+function isNonAtResponseMode(mode: ConversationResponseMode): boolean {
+  return mode === "owner" || mode === "all";
 }
 
 function parsePairCommand(text: string): { kind: "valid"; guestOpenId: string; profile: ProfileName } | { kind: "invalid"; message: string } {

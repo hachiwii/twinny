@@ -5,12 +5,15 @@ import { DEFAULT_CAFFEINATE_COMMAND } from "../app/caffeinate.js";
 import { formatStartupInitializationProbeDetail, runStartupInitializationProbe } from "../app/startup-probe.js";
 import { createDefaultSecretStore, readConfigStatus, resolveLarkAppSecret, type SecretStore } from "../config/index.js";
 import {
+  LarkFeatureConfigurationChecker,
   LARK_REQUIRED_SCOPES,
   LARK_REQUIRED_SCOPE_ALTERNATIVES,
   LarkBotDirectory,
   LarkOpenApiClient,
   resolveLarkEndpoints,
-  TenantAccessTokenManager
+  summarizeLarkFeatureCheckIssue,
+  TenantAccessTokenManager,
+  type LarkFeatureCheckResult
 } from "../lark/index.js";
 import { isTwinnyLockHeld, readTwinnyLockMetadata } from "../lock/index.js";
 import { openRuntimeDatabase } from "../store/index.js";
@@ -20,12 +23,16 @@ import { toErrorMessage } from "../errors.js";
 export async function runDoctorCommand(): Promise<void> {
   const snapshot = await runDoctorChecks();
   for (const check of snapshot.checks) {
-    const marker = check.ok ? "OK" : "FAIL";
-    console.log(`${marker} ${check.name}${check.detail ? ` - ${check.detail}` : ""}`);
+    console.log(formatDoctorCheckLine(check));
   }
   if (!snapshot.ok) {
     process.exitCode = 1;
   }
+}
+
+export function formatDoctorCheckLine(check: HealthCheck): string {
+  const marker = check.skipped ? "SKIP" : check.ok ? "OK" : "FAIL";
+  return `${marker} ${check.name}${check.detail ? ` - ${check.detail}` : ""}`;
 }
 
 export async function runDoctorChecks(): Promise<HealthSnapshot> {
@@ -102,15 +109,38 @@ export async function runDoctorChecks(): Promise<HealthSnapshot> {
       return checkLarkBotOpenId(config, resolvedAppSecret);
     });
 
-    await checkAsync(checks, "lark required scopes", async () => {
-      return checkLarkRequiredScopes(config, resolvedAppSecret);
-    });
+    await checkLarkNecessaryConfiguration(checks, config, resolvedAppSecret);
   }
 
   return {
     ok: checks.every((check) => check.ok),
     checks
   };
+}
+
+export async function checkLarkNecessaryFeatureConfiguration(
+  config: Pick<TwinnyConfig, "auth">,
+  appSecret: string,
+  options: {
+    tokenManager?: TenantAccessTokenManager;
+    openApiClient?: Pick<LarkOpenApiClient, "request">;
+  } = {}
+): Promise<LarkFeatureCheckResult> {
+  const openApiClient = options.openApiClient ?? (() => {
+    const tokenManager = options.tokenManager ?? new TenantAccessTokenManager({
+      appId: config.auth.larkAppId,
+      appSecret,
+      baseUrl: resolveLarkEndpoints(config.auth.larkBrand).openApi
+    });
+    return new LarkOpenApiClient({
+      tokenManager,
+      baseUrl: resolveLarkEndpoints(config.auth.larkBrand).openApi
+    });
+  })();
+  return new LarkFeatureConfigurationChecker({
+    appId: config.auth.larkAppId,
+    openApiClient
+  }).checkFeatureSet("necessary");
 }
 
 export async function checkCaffeinateBinary(options: {
@@ -220,6 +250,36 @@ async function checkAsync<T>(
     });
     return undefined;
   }
+}
+
+async function checkLarkNecessaryConfiguration(
+  checks: HealthCheck[],
+  config: Pick<TwinnyConfig, "auth">,
+  appSecret: string
+): Promise<void> {
+  const result = await checkLarkNecessaryFeatureConfiguration(config, appSecret);
+  if (result.skipped) {
+    checks.push({
+      name: "lark necessary configuration",
+      ok: true,
+      skipped: true,
+      detail: result.skipReason
+    });
+    return;
+  }
+  if (!result.ok) {
+    checks.push({
+      name: "lark necessary configuration",
+      ok: false,
+      detail: summarizeLarkFeatureCheckIssue(result)
+    });
+    return;
+  }
+  checks.push({
+    name: "lark necessary configuration",
+    ok: true,
+    detail: summarizeLarkFeatureCheckIssue(result)
+  });
 }
 
 async function getGrantedLarkScopes(openApiClient: Pick<LarkOpenApiClient, "request">): Promise<Set<string>> {

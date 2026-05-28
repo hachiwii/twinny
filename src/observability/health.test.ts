@@ -3,8 +3,16 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTwinnyConfig, MemorySecretStore } from "../config/index.js";
+import { LARK_FEATURE_SET_DEFINITIONS } from "../lark/feature-config.js";
 import { LARK_REQUIRED_SCOPES } from "../lark/index.js";
-import { checkCaffeinateBinary, checkLarkBotOpenId, checkLarkRequiredScopes, resolveDoctorLarkAppSecret } from "./health.js";
+import {
+  checkCaffeinateBinary,
+  checkLarkBotOpenId,
+  checkLarkNecessaryFeatureConfiguration,
+  checkLarkRequiredScopes,
+  formatDoctorCheckLine,
+  resolveDoctorLarkAppSecret
+} from "./health.js";
 
 describe("doctor health checks", () => {
   const tempDirs: string[] = [];
@@ -181,5 +189,75 @@ describe("doctor health checks", () => {
         requiredScopes: ["im:message:readonly", "im:message:update", "im:message:recall"]
       })
     ).rejects.toThrow("missing: im:message:update, im:message:recall");
+  });
+
+  it("checks only the necessary Lark feature set for doctor configuration", async () => {
+    const config = createTwinnyConfig({
+      home: fs.mkdtempSync(path.join(os.tmpdir(), "twinny-necessary-config-check-")),
+      homeRandom: "0123456789abcdef0123456789abcdef",
+      auth: { larkAppId: "cli_app", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner User" }
+    });
+    tempDirs.push(config.home);
+    const request = vi.fn(async () => ({
+      data: {
+        items: [
+          {
+            version_id: "published",
+            version: "1.0.0",
+            status: 1,
+            publish_time: "2026-05-28",
+            scopes: LARK_FEATURE_SET_DEFINITIONS.necessary.scopes.map((scope) => ({
+              scope,
+              token_types: ["tenant"]
+            })),
+            event_infos: [
+              ...LARK_FEATURE_SET_DEFINITIONS.necessary.events,
+              ...LARK_FEATURE_SET_DEFINITIONS.necessary.callbacks
+            ].map((event) => ({
+              event_type: event,
+              receive_mode: "long_connection"
+            }))
+          }
+        ]
+      }
+    }));
+
+    await expect(
+      checkLarkNecessaryFeatureConfiguration(config, "secret", {
+        openApiClient: { request }
+      })
+    ).resolves.toMatchObject({ ok: true, skipped: false });
+    expect(request).toHaveBeenCalledWith("/application/v6/applications/cli_app/app_versions", {
+      method: "GET",
+      query: { lang: "zh_cn", page_size: 2 }
+    });
+  });
+
+  it("skips doctor Lark configuration when app version cannot be queried", async () => {
+    const config = createTwinnyConfig({
+      home: fs.mkdtempSync(path.join(os.tmpdir(), "twinny-skip-config-check-")),
+      homeRandom: "0123456789abcdef0123456789abcdef",
+      auth: { larkAppId: "cli_app", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner User" }
+    });
+    tempDirs.push(config.home);
+
+    await expect(
+      checkLarkNecessaryFeatureConfiguration(config, "secret", {
+        openApiClient: {
+          request: vi.fn(async () => {
+            throw new Error("permission denied");
+          })
+        }
+      })
+    ).resolves.toMatchObject({ ok: true, skipped: true, skipReason: "permission denied" });
+  });
+
+  it("prints SKIP markers for skipped doctor checks", () => {
+    expect(formatDoctorCheckLine({
+      name: "lark necessary configuration",
+      ok: true,
+      skipped: true,
+      detail: "permission denied"
+    })).toBe("SKIP lark necessary configuration - permission denied");
   });
 });

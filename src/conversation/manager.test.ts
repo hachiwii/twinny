@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Logger } from "pino";
 import { describe, expect, it, vi, type Mock } from "vitest";
 import { TwinnyError } from "../errors.js";
+import type { LarkFeatureCheckResult } from "../lark/feature-config.js";
 import { LarkMessageUnavailableError } from "../lark/messages.js";
 import type { TelemetryCaptureOptions, TelemetryClient, TelemetryErrorContext, TelemetryProperties } from "../telemetry/index.js";
 import type {
@@ -29,7 +30,8 @@ import {
   type LarkMessageReader,
   type LarkResponder,
   type LarkChatDirectory,
-  type LarkUserDirectory
+  type LarkUserDirectory,
+  type LarkFeatureConfigurationStatusProvider
 } from "./manager.js";
 
 const config: TwinnyConfig = {
@@ -1459,6 +1461,34 @@ describe("ConversationManager", () => {
     expect(watchListMarkdown).toContain("| https://example.feishu.cn/docx/other_doc | all | 2025-01-01 08:00:00 |");
     expect(watchListMarkdown).toContain("| https://example.feishu.cn/docx/doc_token | none | 暂无 |");
     expect(vi.mocked(lark.replyText).mock.calls.find(([messageId]) => messageId === "m_watch_list")).toBeUndefined();
+  });
+
+  it("adds document watch configuration hints without blocking /watch", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const lark = createLarkResponder();
+    const larkDocs = createLarkDocResolver();
+    const larkFeatureConfig: LarkFeatureConfigurationStatusProvider = {
+      checkFeatureSet: vi.fn(async () => missingFeatureResult("doc_watch", "文档监听", {
+        missingScopes: ["docs:document.media:download"],
+        scopeApplyUrl: "https://open.larkoffice.com/page/scope-apply?clientID=cli_xxx&scopes=docs%3Adocument.media%3Adownload"
+      }))
+    };
+    const manager = createManager({ repository, lark, larkDocs, larkFeatureConfig });
+
+    manager.submitIncoming(message("m_watch", "/watch https://example.feishu.cn/docx/doc_token"));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith(
+        "m_watch",
+        expect.stringContaining("已监听 docx/doc_token，mode=owner。")
+      )
+    );
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "m_watch",
+      expect.stringContaining("bot 无法看到文档中的图片")
+    );
+    expect(repository.upsertLarkDocWatcher).toHaveBeenCalledWith(expect.objectContaining({ fileToken: "doc_token" }));
+    expect(larkFeatureConfig.checkFeatureSet).toHaveBeenCalledWith("doc_watch");
   });
 
   it("processes mentioned watched doc comments, exits plan mode at start, and replies to the document", async () => {
@@ -4673,6 +4703,37 @@ describe("ConversationManager", () => {
       profile: "guest",
       workspace: "/tmp/twinny/workspaces/group_oc_group"
     });
+  });
+
+  it("adds non-at group message configuration hints without blocking /activate", async () => {
+    const { repository } = createRepository();
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const larkChats: LarkChatDirectory = {
+      getChatInfo: vi.fn(async () => ({ name: "Team Room", chatMode: "group" as const }))
+    };
+    const larkFeatureConfig: LarkFeatureConfigurationStatusProvider = {
+      checkFeatureSet: vi.fn(async () => missingFeatureResult("group_non_at", "群聊非 at 消息", {
+        missingScopes: ["im:message.group_msg"],
+        scopeApplyUrl: "https://open.larkoffice.com/page/scope-apply?clientID=cli_xxx&scopes=im%3Amessage.group_msg"
+      }))
+    };
+    const manager = createManager({ repository, codex, lark, larkChats, larkFeatureConfig, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("g1", "/activate all guest", { senderOpenId: "ou_owner", senderName: "Owner" }));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith(
+        "g1",
+        expect.stringContaining("已激活群聊：Team Room\n响应模式：all\nProfile：guest")
+      )
+    );
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "g1",
+      expect.stringContaining("否则 bot 无法收到非 at 群消息")
+    );
+    expect(repository.findByConversationKey("group_oc_group")).toBeDefined();
+    expect(larkFeatureConfig.checkFeatureSet).toHaveBeenCalledWith("group_non_at");
   });
 
   it("keeps a group's first activated profile immutable while allowing mode and name refreshes", async () => {
@@ -8587,6 +8648,7 @@ function createManager(options: {
   larkMessages?: LarkMessageReader;
   larkDocs?: LarkDocResolver;
   larkDocComments?: LarkDocCommentClient;
+  larkFeatureConfig?: LarkFeatureConfigurationStatusProvider;
   botOpenId?: string;
   assetImageKeys?: ConstructorParameters<typeof ConversationManager>[0]["assetImageKeys"];
   workspaceRoot?: string;
@@ -8614,6 +8676,7 @@ function createManager(options: {
     larkMessages: options.larkMessages,
     larkDocs: options.larkDocs,
     larkDocComments: options.larkDocComments,
+    larkFeatureConfig: options.larkFeatureConfig,
     botOpenId: options.botOpenId,
     assetImageKeys: options.assetImageKeys,
     runtime: options.runtime,
@@ -8621,6 +8684,26 @@ function createManager(options: {
     logger: options.logger,
     nameLookupFailureTtlMs: 60_000
   });
+}
+
+function missingFeatureResult(
+  key: LarkFeatureCheckResult["key"],
+  label: string,
+  overrides: Partial<LarkFeatureCheckResult>
+): LarkFeatureCheckResult {
+  return {
+    key,
+    label,
+    ok: false,
+    skipped: false,
+    missingScopes: [],
+    missingEvents: [],
+    missingCallbacks: [],
+    nonLongConnectionEvents: [],
+    nonLongConnectionCallbacks: [],
+    hasPublishedVersion: true,
+    ...overrides
+  };
 }
 
 function cardModeConfig(overrides: Partial<TwinnyConfig["lark"]> = {}): TwinnyConfig {
