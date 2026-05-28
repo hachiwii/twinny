@@ -10,7 +10,7 @@ import {
   type SecretStore
 } from "../config/index.js";
 import { ProfileCodexAppServerPool, type CodexAppServer } from "../codex/index.js";
-import { ConversationManager, type CodexBridge } from "../conversation/manager.js";
+import { ConversationManager, type CodexBridge, type ConversationQueueOptions } from "../conversation/manager.js";
 import {
   LarkEventConsumer,
   LarkFileDownloader,
@@ -199,7 +199,7 @@ export class TwinnyRuntime {
         botOpenId,
         assetImageKeys,
         profiles: { codexHomeFor: (profile) => getProfileCodexHome(this.config, profile) },
-        runtime: { reloadProfile: (profile) => this.reloadProfile(profile) },
+        runtime: { reloadProfile: (profile, options) => this.reloadProfile(profile, options) },
         telemetry: this.telemetry,
         logger: this.log
       });
@@ -412,7 +412,7 @@ export class TwinnyRuntime {
     });
   }
 
-  async reloadProfile(profile?: ProfileName): Promise<void> {
+  async reloadProfile(profile?: ProfileName, options: ConversationQueueOptions = {}): Promise<void> {
     const pool = this.codexPool;
     if (!pool) {
       throw new Error("Codex app-server pool is not started");
@@ -443,7 +443,7 @@ export class TwinnyRuntime {
       }
 
       const suspended = currentProfiles.has(profileName)
-        ? (await this.conversation?.suspendActiveTurnsForCodexAppServerExit(profileName)) ?? 0
+        ? (await this.conversation?.suspendActiveTurnsForCodexAppServerExit(profileName, options)) ?? 0
         : 0;
       if (currentProfiles.has(profileName)) {
         await this.stopCodexAppServerForReload(pool, profileName);
@@ -455,7 +455,7 @@ export class TwinnyRuntime {
       this.attachCodexAppServerListeners(profileName, server);
       await server.start();
       const recovered = currentProfiles.has(profileName)
-        ? (await this.conversation?.recoverSuspendedActiveTurnsForCodexAppServerExit(profileName)) ?? 0
+        ? (await this.conversation?.recoverSuspendedActiveTurnsForCodexAppServerExit(profileName, options)) ?? 0
         : 0;
       this.log.info({ profile: profileName, suspended, recovered }, "reloaded codex app-server profile");
     }

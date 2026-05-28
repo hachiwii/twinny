@@ -94,6 +94,7 @@ import {
 const COMPACT_PROGRESS_TEXT = "正在压缩上下文";
 const COMPACT_COMPLETED_TEXT = "完成上下文压缩";
 const SIDE_SHUTDOWN_ERROR = "Twinny 服务退出";
+const UNRECOVERABLE_CONTROL_MESSAGE_RECOVERY_TEXT = "上一条控制命令在 Twinny daemon 重启前中断，已终止；请重新执行。";
 const MAIN_THREAD_NAME = "主会话";
 const DOC_COMMENT_AGENT_CARD_SUBTITLE = "文档评论触发";
 const TWINNY_THREAD_DEVELOPER_INSTRUCTIONS = `# Twinny Lark Context
@@ -668,8 +669,12 @@ export interface ProfileHomeResolver {
   codexHomeFor(profile: ProfileName): string;
 }
 
+export interface ConversationQueueOptions {
+  inlineStateKey?: string;
+}
+
 export interface RuntimeControlBridge {
-  reloadProfile(profile?: ProfileName): Promise<void>;
+  reloadProfile(profile?: ProfileName, options?: ConversationQueueOptions): Promise<void>;
 }
 
 export interface ConversationManagerOptions {
@@ -1289,46 +1294,57 @@ export class ConversationManager {
     await Promise.all(cancelPromises);
   }
 
-  async suspendActiveTurnsForCodexAppServerExit(profile: ProfileName): Promise<number> {
+  async suspendActiveTurnsForCodexAppServerExit(profile: ProfileName, options: ConversationQueueOptions = {}): Promise<number> {
     const suspendPromises: Promise<number>[] = [];
-    for (const state of this.states.values()) {
+    for (const [stateKey, state] of this.states) {
+      const suspend = async () => {
+        const active = state.active;
+        if (!active || active.profile !== profile) {
+          return this.failSideTurnsForProfile(state, profile, "Codex app-server exited");
+        }
+        await this.suspendActiveTurnForCodexAppServerExit(state, active);
+        return 1 + await this.failSideTurnsForProfile(state, profile, "Codex app-server exited");
+      };
       suspendPromises.push(
-        state.controlQueue.enqueue(async () => {
-          const active = state.active;
-          if (!active || active.profile !== profile) {
-            return this.failSideTurnsForProfile(state, profile, "Codex app-server exited");
-          }
-          await this.suspendActiveTurnForCodexAppServerExit(state, active);
-          return 1 + await this.failSideTurnsForProfile(state, profile, "Codex app-server exited");
-        })
+        this.runStateControlTask(stateKey, state, options, suspend)
       );
     }
     const counts = await Promise.all(suspendPromises);
     return counts.reduce((sum, count) => sum + count, 0);
   }
 
-  async recoverSuspendedActiveTurnsForCodexAppServerExit(profile: ProfileName): Promise<number> {
+  async recoverSuspendedActiveTurnsForCodexAppServerExit(profile: ProfileName, options: ConversationQueueOptions = {}): Promise<number> {
     const recoverPromises: Promise<number>[] = [];
-    for (const state of this.states.values()) {
+    for (const [stateKey, state] of this.states) {
+      const recover = async () => {
+        if (state.active) {
+          return 0;
+        }
+        const index = state.suspendedActiveTurns.findIndex((active) => active.profile === profile);
+        if (index < 0) {
+          return 0;
+        }
+        const [active] = state.suspendedActiveTurns.splice(index, 1);
+        if (!active) {
+          return 0;
+        }
+        return (await this.recoverSuspendedActiveTurnForCodexAppServerExit(state, active)) ? 1 : 0;
+      };
       recoverPromises.push(
-        state.controlQueue.enqueue(async () => {
-          if (state.active) {
-            return 0;
-          }
-          const index = state.suspendedActiveTurns.findIndex((active) => active.profile === profile);
-          if (index < 0) {
-            return 0;
-          }
-          const [active] = state.suspendedActiveTurns.splice(index, 1);
-          if (!active) {
-            return 0;
-          }
-          return (await this.recoverSuspendedActiveTurnForCodexAppServerExit(state, active)) ? 1 : 0;
-        })
+        this.runStateControlTask(stateKey, state, options, recover)
       );
     }
     const counts = await Promise.all(recoverPromises);
     return counts.reduce((sum, count) => sum + count, 0);
+  }
+
+  private runStateControlTask<T>(
+    stateKey: string,
+    state: ConversationState,
+    options: ConversationQueueOptions,
+    task: () => Promise<T>
+  ): Promise<T> {
+    return stateKey === options.inlineStateKey ? task() : state.controlQueue.enqueue(task);
   }
 
   async recoverUnfinishedMessages(options: { profile?: ProfileName } = {}): Promise<void> {
@@ -1373,7 +1389,11 @@ export class ConversationManager {
       if (!message) {
         continue;
       }
-      if (message.control === "compact" || (message.control === "goal_set" && record.status === "queued")) {
+      if (isUnrecoverableControlMessage(record, message)) {
+        await this.failUnrecoverableControlMessageRecovery(record);
+        continue;
+      }
+      if (shouldRecoverPendingControlMessage(record, message)) {
         state.pendingBatch.push(message);
       } else if (record.status === "processing") {
         const group = processingGroups.get(context.stateKey) ?? { state, context, records: [], messages: [] };
@@ -1393,6 +1413,18 @@ export class ConversationManager {
     for (const { state, context } of recoverableStates.values()) {
       await state.controlQueue.enqueue(() => this.startPendingBatch(state, context));
     }
+  }
+
+  private async failUnrecoverableControlMessageRecovery(record: LarkMessageRecord): Promise<void> {
+    this.log.warn(
+      { eventId: record.eventId, messageId: record.larkMessageId, status: record.status },
+      "control message cannot be recovered as codex turn; marking failed"
+    );
+    if (!record.larkMessageId) {
+      return;
+    }
+    await this.markMessagesFailedBestEffort([record.larkMessageId]);
+    await this.replyControlBestEffort(record.larkMessageId, UNRECOVERABLE_CONTROL_MESSAGE_RECOVERY_TEXT);
   }
 
   async probeUnfinishedMessages(): Promise<ConversationRecoveryProbeSnapshot> {
@@ -1428,10 +1460,16 @@ export class ConversationManager {
             "LARK_MESSAGE_RECOVERY_FAILED"
           );
         }
+        if (isUnrecoverableControlMessage(record, pending)) {
+          throw new TwinnyError(
+            "Control message cannot be recovered as a Codex turn",
+            "LARK_MESSAGE_RECOVERY_FAILED"
+          );
+        }
         if (pending.control === "compact") {
           compactMessages += 1;
         }
-        if (record.status === "queued" || pending.control === "compact") {
+        if (shouldRecoverPendingControlMessage(record, pending) || record.status === "queued") {
           state.pendingBatch.push(pending);
           pendingMessages += 1;
         }
@@ -2711,7 +2749,7 @@ export class ConversationManager {
       return;
     }
     try {
-      await this.options.runtime.reloadProfile(profile);
+      await this.options.runtime.reloadProfile(profile, { inlineStateKey: context.stateKey });
     } catch (error) {
       await this.replyControlBestEffort(message.messageId, toErrorMessage(error));
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -10618,6 +10656,17 @@ function toPendingMessage(
     control: options.control,
     docComment: options.docComment
   };
+}
+
+function isUnrecoverableControlMessage(record: LarkMessageRecord, message: PendingMessage): boolean {
+  return record.routeKind === "control_message" && !message.control;
+}
+
+function shouldRecoverPendingControlMessage(record: LarkMessageRecord, message: PendingMessage): boolean {
+  return (
+    !!message.control &&
+    (record.status === "queued" || record.routeKind === "control_message" || message.control === "compact")
+  );
 }
 
 function countNextPendingBatch(state: ConversationState): number {

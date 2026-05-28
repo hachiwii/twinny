@@ -2611,6 +2611,30 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).not.toHaveBeenCalled();
   });
 
+  it("runs /reload without waiting on its own control queue", async () => {
+    const { repository } = createRepository();
+    const lark = createLarkResponder();
+    let manager!: ConversationManager;
+    const runtime: ConstructorParameters<typeof ConversationManager>[0]["runtime"] = {
+      reloadProfile: vi.fn(async (_profile, options) => {
+        await manager.suspendActiveTurnsForCodexAppServerExit("host", options);
+        await manager.recoverSuspendedActiveTurnsForCodexAppServerExit("host", options);
+      })
+    };
+    manager = createManager({ repository, lark, runtime });
+
+    manager.submitIncoming(message("m_reload", "/reload", {
+      senderOpenId: "ou_owner",
+      senderName: "Owner"
+    }));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith("m_reload", "已 reload 全部 profiles。")
+    );
+    expect(runtime.reloadProfile).toHaveBeenCalledWith(undefined, { inlineStateKey: "p2p_ou_owner" });
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m_reload"]);
+  });
+
   it("replies to /logo with the uploaded logo image key", async () => {
     const codex = createCodex();
     const lark = createLarkResponder();
@@ -8233,6 +8257,43 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("fails unreplayable processing control messages during startup recovery", async () => {
+    const record = larkMessageRecord({
+      larkMessageId: "m_reload",
+      eventId: "e_m_reload",
+      larkUserId: "ou_owner",
+      conversationKey: "p2p_ou_owner",
+      routeKind: "control_message",
+      status: "processing",
+      text: "/reload",
+      rawEventJson: JSON.stringify({
+        ...rawReceiveEvent("m_reload", "/reload"),
+        sender: {
+          sender_id: { open_id: "ou_owner" },
+          sender_type: "user"
+        }
+      })
+    });
+    const { repository } = createRepository(undefined, { larkMessages: [record] });
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    await manager.recoverUnfinishedMessages();
+
+    expect(codex.resumeThread).not.toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesFailed).toHaveBeenCalledWith(["m_reload"]);
+    expect(repository.markLarkMessagesProcessing).not.toHaveBeenCalledWith(["m_reload"], expect.anything());
+    const recovered = repository.getLarkMessageById("m_reload") as LarkMessageRecord | undefined;
+    expect(recovered).toMatchObject({ status: "failed" });
+    expect(recovered?.codexTurnId).toBeUndefined();
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "m_reload",
+      "上一条控制命令在 Twinny daemon 重启前中断，已终止；请重新执行。"
+    );
+  });
+
   it("recovers processing thread replies from persisted DB fields when raw event JSON is missing", async () => {
     const row = groupConversationRecord({ profile: "host", codexThreadId: "thread_recovered" });
     const record = larkMessageRecord({
@@ -8532,6 +8593,7 @@ function createManager(options: {
   logger?: ConstructorParameters<typeof ConversationManager>[0]["logger"];
   config?: TwinnyConfig;
   telemetry?: TelemetryClient;
+  runtime?: ConstructorParameters<typeof ConversationManager>[0]["runtime"];
 } = {}): ConversationManager {
   const workspaceRoot = options.workspaceRoot ?? "/tmp/twinny/workspaces";
   const managerConfig = options.config ?? config;
@@ -8554,6 +8616,7 @@ function createManager(options: {
     larkDocComments: options.larkDocComments,
     botOpenId: options.botOpenId,
     assetImageKeys: options.assetImageKeys,
+    runtime: options.runtime,
     telemetry: options.telemetry,
     logger: options.logger,
     nameLookupFailureTtlMs: 60_000
