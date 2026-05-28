@@ -5382,6 +5382,7 @@ export class ConversationManager {
       active.processingMessageIds.add(queued.messageId);
     }
     addDocCommentCardMessagesToActive(active, batch);
+    addSupplementalCardMessagesToActive(active, batch);
     await this.markMessagesProcessingBestEffort(messageIds, {
       conversationKey: active.conversationKey,
       codexThreadId: active.threadId,
@@ -5499,6 +5500,7 @@ export class ConversationManager {
       active.processingMessageIds.add(message.messageId);
       active.steerMessageCount += 1;
       addDocCommentCardMessagesToActive(active, [message]);
+      addSupplementalCardMessagesToActive(active, [message]);
       await this.markMessagesProcessingBestEffort([message.messageId], {
         conversationKey: active.conversationKey,
         codexThreadId: active.threadId
@@ -5525,6 +5527,7 @@ export class ConversationManager {
       active.messageIds.add(message.messageId);
       active.processingMessageIds.add(message.messageId);
       addDocCommentCardMessagesToActive(active, [message]);
+      addSupplementalCardMessagesToActive(active, [message]);
       await this.markMessagesProcessingBestEffort([message.messageId], {
         conversationKey: active.conversationKey,
         codexThreadId: active.threadId,
@@ -11474,6 +11477,44 @@ function addDocCommentCardMessagesToActive(active: ActiveTurn, messages: Pending
   }
   const existingIds = new Set(card.messages.map((message) => message.id));
   for (const message of docCommentCardMessagesForPending(messages)) {
+    if (existingIds.has(message.id)) {
+      continue;
+    }
+    existingIds.add(message.id);
+    card.messages.push(message);
+  }
+}
+
+function supplementalCardMessagesForPending(messages: PendingMessage[]): TwinnyAgentCardMessage[] {
+  const result: TwinnyAgentCardMessage[] = [];
+  for (const message of messages) {
+    if (message.docComment) {
+      continue;
+    }
+    const content = supplementalCardContentForPendingMessage(message);
+    if (!content) {
+      continue;
+    }
+    result.push({
+      id: `supplemental:${message.messageId}`,
+      text: `[收到补充信息] ${content}`,
+      processOnly: true
+    });
+  }
+  return result;
+}
+
+function supplementalCardContentForPendingMessage(message: PendingMessage): string {
+  return goalContentForPendingMessage(message);
+}
+
+function addSupplementalCardMessagesToActive(active: ActiveTurn, messages: PendingMessage[]): void {
+  const card = active.card;
+  if (!card) {
+    return;
+  }
+  const existingIds = new Set(card.messages.map((message) => message.id));
+  for (const message of supplementalCardMessagesForPending(messages)) {
     if (existingIds.has(message.id)) {
       continue;
     }

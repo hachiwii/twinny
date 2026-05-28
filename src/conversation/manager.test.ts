@@ -6830,6 +6830,41 @@ describe("ConversationManager", () => {
     expect(lark.recallMessage).toHaveBeenCalledWith("card_m1_1");
   });
 
+  it("renders steered message supplements in the working card with media placeholders", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(async ({ fileKey, resourceType, outputDir }) => ({
+        path: path.join(outputDir, fileKey),
+        resourceType,
+        fileKey,
+        size: 1
+      }))
+    };
+    const manager = createManager({ codex, lark, larkFiles, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    manager.submitIncoming(message("m2", "second {{img_1}} and {{video_1}}", {
+      resources: [
+        { resourceType: "image", fileKey: "img_1", codexTag: "img", textPlaceholder: "{{img_1}}" },
+        { resourceType: "file", fileKey: "video_1", codexTag: "video", textPlaceholder: "{{video_1}}" }
+      ]
+    }));
+
+    await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(2));
+
+    const steeredCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const serialized = JSON.stringify(steeredCard);
+    expect(serialized).toContain("[收到补充信息] second [图片] and [视频]");
+    expect(serialized).not.toContain("{{img_1}}");
+    expect(serialized).not.toContain("{{video_1}}");
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+  });
+
   it("renders retryable Codex errors in the working process and captures telemetry", async () => {
     const telemetry = createTelemetry();
     const { codex, turns } = createDeferredCodex();
