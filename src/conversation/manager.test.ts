@@ -472,7 +472,12 @@ describe("ConversationManager", () => {
       await waitForExpect(() =>
         expect(lark.replyMarkdown).toHaveBeenCalledWith(
           "m_workspace_list",
-          `1. \`${firstWorkspace}\`\n2. \`${secondWorkspace}\``
+          [
+            "当前 conversation workspace：`/tmp/twinny/workspaces/p2p_ou_guest`",
+            "",
+            `1. \`${firstWorkspace}\``,
+            `2. \`${secondWorkspace}\``
+          ].join("\n")
         )
       );
       expect(codex.startTurn).not.toHaveBeenCalled();
@@ -544,7 +549,27 @@ describe("ConversationManager", () => {
       manager.submitIncoming(groupMessage("m_topic_workspace_list", "/workspace", topicContext));
 
       await waitForExpect(() =>
-        expect(lark.replyMarkdown).toHaveBeenCalledWith("m_topic_workspace_list", `1. \`${topicWorkspace}\``)
+        expect(lark.replyMarkdown).toHaveBeenCalledWith(
+          "m_topic_workspace_list",
+          [
+            "当前 conversation workspace：`/tmp/twinny/workspaces/group_oc_group`",
+            "",
+            `1. \`${topicWorkspace}\``
+          ].join("\n")
+        )
+      );
+
+      manager.submitIncoming(groupMessage("m_topic_cd_list", "/cd", topicContext));
+
+      await waitForExpect(() =>
+        expect(lark.replyMarkdown).toHaveBeenCalledWith(
+          "m_topic_cd_list",
+          [
+            "当前 thread workspace：`/tmp/twinny/workspaces/group_oc_group/topic`",
+            "",
+            `1. \`${topicWorkspace}\``
+          ].join("\n")
+        )
       );
 
       manager.submitIncoming(groupMessage("m_topic_cd_select", "/cd 1", topicContext));

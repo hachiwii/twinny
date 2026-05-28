@@ -3755,7 +3755,13 @@ export class ConversationManager {
     const resolved = await this.resolveThreadForMessage(context, message);
     const target = await this.resolveWorkspaceCommandTarget(resolved.threadId, text);
     if (target.kind === "list") {
-      await this.replyWorkspaceSelectionList(message.messageId, resolved.threadId);
+      const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+      await this.replyWorkspaceSelectionList(
+        message.messageId,
+        resolved.threadId,
+        "当前 conversation workspace",
+        conversation?.workspace ?? resolved.workspace
+      );
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
@@ -3796,7 +3802,12 @@ export class ConversationManager {
     }
     const target = await this.resolveWorkspaceCommandTarget(resolved.threadId, text);
     if (target.kind === "list") {
-      await this.replyWorkspaceSelectionList(message.messageId, resolved.threadId);
+      await this.replyWorkspaceSelectionList(
+        message.messageId,
+        resolved.threadId,
+        "当前 thread workspace",
+        resolved.workspace
+      );
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
@@ -3810,17 +3821,27 @@ export class ConversationManager {
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
-  private async replyWorkspaceSelectionList(messageId: string, codexThreadId: string): Promise<void> {
+  private async replyWorkspaceSelectionList(
+    messageId: string,
+    codexThreadId: string,
+    currentLabel: string,
+    currentWorkspace: string
+  ): Promise<void> {
     const since = Date.now() - WORKSPACE_SELECTION_LOOKBACK_MS;
     const workspaces = await this.options.repository.listRecentThreadWorkspaces(since, WORKSPACE_SELECTION_LIMIT);
     this.workspaceSelectionsByThread.set(codexThreadId, workspaces);
+    const currentLine = `${currentLabel}：${formatInlineCode(currentWorkspace)}`;
     if (workspaces.length === 0) {
-      await this.replyControlBestEffort(messageId, "最近 30 天没有可选 workspace。");
+      await this.replyControlMarkdownBestEffort(messageId, `${currentLine}\n\n最近 30 天没有可选 workspace。`);
       return;
     }
     await this.replyControlMarkdownBestEffort(
       messageId,
-      workspaces.map((workspace, index) => `${index + 1}. ${formatInlineCode(workspace)}`).join("\n")
+      [
+        currentLine,
+        "",
+        workspaces.map((workspace, index) => `${index + 1}. ${formatInlineCode(workspace)}`).join("\n")
+      ].join("\n")
     );
   }
 
