@@ -182,6 +182,88 @@ describe("handleTurnServerRequest", () => {
     });
   });
 
+  it("dispatches Twinny dynamic tool calls with parsed arguments", async () => {
+    const protocol = new FakeProtocol();
+    const onDynamicToolCall = vi.fn(async (request) =>
+      dynamicToolTextResponse(true, `${request.tool}:${request.callId}`)
+    );
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-list",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_list",
+          namespace: "twinny",
+          tool: "list_threads",
+          arguments: { page: 2, page_size: 50 }
+        }
+      }
+    );
+
+    await Promise.resolve();
+
+    expect(onDynamicToolCall).toHaveBeenCalledWith({
+      requestId: "req-list",
+      threadId: "thread_123",
+      turnId: "turn_1",
+      callId: "call_list",
+      tool: "list_threads",
+      page: 2,
+      pageSize: 50,
+      rawArguments: { page: 2, page_size: 50 }
+    });
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-list", {
+      success: true,
+      contentItems: [{ type: "inputText", text: "list_threads:call_list" }]
+    });
+  });
+
+  it("validates Twinny dynamic tool arguments before dispatch", () => {
+    const protocol = new FakeProtocol();
+    const onDynamicToolCall = vi.fn();
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-wait",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_wait",
+          namespace: "twinny",
+          tool: "wait_for_thread",
+          arguments: { timeout_ms: 999 }
+        }
+      }
+    );
+
+    expect(onDynamicToolCall).not.toHaveBeenCalled();
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-wait", {
+      success: false,
+      contentItems: [{
+        type: "inputText",
+        text: "Invalid wait_for_thread arguments: thread_id is required and timeout_ms must be 1000..3600000."
+      }]
+    });
+  });
+
   it("rejects unsupported dynamic tools for the active thread", () => {
     const protocol = new FakeProtocol();
 

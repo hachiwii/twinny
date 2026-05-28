@@ -76,10 +76,12 @@ import type {
   LarkGroupMessageType
 } from "../types.js";
 import {
+  dynamicToolJsonResponse,
   dynamicToolTextResponse,
   type CodexDynamicToolCallResponse,
   type CodexRequestUserInputResponder,
   type CodexSetThreadNameToolRequest,
+  type CodexTwinnyDynamicToolRequest,
   type CodexTurnInput,
   type CodexUserInput
 } from "../codex/turn.js";
@@ -192,6 +194,8 @@ export interface ConversationRepository {
     conversationKey: string,
     larkThreadId: string
   ): Promise<CodexThreadRecord | undefined> | CodexThreadRecord | undefined;
+  listCodexThreadsByConversation(conversationKey: string): Promise<CodexThreadRecord[]> | CodexThreadRecord[];
+  countUnfinishedLarkMessagesByThread(codexThreadId: string): Promise<number> | number;
   getLarkMessageById(larkMessageId: string): Promise<unknown | undefined> | unknown | undefined;
   getLarkMessageByEventId(eventId: string): Promise<unknown | undefined> | unknown | undefined;
   getLarkMessageUsageTargetForTurn(
@@ -213,6 +217,7 @@ export interface ConversationRepository {
     profile: ProfileName;
     model?: string;
     effort?: string;
+    category?: CodexThreadRecord["category"];
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
     forkedFromCodexThreadId?: string;
@@ -382,12 +387,21 @@ export interface LarkUserDirectory {
 }
 
 export interface LarkChatDirectory {
+  createChat?(input: {
+    name: string;
+    ownerOpenId?: string;
+    userOpenIds?: string[];
+    groupMessageType?: LarkGroupMessageType;
+    uuid?: string;
+    setBotManager?: boolean;
+  }): Promise<{ chatId?: string; raw: unknown }>;
   getChatInfo?(chatId: string): Promise<{
     name?: string;
     chatMode?: LarkChatMode | "p2p";
     groupMessageType?: LarkGroupMessageType;
   } | undefined>;
   getChatName?(chatId: string): Promise<string | undefined>;
+  getChatLink?(chatId: string): Promise<string | undefined>;
 }
 
 export interface LarkFileDownloader {
@@ -562,6 +576,7 @@ export interface CodexBridge {
       responder: CodexRequestUserInputResponder
     ) => Promise<void> | void;
     onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
+    onDynamicToolCall?: (request: CodexTwinnyDynamicToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
   }): Promise<CodexTurnResult>;
   compactThread(params: {
     profile: ProfileName;
@@ -604,6 +619,10 @@ export interface CodexBridge {
     threadId: string;
     name: string;
   }): Promise<void>;
+  readThreadMetadata?(params: {
+    profile: ProfileName;
+    threadId: string;
+  }): Promise<{ path?: string | null }>;
   runGoal?(params: {
     profile: ProfileName;
     threadId: string;
@@ -620,6 +639,7 @@ export interface CodexBridge {
       responder: CodexRequestUserInputResponder
     ) => Promise<void> | void;
     onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
+    onDynamicToolCall?: (request: CodexTwinnyDynamicToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
   }): Promise<CodexTurnResult>;
   resumeGoal?(params: {
     profile: ProfileName;
@@ -636,6 +656,7 @@ export interface CodexBridge {
       responder: CodexRequestUserInputResponder
     ) => Promise<void> | void;
     onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
+    onDynamicToolCall?: (request: CodexTwinnyDynamicToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
   }): Promise<CodexTurnResult>;
 }
 
@@ -667,6 +688,12 @@ export interface LarkResponder {
     chatId: string,
     openId: string,
     card: LarkCardJson
+  ): Promise<LarkSendMessageResult | void>;
+  forwardThread(
+    threadId: string,
+    receiveId: string,
+    receiveIdType: "thread_id" | "chat_id",
+    options?: { uuid?: string }
   ): Promise<LarkSendMessageResult | void>;
   forwardThreadToThread(threadId: string, receiveThreadId: string, options?: { uuid?: string }): Promise<LarkSendMessageResult | void>;
   replyCard(messageId: string, card: LarkCardJson, options?: LarkReplyOptions): Promise<LarkReplyResult | void>;
@@ -890,6 +917,7 @@ interface ActiveTurn {
   codexErrorCount?: number;
   generatedImagePaths: string[];
   finalAgentMessageText?: string;
+  processMessages: string[];
   sawAgentMessagePhase?: boolean;
   goal?: ActiveGoalState;
   card?: ActiveTurnCardState;
@@ -1017,6 +1045,27 @@ interface ParsedStatusCardActionCommand {
 
 type ParsedCardActionCommand = ParsedActiveCardActionCommand | ParsedStatusCardActionCommand;
 
+interface ThreadWaitSnapshot {
+  threadId: string;
+  turnId?: string;
+  outcome: "completed" | "interrupted";
+  status: "idle";
+  finalMessage?: string;
+  processTail: string;
+  omittedProcessLines: number;
+  interruptedReason?: "interrupted" | "failed";
+  updatedAt: number;
+}
+
+interface ThreadIdleWatcher {
+  callerThreadId: string;
+  targetThreadId: string;
+  startedAt: number;
+  resolve(snapshot: ThreadWaitSnapshot): void;
+  reject(error: Error): void;
+  timeout?: NodeJS.Timeout;
+}
+
 export class ConversationManager {
   private static readonly recoveryPrompt = "Twinny daemon has beed reloaded, continue with the unfinished work.";
 
@@ -1024,6 +1073,9 @@ export class ConversationManager {
   private readonly nameLookupFailureCache = new Map<string, number>();
   private readonly pendingThreadNames = new Map<string, string>();
   private readonly workspaceSelectionsByThread = new Map<string, string[]>();
+  private readonly threadIdleWatchers = new Map<string, Set<ThreadIdleWatcher>>();
+  private readonly threadWaitEdges = new Map<string, Set<string>>();
+  private readonly lastTurnSnapshots = new Map<string, ThreadWaitSnapshot>();
   private readonly log: Logger;
   private shuttingDown = false;
 
@@ -1644,6 +1696,7 @@ export class ConversationManager {
             profile,
             workspace,
             name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
+            category: isMainSessionContext(context) ? "main" : "thread",
             larkThreadId: context.larkThreadId
           });
           await this.setThreadModeBestEffort(context.conversationKey, recoveredThread.codexThreadId, "default");
@@ -1675,6 +1728,7 @@ export class ConversationManager {
       profile,
       workspace: activeThread.workspace,
       name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
+      category: isMainSessionContext(context) ? "main" : "thread",
       larkThreadId: context.larkThreadId
     });
     const usageTarget = activeThread.replacedMissingThread
@@ -1759,6 +1813,7 @@ export class ConversationManager {
       profile,
       workspace,
       name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
+      category: isMainSessionContext(context) ? "main" : "thread",
       codexThreadHasRollout: recoveredThreadId !== undefined
     });
     if (recoveredThreadId === undefined && isMainSessionContext(context)) {
@@ -2662,6 +2717,7 @@ export class ConversationManager {
         profile,
         workspace,
         name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
+        category: isMainSessionContext(context) ? "main" : "thread",
         codexThreadHasRollout: false
       });
       if (isMainSessionContext(context)) {
@@ -2747,6 +2803,7 @@ export class ConversationManager {
       profile: parsed.profile,
       workspace,
       name: MAIN_THREAD_NAME,
+      category: "main",
       codexThreadHasRollout: false
     });
     this.syncMainConversationThreadNameToCodexBestEffort(parsed.profile, thread.threadId, parsed.guestOpenId);
@@ -3287,6 +3344,7 @@ export class ConversationManager {
       profile,
       model: modelSettings.model,
       effort: modelSettings.effort,
+      category: "thread",
       ...(threadName ? { name: threadName } : {}),
       codexThreadHasRollout: request.codexThread?.codexThreadHasRollout ?? false,
       forkedFromCodexThreadId: request.codexThread?.forkedFromCodexThreadId,
@@ -3618,7 +3676,8 @@ export class ConversationManager {
       profile: params.profile,
       workspace: params.workspace,
       model: modelSettings.model,
-      effort: modelSettings.effort
+      effort: modelSettings.effort,
+      category: "side"
     });
     await this.markPendingMessagesProcessingBestEffort([message], {
       conversationKey: context.conversationKey,
@@ -3648,6 +3707,7 @@ export class ConversationManager {
       usageCarryover: emptyLarkMessageTokenUsageSnapshot(),
       messageTokenUsage: emptyLarkMessageTokenUsageSnapshot(),
       generatedImagePaths: [],
+      processMessages: [],
       reaction: await this.addReactionBestEffort(message.messageId),
       card: {
         anchorMessageId: message.messageId,
@@ -3681,7 +3741,8 @@ export class ConversationManager {
           onCodexError: (codexError) => this.recordCodexErrorForActiveBestEffort(state, active, codexError),
           onTokenUsage: (usage) => this.recordSideTokenUsageBestEffort(state, active, usage),
           onGoalUpdated: (goal, turnId) => this.recordGoalUpdateForActiveBestEffort(state, active, goal, turnId),
-          onGoalCleared: () => this.recordGoalClearedForActiveBestEffort(state, active)
+          onGoalCleared: () => this.recordGoalClearedForActiveBestEffort(state, active),
+          onDynamicToolCall: (request) => this.handleTwinnyDynamicToolCall(state, active, request)
         });
         active.completedStatus = result.status;
         active.resultText = result.text;
@@ -3985,6 +4046,7 @@ export class ConversationManager {
         profile: target.profile,
         workspace: target.workspace,
         name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
+        category: isMainSessionContext(context) ? "main" : "thread",
         larkThreadId: context.larkThreadId
       });
     }
@@ -4832,6 +4894,7 @@ export class ConversationManager {
         profile,
         workspace,
         name: MAIN_THREAD_NAME,
+        category: "main",
         codexThreadHasRollout: false
       });
       this.syncMainConversationThreadNameToCodexBestEffort(
@@ -5191,6 +5254,7 @@ export class ConversationManager {
       usageCarryover: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       messageTokenUsage: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       generatedImagePaths: [],
+      processMessages: [],
       reaction: await this.addReactionBestEffort(message.messageId),
       card: params.card ?? {
         anchorMessageId: message.messageId,
@@ -5493,6 +5557,7 @@ export class ConversationManager {
       usageCarryover: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       messageTokenUsage: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       generatedImagePaths: [],
+      processMessages: [],
       reaction: await this.addReactionBestEffort(anchor.messageId),
       goal: {
         objective: content,
@@ -5529,7 +5594,8 @@ export class ConversationManager {
             request: CodexRequestUserInputRequest,
             responder: CodexRequestUserInputResponder
           ) => this.handleRequestUserInput(state, active, request, responder),
-          onSetThreadName: (request: CodexSetThreadNameToolRequest) => this.handleSetThreadNameToolCall(state, active, request)
+          onSetThreadName: (request: CodexSetThreadNameToolRequest) => this.handleSetThreadNameToolCall(state, active, request),
+          onDynamicToolCall: (request: CodexTwinnyDynamicToolRequest) => this.handleTwinnyDynamicToolCall(state, active, request)
         };
         const result = params.recovering
           ? await this.options.codex.resumeGoal!({
@@ -5639,6 +5705,7 @@ export class ConversationManager {
       profile,
       workspace: activeThread.workspace,
       name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
+      category: isMainSessionContext(context) ? "main" : "thread",
       larkThreadId: context.larkThreadId
     });
     await this.backfillThreadSummaryCardForLarkThread(context, message, {
@@ -5784,6 +5851,7 @@ export class ConversationManager {
       usageCarryover: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       messageTokenUsage: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       generatedImagePaths: [],
+      processMessages: [],
       reaction: anchor.docComment ? undefined : await this.addReactionBestEffort(anchor.messageId),
       card: params.card ?? {
         anchorMessageId: cardDelivery?.kind === "reply"
@@ -5826,7 +5894,8 @@ export class ConversationManager {
           onGoalCleared: () => this.recordGoalClearedForActiveBestEffort(state, active),
           onPlanUpdated: (plan) => this.handlePlanUpdated(state, active, plan),
           onRequestUserInput: (request, responder) => this.handleRequestUserInput(state, active, request, responder),
-          onSetThreadName: (request) => this.handleSetThreadNameToolCall(state, active, request)
+          onSetThreadName: (request) => this.handleSetThreadNameToolCall(state, active, request),
+          onDynamicToolCall: (request) => this.handleTwinnyDynamicToolCall(state, active, request)
         });
         active.completedStatus = result.status;
         active.resultText = result.text;
@@ -6119,6 +6188,419 @@ export class ConversationManager {
     });
   }
 
+  private async handleTwinnyDynamicToolCall(
+    state: ConversationState,
+    active: ActiveTurn,
+    request: CodexTwinnyDynamicToolRequest
+  ): Promise<CodexDynamicToolCallResponse> {
+    if (!this.isDynamicToolCallerCurrent(state, active, request)) {
+      return dynamicToolErrorResponse("STALE_TURN", "Dynamic tool call was ignored because this turn is no longer active.");
+    }
+    try {
+      switch (request.tool) {
+        case "list_threads":
+          return await this.handleListThreadsToolCall(active, request);
+        case "wait_for_thread":
+          return await this.handleWaitForThreadToolCall(active, request);
+        case "send_thread_ref":
+          return await this.handleSendThreadRefToolCall(active, request);
+        case "create_conversation":
+          return await this.handleCreateConversationToolCall(active, request);
+      }
+    } catch (error) {
+      return dynamicToolErrorResponse(errorCodeForDynamicTool(error), toErrorMessage(error));
+    }
+  }
+
+  private isDynamicToolCallerCurrent(
+    state: ConversationState,
+    active: ActiveTurn,
+    request: { threadId: string; turnId: string }
+  ): boolean {
+    const current = active.kind === "side" ? isSideTurnCurrent(state, active) : isActiveTurnCurrent(state, active);
+    return current &&
+      !active.cancelRequested &&
+      active.threadId === request.threadId &&
+      (active.turnId === undefined || active.turnId === request.turnId);
+  }
+
+  private async handleListThreadsToolCall(
+    active: ActiveTurn,
+    request: Extract<CodexTwinnyDynamicToolRequest, { tool: "list_threads" }>
+  ): Promise<CodexDynamicToolCallResponse> {
+    const conversation = await this.options.repository.findByConversationKey(active.conversationKey);
+    if (!conversation) {
+      return dynamicToolErrorResponse("CONVERSATION_NOT_FOUND", `Conversation ${active.conversationKey} was not found.`);
+    }
+    const records = await this.options.repository.listCodexThreadsByConversation(active.conversationKey);
+    const main = records.find((thread) => thread.codexThreadId === conversation.codexThreadId);
+    const ordered = [
+      ...(main ? [main] : []),
+      ...records.filter((thread) => thread.codexThreadId !== conversation.codexThreadId)
+    ];
+    const start = (request.page - 1) * request.pageSize;
+    const pageItems = ordered.slice(start, start + request.pageSize);
+    const threads = await Promise.all(pageItems.map(async (thread) => {
+      const metadata = await this.readThreadMetadataBestEffort(thread);
+      return {
+        thread_id: thread.codexThreadId,
+        title: thread.name,
+        category: threadCategoryForList(thread, conversation),
+        status: this.threadStatusForTool(thread),
+        workspace: thread.workspace,
+        rollout_path: metadata.path ?? null,
+        model: thread.model ?? null,
+        effort: thread.effort ?? null,
+        mode: thread.mode,
+        lark_thread_id: thread.larkThreadId ?? null,
+        created_at: new Date(thread.createdAt).toISOString(),
+        updated_at: new Date(thread.updatedAt).toISOString()
+      };
+    }));
+    return dynamicToolJsonResponse(true, {
+      ok: true,
+      conversation_key: active.conversationKey,
+      page: request.page,
+      page_size: request.pageSize,
+      has_more: start + request.pageSize < ordered.length,
+      threads
+    });
+  }
+
+  private async readThreadMetadataBestEffort(thread: CodexThreadRecord): Promise<{ path?: string | null }> {
+    if (!this.options.codex.readThreadMetadata) {
+      return { path: null };
+    }
+    try {
+      return await this.options.codex.readThreadMetadata({ profile: thread.profile, threadId: thread.codexThreadId });
+    } catch (error) {
+      this.log.warn({ error, threadId: thread.codexThreadId }, "failed to read codex thread metadata");
+      return { path: null };
+    }
+  }
+
+  private threadStatusForTool(thread: CodexThreadRecord): "working" | "waiting_for_interaction" | "idle" {
+    const active = this.findActiveTurn(thread.codexThreadId);
+    if (active && !active.cancelRequested && active.completedStatus === undefined) {
+      return active.waiting ? "waiting_for_interaction" : "working";
+    }
+    if (thread.status === "waiting") {
+      return "waiting_for_interaction";
+    }
+    return thread.status === "working" ? "working" : "idle";
+  }
+
+  private async handleWaitForThreadToolCall(
+    active: ActiveTurn,
+    request: Extract<CodexTwinnyDynamicToolRequest, { tool: "wait_for_thread" }>
+  ): Promise<CodexDynamicToolCallResponse> {
+    const target = await this.options.repository.getCodexThreadById(request.targetThreadId);
+    if (!target) {
+      return dynamicToolErrorResponse("THREAD_NOT_MANAGED", `Thread ${request.targetThreadId} is not managed by Twinny.`);
+    }
+    if (request.targetThreadId === active.threadId || this.wouldCreateWaitCycle(active.threadId, request.targetThreadId)) {
+      return dynamicToolErrorResponse("WAIT_CYCLE_DETECTED", "wait_for_thread would create a circular wait chain.");
+    }
+
+    const ready = await this.threadWaitSnapshotIfReady(request.targetThreadId);
+    if (ready) {
+      return dynamicToolJsonResponse(true, waitSnapshotResponse(ready, 0));
+    }
+    if (await this.threadIsIdleWithoutWaitSnapshot(request.targetThreadId)) {
+      return dynamicToolErrorResponse(
+        "THREAD_LAST_TURN_UNAVAILABLE",
+        `Thread ${request.targetThreadId} is idle, but its last turn result is not available in memory.`
+      );
+    }
+
+    const startedAt = Date.now();
+    let watcher: ThreadIdleWatcher | undefined;
+    try {
+      this.addWaitEdge(active.threadId, request.targetThreadId);
+      const snapshot = await new Promise<ThreadWaitSnapshot>((resolve, reject) => {
+        watcher = {
+          callerThreadId: active.threadId,
+          targetThreadId: request.targetThreadId,
+          startedAt,
+          resolve,
+          reject
+        };
+        watcher.timeout = setTimeout(() => {
+          this.removeThreadIdleWatcher(watcher!);
+          reject(new TwinnyError(`Timed out waiting for thread ${request.targetThreadId} to become idle`, "THREAD_WAIT_TIMEOUT"));
+        }, request.timeoutMs);
+        watcher.timeout.unref?.();
+        this.addThreadIdleWatcher(watcher);
+        void this.resolveThreadIdleWatchersIfReady(request.targetThreadId);
+      });
+      return dynamicToolJsonResponse(true, waitSnapshotResponse(snapshot, Date.now() - startedAt));
+    } catch (error) {
+      return dynamicToolErrorResponse(errorCodeForDynamicTool(error), toErrorMessage(error));
+    } finally {
+      if (watcher) {
+        this.removeThreadIdleWatcher(watcher);
+      }
+      this.removeWaitEdge(active.threadId, request.targetThreadId);
+    }
+  }
+
+  private async handleSendThreadRefToolCall(
+    active: ActiveTurn,
+    request: Extract<CodexTwinnyDynamicToolRequest, { tool: "send_thread_ref" }>
+  ): Promise<CodexDynamicToolCallResponse> {
+    const conversation = await this.options.repository.findByConversationKey(active.conversationKey);
+    const target = await this.options.repository.getCodexThreadById(request.targetThreadId);
+    if (!conversation || !target || target.conversationKey !== active.conversationKey) {
+      return dynamicToolErrorResponse("THREAD_NOT_MANAGED", `Thread ${request.targetThreadId} is not in the current conversation.`);
+    }
+    if (threadCategoryForList(target, conversation) !== "thread" || !target.larkThreadId) {
+      return dynamicToolErrorResponse("THREAD_NOT_FORWARDABLE", "Target thread must be a normal thread with a lark_thread_id.");
+    }
+    const destination = active.context.larkThreadId
+      ? { type: "thread" as const, id: active.context.larkThreadId, receiveIdType: "thread_id" as const }
+      : { type: "chat" as const, id: conversation.chatId, receiveIdType: "chat_id" as const };
+    await this.options.lark.forwardThread(target.larkThreadId, destination.id, destination.receiveIdType, {
+      uuid: createLarkUuid("twinny-thread-ref", request.callId, target.larkThreadId, destination.id)
+    });
+    return dynamicToolJsonResponse(true, {
+      ok: true,
+      thread_id: target.codexThreadId,
+      lark_thread_id: target.larkThreadId,
+      destination: { type: destination.type, id: destination.id }
+    });
+  }
+
+  private async handleCreateConversationToolCall(
+    active: ActiveTurn,
+    request: Extract<CodexTwinnyDynamicToolRequest, { tool: "create_conversation" }>
+  ): Promise<CodexDynamicToolCallResponse> {
+    if (!this.options.larkChats?.createChat || !this.options.larkChats.getChatLink) {
+      return dynamicToolErrorResponse("LARK_CHAT_DIRECTORY_MISSING", "Twinny is not configured to create Lark chats.");
+    }
+    if (active.profile !== "host" && (request.profile || request.responseMode)) {
+      return dynamicToolErrorResponse("CREATE_CONVERSATION_FORBIDDEN", "Only owner profile threads may override response_mode or profile.");
+    }
+    const profile = request.profile ?? active.profile;
+    if (!this.options.config.profiles[profile]) {
+      return dynamicToolErrorResponse("PROFILE_NOT_FOUND", `Profile ${profile} is not configured.`);
+    }
+    const responseMode = request.responseMode ?? "all_at";
+    const memberOpenIds = [...new Set([this.options.config.owner.openId, ...request.memberOpenIds])];
+    const chat = await this.options.larkChats.createChat({
+      name: request.name,
+      ownerOpenId: this.options.config.owner.openId,
+      userOpenIds: memberOpenIds,
+      groupMessageType: "chat",
+      uuid: createLarkUuid("twinny-create-conversation", request.callId, request.name),
+      setBotManager: true
+    });
+    if (!chat.chatId) {
+      return dynamicToolErrorResponse("LARK_CHAT_CREATE_FAILED", "Lark create chat response did not include chat_id.");
+    }
+    const conversationKey = conversationKeyForGroup(chat.chatId);
+    const existing = await this.options.repository.findByConversationKey(conversationKey);
+    if (existing) {
+      return dynamicToolErrorResponse("CONVERSATION_ALREADY_EXISTS", `Conversation ${conversationKey} already exists.`);
+    }
+    const workspace = await this.options.workspaces.ensureWorkspace(conversationKey);
+    const context: MessageContext = { type: "group", conversationKey, stateKey: conversationKey };
+    const thread = await this.options.codex.startThread({
+      profile,
+      cwd: workspace,
+      approvalPolicy: "never",
+      developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context, { mainThread: true })
+    });
+    await this.options.repository.create({
+      conversationKey,
+      type: "group",
+      chatId: chat.chatId,
+      name: request.name,
+      responseMode,
+      profile,
+      codexThreadId: thread.threadId,
+      workspace,
+      profileCodexHome: this.options.profiles.codexHomeFor(profile)
+    });
+    await this.recordCodexThreadBestEffort({
+      conversationKey,
+      codexThreadId: thread.threadId,
+      profile,
+      workspace,
+      name: MAIN_THREAD_NAME,
+      category: "main",
+      codexThreadHasRollout: false
+    });
+    this.syncMainConversationThreadNameToCodexBestEffort(profile, thread.threadId, request.name);
+    const shareLink = await this.options.larkChats.getChatLink(chat.chatId);
+    if (!shareLink) {
+      return dynamicToolErrorResponse("LARK_CHAT_LINK_FAILED", "Lark chat link response did not include a share link.", {
+        conversation_key: conversationKey,
+        chat_id: chat.chatId
+      });
+    }
+    return dynamicToolJsonResponse(true, {
+      ok: true,
+      conversation: {
+        conversation_key: conversationKey,
+        chat_id: chat.chatId,
+        workspace,
+        response_mode: responseMode,
+        profile,
+        codex_thread_id: thread.threadId,
+        share_link: shareLink
+      }
+    });
+  }
+
+  private wouldCreateWaitCycle(callerThreadId: string, targetThreadId: string): boolean {
+    if (callerThreadId === targetThreadId) {
+      return true;
+    }
+    const visited = new Set<string>();
+    const stack = [targetThreadId];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (current === callerThreadId) {
+        return true;
+      }
+      if (visited.has(current)) {
+        continue;
+      }
+      visited.add(current);
+      for (const next of this.threadWaitEdges.get(current) ?? []) {
+        stack.push(next);
+      }
+    }
+    return false;
+  }
+
+  private addWaitEdge(callerThreadId: string, targetThreadId: string): void {
+    const targets = this.threadWaitEdges.get(callerThreadId) ?? new Set<string>();
+    targets.add(targetThreadId);
+    this.threadWaitEdges.set(callerThreadId, targets);
+  }
+
+  private removeWaitEdge(callerThreadId: string, targetThreadId: string): void {
+    const targets = this.threadWaitEdges.get(callerThreadId);
+    if (!targets) {
+      return;
+    }
+    targets.delete(targetThreadId);
+    if (targets.size === 0) {
+      this.threadWaitEdges.delete(callerThreadId);
+    }
+  }
+
+  private addThreadIdleWatcher(watcher: ThreadIdleWatcher | undefined): void {
+    if (!watcher) {
+      return;
+    }
+    const watchers = this.threadIdleWatchers.get(watcher.targetThreadId) ?? new Set<ThreadIdleWatcher>();
+    watchers.add(watcher);
+    this.threadIdleWatchers.set(watcher.targetThreadId, watchers);
+  }
+
+  private removeThreadIdleWatcher(watcher: ThreadIdleWatcher): void {
+    if (watcher.timeout) {
+      clearTimeout(watcher.timeout);
+      watcher.timeout = undefined;
+    }
+    const watchers = this.threadIdleWatchers.get(watcher.targetThreadId);
+    if (!watchers) {
+      return;
+    }
+    watchers.delete(watcher);
+    if (watchers.size === 0) {
+      this.threadIdleWatchers.delete(watcher.targetThreadId);
+    }
+  }
+
+  private async resolveThreadIdleWatchersIfReady(threadId: string): Promise<void> {
+    const watchers = this.threadIdleWatchers.get(threadId);
+    if (!watchers || watchers.size === 0) {
+      return;
+    }
+    const snapshot = await this.threadWaitSnapshotIfReady(threadId);
+    if (!snapshot) {
+      return;
+    }
+    for (const watcher of [...watchers]) {
+      this.removeThreadIdleWatcher(watcher);
+      watcher.resolve(snapshot);
+    }
+  }
+
+  private async threadWaitSnapshotIfReady(threadId: string): Promise<ThreadWaitSnapshot | undefined> {
+    const active = this.findActiveTurn(threadId);
+    if (active && !active.cancelRequested && active.completedStatus === undefined) {
+      return undefined;
+    }
+    const thread = await this.options.repository.getCodexThreadById(threadId);
+    if (!thread || thread.status !== "idle") {
+      return undefined;
+    }
+    if (await this.options.repository.countUnfinishedLarkMessagesByThread(threadId) > 0) {
+      return undefined;
+    }
+    const conversation = await this.options.repository.findByConversationKey(thread.conversationKey);
+    if (conversation) {
+      const context = createMessageContextForThread(conversation, thread);
+      const state = this.states.get(context.stateKey);
+      if (state && (state.pendingBatch.length > 0 || (state.waitingInterruptBatch?.messages.length ?? 0) > 0 || state.processingMessage)) {
+        return undefined;
+      }
+    }
+    return this.lastTurnSnapshots.get(threadId);
+  }
+
+  private async threadIsIdleWithoutWaitSnapshot(threadId: string): Promise<boolean> {
+    if (this.lastTurnSnapshots.has(threadId)) {
+      return false;
+    }
+    const active = this.findActiveTurn(threadId);
+    if (active && !active.cancelRequested && active.completedStatus === undefined) {
+      return false;
+    }
+    const thread = await this.options.repository.getCodexThreadById(threadId);
+    if (!thread || thread.status !== "idle") {
+      return false;
+    }
+    if (await this.options.repository.countUnfinishedLarkMessagesByThread(threadId) > 0) {
+      return false;
+    }
+    const conversation = await this.options.repository.findByConversationKey(thread.conversationKey);
+    if (conversation) {
+      const context = createMessageContextForThread(conversation, thread);
+      const state = this.states.get(context.stateKey);
+      if (state && (state.pendingBatch.length > 0 || (state.waitingInterruptBatch?.messages.length ?? 0) > 0 || state.processingMessage)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private rememberThreadWaitSnapshot(active: ActiveTurn): void {
+    const interrupted = active.cancelRequested || active.completedStatus !== "completed";
+    const process = processTail(active.processMessages);
+    this.lastTurnSnapshots.set(active.threadId, {
+      threadId: active.threadId,
+      turnId: active.turnId,
+      outcome: interrupted ? "interrupted" : "completed",
+      status: "idle",
+      finalMessage: interrupted ? undefined : active.finalAgentMessageText ?? active.resultText,
+      processTail: process.text,
+      omittedProcessLines: process.omitted,
+      interruptedReason: interrupted ? active.completedStatus === "failed" || active.resultError ? "failed" : "interrupted" : undefined,
+      updatedAt: Date.now()
+    });
+  }
+
+  private notifyThreadIdleWatchersBestEffort(threadId: string): void {
+    void this.resolveThreadIdleWatchersIfReady(threadId).catch((error) => {
+      this.log.warn({ error, threadId }, "failed to notify thread idle watchers");
+    });
+  }
+
   private async handlePlanUpdated(
     state: ConversationState,
     active: ActiveTurn,
@@ -6168,6 +6650,7 @@ export class ConversationManager {
       this.stopAgentCardTimer(active);
       return;
     }
+    this.rememberThreadWaitSnapshot(active);
     this.captureTurnEnd(state, active);
     state.active = undefined;
     await this.clearReactionBestEffort(active);
@@ -6179,6 +6662,7 @@ export class ConversationManager {
         return;
       }
       await this.startPendingBatch(state, active.context);
+      this.notifyThreadIdleWatchersBestEffort(active.threadId);
       return;
     }
     if (active.completedStatus === "completed") {
@@ -6197,6 +6681,7 @@ export class ConversationManager {
     await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
     this.stopAgentCardTimer(active);
     await this.startPendingBatch(state, active.context);
+    this.notifyThreadIdleWatchersBestEffort(active.threadId);
   }
 
   private async finishSideTurn(state: ConversationState, active: ActiveTurn): Promise<void> {
@@ -6213,6 +6698,7 @@ export class ConversationManager {
     if (active.sideId !== undefined) {
       state.sideTurns.delete(active.sideId);
     }
+    this.rememberThreadWaitSnapshot(active);
     this.captureTurnEnd(state, active);
     await this.clearReactionBestEffort(active);
     if (!active.cancelRequested && active.completedStatus === "completed") {
@@ -6227,6 +6713,8 @@ export class ConversationManager {
     }
     this.stopAgentCardTimer(active);
     await this.unsubscribeSideThreadBestEffort(active);
+    await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
+    this.notifyThreadIdleWatchersBestEffort(active.threadId);
   }
 
   private captureTurnEnd(state: ConversationState, active: ActiveTurn): void {
@@ -6306,7 +6794,9 @@ export class ConversationManager {
     await this.updateThreadSummaryCardBestEffort(active.threadId);
     await this.interruptAgentCardBestEffort(state, active);
     if (!options.waitForCompletion || noCompletionExpected) {
+      this.rememberThreadWaitSnapshot(active);
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
+      this.notifyThreadIdleWatchersBestEffort(active.threadId);
     }
     if (activeHasGoal(active)) {
       await this.clearActiveGoalBestEffort(active);
@@ -6317,7 +6807,9 @@ export class ConversationManager {
     }
     if (options.waitForCompletion && !noCompletionExpected && interruptResult === "missing") {
       state.active = undefined;
+      this.rememberThreadWaitSnapshot(active);
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
+      this.notifyThreadIdleWatchersBestEffort(active.threadId);
     }
     return true;
   }
@@ -6337,6 +6829,8 @@ export class ConversationManager {
     if (active.turnId) {
       await this.interruptActiveTurnBestEffort(active);
     }
+    this.rememberThreadWaitSnapshot(active);
+    this.notifyThreadIdleWatchersBestEffort(active.threadId);
     return true;
   }
 
@@ -6544,6 +7038,7 @@ export class ConversationManager {
     workspace?: string;
     model?: string;
     effort?: string;
+    category?: CodexThreadRecord["category"];
     name?: string;
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
@@ -6610,6 +7105,7 @@ export class ConversationManager {
     workspace?: string;
     model?: string;
     effort?: string;
+    category?: CodexThreadRecord["category"];
     larkThreadId: string;
     codexThreadHasRollout?: boolean;
     replaceExistingLarkThread?: boolean;
@@ -7198,6 +7694,7 @@ export class ConversationManager {
           profile: params.profile,
           workspace: binding.conversation.workspace,
           name: MAIN_THREAD_NAME,
+          category: "main",
           codexThreadHasRollout: false
         });
         this.syncMainConversationThreadNameToCodexBestEffort(
@@ -7369,6 +7866,7 @@ export class ConversationManager {
       effort: params.effort,
       workspace: params.workspace,
       name: MAIN_THREAD_NAME,
+      category: "main",
       codexThreadHasRollout: params.codexThreadHasRollout
     });
     this.syncMainConversationThreadNameToCodexBestEffort(
@@ -7961,7 +8459,9 @@ export class ConversationManager {
           onGoalCleared: () => this.recordGoalClearedForActiveBestEffort(state, active),
           onRequestUserInput: active.kind === "side"
             ? undefined
-            : (request, responder) => this.handleRequestUserInput(state, active, request, responder)
+            : (request, responder) => this.handleRequestUserInput(state, active, request, responder),
+          onSetThreadName: (request) => this.handleSetThreadNameToolCall(state, active, request),
+          onDynamicToolCall: (request) => this.handleTwinnyDynamicToolCall(state, active, request)
         });
         active.completedStatus = result.status;
         active.resultText = result.text;
@@ -7994,16 +8494,21 @@ export class ConversationManager {
     if (agentMessage.phase === "commentary" || agentMessage.phase === "final_answer") {
       active.sawAgentMessagePhase = true;
     }
-    const card = active.card;
-    if (!card || card.fallbackPlain) {
-      await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
-      return;
-    }
     if (
       agentMessage.phase === "final_answer" &&
       !(activeHasGoal(active) && active.goal?.completed !== true)
     ) {
       active.finalAgentMessageText = text;
+      const card = active.card;
+      if (!card || card.fallbackPlain) {
+        await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
+      }
+      return;
+    }
+    active.processMessages.push(text);
+    const card = active.card;
+    if (!card || card.fallbackPlain) {
+      await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
       return;
     }
     card.messages.push({ id: agentMessage.id, text });
@@ -9695,6 +10200,61 @@ function createMessageContextForThread(conversation: ConversationRecord, thread:
 
 function isMainSessionContext(context: MessageContext): boolean {
   return context.larkThreadId === undefined;
+}
+
+function threadCategoryForList(thread: CodexThreadRecord, conversation: ConversationRecord): CodexThreadRecord["category"] {
+  if (thread.codexThreadId === conversation.codexThreadId) {
+    return "main";
+  }
+  if (thread.category === "side") {
+    return "side";
+  }
+  if (thread.larkThreadId) {
+    return "thread";
+  }
+  return "previous_main";
+}
+
+function dynamicToolErrorResponse(
+  code: string,
+  message: string,
+  extra: Record<string, unknown> = {}
+): CodexDynamicToolCallResponse {
+  return dynamicToolJsonResponse(false, {
+    ok: false,
+    ...extra,
+    error: { code, message }
+  });
+}
+
+function errorCodeForDynamicTool(error: unknown): string {
+  return error instanceof TwinnyError ? error.code : "TWINNY_DYNAMIC_TOOL_FAILED";
+}
+
+function waitSnapshotResponse(snapshot: ThreadWaitSnapshot, waitedMs: number): Record<string, unknown> {
+  return {
+    ok: true,
+    thread_id: snapshot.threadId,
+    outcome: snapshot.outcome,
+    status: snapshot.status,
+    waited_ms: waitedMs,
+    turn_id: snapshot.turnId ?? null,
+    ...(snapshot.outcome === "completed" ? { final_message: snapshot.finalMessage ?? "" } : {}),
+    process_tail: snapshot.processTail,
+    omitted_process_lines: snapshot.omittedProcessLines,
+    ...(snapshot.interruptedReason ? { interrupted_reason: snapshot.interruptedReason } : {}),
+    updated_at: new Date(snapshot.updatedAt).toISOString()
+  };
+}
+
+function processTail(messages: string[], maxLines = 100): { text: string; omitted: number } {
+  const lines = messages.flatMap((message) => message.split(/\r?\n/));
+  const omitted = Math.max(0, lines.length - maxLines);
+  const tail = lines.slice(-maxLines);
+  return {
+    text: omitted > 0 ? [`前面省略 ${omitted} 行工作过程。`, ...tail].join("\n") : tail.join("\n"),
+    omitted
+  };
 }
 
 function joinDeveloperInstructions(...sections: string[]): string {

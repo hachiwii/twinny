@@ -23,6 +23,8 @@ export type CodexThreadMode = "default" | "plan";
 
 export type CodexThreadStatus = "idle" | "working" | "waiting";
 
+export type CodexThreadCategory = "main" | "thread" | "side" | "previous_main";
+
 export type CodexThreadGoalStatus =
   | "none"
   | "active"
@@ -226,6 +228,7 @@ export interface CodexThreadRecord {
   profile: ProfileName;
   model?: string;
   effort?: string;
+  category: CodexThreadCategory;
   mode: CodexThreadMode;
   status: CodexThreadStatus;
   goalStatus: CodexThreadGoalStatus;

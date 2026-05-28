@@ -112,6 +112,29 @@ describe("LarkChatDirectory", () => {
       }
     );
   });
+
+  it("fetches a chat share link", async () => {
+    const fetch = sequenceFetch([
+      { code: 0, tenant_access_token: "tenant-token", expire: 7200 },
+      { code: 0, data: { share_link: "https://fsopen.bytedance.net/share/oc_project" } }
+    ]);
+    const directory = new LarkChatDirectory({ openApiClient: createOpenApiClient(fetch) });
+
+    await expect(directory.getChatLink("oc_project")).resolves.toBe("https://fsopen.bytedance.net/share/oc_project");
+
+    expect(fetch).toHaveBeenLastCalledWith(
+      "https://open.feishu.cn/open-apis/im/v1/chats/oc_project/link",
+      {
+        method: "GET",
+        headers: {
+          authorization: "Bearer tenant-token",
+          "content-type": "application/json"
+        },
+        body: undefined,
+        signal: undefined
+      }
+    );
+  });
 });
 
 describe("LarkBotDirectory", () => {

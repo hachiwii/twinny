@@ -7,30 +7,35 @@ describe("codex thread payloads", () => {
       cwd: "/tmp/twinny/workspaces/p2p_ou_1",
       approvalPolicy: "never",
       persistExtendedHistory: true,
-      dynamicTools: [
-        {
+      dynamicTools: expect.arrayContaining([
+        expect.objectContaining({
           namespace: "twinny",
           name: "set_thread_name",
           description: expect.stringContaining("15 Chinese characters or 10 words"),
-          inputSchema: {
+          inputSchema: expect.objectContaining({
             type: "object",
             additionalProperties: false,
             required: ["name"],
-            properties: {
+            properties: expect.objectContaining({
               name: {
                 type: "string",
                 minLength: 1,
                 description: expect.stringContaining("15 Chinese characters or 10 words")
               }
-            }
-          },
+            })
+          }),
           deferLoading: false
-        }
-      ]
+        }),
+        expect.objectContaining({ namespace: "twinny", name: "list_threads", deferLoading: false }),
+        expect.objectContaining({ namespace: "twinny", name: "wait_for_thread", deferLoading: false }),
+        expect.objectContaining({ namespace: "twinny", name: "send_thread_ref", deferLoading: false }),
+        expect.objectContaining({ namespace: "twinny", name: "create_conversation", deferLoading: false })
+      ])
     });
     const tool = buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools[0]!;
     expect(JSON.stringify(tool.inputSchema)).not.toContain("maxLength");
     expect(tool.description).not.toContain("Twinny");
+    expect(buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools).toHaveLength(5);
   });
 
   it("builds thread/resume with the persisted thread id and the same thread overrides", () => {

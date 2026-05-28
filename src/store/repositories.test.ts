@@ -181,6 +181,7 @@ describe("ConversationRepository", () => {
       profile: "owner"
     });
     expect(mainThread.workspace).toBe(workspace);
+    expect(mainThread.category).toBe("previous_main");
 
     now = 1200;
     const topicThread = repo.upsertCodexThread({
@@ -191,6 +192,7 @@ describe("ConversationRepository", () => {
       larkThreadId: "topic-1"
     });
     expect(topicThread.workspace).toBe(topicWorkspace);
+    expect(topicThread.category).toBe("thread");
 
     now = 1300;
     expect(repo.updateConversationWorkspace("p2p_ou_456", conversationWorkspace)).toMatchObject({
@@ -214,6 +216,10 @@ describe("ConversationRepository", () => {
     expect(repo.getByConversationKey("p2p_ou_456")).toMatchObject({
       workspace: conversationWorkspace
     });
+    expect(repo.listCodexThreadsByConversation("p2p_ou_456").map((thread) => thread.codexThreadId)).toEqual([
+      "thread-topic",
+      "thread-main"
+    ]);
     expect(repo.listRecentThreadWorkspaces(0, 10)).toEqual([topicWorkspaceNew, conversationWorkspace]);
     expect(repo.listRecentThreadWorkspaces(1350, 10)).toEqual([topicWorkspaceNew]);
   });
@@ -548,6 +554,7 @@ describe("ConversationRepository", () => {
       processingStartedAt: 1400,
       updatedAt: 1400
     });
+    expect(repo.countUnfinishedLarkMessagesByThread("thread-1")).toBe(1);
 
     now = 1500;
     repo.markLarkMessagesSteered(["om_1"], {
@@ -561,6 +568,7 @@ describe("ConversationRepository", () => {
       codexTurnId: "turn-1",
       updatedAt: 1500
     });
+    expect(repo.countUnfinishedLarkMessagesByThread("thread-1")).toBe(0);
 
     now = 1550;
     repo.markLarkMessagesInterrupted(["om_1"]);
@@ -899,6 +907,7 @@ describe("ConversationRepository", () => {
       codexThreadId: "thread-topic-1",
       conversationKey: "group_oc_group",
       larkThreadId: "om_root",
+      category: "thread",
       profile: "guest"
     });
     expect(repo.getCodexThreadByConversationAndLarkThread("group_oc_group", "om_root")).toEqual(first);
@@ -933,6 +942,7 @@ describe("ConversationRepository", () => {
       codexThreadId: "thread-topic-2",
       conversationKey: "group_oc_group",
       larkThreadId: "om_root",
+      category: "thread",
       totalTokens: 0,
       codexThreadHasRollout: false,
       tokenUsageJson: "{}",

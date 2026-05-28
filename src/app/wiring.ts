@@ -53,6 +53,7 @@ import type {
   CodexDynamicToolCallResponse,
   CodexRequestUserInputResponder,
   CodexSetThreadNameToolRequest,
+  CodexTwinnyDynamicToolRequest,
   CodexTurnInput
 } from "../codex/turn.js";
 import { WorkspaceManager } from "../workspace/index.js";
@@ -670,6 +671,8 @@ export function adaptConversationRepository(repository: ConversationRepository) 
     markThreadHasRollout: repository.markThreadHasRollout.bind(repository),
     getCodexThreadById: repository.getCodexThreadById.bind(repository),
     getCodexThreadByConversationAndLarkThread: repository.getCodexThreadByConversationAndLarkThread.bind(repository),
+    listCodexThreadsByConversation: repository.listCodexThreadsByConversation.bind(repository),
+    countUnfinishedLarkMessagesByThread: repository.countUnfinishedLarkMessagesByThread.bind(repository),
     getLarkMessageById: repository.getLarkMessageById.bind(repository),
     getLarkMessageByEventId: repository.getLarkMessageByEventId.bind(repository),
     getLarkMessageUsageTargetForTurn: repository.getLarkMessageUsageTargetForTurn.bind(repository),
@@ -777,7 +780,8 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool) {
       onTokenUsage,
       onPlanUpdated,
       onRequestUserInput,
-      onSetThreadName
+      onSetThreadName,
+      onDynamicToolCall
     }: {
       profile: ProfileName;
       threadId: string;
@@ -798,6 +802,7 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool) {
         responder: CodexRequestUserInputResponder
       ) => Promise<void> | void;
       onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
+      onDynamicToolCall?: (request: CodexTwinnyDynamicToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
     }) =>
       pool.get(profile).startTurn({
         threadId,
@@ -814,7 +819,8 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool) {
         onTokenUsage,
         onPlanUpdated,
         onRequestUserInput,
-        onSetThreadName
+        onSetThreadName,
+        onDynamicToolCall
       }),
     compactThread: async ({
       profile,
@@ -871,6 +877,13 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool) {
     }): Promise<void> => {
       await pool.get(profile).setThreadName(threadId, name);
     },
+    readThreadMetadata: async ({
+      profile,
+      threadId
+    }: {
+      profile: ProfileName;
+      threadId: string;
+    }) => pool.get(profile).readThreadMetadata(threadId),
     runGoal: async ({
       profile,
       ...options
@@ -997,6 +1010,14 @@ function adaptLarkSender(
       options?: { uuid?: string }
     ) => {
       return sender.forwardThreadToThread(threadId, receiveThreadId, options);
+    },
+    forwardThread: async (
+      threadId: string,
+      receiveId: string,
+      receiveIdType: "thread_id" | "chat_id",
+      options?: { uuid?: string }
+    ) => {
+      return sender.forwardThread(threadId, receiveId, receiveIdType, options);
     },
     replyCard: async (
       messageId: string,

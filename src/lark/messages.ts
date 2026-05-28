@@ -405,15 +405,24 @@ export class LarkMessageSender {
     receiveThreadId: string,
     options: ForwardThreadOptions = {}
   ): Promise<LarkSendMessageResult> {
+    return this.forwardThread(threadId, receiveThreadId, "thread_id", options);
+  }
+
+  async forwardThread(
+    threadId: string,
+    receiveId: string,
+    receiveIdType: "thread_id" | "chat_id",
+    options: ForwardThreadOptions = {}
+  ): Promise<LarkSendMessageResult> {
     const raw = await this.openApiClient.request(`/im/v1/threads/${encodePathSegment(threadId)}/forward`, {
       method: "POST",
       query: {
-        receive_id_type: "thread_id",
+        receive_id_type: receiveIdType,
         ...(options.uuid ? { uuid: options.uuid } : {})
       },
       signal: options.signal,
       body: {
-        receive_id: receiveThreadId
+        receive_id: receiveId
       }
     });
     return {

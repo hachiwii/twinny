@@ -2089,6 +2089,8 @@ function adaptConversationRepository(repository: StoreConversationRepository): M
     markThreadHasRollout: repository.markThreadHasRollout.bind(repository),
     getCodexThreadById: repository.getCodexThreadById.bind(repository),
     getCodexThreadByConversationAndLarkThread: repository.getCodexThreadByConversationAndLarkThread.bind(repository),
+    listCodexThreadsByConversation: repository.listCodexThreadsByConversation.bind(repository),
+    countUnfinishedLarkMessagesByThread: repository.countUnfinishedLarkMessagesByThread.bind(repository),
     getLarkMessageById: repository.getLarkMessageById.bind(repository),
     getLarkMessageByEventId: repository.getLarkMessageByEventId.bind(repository),
     getLarkMessageUsageTargetForTurn: repository.getLarkMessageUsageTargetForTurn.bind(repository),
@@ -2167,7 +2169,9 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool): CodexBridge {
       onGoalUpdated,
       onGoalCleared,
       onPlanUpdated,
-      onRequestUserInput
+      onRequestUserInput,
+      onSetThreadName,
+      onDynamicToolCall
     }: {
       profile: ProfileName;
       threadId: string;
@@ -2187,6 +2191,8 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool): CodexBridge {
         request: CodexRequestUserInputRequest,
         responder: CodexRequestUserInputResponder
       ) => Promise<void> | void;
+      onSetThreadName?: Parameters<CodexBridge["startTurn"]>[0]["onSetThreadName"];
+      onDynamicToolCall?: Parameters<CodexBridge["startTurn"]>[0]["onDynamicToolCall"];
     }) =>
       pool.get(profile).startTurn({
         threadId,
@@ -2202,7 +2208,9 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool): CodexBridge {
         onGoalUpdated,
         onGoalCleared,
         onPlanUpdated,
-        onRequestUserInput
+        onRequestUserInput,
+        onSetThreadName,
+        onDynamicToolCall
       }),
     compactThread: async ({ profile, threadId, cwd, onTurnStarted, onTokenUsage }) =>
       pool.get(profile).compactThread({ threadId, cwd, onTurnStarted, onTokenUsage }),
@@ -2225,6 +2233,7 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool): CodexBridge {
       await pool.get(profile).interruptTurn({ threadId, turnId });
     },
     readCodexVersion: ({ profile }) => pool.get(profile).readCodexVersion(),
+    readThreadMetadata: async ({ profile, threadId }) => pool.get(profile).readThreadMetadata(threadId),
     readAccountRateLimits: async ({ profile }) => pool.get(profile).readAccountRateLimits()
   };
 }
@@ -2251,6 +2260,8 @@ function adaptLarkSender(sender: LarkMessageSender, config: TwinnyConfig): LarkR
     sendCardToChatId: (chatId, card, options) => sender.sendInteractiveCardToChatId(chatId, card, options),
     sendEphemeralCardToChatId: (chatId, openId, card) =>
       sender.sendEphemeralInteractiveCardToChatId(chatId, openId, card),
+    forwardThread: (threadId, receiveId, receiveIdType, options) =>
+      sender.forwardThread(threadId, receiveId, receiveIdType, options),
     forwardThreadToThread: (threadId, receiveThreadId, options) =>
       sender.forwardThreadToThread(threadId, receiveThreadId, options),
     replyCard: (messageId, card, options) => sender.replyInteractiveCard(messageId, card, options),

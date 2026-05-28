@@ -68,6 +68,7 @@ export interface TurnStartOptions {
     responder: CodexRequestUserInputResponder
   ) => Promise<void> | void;
   onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
+  onDynamicToolCall?: (request: CodexTwinnyDynamicToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
 }
 
 export interface TurnRequestOptions {
@@ -117,6 +118,45 @@ export interface CodexSetThreadNameToolRequest {
   name: string;
   rawArguments: unknown;
 }
+
+interface CodexDynamicToolRequestBase {
+  requestId: string | number;
+  threadId: string;
+  turnId: string;
+  callId: string;
+  rawArguments: unknown;
+}
+
+export interface CodexListThreadsToolRequest extends CodexDynamicToolRequestBase {
+  tool: "list_threads";
+  page: number;
+  pageSize: number;
+}
+
+export interface CodexWaitForThreadToolRequest extends CodexDynamicToolRequestBase {
+  tool: "wait_for_thread";
+  targetThreadId: string;
+  timeoutMs: number;
+}
+
+export interface CodexSendThreadRefToolRequest extends CodexDynamicToolRequestBase {
+  tool: "send_thread_ref";
+  targetThreadId: string;
+}
+
+export interface CodexCreateConversationToolRequest extends CodexDynamicToolRequestBase {
+  tool: "create_conversation";
+  name: string;
+  memberOpenIds: string[];
+  responseMode?: "all" | "all_at" | "owner" | "owner_at" | "none";
+  profile?: string;
+}
+
+export type CodexTwinnyDynamicToolRequest =
+  | CodexListThreadsToolRequest
+  | CodexWaitForThreadToolRequest
+  | CodexSendThreadRefToolRequest
+  | CodexCreateConversationToolRequest;
 
 export interface CodexDynamicToolCallResponse {
   success: boolean;
@@ -810,7 +850,7 @@ function handleDynamicToolCallRequest(
   if (params.threadId !== options.threadId) {
     return;
   }
-  if (params.namespace !== "twinny" || params.tool !== "set_thread_name") {
+  if (params.namespace !== "twinny") {
     protocol.respondError(request.id, {
       code: "TWINNY_UNSUPPORTED_SERVER_REQUEST",
       message: `Twinny does not implement dynamic tool ${params.namespace ? `${params.namespace}.` : ""}${params.tool}`
@@ -818,8 +858,47 @@ function handleDynamicToolCallRequest(
     return;
   }
 
-  if (!options.onSetThreadName) {
+  if (params.tool === "set_thread_name") {
+    handleSetThreadNameToolCall(protocol, options, request.id, params);
+    return;
+  }
+
+  if (!options.onDynamicToolCall) {
     protocol.respondError(request.id, {
+      code: "TWINNY_UNSUPPORTED_SERVER_REQUEST",
+      message: `Twinny does not implement twinny.${params.tool} for this turn`
+    });
+    return;
+  }
+
+  const parsed = parseTwinnyDynamicToolRequest(request.id, params);
+  if (typeof parsed === "string") {
+    protocol.respond(request.id, dynamicToolTextResponse(false, parsed));
+    return;
+  }
+
+  void Promise.resolve(options.onDynamicToolCall(parsed)).then(
+    (response) => protocol.respond(request.id, response),
+    (error: unknown) => {
+      protocol.respond(
+        request.id,
+        dynamicToolJsonResponse(false, {
+          ok: false,
+          error: { code: "TWINNY_DYNAMIC_TOOL_FAILED", message: toErrorMessage(error) }
+        })
+      );
+    }
+  );
+}
+
+function handleSetThreadNameToolCall(
+  protocol: CodexProtocolClient,
+  options: TurnStartOptions,
+  requestId: string | number,
+  params: DynamicToolCallParams
+): void {
+  if (!options.onSetThreadName) {
+    protocol.respondError(requestId, {
       code: "TWINNY_UNSUPPORTED_SERVER_REQUEST",
       message: "Twinny does not implement twinny.set_thread_name for this turn"
     });
@@ -828,13 +907,13 @@ function handleDynamicToolCallRequest(
 
   const name = parseSetThreadNameArguments(params.arguments);
   if (!name) {
-    protocol.respond(request.id, dynamicToolTextResponse(false, "Invalid thread name: expected a non-empty name string."));
+    protocol.respond(requestId, dynamicToolTextResponse(false, "Invalid thread name: expected a non-empty name string."));
     return;
   }
 
   void Promise.resolve(
     options.onSetThreadName({
-      requestId: request.id,
+      requestId,
       threadId: params.threadId,
       turnId: params.turnId,
       callId: params.callId,
@@ -842,10 +921,10 @@ function handleDynamicToolCallRequest(
       rawArguments: params.arguments
     })
   ).then(
-    (response) => protocol.respond(request.id, response),
+    (response) => protocol.respond(requestId, response),
     (error: unknown) => {
       protocol.respond(
-        request.id,
+        requestId,
         dynamicToolTextResponse(false, `Failed to update thread name: ${toErrorMessage(error)}`)
       );
     }
@@ -896,11 +975,158 @@ function parseSetThreadNameArguments(value: unknown): string | undefined {
   return name || undefined;
 }
 
+function parseTwinnyDynamicToolRequest(
+  requestId: string | number,
+  params: DynamicToolCallParams
+): CodexTwinnyDynamicToolRequest | string {
+  switch (params.tool) {
+    case "list_threads": {
+      const args = isRecord(params.arguments) ? params.arguments : {};
+      const page = optionalInteger(args.page, 1, 1, Number.MAX_SAFE_INTEGER);
+      const pageSize = optionalInteger(args.page_size, 20, 1, 100);
+      if (page === undefined || pageSize === undefined) {
+        return "Invalid list_threads arguments: page must be >= 1 and page_size must be 1..100.";
+      }
+      return {
+        requestId,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        callId: params.callId,
+        tool: "list_threads",
+        page,
+        pageSize,
+        rawArguments: params.arguments
+      };
+    }
+    case "wait_for_thread": {
+      if (!isRecord(params.arguments)) {
+        return "Invalid wait_for_thread arguments: expected an object.";
+      }
+      const targetThreadId = trimmedString(params.arguments.thread_id);
+      const timeoutMs = optionalInteger(params.arguments.timeout_ms, 300_000, 1_000, 3_600_000);
+      if (!targetThreadId || timeoutMs === undefined) {
+        return "Invalid wait_for_thread arguments: thread_id is required and timeout_ms must be 1000..3600000.";
+      }
+      return {
+        requestId,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        callId: params.callId,
+        tool: "wait_for_thread",
+        targetThreadId,
+        timeoutMs,
+        rawArguments: params.arguments
+      };
+    }
+    case "send_thread_ref": {
+      if (!isRecord(params.arguments)) {
+        return "Invalid send_thread_ref arguments: expected an object.";
+      }
+      const targetThreadId = trimmedString(params.arguments.thread_id);
+      if (!targetThreadId) {
+        return "Invalid send_thread_ref arguments: thread_id is required.";
+      }
+      return {
+        requestId,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        callId: params.callId,
+        tool: "send_thread_ref",
+        targetThreadId,
+        rawArguments: params.arguments
+      };
+    }
+    case "create_conversation": {
+      if (!isRecord(params.arguments)) {
+        return "Invalid create_conversation arguments: expected an object.";
+      }
+      const name = trimmedString(params.arguments.name);
+      if (!name || name.length > 80) {
+        return "Invalid create_conversation arguments: name is required and must be at most 80 characters.";
+      }
+      const memberOpenIds = parseMemberOpenIds(params.arguments.member_open_ids);
+      if (!memberOpenIds) {
+        return "Invalid create_conversation arguments: member_open_ids must contain at most 50 non-empty strings.";
+      }
+      const responseMode = parseResponseMode(params.arguments.response_mode);
+      if (params.arguments.response_mode !== undefined && !responseMode) {
+        return "Invalid create_conversation arguments: response_mode is unsupported.";
+      }
+      const profile = trimmedString(params.arguments.profile);
+      if (profile !== undefined && profile.length > 64) {
+        return "Invalid create_conversation arguments: profile must be at most 64 characters.";
+      }
+      return {
+        requestId,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        callId: params.callId,
+        tool: "create_conversation",
+        name,
+        memberOpenIds,
+        ...(responseMode ? { responseMode } : {}),
+        ...(profile ? { profile } : {}),
+        rawArguments: params.arguments
+      };
+    }
+    default:
+      return `Twinny does not implement dynamic tool twinny.${params.tool}`;
+  }
+}
+
+function optionalInteger(value: unknown, defaultValue: number, min: number, max: number): number | undefined {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    return undefined;
+  }
+  return value;
+}
+
+function trimmedString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function parseMemberOpenIds(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value) || value.length > 50) {
+    return undefined;
+  }
+  const ids: string[] = [];
+  for (const item of value) {
+    const id = trimmedString(item);
+    if (!id) {
+      return undefined;
+    }
+    if (!ids.includes(id)) {
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
+function parseResponseMode(value: unknown): CodexCreateConversationToolRequest["responseMode"] | undefined {
+  return value === "all" || value === "all_at" || value === "owner" || value === "owner_at" || value === "none"
+    ? value
+    : undefined;
+}
+
 export function dynamicToolTextResponse(success: boolean, text: string): CodexDynamicToolCallResponse {
   return {
     success,
     contentItems: [{ type: "inputText", text }]
   };
+}
+
+export function dynamicToolJsonResponse(success: boolean, value: unknown): CodexDynamicToolCallResponse {
+  return dynamicToolTextResponse(success, JSON.stringify(value));
 }
 
 function escapeXmlText(value: string): string {

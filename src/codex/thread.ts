@@ -56,6 +56,90 @@ export const SET_THREAD_NAME_TOOL_SPEC: DynamicToolSpec = {
   deferLoading: false
 };
 
+export const LIST_THREADS_TOOL_SPEC: DynamicToolSpec = {
+  namespace: "twinny",
+  name: "list_threads",
+  description:
+    "List Twinny-managed threads in the current conversation. Results are ordered by update time with the current conversation main thread pinned first. Supports pagination with page_size up to 100.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      page: { type: "integer", minimum: 1, default: 1 },
+      page_size: { type: "integer", minimum: 1, maximum: 100, default: 20 }
+    }
+  },
+  deferLoading: false
+};
+
+export const WAIT_FOR_THREAD_TOOL_SPEC: DynamicToolSpec = {
+  namespace: "twinny",
+  name: "wait_for_thread",
+  description:
+    "Wait for a Twinny-managed thread to become idle and for its queued work to clear. Returns the last turn final message and the latest 100 lines of process output when completed; interrupted or failed turns return the process tail instead of a final message.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["thread_id"],
+    properties: {
+      thread_id: { type: "string", minLength: 1 },
+      timeout_ms: { type: "integer", minimum: 1000, maximum: 3600000, default: 300000 }
+    }
+  },
+  deferLoading: false
+};
+
+export const SEND_THREAD_REF_TOOL_SPEC: DynamicToolSpec = {
+  namespace: "twinny",
+  name: "send_thread_ref",
+  description:
+    "Forward a Twinny conversation thread reference into the current conversation. The target must be a normal thread with a Lark thread id; main, side, previous main, or unbound threads are rejected.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["thread_id"],
+    properties: {
+      thread_id: { type: "string", minLength: 1 }
+    }
+  },
+  deferLoading: false
+};
+
+export const CREATE_CONVERSATION_TOOL_SPEC: DynamicToolSpec = {
+  namespace: "twinny",
+  name: "create_conversation",
+  description:
+    "Create a new Twinny conversation/project group only when the user or instructions explicitly ask for a new Twinny conversation or project group. Do not use this for ordinary Feishu/Lark group creation.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["name"],
+    properties: {
+      name: { type: "string", minLength: 1, maxLength: 80 },
+      member_open_ids: {
+        type: "array",
+        items: { type: "string", minLength: 1 },
+        maxItems: 50,
+        default: []
+      },
+      response_mode: {
+        type: "string",
+        enum: ["all", "all_at", "owner", "owner_at", "none"]
+      },
+      profile: { type: "string", minLength: 1, maxLength: 64 }
+    }
+  },
+  deferLoading: false
+};
+
+export const TWINNY_DYNAMIC_TOOL_SPECS: DynamicToolSpec[] = [
+  SET_THREAD_NAME_TOOL_SPEC,
+  LIST_THREADS_TOOL_SPEC,
+  WAIT_FOR_THREAD_TOOL_SPEC,
+  SEND_THREAD_REF_TOOL_SPEC,
+  CREATE_CONVERSATION_TOOL_SPEC
+];
+
 export interface CodexThread {
   id: string;
   [key: string]: unknown;
@@ -76,6 +160,17 @@ export interface ThreadForkResponse {
   [key: string]: unknown;
 }
 
+export interface ThreadReadParams {
+  threadId: string;
+  includeTurns: boolean;
+}
+
+export interface ThreadReadResponse {
+  thread: CodexThread & {
+    path?: string | null;
+  };
+}
+
 export interface ThreadRuntimeOptions {
   cwd: string;
   developerInstructions?: string;
@@ -92,7 +187,7 @@ export function buildThreadStartParams(options: ThreadRuntimeOptions): ThreadSta
     cwd: options.cwd,
     approvalPolicy: "never",
     persistExtendedHistory: true,
-    dynamicTools: [SET_THREAD_NAME_TOOL_SPEC]
+    dynamicTools: TWINNY_DYNAMIC_TOOL_SPECS
   };
   if (options.developerInstructions) {
     params.developerInstructions = options.developerInstructions;
@@ -188,6 +283,17 @@ export async function unsubscribeCodexThread(
   threadId: string
 ): Promise<void> {
   await protocol.request<Record<string, unknown>, ThreadUnsubscribeParams>("thread/unsubscribe", { threadId });
+}
+
+export async function readCodexThread(
+  protocol: CodexProtocolClient,
+  threadId: string,
+  options: { includeTurns?: boolean } = {}
+): Promise<ThreadReadResponse> {
+  return protocol.request<ThreadReadResponse, ThreadReadParams>("thread/read", {
+    threadId,
+    includeTurns: options.includeTurns ?? false
+  });
 }
 
 export async function setCodexThreadName(

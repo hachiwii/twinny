@@ -7,7 +7,12 @@ import type {
   CodexThreadTokenUsageUpdate,
   CodexTurnResult
 } from "../types.js";
-import type { CodexDynamicToolCallResponse, CodexRequestUserInputResponder, CodexSetThreadNameToolRequest } from "./turn.js";
+import type {
+  CodexDynamicToolCallResponse,
+  CodexRequestUserInputResponder,
+  CodexSetThreadNameToolRequest,
+  CodexTwinnyDynamicToolRequest
+} from "./turn.js";
 import {
   codexErrorMatchesRun,
   extractTotalTokens,
@@ -69,6 +74,7 @@ export interface GoalRunOptions {
     responder: CodexRequestUserInputResponder
   ) => Promise<void> | void;
   onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
+  onDynamicToolCall?: (request: CodexTwinnyDynamicToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
 }
 
 export interface GoalResumeOptions extends GoalRunOptions, ThreadRuntimeOptions {
@@ -524,13 +530,15 @@ function goalOptionsAsTurnOptions(options: GoalRunOptions): {
     responder: CodexRequestUserInputResponder
   ) => Promise<void> | void;
   onSetThreadName?: (request: CodexSetThreadNameToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
+  onDynamicToolCall?: (request: CodexTwinnyDynamicToolRequest) => Promise<CodexDynamicToolCallResponse> | CodexDynamicToolCallResponse;
 } {
   return {
     threadId: options.threadId,
     cwd: options.cwd,
     mode: "default",
     onRequestUserInput: options.onRequestUserInput,
-    onSetThreadName: options.onSetThreadName
+    onSetThreadName: options.onSetThreadName,
+    onDynamicToolCall: options.onDynamicToolCall
   };
 }
 

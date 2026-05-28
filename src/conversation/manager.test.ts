@@ -951,6 +951,369 @@ describe("ConversationManager", () => {
     }
   });
 
+  it("lists Twinny-managed threads with category, Lark thread id, mode, and rollout metadata", async () => {
+    const turn = deferred<CodexTurnResult>();
+    let turnParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
+    const codex = createCodex({
+      readThreadMetadata: vi.fn(async ({ threadId }) => ({ path: `/rollouts/${threadId}.jsonl` })),
+      startTurn: vi.fn((params) => {
+        turnParams = params;
+        void params.onTurnStarted?.("turn_1");
+        return turn.promise;
+      })
+    });
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          id: 10,
+          codexThreadId: "thread_main",
+          conversationKey: "group_oc_group",
+          name: "主会话",
+          category: "main",
+          mode: "plan",
+          updatedAt: 100
+        }),
+        codexThreadRecord({
+          id: 11,
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          name: "Topic",
+          category: "thread",
+          larkThreadId: "topic_1",
+          mode: "default",
+          updatedAt: 300
+        }),
+        codexThreadRecord({
+          id: 12,
+          codexThreadId: "thread_side",
+          conversationKey: "group_oc_group",
+          name: "Side",
+          category: "side",
+          updatedAt: 250
+        }),
+        codexThreadRecord({
+          id: 13,
+          codexThreadId: "thread_previous",
+          conversationKey: "group_oc_group",
+          name: "Past Main",
+          category: "previous_main",
+          updatedAt: 200
+        })
+      ]
+    });
+    const manager = createManager({ repository, codex });
+
+    try {
+      manager.submitIncoming(groupMessage("g1", "hello"));
+      await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+      const response = await turnParams?.onDynamicToolCall?.({
+        requestId: "req_list",
+        threadId: "thread_main",
+        turnId: "turn_1",
+        callId: "call_list",
+        tool: "list_threads",
+        page: 1,
+        pageSize: 10,
+        rawArguments: {}
+      });
+      const payload = dynamicToolPayload(response);
+
+      expect(payload).toMatchObject({
+        ok: true,
+        conversation_key: "group_oc_group",
+        page: 1,
+        page_size: 10,
+        has_more: false
+      });
+      expect(payload.threads.map((thread: { thread_id: string }) => thread.thread_id)).toEqual([
+        "thread_main",
+        "thread_topic",
+        "thread_side",
+        "thread_previous"
+      ]);
+      expect(payload.threads[0]).toMatchObject({
+        thread_id: "thread_main",
+        category: "main",
+        status: "working",
+        mode: "plan",
+        lark_thread_id: null,
+        rollout_path: "/rollouts/thread_main.jsonl"
+      });
+      expect(payload.threads[1]).toMatchObject({
+        thread_id: "thread_topic",
+        category: "thread",
+        status: "idle",
+        mode: "default",
+        lark_thread_id: "topic_1"
+      });
+      expect(payload.threads[2]).toMatchObject({ category: "side" });
+      expect(payload.threads[3]).toMatchObject({ category: "previous_main", lark_thread_id: null });
+    } finally {
+      turn.resolve(completed("thread_main", "turn_1"));
+      await turn.promise;
+      await waitForDelay();
+    }
+  });
+
+  it("waits for a managed thread to become idle and returns final message plus latest process lines", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_1",
+          name: "Target"
+        })
+      ]
+    });
+    const manager = createManager({ repository, codex, config: cardModeConfig() });
+
+    manager.submitIncoming(groupMessage("topic_msg", "target work", { chatType: "topic_group", larkThreadId: "topic_1" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    const waitPromise = Promise.resolve(turns[1]!.params.onDynamicToolCall!({
+      requestId: "req_wait",
+      threadId: "thread_main",
+      turnId: "turn_2",
+      callId: "call_wait",
+      tool: "wait_for_thread",
+      targetThreadId: "thread_topic",
+      timeoutMs: 5_000,
+      rawArguments: { thread_id: "thread_topic" }
+    }));
+    let settled = false;
+    void waitPromise.then(() => {
+      settled = true;
+    });
+    await waitForDelay();
+    expect(settled).toBe(false);
+
+    const lines = Array.from({ length: 105 }, (_, index) => `line ${index + 1}`);
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_process", text: lines.join("\n"), phase: "commentary" });
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_final", text: "final from target", phase: "final_answer" });
+    turns[0]!.resolve({ ...completed("thread_topic", "turn_1"), text: "fallback final" });
+
+    const payload = dynamicToolPayload(await waitPromise);
+    expect(payload).toMatchObject({
+      ok: true,
+      thread_id: "thread_topic",
+      outcome: "completed",
+      status: "idle",
+      turn_id: "turn_1",
+      final_message: "final from target",
+      omitted_process_lines: 5
+    });
+    expect(payload.process_tail).toContain("前面省略 5 行工作过程。");
+    expect(payload.process_tail.split("\n")).not.toContain("line 5");
+    expect(payload.process_tail.split("\n")).toContain("line 6");
+    expect(payload.process_tail.split("\n")).toContain("line 105");
+
+    turns[1]!.resolve(completed("thread_main", "turn_2"));
+    await waitForDelay();
+  });
+
+  it("returns interrupted wait output when the target thread fails", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_1"
+        })
+      ]
+    });
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(groupMessage("topic_msg", "target work", { chatType: "topic_group", larkThreadId: "topic_1" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_process", text: "before failure", phase: "commentary" });
+    turns[0]!.resolve({ ...completed("thread_topic", "turn_1", "failed"), error: "boom" });
+    await waitForExpect(() => expect(repository.getCodexThreadById("thread_topic")).toMatchObject({ status: "idle" }));
+
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    const payload = dynamicToolPayload(await turns[1]!.params.onDynamicToolCall!({
+      requestId: "req_wait",
+      threadId: "thread_main",
+      turnId: "turn_2",
+      callId: "call_wait",
+      tool: "wait_for_thread",
+      targetThreadId: "thread_topic",
+      timeoutMs: 5_000,
+      rawArguments: { thread_id: "thread_topic" }
+    }));
+
+    expect(payload).toMatchObject({
+      ok: true,
+      thread_id: "thread_topic",
+      outcome: "interrupted",
+      interrupted_reason: "failed",
+      process_tail: "before failure"
+    });
+    expect(payload).not.toHaveProperty("final_message");
+
+    turns[1]!.resolve(completed("thread_main", "turn_2"));
+    await waitForDelay();
+  });
+
+  it("forwards normal thread references and rejects unbound thread references", async () => {
+    const turn = deferred<CodexTurnResult>();
+    let turnParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
+    const codex = createCodex({
+      startTurn: vi.fn((params) => {
+        turnParams = params;
+        void params.onTurnStarted?.("turn_1");
+        return turn.promise;
+      })
+    });
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_1"
+        }),
+        codexThreadRecord({
+          codexThreadId: "thread_unbound",
+          conversationKey: "group_oc_group",
+          category: "thread"
+        })
+      ]
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    try {
+      manager.submitIncoming(groupMessage("g1", "hello"));
+      await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+      const okPayload = dynamicToolPayload(await turnParams?.onDynamicToolCall?.({
+        requestId: "req_ref",
+        threadId: "thread_main",
+        turnId: "turn_1",
+        callId: "call_ref",
+        tool: "send_thread_ref",
+        targetThreadId: "thread_topic",
+        rawArguments: { thread_id: "thread_topic" }
+      }));
+      expect(okPayload).toMatchObject({
+        ok: true,
+        thread_id: "thread_topic",
+        lark_thread_id: "topic_1",
+        destination: { type: "chat", id: "oc_group" }
+      });
+      expect(lark.forwardThread).toHaveBeenCalledWith("topic_1", "oc_group", "chat_id", {
+        uuid: expect.stringMatching(UUID_PATTERN)
+      });
+
+      const errorResponse = await turnParams?.onDynamicToolCall?.({
+        requestId: "req_ref_bad",
+        threadId: "thread_main",
+        turnId: "turn_1",
+        callId: "call_ref_bad",
+        tool: "send_thread_ref",
+        targetThreadId: "thread_unbound",
+        rawArguments: { thread_id: "thread_unbound" }
+      });
+      expect(errorResponse).toMatchObject({ success: false });
+      expect(dynamicToolPayload(errorResponse)).toMatchObject({
+        ok: false,
+        error: { code: "THREAD_NOT_FORWARDABLE" }
+      });
+    } finally {
+      turn.resolve(completed("thread_main", "turn_1"));
+      await turn.promise;
+      await waitForDelay();
+    }
+  });
+
+  it("creates a new Twinny conversation group from an owner-profile dynamic tool call", async () => {
+    const turn = deferred<CodexTurnResult>();
+    let turnParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_new_conversation" })),
+      startTurn: vi.fn((params) => {
+        turnParams = params;
+        void params.onTurnStarted?.("turn_1");
+        return turn.promise;
+      })
+    });
+    const { repository } = createRepository(groupConversationRecord({
+      codexThreadId: "thread_main",
+      profile: "host"
+    }));
+    const larkChats: LarkChatDirectory = {
+      createChat: vi.fn(async () => ({ chatId: "oc_new", raw: {} })),
+      getChatLink: vi.fn(async () => "https://fsopen.bytedance.net/share/oc_new")
+    };
+    const manager = createManager({ repository, codex, larkChats });
+
+    try {
+      manager.submitIncoming(groupMessage("g1", "hello", { senderOpenId: "ou_owner", senderName: "Owner" }));
+      await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+      const payload = dynamicToolPayload(await turnParams?.onDynamicToolCall?.({
+        requestId: "req_create",
+        threadId: "thread_main",
+        turnId: "turn_1",
+        callId: "call_create",
+        tool: "create_conversation",
+        name: "New Project",
+        memberOpenIds: ["ou_extra"],
+        responseMode: "owner",
+        profile: "guest",
+        rawArguments: { name: "New Project", member_open_ids: ["ou_extra"] }
+      }));
+
+      expect(larkChats.createChat).toHaveBeenCalledWith(expect.objectContaining({
+        name: "New Project",
+        ownerOpenId: "ou_owner",
+        userOpenIds: ["ou_owner", "ou_extra"],
+        groupMessageType: "chat",
+        setBotManager: true,
+        uuid: expect.stringMatching(UUID_PATTERN)
+      }));
+      expect(larkChats.getChatLink).toHaveBeenCalledWith("oc_new");
+      expect(codex.startThread).toHaveBeenCalledWith(expect.objectContaining({
+        profile: "guest",
+        cwd: "/tmp/twinny/workspaces/group_oc_new",
+        approvalPolicy: "never"
+      }));
+      expect(repository.findByConversationKey("group_oc_new")).toMatchObject({
+        conversationKey: "group_oc_new",
+        chatId: "oc_new",
+        name: "New Project",
+        responseMode: "owner",
+        profile: "guest",
+        codexThreadId: "thread_new_conversation"
+      });
+      expect(payload).toMatchObject({
+        ok: true,
+        conversation: {
+          conversation_key: "group_oc_new",
+          chat_id: "oc_new",
+          workspace: "/tmp/twinny/workspaces/group_oc_new",
+          response_mode: "owner",
+          profile: "guest",
+          codex_thread_id: "thread_new_conversation",
+          share_link: "https://fsopen.bytedance.net/share/oc_new"
+        }
+      });
+    } finally {
+      turn.resolve(completed("thread_main", "turn_1"));
+      await turn.promise;
+      await waitForDelay();
+    }
+  });
+
   it("applies a Codex thread name update that arrives before the thread card is stored", async () => {
     const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
@@ -4204,7 +4567,8 @@ describe("ConversationManager", () => {
       workspace: "/tmp/twinny/workspaces/p2p_ou_guest",
       profile: "guest",
       model: "gpt-5.5",
-      effort: "medium"
+      effort: "medium",
+      category: "side"
     });
     const rawUsage = {
       threadId: "thread_1_side_1",
@@ -9129,6 +9493,7 @@ function createLarkResponder(): LarkResponder {
     sendCardToOpenId: vi.fn(async (openId) => ({ messageId: `card_${openId}_${++markdownReplyCount}`, raw: {} })),
     sendCardToChatId: vi.fn(async (chatId) => ({ messageId: `card_${chatId}_${++markdownReplyCount}`, raw: {} })),
     sendEphemeralCardToChatId: vi.fn(async (chatId) => ({ messageId: `ephemeral_${chatId}_${++markdownReplyCount}`, raw: {} })),
+    forwardThread: vi.fn(async (threadId) => ({ messageId: `forward_${threadId}_${++markdownReplyCount}`, raw: {} })),
     forwardThreadToThread: vi.fn(async (threadId) => ({ messageId: `forward_${threadId}_${++markdownReplyCount}`, raw: {} })),
     replyCard: vi.fn(async (messageId) => ({ messageId: `card_${messageId}_${++markdownReplyCount}` })),
     patchCard: vi.fn(async (messageId) => ({ messageId })),
@@ -9178,6 +9543,7 @@ function createRepository(initial?: ConversationRecord, options: {
     profile: ProfileName;
     model?: string;
     effort?: string;
+    category?: CodexThreadRecord["category"];
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
     forkedFromCodexThreadId?: string;
@@ -9192,6 +9558,7 @@ function createRepository(initial?: ConversationRecord, options: {
       conversationKey: input.conversationKey,
       workspace: input.workspace ?? existing?.workspace ?? row?.workspace ?? "/tmp/twinny/workspaces/p2p_ou_guest",
       name: input.name ?? existing?.name ?? "新会话",
+      category: input.category ?? existing?.category ?? (input.larkThreadId ? "thread" : "previous_main"),
       larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
       profile: input.profile,
       model: input.model ?? existing?.model,
@@ -9220,6 +9587,7 @@ function createRepository(initial?: ConversationRecord, options: {
       conversationKey,
       workspace: update.workspace ?? existing?.workspace ?? row?.workspace ?? "/tmp/twinny/workspaces/p2p_ou_guest",
       name: existing?.name ?? "新会话",
+      category: "thread",
       larkThreadId,
       profile: update.profile,
       model: update.model ?? existing?.model,
@@ -9247,9 +9615,20 @@ function createRepository(initial?: ConversationRecord, options: {
       return row;
     },
     repository: {
-      findByConversationKey: () => row ?? null,
+      findByConversationKey: (conversationKey) => row?.conversationKey === conversationKey ? row : null,
       getCodexThreadById: vi.fn((codexThreadId) => codexThreads.get(codexThreadId)),
       getCodexThreadByConversationAndLarkThread: vi.fn(getCodexThreadByLarkThread),
+      listCodexThreadsByConversation: vi.fn((conversationKey) =>
+        [...codexThreads.values()]
+          .filter((thread) => thread.conversationKey === conversationKey)
+          .sort((left, right) => right.updatedAt - left.updatedAt || right.createdAt - left.createdAt || right.id - left.id)
+      ),
+      countUnfinishedLarkMessagesByThread: vi.fn((codexThreadId) =>
+        [...larkMessages.values()].filter((message) =>
+          message.codexThreadId === codexThreadId &&
+          (message.status === "processing" || message.status === "queued")
+        ).length
+      ),
       getLarkMessageById: vi.fn((larkMessageId) =>
         larkMessages.get(larkMessageId) ?? (larkMessageIds.has(larkMessageId) ? { larkMessageId } : undefined)
       ),
@@ -9824,6 +10203,7 @@ function codexThreadRecord(overrides: Partial<CodexThreadRecord> = {}): CodexThr
     workspace: `/tmp/twinny/workspaces/${conversationKey}`,
     name: "新会话",
     profile: "guest",
+    category: "previous_main",
     mode: "default",
     status: "idle",
     goalStatus: "none",
@@ -10020,6 +10400,12 @@ function completed(
     text: "",
     status
   };
+}
+
+function dynamicToolPayload(response: unknown): any {
+  const item = (response as { contentItems?: Array<{ text?: string }> } | undefined)?.contentItems?.[0];
+  expect(item?.text).toEqual(expect.any(String));
+  return JSON.parse(item!.text!);
 }
 
 interface Deferred<T> {

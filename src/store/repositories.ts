@@ -2,6 +2,7 @@ import path from "node:path";
 
 import { TwinnyError } from "../errors.js";
 import type {
+  CodexThreadCategory,
   CodexThreadRecord,
   CodexThreadGoalStatus,
   CodexThreadMode,
@@ -59,6 +60,7 @@ interface CodexThreadRow {
   profile: ProfileName;
   model: string | null;
   effort: string | null;
+  category: CodexThreadCategory;
   mode: CodexThreadMode;
   status: CodexThreadStatus;
   goal_status: CodexThreadGoalStatus;
@@ -151,6 +153,7 @@ export interface UpsertCodexThreadInput {
   name?: string;
   model?: string;
   effort?: string;
+  category?: CodexThreadCategory;
   larkThreadId?: string;
   codexThreadHasRollout?: boolean;
   forkedFromCodexThreadId?: string;
@@ -304,6 +307,8 @@ export class ConversationRepository {
   private readonly upsertCodexThreadStatement: TwinnyStatement<[Record<string, unknown>]>;
   private readonly selectCodexThreadById: TwinnyStatement<[string], CodexThreadRow>;
   private readonly selectCodexThreadByConversationAndLarkThread: TwinnyStatement<[string, string], CodexThreadRow>;
+  private readonly selectCodexThreadsByConversation: TwinnyStatement<[string], CodexThreadRow>;
+  private readonly countUnfinishedLarkMessagesByThreadStatement: TwinnyStatement<[string], { count: number }>;
   private readonly replaceCodexThreadForLarkThreadStatement: TwinnyStatement<[Record<string, unknown>]>;
   private readonly updateCodexThreadUsageStatement: TwinnyStatement<[Record<string, unknown>]>;
   private readonly updateCodexThreadCardStatement: TwinnyStatement<[Record<string, unknown>]>;
@@ -442,6 +447,7 @@ export class ConversationRepository {
         profile,
         model,
         effort,
+        category,
         forked_from_thread_id,
         forked_at,
         thread_has_rollout,
@@ -458,6 +464,7 @@ export class ConversationRepository {
         @profile,
         @model,
         @effort,
+        COALESCE(@category, CASE WHEN @larkThreadId IS NOT NULL THEN 'thread' ELSE 'previous_main' END),
         @forkedFromCodexThreadId,
         @forkedAt,
         @codexThreadHasRollout,
@@ -474,6 +481,7 @@ export class ConversationRepository {
         profile = excluded.profile,
         model = COALESCE(excluded.model, threads.model),
         effort = COALESCE(excluded.effort, threads.effort),
+        category = COALESCE(@category, threads.category),
         forked_from_thread_id = COALESCE(excluded.forked_from_thread_id, threads.forked_from_thread_id),
         forked_at = COALESCE(excluded.forked_at, threads.forked_at),
         thread_has_rollout = CASE
@@ -490,12 +498,24 @@ export class ConversationRepository {
       WHERE conversation_key = ?
         AND lark_thread_id = ?
     `);
+    this.selectCodexThreadsByConversation = this.db.prepare(`
+      SELECT * FROM threads
+      WHERE conversation_key = ?
+      ORDER BY updated_at DESC, id DESC
+    `);
+    this.countUnfinishedLarkMessagesByThreadStatement = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM lark_messages
+      WHERE thread_id = ?
+        AND status IN ('queued', 'processing')
+    `);
     this.replaceCodexThreadForLarkThreadStatement = this.db.prepare(`
       UPDATE threads
       SET thread_id = @codexThreadId,
           profile = @profile,
           model = @model,
           effort = @effort,
+          category = 'thread',
           workspace = COALESCE(@workspace, workspace),
           input_tokens = 0,
           output_tokens = 0,
@@ -582,6 +602,7 @@ export class ConversationRepository {
         profile,
         model,
         effort,
+        category,
         creator_open_id,
         card_message_id,
         thread_has_rollout,
@@ -596,6 +617,7 @@ export class ConversationRepository {
         @profile,
         @model,
         @effort,
+        CASE WHEN @larkThreadId IS NOT NULL THEN 'thread' ELSE 'previous_main' END,
         @creatorOpenId,
         @cardMessageId,
         0,
@@ -610,6 +632,10 @@ export class ConversationRepository {
         profile = excluded.profile,
         model = COALESCE(excluded.model, threads.model),
         effort = COALESCE(excluded.effort, threads.effort),
+        category = CASE
+          WHEN excluded.lark_thread_id IS NOT NULL THEN 'thread'
+          ELSE threads.category
+        END,
         creator_open_id = COALESCE(excluded.creator_open_id, threads.creator_open_id),
         card_message_id = COALESCE(excluded.card_message_id, threads.card_message_id),
         updated_at = excluded.updated_at
@@ -1167,6 +1193,7 @@ export class ConversationRepository {
       profile,
       model: input.model ?? null,
       effort: input.effort ?? null,
+      category: input.category ?? null,
       forkedFromCodexThreadId: input.forkedFromCodexThreadId ?? null,
       forkedAt: input.forkedAt ?? null,
       codexThreadHasRollout: input.codexThreadHasRollout === true ? 1 : 0,
@@ -1190,6 +1217,18 @@ export class ConversationRepository {
     assertValidConversationKey(conversationKey);
     assertNonEmpty(larkThreadId, "larkThreadId");
     return mapCodexThreadRow(this.selectCodexThreadByConversationAndLarkThread.get(conversationKey, larkThreadId));
+  }
+
+  listCodexThreadsByConversation(conversationKey: string): CodexThreadRecord[] {
+    assertValidConversationKey(conversationKey);
+    return this.selectCodexThreadsByConversation.all(conversationKey)
+      .map((row) => mapCodexThreadRow(row))
+      .filter((thread): thread is CodexThreadRecord => thread !== undefined);
+  }
+
+  countUnfinishedLarkMessagesByThread(codexThreadId: string): number {
+    assertNonEmpty(codexThreadId, "codexThreadId");
+    return Math.max(0, this.countUnfinishedLarkMessagesByThreadStatement.get(codexThreadId)?.count ?? 0);
   }
 
   replaceCodexThreadForLarkThread(
@@ -1228,6 +1267,7 @@ export class ConversationRepository {
           profile,
           model: input.model ?? null,
           effort: input.effort ?? null,
+          category: "thread",
           forkedFromCodexThreadId: null,
           forkedAt: null,
           codexThreadHasRollout,
@@ -1810,6 +1850,7 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     profile: row.profile,
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
+    category: validCodexThreadCategory(row.category) ? row.category : row.lark_thread_id ? "thread" : "previous_main",
     mode: validCodexThreadMode(row.mode) ? row.mode : "default",
     status: validCodexThreadStatus(row.status) ? row.status : "idle",
     goalStatus: validCodexThreadGoalStatus(row.goal_status) ? row.goal_status : "none",
@@ -1920,6 +1961,9 @@ function validateCodexThreadInput(input: UpsertCodexThreadInput): void {
   }
   if (input.effort !== undefined) {
     assertNonEmpty(input.effort, "effort");
+  }
+  if (input.category !== undefined && !validCodexThreadCategory(input.category)) {
+    throw new TwinnyError(`Unsupported Codex thread category: ${input.category}`, "CODEX_THREAD_CATEGORY_INVALID");
   }
   if (input.larkThreadId !== undefined) {
     assertNonEmpty(input.larkThreadId, "larkThreadId");
@@ -2102,6 +2146,10 @@ function validCodexThreadMode(mode: unknown): mode is CodexThreadMode {
 
 function validCodexThreadStatus(status: unknown): status is CodexThreadStatus {
   return status === "idle" || status === "working" || status === "waiting";
+}
+
+function validCodexThreadCategory(category: unknown): category is CodexThreadCategory {
+  return category === "main" || category === "thread" || category === "side" || category === "previous_main";
 }
 
 function validCodexThreadGoalStatus(status: unknown): status is CodexThreadGoalStatus {

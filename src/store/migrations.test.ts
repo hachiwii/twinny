@@ -18,8 +18,8 @@ describe("store migrations", () => {
   it("loads the bundled store migrations", () => {
     const migrations = loadStoreMigrations();
 
-    expect(currentStoreSchemaVersion).toBe(4);
-    expect(migrations).toHaveLength(4);
+    expect(currentStoreSchemaVersion).toBe(5);
+    expect(migrations).toHaveLength(5);
     expect(migrations[0]).toMatchObject({
       version: 1,
       name: "0001_initial"
@@ -35,6 +35,10 @@ describe("store migrations", () => {
     expect(migrations[3]).toMatchObject({
       version: 4,
       name: "0004_thread_workspace"
+    });
+    expect(migrations[4]).toMatchObject({
+      version: 5,
+      name: "0005_thread_category"
     });
   });
 
@@ -120,7 +124,8 @@ describe("store migrations", () => {
         { name: "goal_updated_at", type: "INTEGER", notnull: 0, pk: 0 },
         { name: "model", type: "TEXT", notnull: 0, pk: 0 },
         { name: "effort", type: "TEXT", notnull: 0, pk: 0 },
-        { name: "workspace", type: "TEXT", notnull: 1, pk: 0 }
+        { name: "workspace", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "category", type: "TEXT", notnull: 1, pk: 0 }
       ]);
 
       const threadIndexes = db
@@ -293,6 +298,96 @@ describe("store migrations", () => {
       expect(rows).toEqual([
         { thread_id: "thread_1", workspace: "/tmp/twinny/workspaces/p2p_ou_guest" },
         { thread_id: "thread_orphan", workspace: "" }
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("backfills thread category when upgrading to version 5", () => {
+    const db = new TwinnyDatabase(":memory:");
+    const migrations = loadStoreMigrations();
+    try {
+      expect(runStoreMigrations(db, { migrations: migrations.slice(0, 4) })).toBe(4);
+
+      db.exec(`
+        INSERT INTO conversations (
+          conversation_key,
+          type,
+          chat_id,
+          name,
+          profile,
+          thread_id,
+          workspace,
+          profile_codex_home,
+          created_at,
+          updated_at,
+          response_mode
+        ) VALUES (
+          'group_oc_group',
+          'group',
+          'oc_group',
+          'Team Room',
+          'guest',
+          'thread_main',
+          '/tmp/twinny/workspaces/group_oc_group',
+          '/tmp/twinny/profiles/guest/codex',
+          100,
+          100,
+          'all_at'
+        );
+
+        INSERT INTO threads (
+          thread_id,
+          conversation_key,
+          lark_thread_id,
+          profile,
+          created_at,
+          updated_at,
+          workspace
+        ) VALUES
+          ('thread_main', 'group_oc_group', NULL, 'guest', 100, 100, '/tmp/twinny/workspaces/group_oc_group'),
+          ('thread_topic', 'group_oc_group', 'topic_1', 'guest', 100, 110, '/tmp/twinny/workspaces/group_oc_group'),
+          ('thread_side', 'group_oc_group', NULL, 'guest', 100, 120, '/tmp/twinny/workspaces/group_oc_group'),
+          ('thread_previous', 'group_oc_group', NULL, 'guest', 100, 130, '/tmp/twinny/workspaces/group_oc_group');
+
+        INSERT INTO lark_messages (
+          event_id,
+          lark_user_id,
+          conversation_key,
+          thread_id,
+          route_kind,
+          status,
+          text,
+          received_at,
+          updated_at,
+          side_id
+        ) VALUES (
+          'event_side',
+          'ou_guest',
+          'group_oc_group',
+          'thread_side',
+          'side_message',
+          'completed',
+          'side work',
+          120,
+          120,
+          1
+        );
+      `);
+
+      expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
+
+      const rows = db
+        .prepare<[], { thread_id: string; category: string }>(
+          "SELECT thread_id, category FROM threads ORDER BY thread_id ASC"
+        )
+        .all();
+      expect(rows).toEqual([
+        { thread_id: "thread_main", category: "main" },
+        { thread_id: "thread_previous", category: "previous_main" },
+        { thread_id: "thread_side", category: "side" },
+        { thread_id: "thread_topic", category: "thread" }
       ]);
     } finally {
       db.close();

@@ -19,6 +19,7 @@ import {
 import {
   forkCodexThread,
   injectCodexThreadItems,
+  readCodexThread,
   resumeCodexThread,
   setCodexThreadName,
   startCodexThread,
@@ -208,6 +209,11 @@ export class CodexAppServer extends EventEmitter {
 
   async setThreadName(threadId: string, name: string): Promise<void> {
     await setCodexThreadName(this.protocol, { threadId, name });
+  }
+
+  async readThreadMetadata(threadId: string): Promise<{ path?: string | null }> {
+    const response = await readCodexThread(this.protocol, threadId, { includeTurns: false });
+    return { path: typeof response.thread.path === "string" ? response.thread.path : response.thread.path ?? null };
   }
 
   async startTurn(options: TurnStartOptions): Promise<import("../types.js").CodexTurnResult> {

@@ -28,6 +28,11 @@ export interface LarkChatCreateResult {
   raw: unknown;
 }
 
+export interface LarkChatLinkResult {
+  link?: string;
+  raw: unknown;
+}
+
 export class LarkUserDirectory {
   constructor(private readonly options: LarkUserDirectoryOptions) {}
 
@@ -80,6 +85,13 @@ export class LarkChatDirectory {
   async getChatName(chatId: string): Promise<string | undefined> {
     return (await this.getChatInfo(chatId)).name;
   }
+
+  async getChatLink(chatId: string): Promise<string | undefined> {
+    const raw = await this.options.openApiClient.request(`/im/v1/chats/${encodePathSegment(chatId)}/link`, {
+      method: "GET"
+    });
+    return extractChatLink(raw);
+  }
 }
 
 export class LarkBotDirectory {
@@ -114,6 +126,11 @@ function extractChatId(raw: unknown): string | undefined {
   const data = getRecord(raw, "data");
   const chat = getRecord(data, "chat");
   return firstNonEmptyString(chat.chat_id, data.chat_id);
+}
+
+function extractChatLink(raw: unknown): string | undefined {
+  const data = getRecord(raw, "data");
+  return firstNonEmptyString(data.share_link, data.link, data.url);
 }
 
 function normalizeLarkChatMode(value: string | undefined): LarkDirectoryChatMode | undefined {
