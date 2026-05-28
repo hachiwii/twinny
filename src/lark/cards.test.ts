@@ -4,6 +4,8 @@ import {
   renderHiddenTwinnyStatusCard,
   renderTwinnyBannerCard,
   renderTwinnyAgentCard,
+  renderTwinnyResumeHistoryCard,
+  renderTwinnyResumeListCard,
   renderTwinnyStatusCard,
   renderTwinnyThreadSummaryCard,
   type RenderTwinnyAgentCardOptions
@@ -835,6 +837,54 @@ describe("renderTwinnyStatusCard", () => {
 
     expect(JSON.stringify(card)).toContain("已隐藏的状态卡片");
     expect((card.body as { elements: unknown[] }).elements).toEqual([]);
+  });
+});
+
+describe("renderTwinnyResumeListCard", () => {
+  it("renders an untitled thread table with paging actions", () => {
+    const card = renderTwinnyResumeListCard({
+      stateKey: "p2p_ou_guest",
+      browserId: "browser_1",
+      hasPreviousPage: false,
+      hasNextPage: true,
+      items: [
+        {
+          index: 1,
+          threadId: "thread_external",
+          name: "External thread",
+          cwd: "/tmp/project"
+        }
+      ]
+    });
+
+    expect(card.header).toBeUndefined();
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain("| 序号 | thread_id | name | 工作目录 |");
+    expect(serialized).toContain("thread_external");
+    expect(findButton(card, "上一页")).toMatchObject({
+      behaviors: [{ value: { twinny: true, action: "resume_prev", stateKey: "p2p_ou_guest", browserId: "browser_1" } }]
+    });
+    expect(findButton(card, "下一页")).toMatchObject({
+      behaviors: [{ value: { twinny: true, action: "resume_next", stateKey: "p2p_ou_guest", browserId: "browser_1" } }]
+    });
+  });
+});
+
+describe("renderTwinnyResumeHistoryCard", () => {
+  it("renders a title without a colored header template", () => {
+    const card = renderTwinnyResumeHistoryCard({
+      messages: [
+        { role: "user", text: "hello" },
+        { role: "assistant", text: "working\nfinal" }
+      ]
+    });
+
+    expect(card.header).toMatchObject({ title: { content: "历史消息" } });
+    expect((card.header as Record<string, unknown>).template).toBeUndefined();
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain("- **User: **hello");
+    expect(serialized).toContain("- **Assistant: **working");
+    expect(serialized).toContain("final");
   });
 });
 

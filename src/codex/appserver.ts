@@ -19,12 +19,16 @@ import {
 import {
   forkCodexThread,
   injectCodexThreadItems,
+  listCodexThreads,
   readCodexThread,
   resumeCodexThread,
   setCodexThreadName,
   startCodexThread,
   unsubscribeCodexThread,
   type ThreadForkResponse,
+  type ThreadListParams,
+  type ThreadListResponse,
+  type ThreadReadResponse,
   type ThreadResumeResponse,
   type ThreadStartResponse
 } from "./thread.js";
@@ -215,6 +219,14 @@ export class CodexAppServer extends EventEmitter {
   async readThreadMetadata(threadId: string): Promise<{ path?: string | null }> {
     const response = await readCodexThread(this.protocol, threadId, { includeTurns: false });
     return { path: typeof response.thread.path === "string" ? response.thread.path : response.thread.path ?? null };
+  }
+
+  async readThread(threadId: string, options: { includeTurns?: boolean } = {}): Promise<ThreadReadResponse> {
+    return readCodexThread(this.protocol, threadId, { includeTurns: options.includeTurns === true });
+  }
+
+  async listThreads(params: ThreadListParams = {}): Promise<ThreadListResponse> {
+    return listCodexThreads(this.protocol, params);
   }
 
   async startTurn(options: TurnStartOptions): Promise<import("../types.js").CodexTurnResult> {

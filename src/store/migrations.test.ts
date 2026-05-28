@@ -18,8 +18,8 @@ describe("store migrations", () => {
   it("loads the bundled store migrations", () => {
     const migrations = loadStoreMigrations();
 
-    expect(currentStoreSchemaVersion).toBe(5);
-    expect(migrations).toHaveLength(5);
+    expect(currentStoreSchemaVersion).toBe(6);
+    expect(migrations).toHaveLength(6);
     expect(migrations[0]).toMatchObject({
       version: 1,
       name: "0001_initial"
@@ -39,6 +39,10 @@ describe("store migrations", () => {
     expect(migrations[4]).toMatchObject({
       version: 5,
       name: "0005_thread_category"
+    });
+    expect(migrations[5]).toMatchObject({
+      version: 6,
+      name: "0006_thread_fork_source"
     });
   });
 
@@ -125,7 +129,8 @@ describe("store migrations", () => {
         { name: "model", type: "TEXT", notnull: 0, pk: 0 },
         { name: "effort", type: "TEXT", notnull: 0, pk: 0 },
         { name: "workspace", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "category", type: "TEXT", notnull: 1, pk: 0 }
+        { name: "category", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "fork_source", type: "TEXT", notnull: 0, pk: 0 }
       ]);
 
       const threadIndexes = db

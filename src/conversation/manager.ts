@@ -19,6 +19,8 @@ import {
   renderHiddenTwinnyStatusCard,
   renderTwinnyBannerCard,
   renderTwinnyAgentCard,
+  renderTwinnyResumeHistoryCard,
+  renderTwinnyResumeListCard,
   renderTwinnyStatusCard,
   renderTwinnyThreadSummaryCard,
   type LarkCardElement,
@@ -87,6 +89,13 @@ import {
   type CodexUserInput
 } from "../codex/turn.js";
 import type { ThreadGoal } from "../codex/goal.js";
+import type {
+  CodexThread,
+  ThreadListParams,
+  ThreadListResponse,
+  ThreadSourceKind,
+  ThreadTurn
+} from "../codex/thread.js";
 import type { LarkSendMessageResult } from "../lark/types.js";
 import type { TelemetryClient } from "../telemetry/index.js";
 import { TWINNY_VERSION } from "../version.js";
@@ -107,6 +116,22 @@ const UNRECOVERABLE_CONTROL_MESSAGE_RECOVERY_TEXT = "上一条控制命令在 Tw
 const MAIN_THREAD_NAME = "主会话";
 const TWINNY_CODEX_THREAD_NAME_PREFIX = "[twinny]";
 const DOC_COMMENT_AGENT_CARD_SUBTITLE = "文档评论触发";
+const RESUME_LIST_PAGE_SIZE = 20;
+const RESUME_CODEX_PAGE_SIZE = 100;
+const RESUME_HISTORY_MESSAGE_LIMIT = 20;
+const RESUME_BROWSER_TTL_MS = 60 * 60 * 1000;
+const RESUME_CODEX_SOURCE_KINDS: ThreadSourceKind[] = [
+  "cli",
+  "vscode",
+  "exec",
+  "appServer",
+  "subAgent",
+  "subAgentReview",
+  "subAgentCompact",
+  "subAgentThreadSpawn",
+  "subAgentOther",
+  "unknown"
+];
 const TWINNY_THREAD_DEVELOPER_INSTRUCTIONS = `# Twinny Lark Context
 
 The user is messaging you through Twinny (https://github.com/hachiwii/twinny), a local Feishu/Lark-to-Codex bridge.
@@ -207,6 +232,7 @@ export interface ConversationRepository {
     conversationKey: string,
     larkThreadId: string
   ): Promise<CodexThreadRecord | undefined> | CodexThreadRecord | undefined;
+  listCodexThreadIds(): Promise<string[]> | string[];
   listCodexThreadsByConversation(conversationKey: string): Promise<CodexThreadRecord[]> | CodexThreadRecord[];
   countUnfinishedLarkMessagesByThread(codexThreadId: string): Promise<number> | number;
   getLarkMessageById(larkMessageId: string): Promise<unknown | undefined> | unknown | undefined;
@@ -235,6 +261,7 @@ export interface ConversationRepository {
     codexThreadHasRollout?: boolean;
     forkedFromCodexThreadId?: string;
     forkedAt?: number;
+    forkSource?: CodexThreadRecord["forkSource"];
     name?: string;
   }): Promise<unknown> | unknown;
   replaceCodexThreadForLarkThread?(
@@ -563,7 +590,15 @@ export interface CodexBridge {
     developerInstructions?: string;
     model?: string;
     effort?: string;
-  }): Promise<{ threadId: string }>;
+  }): Promise<{ threadId: string; model?: string; effort?: string; cwd?: string }>;
+  readThread?(params: {
+    profile: ProfileName;
+    threadId: string;
+    includeTurns?: boolean;
+  }): Promise<CodexThread>;
+  listThreads?(params: {
+    profile: ProfileName;
+  } & ThreadListParams): Promise<ThreadListResponse>;
   injectThreadItems?(params: {
     profile: ProfileName;
     threadId: string;
@@ -807,9 +842,12 @@ interface NewSessionTopicRequest {
 interface NewSessionTopicCodexThread {
   threadId: string;
   workspace?: string;
+  model?: string;
+  effort?: string;
   codexThreadHasRollout: boolean;
   forkedFromCodexThreadId?: string;
   forkedAt?: number;
+  forkSource?: CodexThreadRecord["forkSource"];
 }
 
 interface CreatedSessionTopic {
@@ -820,6 +858,29 @@ interface CreatedSessionTopic {
   cardMessageId: string;
   creatorOpenId: string;
 }
+
+interface ResumeThreadListItem {
+  threadId: string;
+  name: string;
+  cwd: string;
+  updatedAt?: number;
+}
+
+interface ResumeBrowserState {
+  id: string;
+  stateKey: string;
+  conversationKey: string;
+  profile: ProfileName;
+  pages: ResumeThreadListItem[][];
+  buffer: ResumeThreadListItem[];
+  currentPageIndex: number;
+  nextCursor: string | null;
+  exhausted: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+type ResumeCwdMode = "session" | "local";
 
 interface LarkReplyOptions {
   replyInThread?: boolean;
@@ -1016,6 +1077,7 @@ type ParsedCommand =
   | { kind: "new" }
   | { kind: "thread"; text: string }
   | { kind: "fork"; text: string }
+  | { kind: "resume"; text: string }
   | { kind: "watch"; text: string }
   | { kind: "activate"; text: string }
   | { kind: "pair"; text: string }
@@ -1063,7 +1125,17 @@ interface ParsedStatusCardActionCommand {
   text: string;
 }
 
-type ParsedCardActionCommand = ParsedActiveCardActionCommand | ParsedStatusCardActionCommand;
+interface ParsedResumeListCardActionCommand {
+  action: "resume_prev" | "resume_next";
+  stateKey: string;
+  browserId: string;
+  text: string;
+}
+
+type ParsedCardActionCommand =
+  | ParsedActiveCardActionCommand
+  | ParsedStatusCardActionCommand
+  | ParsedResumeListCardActionCommand;
 
 interface ThreadWaitSnapshot {
   threadId: string;
@@ -1093,6 +1165,7 @@ export class ConversationManager {
   private readonly nameLookupFailureCache = new Map<string, number>();
   private readonly pendingThreadNames = new Map<string, string>();
   private readonly workspaceSelectionsByThread = new Map<string, string[]>();
+  private readonly resumeBrowsers = new Map<string, ResumeBrowserState>();
   private readonly threadIdleWatchers = new Map<string, Set<ThreadIdleWatcher>>();
   private readonly threadWaitEdges = new Map<string, Set<string>>();
   private readonly lastTurnSnapshots = new Map<string, ThreadWaitSnapshot>();
@@ -1216,6 +1289,23 @@ export class ConversationManager {
     if (!state) {
       void this.recordCardActionBestEffort(action, command, "completed").catch((error) => {
         this.log.warn({ error, eventId: action.eventId }, "failed to record stale card action");
+      });
+      return;
+    }
+
+    if (isResumeListCardAction(command)) {
+      void state.controlQueue.enqueue(() => this.processResumeListCardAction(state, action, command)).catch((error) => {
+        this.options.telemetry?.captureError(error, {
+          errorType: "conversation",
+          errorSite: "conversation.submitCardAction",
+          operation: "resume_list_card_action",
+          fatal: false,
+          conversationKey: conversationKeyFromStateKey(command.stateKey),
+          larkSenderOpenId: action.operatorOpenId,
+          larkEventId: action.eventId,
+          larkMessageId: action.openMessageId
+        });
+        this.log.error({ error, eventId: action.eventId }, "conversation resume list card action failed");
       });
       return;
     }
@@ -2361,6 +2451,10 @@ export class ConversationManager {
       await this.handleForkCommand(state, context, message, parsed.text);
       return;
     }
+    if (parsed.kind === "resume") {
+      await this.handleResumeCommand(state, context, message, parsed.text);
+      return;
+    }
     if (parsed.kind === "watch") {
       await this.handleWatchCommand(state, context, message, parsed.text);
       return;
@@ -2560,6 +2654,7 @@ export class ConversationManager {
     const isInactiveGroupCommandAllowed =
       parsed.kind === "thread" ||
       parsed.kind === "fork" ||
+      parsed.kind === "resume" ||
       ((parsed.kind === "activate" || parsed.kind === "pair" || parsed.kind === "reload") && senderProfile === "host");
     if (!conversation || conversation.responseMode === "none") {
       if (isInactiveGroupCommandAllowed) {
@@ -2577,6 +2672,7 @@ export class ConversationManager {
       !hasBotMention &&
       parsed.kind !== "thread" &&
       parsed.kind !== "fork" &&
+      parsed.kind !== "resume" &&
       parsed.kind !== "pair" &&
       parsed.kind !== "reload"
     ) {
@@ -3106,6 +3202,411 @@ export class ConversationManager {
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
+  private async handleResumeCommand(
+    _state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    if (!isThreadCommandMessageType(message.messageType)) {
+      await this.replyControlBestEffort(message.messageId, "resume 只支持 text/post 消息。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const parsed = parseResumeCommand(text);
+    if (parsed.kind === "invalid") {
+      await this.replyControlBestEffort(message.messageId, parsed.message);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+    if (!conversation && isGroupConversationType(context.type)) {
+      await this.replyControlBestEffort(message.messageId, "请先由 owner 在群内执行 /activate。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    const profile = conversation?.profile ?? profileForSender(this.options.config, message.senderOpenId);
+    if (profile === "none") {
+      await this.replyControlBestEffort(message.messageId, "当前用户未绑定可用 profile，无法 resume。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    if (parsed.kind === "list") {
+      await this.replyResumeThreadList(context, message, profile);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    await this.resumeForkThread(context, message, conversation, profile, parsed);
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async replyResumeThreadList(
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    profile: ProfileName
+  ): Promise<void> {
+    this.pruneResumeBrowsers();
+    const browser: ResumeBrowserState = {
+      id: createLarkUuid("twinny-resume-browser", message.eventId),
+      stateKey: context.stateKey,
+      conversationKey: context.conversationKey,
+      profile,
+      pages: [],
+      buffer: [],
+      currentPageIndex: 0,
+      nextCursor: null,
+      exhausted: false,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    const excluded = new Set(await this.options.repository.listCodexThreadIds());
+    await this.ensureResumeBrowserPage(browser, 0, excluded);
+    this.resumeBrowsers.set(browser.id, browser);
+    const result = await this.options.lark.replyCard(
+      message.messageId,
+      this.renderResumeListCard(browser)
+    );
+    if (!nonEmptyString(result?.messageId)) {
+      this.log.warn({ messageId: message.messageId }, "resume list card reply did not include message id");
+    }
+  }
+
+  private async processResumeListCardAction(
+    state: ConversationState,
+    action: IncomingLarkCardAction,
+    command: ParsedResumeListCardActionCommand
+  ): Promise<void> {
+    const existing = await this.options.repository.getLarkMessageByEventId(action.eventId);
+    if (existing) {
+      return;
+    }
+
+    let status: LarkMessageStatus = "completed";
+    try {
+      if (!action.openMessageId) {
+        status = "failed";
+        this.log.warn({ eventId: action.eventId, action: command.action }, "resume list action missing message id");
+        return;
+      }
+      const browser = this.resumeBrowsers.get(command.browserId);
+      if (!browser || browser.stateKey !== command.stateKey || Date.now() - browser.updatedAt > RESUME_BROWSER_TTL_MS) {
+        this.resumeBrowsers.delete(command.browserId);
+        await this.options.lark.patchCard(action.openMessageId, renderTwinnyResumeListCard({
+          stateKey: command.stateKey,
+          browserId: command.browserId,
+          items: [],
+          hasPreviousPage: false,
+          hasNextPage: false
+        }));
+        return;
+      }
+
+      if (command.action === "resume_prev") {
+        browser.currentPageIndex = Math.max(0, browser.currentPageIndex - 1);
+      } else {
+        const nextPageIndex = browser.currentPageIndex + 1;
+        const excluded = new Set(await this.options.repository.listCodexThreadIds());
+        await this.ensureResumeBrowserPage(browser, nextPageIndex, excluded);
+        if (browser.pages[nextPageIndex]?.length) {
+          browser.currentPageIndex = nextPageIndex;
+        }
+      }
+      browser.updatedAt = Date.now();
+      await this.options.lark.patchCard(action.openMessageId, this.renderResumeListCard(browser));
+    } catch (error) {
+      status = "failed";
+      throw error;
+    } finally {
+      await this.recordCardActionBestEffort(action, command, status);
+      this.captureCardActionReceived(state, action, command, status, undefined, 0);
+    }
+  }
+
+  private async resumeForkThread(
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    conversation: ConversationRecord | null | undefined,
+    profile: ProfileName,
+    parsed: Extract<ReturnType<typeof parseResumeCommand>, { kind: "select" }>
+  ): Promise<void> {
+    const source = await this.resolveResumeSourceThread(context, parsed, profile);
+    if (!source) {
+      await this.replyControlBestEffort(message.messageId, "没有找到可恢复的 Codex thread。");
+      return;
+    }
+    const existing = await this.options.repository.getCodexThreadById(source.threadId);
+    if (existing || isTwinnyInternalCodexThreadName(source.name)) {
+      await this.replyControlBestEffort(message.messageId, "该 Codex thread 已由 Twinny 管理，不能通过 /resume 恢复。");
+      return;
+    }
+
+    const workspace = parsed.cwdMode === "local"
+      ? await this.resolveLocalResumeWorkspace(context, message, conversation)
+      : source.cwd;
+    if (!workspace) {
+      await this.replyControlBestEffort(message.messageId, "目标 Codex thread 缺少工作目录，无法使用 session 模式。");
+      return;
+    }
+
+    const chatId = context.type === "p2p"
+      ? message.senderOpenId
+      : nonEmptyString(message.larkGroupId) ?? nonEmptyString(message.chatId);
+    if (!chatId) {
+      await this.replyControlBestEffort(message.messageId, "resume 只能在群聊或私聊中使用。");
+      return;
+    }
+
+    const modelSettings = this.profileDefaultModelSettings(profile);
+    const forkedAt = Date.now();
+    let forked: { threadId: string; model?: string; effort?: string; cwd?: string };
+    try {
+      forked = await this.options.codex.forkThread({
+        profile,
+        threadId: source.threadId,
+        cwd: workspace,
+        approvalPolicy: "never",
+        developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context),
+        model: modelSettings.model,
+        effort: modelSettings.effort
+      });
+    } catch (error) {
+      if (!isMissingRolloutError(error)) {
+        throw error;
+      }
+      await this.replyControlBestEffort(message.messageId, "目标 Codex thread 没有可复制的历史。");
+      return;
+    }
+
+    let topic = await this.createNewSessionTopic(context, {
+      chatId,
+      operatorOpenId: message.senderOpenId,
+      eventId: message.eventId,
+      anchorMessage: message,
+      name: normalizeThreadName(source.name) ?? "恢复会话",
+      codexThread: {
+        threadId: forked.threadId,
+        workspace,
+        model: forked.model ?? modelSettings.model,
+        effort: forked.effort ?? modelSettings.effort,
+        codexThreadHasRollout: true,
+        forkedFromCodexThreadId: source.threadId,
+        forkedAt,
+        forkSource: "external_resume"
+      }
+    });
+    if (!topic) {
+      return;
+    }
+
+    const intro = await this.replyThreadTextMessage(
+      topic.cardMessageId,
+      `已恢复 ${source.threadId} (复制为 ${forked.threadId}) 的会话，当前工作目录为：${workspace}`
+    );
+    topic = await this.updateSessionTopicThreadId(context, topic, intro.larkThreadId);
+    await this.forwardSessionTopicToSourceThreadBestEffort(context, message, topic);
+    await this.replyResumeHistoryCard(topic.cardMessageId, profile, forked.threadId);
+  }
+
+  private async replyResumeHistoryCard(anchorMessageId: string, profile: ProfileName, threadId: string): Promise<void> {
+    const messages = await this.readResumeHistoryMessages(profile, threadId);
+    await this.options.lark.replyCard(
+      anchorMessageId,
+      renderTwinnyResumeHistoryCard({ messages }),
+      { replyInThread: true }
+    );
+  }
+
+  private async resolveResumeSourceThread(
+    context: MessageContext,
+    parsed: Extract<ReturnType<typeof parseResumeCommand>, { kind: "select" }>,
+    profile: ProfileName
+  ): Promise<ResumeThreadListItem | undefined> {
+    if (parsed.selector.kind === "index") {
+      const browser = this.latestResumeBrowserForState(context.stateKey);
+      const item = browser?.pages[browser.currentPageIndex]?.[parsed.selector.index - 1];
+      return item ? { ...item } : undefined;
+    }
+    return this.readResumeThreadSummary(profile, parsed.selector.threadId);
+  }
+
+  private async readResumeThreadSummary(profile: ProfileName, threadId: string): Promise<ResumeThreadListItem | undefined> {
+    if (!this.options.codex.readThread) {
+      throw new TwinnyError("Codex bridge does not support thread/read", "CODEX_THREAD_READ_UNAVAILABLE");
+    }
+    const thread = await this.options.codex.readThread({ profile, threadId });
+    return this.codexThreadToResumeItem(thread);
+  }
+
+  private async resolveLocalResumeWorkspace(
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    conversation: ConversationRecord | null | undefined
+  ): Promise<string> {
+    const larkThreadId = context.larkThreadId;
+    if (larkThreadId) {
+      const thread = await this.options.repository.getCodexThreadByConversationAndLarkThread(context.conversationKey, larkThreadId);
+      if (thread?.workspace) {
+        return thread.workspace;
+      }
+    }
+    if (conversation?.workspace) {
+      return conversation.workspace;
+    }
+    void message;
+    return this.options.workspaces.ensureWorkspace(context.conversationKey);
+  }
+
+  private async ensureResumeBrowserPage(
+    browser: ResumeBrowserState,
+    pageIndex: number,
+    excludedThreadIds: Set<string>
+  ): Promise<void> {
+    while (browser.pages.length <= pageIndex && (!browser.exhausted || browser.buffer.length > 0)) {
+      const page = await this.fetchNextResumeBrowserPage(browser, excludedThreadIds);
+      if (page.length === 0) {
+        break;
+      }
+      browser.pages.push(page);
+    }
+  }
+
+  private async fetchNextResumeBrowserPage(
+    browser: ResumeBrowserState,
+    excludedThreadIds: Set<string>
+  ): Promise<ResumeThreadListItem[]> {
+    if (!this.options.codex.listThreads) {
+      throw new TwinnyError("Codex bridge does not support thread/list", "CODEX_THREAD_LIST_UNAVAILABLE");
+    }
+    const items: ResumeThreadListItem[] = [];
+    this.drainResumeBrowserBuffer(browser, items, excludedThreadIds);
+    let cursor = browser.nextCursor;
+    while (items.length < RESUME_LIST_PAGE_SIZE && !browser.exhausted) {
+      const response = await this.options.codex.listThreads({
+        profile: browser.profile,
+        cursor,
+        limit: RESUME_CODEX_PAGE_SIZE,
+        sortKey: "updated_at",
+        sortDirection: "desc",
+        sourceKinds: RESUME_CODEX_SOURCE_KINDS,
+        archived: false,
+        useStateDbOnly: false
+      });
+      for (const thread of response.data) {
+        const item = this.codexThreadToResumeItem(thread);
+        if (!item || excludedThreadIds.has(item.threadId) || isTwinnyInternalCodexThreadName(item.name)) {
+          continue;
+        }
+        if (items.length < RESUME_LIST_PAGE_SIZE) {
+          items.push(item);
+        } else {
+          browser.buffer.push(item);
+        }
+      }
+      if (!response.nextCursor || response.nextCursor === cursor) {
+        browser.exhausted = true;
+      }
+      cursor = response.nextCursor;
+      browser.nextCursor = response.nextCursor;
+    }
+    return items;
+  }
+
+  private drainResumeBrowserBuffer(
+    browser: ResumeBrowserState,
+    items: ResumeThreadListItem[],
+    excludedThreadIds: Set<string>
+  ): void {
+    while (items.length < RESUME_LIST_PAGE_SIZE && browser.buffer.length > 0) {
+      const item = browser.buffer.shift();
+      if (!item || excludedThreadIds.has(item.threadId) || isTwinnyInternalCodexThreadName(item.name)) {
+        continue;
+      }
+      items.push(item);
+    }
+  }
+
+  private codexThreadToResumeItem(thread: CodexThread | undefined): ResumeThreadListItem | undefined {
+    const threadId = nonEmptyString(thread?.id);
+    if (!threadId) {
+      return undefined;
+    }
+    const cwd = nonEmptyString(typeof thread?.cwd === "string" ? thread.cwd : undefined);
+    if (!cwd) {
+      return undefined;
+    }
+    return {
+      threadId,
+      name: nonEmptyString(typeof thread?.name === "string" ? thread.name : undefined) ?? "未命名",
+      cwd,
+      updatedAt: typeof thread?.updatedAt === "number" ? thread.updatedAt : undefined
+    };
+  }
+
+  private latestResumeBrowserForState(stateKey: string): ResumeBrowserState | undefined {
+    this.pruneResumeBrowsers();
+    return [...this.resumeBrowsers.values()]
+      .filter((browser) => browser.stateKey === stateKey)
+      .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+  }
+
+  private pruneResumeBrowsers(): void {
+    const now = Date.now();
+    for (const [id, browser] of this.resumeBrowsers) {
+      if (now - browser.updatedAt > RESUME_BROWSER_TTL_MS) {
+        this.resumeBrowsers.delete(id);
+      }
+    }
+  }
+
+  private renderResumeListCard(browser: ResumeBrowserState): LarkCardJson {
+    const page = browser.pages[browser.currentPageIndex] ?? [];
+    return renderTwinnyResumeListCard({
+      stateKey: browser.stateKey,
+      browserId: browser.id,
+      items: page.map((item, index) => ({
+        index: index + 1,
+        threadId: item.threadId,
+        name: item.name,
+        cwd: item.cwd
+      })),
+      hasPreviousPage: browser.currentPageIndex > 0,
+      hasNextPage: browser.currentPageIndex < browser.pages.length - 1 || browser.buffer.length > 0 || !browser.exhausted
+    });
+  }
+
+  private async readResumeHistoryMessages(
+    profile: ProfileName,
+    threadId: string
+  ): Promise<Array<{ role: "user" | "assistant"; text: string }>> {
+    if (!this.options.codex.readThread) {
+      return [];
+    }
+    const thread = await this.options.codex.readThread({ profile, threadId, includeTurns: true });
+    const turns = Array.isArray(thread.turns) ? thread.turns : [];
+    const orderedTurns = turns
+      .map((turn, index) => ({ turn, index, timestamp: resumeTurnTimestamp(turn) }))
+      .sort((left, right) => right.timestamp - left.timestamp || right.index - left.index)
+      .map((entry) => entry.turn);
+    const newest: Array<{ role: "user" | "assistant"; text: string }> = [];
+    for (const turn of orderedTurns) {
+      const messages = resumeMessagesFromTurn(turn).reverse();
+      for (const item of messages) {
+        newest.push(item);
+        if (newest.length >= RESUME_HISTORY_MESSAGE_LIMIT) {
+          break;
+        }
+      }
+      if (newest.length >= RESUME_HISTORY_MESSAGE_LIMIT) {
+        break;
+      }
+    }
+    return newest.reverse();
+  }
+
   private async handleWatchCommand(
     _state: ConversationState,
     context: MessageContext,
@@ -3358,26 +3859,29 @@ export class ConversationManager {
         });
     const threadName = this.consumePendingThreadName(thread.threadId) ?? request.name;
     const modelSettings = this.profileDefaultModelSettings(profile);
+    const threadModel = request.codexThread?.model ?? modelSettings.model;
+    const threadEffort = request.codexThread?.effort ?? modelSettings.effort;
     await this.options.repository.upsertCodexThread({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
       workspace,
       profile,
-      model: modelSettings.model,
-      effort: modelSettings.effort,
+      model: threadModel,
+      effort: threadEffort,
       category: "thread",
       ...(threadName ? { name: threadName } : {}),
       codexThreadHasRollout: request.codexThread?.codexThreadHasRollout ?? false,
       forkedFromCodexThreadId: request.codexThread?.forkedFromCodexThreadId,
-      forkedAt: request.codexThread?.forkedAt
+      forkedAt: request.codexThread?.forkedAt,
+      forkSource: request.codexThread?.forkSource
     });
     const initialRecord = await this.options.repository.updateCodexThreadCard({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
       workspace,
       profile,
-      model: modelSettings.model,
-      effort: modelSettings.effort,
+      model: threadModel,
+      effort: threadEffort,
       ...(threadName ? { name: threadName } : {}),
       creatorOpenId: request.operatorOpenId
     });
@@ -3404,8 +3908,8 @@ export class ConversationManager {
       codexThreadId: thread.threadId,
       workspace,
       profile,
-      model: modelSettings.model,
-      effort: modelSettings.effort,
+      model: threadModel,
+      effort: threadEffort,
       ...(finalThreadName ? { name: finalThreadName } : {}),
       larkThreadId: cardThreadId,
       creatorOpenId: request.operatorOpenId,
@@ -9566,6 +10070,9 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "fork") {
     return { kind: "fork", text: rest };
   }
+  if (command === "resume") {
+    return { kind: "resume", text: rest };
+  }
   if (command === "watch") {
     return { kind: "watch", text: rest };
   }
@@ -9629,6 +10136,42 @@ function parseModelCommand(text: string): { kind: "valid"; model: string; effort
   return { kind: "valid", model, effort };
 }
 
+function parseResumeCommand(
+  text: string
+): { kind: "list" } | { kind: "invalid"; message: string } | {
+  kind: "select";
+  selector: { kind: "index"; index: number } | { kind: "thread"; threadId: string };
+  cwdMode: ResumeCwdMode;
+} {
+  const parts = text.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) {
+    return { kind: "list" };
+  }
+  if (parts.length > 2) {
+    return { kind: "invalid", message: "用法：/resume [1-20|thread_id] [session|local]" };
+  }
+  const [target, modeText] = parts as [string, string | undefined];
+  if (target === "session" || target === "local") {
+    return { kind: "invalid", message: "用法：/resume [1-20|thread_id] [session|local]" };
+  }
+  const cwdMode = modeText === undefined ? "session" : parseResumeCwdMode(modeText);
+  if (!cwdMode) {
+    return { kind: "invalid", message: "工作目录模式只能是 session 或 local。" };
+  }
+  if (/^\d+$/.test(target)) {
+    const index = Number(target);
+    if (index < 1 || index > RESUME_LIST_PAGE_SIZE) {
+      return { kind: "invalid", message: "序号必须是 1-20。" };
+    }
+    return { kind: "select", selector: { kind: "index", index }, cwdMode };
+  }
+  return { kind: "select", selector: { kind: "thread", threadId: target }, cwdMode };
+}
+
+function parseResumeCwdMode(value: string): ResumeCwdMode | undefined {
+  return value === "session" || value === "local" ? value : undefined;
+}
+
 function parseTwinnyCardAction(value: Record<string, unknown>): ParsedCardActionCommand | undefined {
   if (value.twinny !== true) {
     return undefined;
@@ -9647,6 +10190,20 @@ function parseTwinnyCardAction(value: Record<string, unknown>): ParsedCardAction
       action,
       stateKey,
       ...(larkThreadId ? { larkThreadId } : {}),
+      text: twinnyCardActionText(action)
+    };
+  }
+  if (action === "resume_prev" || action === "resume_next") {
+    const browserId = typeof value.browserId === "string" && value.browserId.trim()
+      ? value.browserId.trim()
+      : undefined;
+    if (!browserId) {
+      return undefined;
+    }
+    return {
+      action,
+      stateKey,
+      browserId,
       text: twinnyCardActionText(action)
     };
   }
@@ -9671,7 +10228,9 @@ function isTwinnyCardAction(value: unknown): value is ParsedCardActionCommand["a
     value === "plan_implement" ||
     value === "plan_interrupt" ||
     value === "status_hide" ||
-    value === "status_refresh"
+    value === "status_refresh" ||
+    value === "resume_prev" ||
+    value === "resume_next"
   );
 }
 
@@ -9695,6 +10254,10 @@ function twinnyCardActionText(action: ParsedCardActionCommand["action"]): string
       return "/status hide";
     case "status_refresh":
       return "/status refresh";
+    case "resume_prev":
+      return "/resume 上一页";
+    case "resume_next":
+      return "/resume 下一页";
   }
 }
 
@@ -10076,6 +10639,7 @@ function parsedCommandTitleText(command: ParsedCommand): string | undefined {
     command.kind === "reload" ||
     command.kind === "thread" ||
     command.kind === "fork" ||
+    command.kind === "resume" ||
     command.kind === "watch"
   ) {
     return command.text;
@@ -10094,6 +10658,10 @@ function normalizeTwinnyThreadName(value: string): string | undefined {
 
 function stripTwinnyCodexThreadNamePrefix(value: string): string {
   return compactInlineText(value).replace(/^\[twinny\]\s*/iu, "");
+}
+
+function isTwinnyInternalCodexThreadName(value: string | undefined): boolean {
+  return compactInlineText(value ?? "").startsWith(TWINNY_CODEX_THREAD_NAME_PREFIX);
 }
 
 function codexThreadNameForTwinnyName(name: string): string | undefined {
@@ -10323,6 +10891,67 @@ function processTail(messages: string[], maxLines = 100): { text: string; omitte
   };
 }
 
+function resumeMessagesFromTurn(turn: ThreadTurn): Array<{ role: "user" | "assistant"; text: string }> {
+  const messages: Array<{ role: "user" | "assistant"; text: string }> = [];
+  for (const item of turn.items) {
+    if (item.type === "userMessage") {
+      const text = resumeUserInputText(Array.isArray(item.content) ? item.content : []);
+      if (text) {
+        messages.push({ role: "user", text });
+      }
+    } else if (item.type === "agentMessage" && typeof item.text === "string") {
+      const text = truncateResumeHistoryText(item.text);
+      if (text) {
+        messages.push({ role: "assistant", text });
+      }
+    }
+  }
+  return messages;
+}
+
+function resumeTurnTimestamp(turn: ThreadTurn): number {
+  if (typeof turn.completedAt === "number") {
+    return turn.completedAt;
+  }
+  if (typeof turn.startedAt === "number") {
+    return turn.startedAt;
+  }
+  return 0;
+}
+
+function resumeUserInputText(content: unknown[]): string {
+  return truncateResumeHistoryText(content.map(resumeUserInputPartText).filter(Boolean).join("\n"));
+}
+
+function resumeUserInputPartText(input: unknown): string {
+  if (!isRecord(input)) {
+    return "";
+  }
+  const type = input.type;
+  if (type === "text" && typeof input.text === "string") {
+    return input.text;
+  }
+  if (type === "image") {
+    return "[图片]";
+  }
+  if (type === "localImage") {
+    return typeof input.path === "string" ? `[本地图片] ${input.path}` : "[本地图片]";
+  }
+  if (type === "skill") {
+    return typeof input.name === "string" ? `[Skill] ${input.name}` : "[Skill]";
+  }
+  if (type === "mention") {
+    return typeof input.name === "string" ? `@${input.name}` : "@mention";
+  }
+  return "";
+}
+
+function truncateResumeHistoryText(text: string): string {
+  const normalized = text.trim();
+  const maxLength = 1200;
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
 function joinDeveloperInstructions(...sections: string[]): string {
   return sections.map((section) => section.trim()).filter((section) => section.length > 0).join("\n\n");
 }
@@ -10397,6 +11026,10 @@ function statusCardActionValue(context: MessageContext, action: ParsedStatusCard
 
 function isStatusCardAction(command: ParsedCardActionCommand): command is ParsedStatusCardActionCommand {
   return command.action === "status_hide" || command.action === "status_refresh";
+}
+
+function isResumeListCardAction(command: ParsedCardActionCommand): command is ParsedResumeListCardActionCommand {
+  return command.action === "resume_prev" || command.action === "resume_next";
 }
 
 function statusCardActionLarkThreadId(command: ParsedStatusCardActionCommand): string | undefined {
@@ -11411,6 +12044,7 @@ function classifyInitialRoute(
     parsed.kind === "new" ||
     parsed.kind === "thread" ||
     parsed.kind === "fork" ||
+    parsed.kind === "resume" ||
     parsed.kind === "watch" ||
     parsed.kind === "activate" ||
     parsed.kind === "pair" ||

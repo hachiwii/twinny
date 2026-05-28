@@ -3,6 +3,7 @@ import path from "node:path";
 import { TwinnyError } from "../errors.js";
 import type {
   CodexThreadCategory,
+  CodexThreadForkSource,
   CodexThreadRecord,
   CodexThreadGoalStatus,
   CodexThreadMode,
@@ -67,6 +68,7 @@ interface CodexThreadRow {
   goal_updated_at: number | null;
   forked_from_thread_id: string | null;
   forked_at: number | null;
+  fork_source: CodexThreadForkSource | null;
   creator_open_id: string | null;
   card_message_id: string | null;
   thread_has_rollout: 0 | 1;
@@ -158,6 +160,7 @@ export interface UpsertCodexThreadInput {
   codexThreadHasRollout?: boolean;
   forkedFromCodexThreadId?: string;
   forkedAt?: number;
+  forkSource?: CodexThreadForkSource;
 }
 
 export interface InsertLarkMessageInput {
@@ -306,6 +309,7 @@ export class ConversationRepository {
   private readonly deleteByKey: TwinnyStatement<[string]>;
   private readonly upsertCodexThreadStatement: TwinnyStatement<[Record<string, unknown>]>;
   private readonly selectCodexThreadById: TwinnyStatement<[string], CodexThreadRow>;
+  private readonly selectCodexThreadIds: TwinnyStatement<[], { thread_id: string }>;
   private readonly selectCodexThreadByConversationAndLarkThread: TwinnyStatement<[string, string], CodexThreadRow>;
   private readonly selectCodexThreadsByConversation: TwinnyStatement<[string], CodexThreadRow>;
   private readonly countUnfinishedLarkMessagesByThreadStatement: TwinnyStatement<[string], { count: number }>;
@@ -451,6 +455,7 @@ export class ConversationRepository {
         category,
         forked_from_thread_id,
         forked_at,
+        fork_source,
         thread_has_rollout,
         total_tokens,
         token_usage_json,
@@ -468,6 +473,7 @@ export class ConversationRepository {
         COALESCE(@category, CASE WHEN @larkThreadId IS NOT NULL THEN 'thread' ELSE 'previous_main' END),
         @forkedFromCodexThreadId,
         @forkedAt,
+        @forkSource,
         @codexThreadHasRollout,
         @totalTokens,
         @tokenUsageJson,
@@ -485,6 +491,7 @@ export class ConversationRepository {
         category = COALESCE(@category, threads.category),
         forked_from_thread_id = COALESCE(excluded.forked_from_thread_id, threads.forked_from_thread_id),
         forked_at = COALESCE(excluded.forked_at, threads.forked_at),
+        fork_source = COALESCE(excluded.fork_source, threads.fork_source),
         thread_has_rollout = CASE
           WHEN threads.thread_has_rollout = 1 OR excluded.thread_has_rollout = 1 THEN 1
           ELSE 0
@@ -493,6 +500,9 @@ export class ConversationRepository {
     `);
     this.selectCodexThreadById = this.db.prepare(`
       SELECT * FROM threads WHERE thread_id = ?
+    `);
+    this.selectCodexThreadIds = this.db.prepare(`
+      SELECT thread_id FROM threads
     `);
     this.selectCodexThreadByConversationAndLarkThread = this.db.prepare(`
       SELECT * FROM threads
@@ -1212,6 +1222,7 @@ export class ConversationRepository {
       category: input.category ?? null,
       forkedFromCodexThreadId: input.forkedFromCodexThreadId ?? null,
       forkedAt: input.forkedAt ?? null,
+      forkSource: input.forkSource ?? null,
       codexThreadHasRollout: input.codexThreadHasRollout === true ? 1 : 0,
       totalTokens: 0,
       tokenUsageJson: "{}",
@@ -1224,6 +1235,10 @@ export class ConversationRepository {
   getCodexThreadById(codexThreadId: string): CodexThreadRecord | undefined {
     assertNonEmpty(codexThreadId, "codexThreadId");
     return mapCodexThreadRow(this.selectCodexThreadById.get(codexThreadId));
+  }
+
+  listCodexThreadIds(): string[] {
+    return this.selectCodexThreadIds.all().map((row) => row.thread_id);
   }
 
   getCodexThreadByConversationAndLarkThread(
@@ -1906,6 +1921,7 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     goalUpdatedAt: row.goal_updated_at ?? undefined,
     forkedFromCodexThreadId: row.forked_from_thread_id ?? undefined,
     forkedAt: row.forked_at ?? undefined,
+    forkSource: row.fork_source === "external_resume" ? row.fork_source : undefined,
     creatorOpenId: row.creator_open_id ?? undefined,
     cardMessageId: row.card_message_id ?? undefined,
     codexThreadHasRollout: row.thread_has_rollout === 1,
@@ -2019,6 +2035,9 @@ function validateCodexThreadInput(input: UpsertCodexThreadInput): void {
   }
   if (input.forkedFromCodexThreadId !== undefined) {
     assertNonEmpty(input.forkedFromCodexThreadId, "forkedFromCodexThreadId");
+  }
+  if (input.forkSource !== undefined && input.forkSource !== "external_resume") {
+    throw new TwinnyError(`Unsupported Codex thread fork source: ${input.forkSource}`, "CODEX_THREAD_FORK_SOURCE_INVALID");
   }
 }
 

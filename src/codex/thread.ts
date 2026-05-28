@@ -27,6 +27,18 @@ export interface ThreadForkParams extends ThreadRuntimeParams {
   config?: Record<string, unknown>;
 }
 
+export type ThreadSourceKind =
+  | "cli"
+  | "vscode"
+  | "exec"
+  | "appServer"
+  | "subAgent"
+  | "subAgentReview"
+  | "subAgentCompact"
+  | "subAgentThreadSpawn"
+  | "subAgentOther"
+  | "unknown";
+
 export interface DynamicToolSpec {
   namespace?: string;
   name: string;
@@ -142,6 +154,12 @@ export const TWINNY_DYNAMIC_TOOL_SPECS: DynamicToolSpec[] = [
 
 export interface CodexThread {
   id: string;
+  name?: string | null;
+  cwd?: string;
+  path?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
+  turns?: ThreadTurn[];
   [key: string]: unknown;
 }
 
@@ -166,9 +184,37 @@ export interface ThreadReadParams {
 }
 
 export interface ThreadReadResponse {
-  thread: CodexThread & {
-    path?: string | null;
-  };
+  thread: CodexThread;
+}
+
+export interface ThreadListParams {
+  cursor?: string | null;
+  limit?: number | null;
+  sortKey?: "created_at" | "updated_at" | null;
+  sortDirection?: "asc" | "desc" | null;
+  sourceKinds?: ThreadSourceKind[] | null;
+  archived?: boolean | null;
+  useStateDbOnly?: boolean;
+}
+
+export interface ThreadListResponse {
+  data: CodexThread[];
+  nextCursor: string | null;
+  backwardsCursor: string | null;
+}
+
+export type ThreadItem =
+  | { type: "userMessage"; id: string; content: unknown[] }
+  | { type: "agentMessage"; id: string; text: string; phase?: string | null }
+  | { type: string; id?: string; [key: string]: unknown };
+
+export interface ThreadTurn {
+  id: string;
+  items: ThreadItem[];
+  itemsView: "notLoaded" | "summary" | "full";
+  status: string;
+  startedAt?: number | null;
+  completedAt?: number | null;
 }
 
 export interface ThreadRuntimeOptions {
@@ -294,6 +340,13 @@ export async function readCodexThread(
     threadId,
     includeTurns: options.includeTurns ?? false
   });
+}
+
+export async function listCodexThreads(
+  protocol: CodexProtocolClient,
+  params: ThreadListParams = {}
+): Promise<ThreadListResponse> {
+  return protocol.request<ThreadListResponse, ThreadListParams>("thread/list", params);
 }
 
 export async function setCodexThreadName(

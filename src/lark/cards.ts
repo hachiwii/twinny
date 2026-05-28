@@ -43,6 +43,13 @@ export interface TwinnyStatusCardActionValue {
   larkThreadId?: string;
 }
 
+export interface TwinnyResumeListActionValue {
+  twinny: true;
+  action: "resume_prev" | "resume_next";
+  stateKey: string;
+  browserId: string;
+}
+
 export interface TwinnyAgentCardInputQuestion {
   id: string;
   header: string;
@@ -170,6 +177,30 @@ export interface RenderTwinnyStatusCardOptions {
   };
   hideAction?: TwinnyStatusCardActionValue;
   refreshAction?: TwinnyStatusCardActionValue;
+}
+
+export interface TwinnyResumeListItem {
+  index: number;
+  threadId: string;
+  name: string;
+  cwd: string;
+}
+
+export interface RenderTwinnyResumeListCardOptions {
+  stateKey: string;
+  browserId: string;
+  items: TwinnyResumeListItem[];
+  hasPreviousPage: boolean;
+  hasNextPage: boolean;
+}
+
+export interface TwinnyResumeHistoryMessage {
+  role: "user" | "assistant";
+  text: string;
+}
+
+export interface RenderTwinnyResumeHistoryCardOptions {
+  messages: TwinnyResumeHistoryMessage[];
 }
 
 export interface RenderTwinnyBannerCardOptions {
@@ -321,6 +352,76 @@ export function renderTwinnyStatusCard(options: RenderTwinnyStatusCardOptions): 
       vertical_align: "top",
       padding: "12px 12px 12px 12px",
       elements
+    }
+  };
+}
+
+export function renderTwinnyResumeListCard(options: RenderTwinnyResumeListCardOptions): LarkCardJson {
+  const table = resumeListTable(options.items);
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      style: {
+        text_size: {
+          normal_v2: {
+            default: "normal",
+            pc: "normal",
+            mobile: "heading"
+          }
+        }
+      }
+    },
+    body: {
+      direction: "vertical",
+      horizontal_spacing: "8px",
+      vertical_spacing: "8px",
+      horizontal_align: "left",
+      vertical_align: "top",
+      padding: "12px 12px 12px 12px",
+      elements: [
+        markdownElement(table),
+        resumeListActionButtonsElement(options)
+      ]
+    }
+  };
+}
+
+export function renderTwinnyResumeHistoryCard(options: RenderTwinnyResumeHistoryCardOptions): LarkCardJson {
+  const content = options.messages.length > 0
+    ? options.messages
+      .map((message) => `- **${message.role === "user" ? "User" : "Assistant"}: **${escapeListItemMarkdown(message.text)}`)
+      .join("\n")
+    : "暂无历史消息";
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      style: {
+        text_size: {
+          normal_v2: {
+            default: "normal",
+            pc: "normal",
+            mobile: "heading"
+          }
+        }
+      }
+    },
+    body: {
+      direction: "vertical",
+      horizontal_spacing: "8px",
+      vertical_spacing: "8px",
+      horizontal_align: "left",
+      vertical_align: "top",
+      padding: "12px 12px 12px 12px",
+      elements: [markdownElement(content)]
+    },
+    header: {
+      title: {
+        tag: "plain_text",
+        content: "历史消息"
+      },
+      padding: "12px 12px 12px 12px"
     }
   };
 }
@@ -905,6 +1006,36 @@ function statusActionButtonsElement(options: {
   };
 }
 
+function resumeListActionButtonsElement(options: RenderTwinnyResumeListCardOptions): LarkCardElement {
+  const buttons = [
+    buttonElement("上一页", "default", {
+      twinny: true,
+      action: "resume_prev",
+      stateKey: options.stateKey,
+      browserId: options.browserId
+    }),
+    buttonElement("下一页", "default", {
+      twinny: true,
+      action: "resume_next",
+      stateKey: options.stateKey,
+      browserId: options.browserId
+    })
+  ];
+  return {
+    tag: "column_set",
+    horizontal_spacing: "8px",
+    horizontal_align: "left",
+    columns: buttons.map((button) => ({
+      tag: "column",
+      width: "auto",
+      elements: [button],
+      direction: "horizontal",
+      vertical_align: "top"
+    })),
+    margin: "8px 0px 0px 0px"
+  };
+}
+
 function waitingButtonsElement(
   options: RenderTwinnyAgentCardOptions,
   primaryLabel: string,
@@ -1021,7 +1152,7 @@ function queueModeHintElement(options: RenderTwinnyAgentCardOptions): LarkCardEl
 function buttonElement(
   label: string,
   type: string,
-  value: TwinnyAgentCardActionValue | TwinnyStatusCardActionValue,
+  value: TwinnyAgentCardActionValue | TwinnyStatusCardActionValue | TwinnyResumeListActionValue,
   options: { formSubmit?: boolean; name?: string } = {}
 ): LarkCardElement {
   const element: LarkCardElement = {
@@ -1381,6 +1512,36 @@ function safeFormKey(value: string): string {
 
 function escapeMarkdown(value: string): string {
   return value.replace(/\*/g, "\\*").replace(/_/g, "\\_");
+}
+
+function resumeListTable(items: TwinnyResumeListItem[]): string {
+  const rows = [
+    "| 序号 | thread_id | name | 工作目录 |",
+    "| --- | --- | --- | --- |"
+  ];
+  if (items.length === 0) {
+    rows.push("| - | - | - | 暂无可恢复的 Codex thread |");
+    return rows.join("\n");
+  }
+  for (const item of items) {
+    rows.push([
+      String(item.index),
+      tableCell(item.threadId),
+      tableCell(item.name || "未命名"),
+      tableCell(item.cwd || "未知")
+    ].join(" | ").replace(/^/, "| ").replace(/$/, " |"));
+  }
+  return rows.join("\n");
+}
+
+function tableCell(value: string): string {
+  return value.replace(/\s+/g, " ").trim().replace(/\|/g, "\\|");
+}
+
+function escapeListItemMarkdown(value: string): string {
+  return escapeMarkdown(value)
+    .replace(/\r?\n/g, "\n  ")
+    .trim();
 }
 
 function renderProcessItems(messages: TwinnyAgentCardMessage[]): string[] {

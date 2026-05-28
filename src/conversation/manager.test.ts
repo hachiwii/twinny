@@ -4447,6 +4447,182 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_fork_empty"]);
   });
 
+  it("lists external Codex threads for /resume and filters Twinny-managed threads", async () => {
+    const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      listThreads: vi.fn(async () => ({
+        data: [
+          { id: "thread_group", name: "managed", cwd: "/tmp/managed", updatedAt: 3 },
+          { id: "thread_twinny", name: "[twinny] internal", cwd: "/tmp/internal", updatedAt: 2 },
+          { id: "thread_external", name: "External", cwd: "/tmp/external", updatedAt: 1 }
+        ],
+        nextCursor: null,
+        backwardsCursor: null
+      }))
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_resume_list", "/resume", {
+      senderOpenId: "ou_guest"
+    }));
+
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
+    const serialized = JSON.stringify(card);
+    expect(card.header).toBeUndefined();
+    expect(serialized).toContain("| 序号 | thread_id | name | 工作目录 |");
+    expect(serialized).toContain("thread_external");
+    expect(serialized).not.toContain("thread_group");
+    expect(serialized).not.toContain("thread_twinny");
+    expect(codex.listThreads).toHaveBeenCalledWith(expect.objectContaining({
+      profile: "host",
+      limit: 100,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+      archived: false
+    }));
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_resume_list"]);
+  });
+
+  it("keeps extra filtered /resume list items for the next card page", async () => {
+    const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
+    const { repository } = createRepository(row);
+    const codexThreads = Array.from({ length: 25 }, (_, index) => {
+      const number = index + 1;
+      return {
+        id: `thread_external_${number}`,
+        name: `External ${number}`,
+        cwd: `/tmp/external-${number}`,
+        updatedAt: 100 - index
+      };
+    });
+    const codex = createCodex({
+      listThreads: vi.fn(async () => ({
+        data: codexThreads,
+        nextCursor: null,
+        backwardsCursor: null
+      }))
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_resume_list", "/resume", {
+      senderOpenId: "ou_guest"
+    }));
+
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
+    const firstPage = JSON.stringify(card);
+    expect(firstPage).toContain("thread_external_20");
+    expect(firstPage).not.toContain("thread_external_21");
+
+    manager.submitCardAction({
+      eventId: "event_resume_next",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_resume_list",
+      openChatId: "oc_group",
+      actionTag: "button",
+      actionValue: findTwinnyCardActionValue(card, "resume_next"),
+      raw: { event_id: "event_resume_next" }
+    });
+
+    await waitForExpect(() => expect(lark.patchCard).toHaveBeenCalledWith("card_resume_list", expect.any(Object)));
+    const secondPage = JSON.stringify(vi.mocked(lark.patchCard).mock.calls.at(-1)![1]);
+    expect(secondPage).toContain("thread_external_21");
+    expect(secondPage).toContain("thread_external_25");
+    expect(secondPage).not.toContain("thread_external_20");
+    expect(codex.listThreads).toHaveBeenCalledTimes(1);
+  });
+
+  it("resume-forks the selected external Codex thread with Twinny instructions and sends history", async () => {
+    const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      listThreads: vi.fn(async () => ({
+        data: [{ id: "thread_external", name: "External Thread", cwd: "/tmp/session-workspace", updatedAt: 1 }],
+        nextCursor: null,
+        backwardsCursor: null
+      })),
+      forkThread: vi.fn(async () => ({ threadId: "thread_resume_fork", model: "gpt-5.5", effort: "medium" })),
+      readThread: vi.fn(async ({ threadId, includeTurns }) => ({
+        id: threadId,
+        name: "External Thread",
+        cwd: "/tmp/session-workspace",
+        turns: includeTurns
+          ? [
+            {
+              id: "turn_1",
+              itemsView: "full" as const,
+              status: "completed",
+              startedAt: 1,
+              completedAt: 2,
+              items: [
+                { type: "userMessage" as const, id: "user_1", content: [{ type: "text", text: "old user", text_elements: [] }] },
+                { type: "agentMessage" as const, id: "agent_1", text: "old assistant", phase: "final_answer" }
+              ]
+            }
+          ]
+          : []
+      }))
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: "card_oc_group_resume",
+      raw: { data: { thread_id: "topic_resume" } }
+    });
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_resume_intro",
+      raw: { data: { thread_id: "topic_resume" } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_resume_list", "/resume", {
+      senderOpenId: "ou_guest"
+    }));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    manager.submitIncoming(groupMessage("g_resume_select", "/resume 1 local", {
+      senderOpenId: "ou_guest"
+    }));
+
+    await waitForExpect(() => expect(codex.forkThread).toHaveBeenCalledTimes(1));
+    expect(codex.forkThread).toHaveBeenCalledWith({
+      profile: "host",
+      threadId: "thread_external",
+      cwd: "/tmp/twinny/workspaces/group_oc_group",
+      approvalPolicy: "never",
+      developerInstructions: expect.stringContaining("Twinny Lark Context"),
+      model: "gpt-5.5",
+      effort: "medium"
+    });
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "card_oc_group_resume",
+      "已恢复 thread_external (复制为 thread_resume_fork) 的会话，当前工作目录为：/tmp/twinny/workspaces/group_oc_group",
+      { replyInThread: true }
+    );
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(2));
+    expect(codex.readThread).toHaveBeenCalledWith({
+      profile: "host",
+      threadId: "thread_resume_fork",
+      includeTurns: true
+    });
+    const historyCard = vi.mocked(lark.replyCard).mock.calls[1]![1] as Record<string, unknown>;
+    expect(historyCard.header).toMatchObject({ title: { content: "历史消息" } });
+    expect((historyCard.header as Record<string, unknown>).template).toBeUndefined();
+    expect(JSON.stringify(historyCard)).toContain("**User: **old user");
+    expect(JSON.stringify(historyCard)).toContain("**Assistant: **old assistant");
+    expect(repository.getCodexThreadById("thread_resume_fork")).toMatchObject({
+      codexThreadId: "thread_resume_fork",
+      larkThreadId: "topic_resume",
+      forkedFromCodexThreadId: "thread_external",
+      forkSource: "external_resume",
+      codexThreadHasRollout: true
+    });
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_resume_select"]);
+  });
+
   it("allows /fork inside a Lark thread and forks that topic's Codex thread", async () => {
     const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
     const { repository } = createRepository(row, {
@@ -9492,6 +9668,44 @@ function capturedTelemetryEvents(telemetry: TelemetryClient, event: string): Cap
   return ((telemetry as TelemetryClient & { captured?: CapturedTelemetryEvent[] }).captured ?? []).filter((item) => item.event === event);
 }
 
+function findTwinnyCardActionValue(card: unknown, action: string): Record<string, unknown> {
+  const value = findTwinnyCardActionValueInner(card, action);
+  if (!value) {
+    throw new Error(`card action ${action} not found`);
+  }
+  return value;
+}
+
+function findTwinnyCardActionValueInner(value: unknown, action: string): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findTwinnyCardActionValueInner(item, action);
+      if (found) {
+        return found;
+      }
+    }
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const candidate = record.value;
+  if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+    const candidateRecord = candidate as Record<string, unknown>;
+    if (candidateRecord.twinny === true && candidateRecord.action === action) {
+      return candidateRecord;
+    }
+  }
+  for (const nested of Object.values(record)) {
+    const found = findTwinnyCardActionValueInner(nested, action);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
 function createCodex(overrides: Partial<CodexBridge> = {}): CodexBridge {
   return {
     startThread: vi.fn(async () => ({ threadId: "thread_1" })),
@@ -9672,6 +9886,7 @@ function createRepository(initial?: ConversationRecord, options: {
     codexThreadHasRollout?: boolean;
     forkedFromCodexThreadId?: string;
     forkedAt?: number;
+    forkSource?: CodexThreadRecord["forkSource"];
     name?: string;
   }): CodexThreadRecord => {
     const existing = codexThreads.get(input.codexThreadId);
@@ -9689,6 +9904,7 @@ function createRepository(initial?: ConversationRecord, options: {
       effort: input.effort ?? existing?.effort,
       forkedFromCodexThreadId: input.forkedFromCodexThreadId ?? existing?.forkedFromCodexThreadId,
       forkedAt: input.forkedAt ?? existing?.forkedAt,
+      forkSource: input.forkSource ?? existing?.forkSource,
       codexThreadHasRollout: existing?.codexThreadHasRollout === true || input.codexThreadHasRollout === true,
       createdAt: existing?.createdAt ?? Date.now(),
       updatedAt: Date.now()
@@ -9749,6 +9965,7 @@ function createRepository(initial?: ConversationRecord, options: {
       findByConversationKey: (conversationKey) => row?.conversationKey === conversationKey ? row : null,
       getCodexThreadById: vi.fn((codexThreadId) => codexThreads.get(codexThreadId)),
       getCodexThreadByConversationAndLarkThread: vi.fn(getCodexThreadByLarkThread),
+      listCodexThreadIds: vi.fn(() => [...codexThreads.keys()]),
       listCodexThreadsByConversation: vi.fn((conversationKey) =>
         [...codexThreads.values()]
           .filter((thread) => thread.conversationKey === conversationKey)

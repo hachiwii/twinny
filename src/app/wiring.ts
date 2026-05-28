@@ -56,6 +56,7 @@ import type {
   CodexTwinnyDynamicToolRequest,
   CodexTurnInput
 } from "../codex/turn.js";
+import type { ThreadListParams } from "../codex/thread.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { MacIdleSleepPreventer, type IdleSleepPreventer } from "./caffeinate.js";
 import {
@@ -672,6 +673,7 @@ export function adaptConversationRepository(repository: ConversationRepository) 
     getCodexThreadById: repository.getCodexThreadById.bind(repository),
     hasUserMessageForCodexThread: repository.hasUserMessageForCodexThread.bind(repository),
     getCodexThreadByConversationAndLarkThread: repository.getCodexThreadByConversationAndLarkThread.bind(repository),
+    listCodexThreadIds: repository.listCodexThreadIds.bind(repository),
     listCodexThreadsByConversation: repository.listCodexThreadsByConversation.bind(repository),
     countUnfinishedLarkMessagesByThread: repository.countUnfinishedLarkMessagesByThread.bind(repository),
     getLarkMessageById: repository.getLarkMessageById.bind(repository),
@@ -757,7 +759,23 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool) {
         model,
         effort
       });
-      return { threadId: response.thread.id };
+      return {
+        threadId: response.thread.id,
+        model: typeof response.model === "string" ? response.model : undefined,
+        effort: typeof response.reasoningEffort === "string" ? response.reasoningEffort : undefined,
+        cwd: typeof response.cwd === "string" ? response.cwd : undefined
+      };
+    },
+    readThread: async ({
+      profile,
+      threadId,
+      includeTurns
+    }: { profile: ProfileName; threadId: string; includeTurns?: boolean }) => {
+      const response = await pool.get(profile).readThread(threadId, { includeTurns });
+      return response.thread;
+    },
+    listThreads: async ({ profile, ...params }: { profile: ProfileName } & ThreadListParams) => {
+      return pool.get(profile).listThreads(params);
     },
     injectThreadItems: async ({ profile, threadId, items }: { profile: ProfileName; threadId: string; items: unknown[] }) => {
       await pool.get(profile).injectThreadItems(threadId, items);
