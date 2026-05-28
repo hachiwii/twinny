@@ -2434,6 +2434,12 @@ export class ConversationManager {
     message: IncomingLarkMessage,
     parsed: ParsedCommand
   ): Promise<void> {
+    if (isOwnerOnlyParsedCommand(parsed) && profileForSender(this.options.config, message.senderOpenId) !== "host") {
+      await this.replyControlBestEffort(message.messageId, `只有 owner 可以执行 /${parsed.kind}。`);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
     if (parsed.kind === "activate") {
       await this.handleActivateCommand(state, context, message, parsed.text);
       return;
@@ -3324,6 +3330,10 @@ export class ConversationManager {
 
     let status: LarkMessageStatus = "completed";
     try {
+      if (profileForSender(this.options.config, action.operatorOpenId) !== "host") {
+        await this.sendDirectControlBestEffort(action.operatorOpenId, "只有 owner 可以操作 /resume 卡片。");
+        return;
+      }
       if (!action.openMessageId) {
         status = "failed";
         this.log.warn({ eventId: action.eventId, action: command.action }, "resume list action missing message id");
@@ -12156,6 +12166,7 @@ function larkMentionTextRefs(mentions: IncomingLarkMessage["mentions"]): string[
 }
 
 function helpTextFor(message: IncomingLarkMessage, context: MessageContext, config: TwinnyConfig): string {
+  const isOwner = profileForSender(config, message.senderOpenId) === "host";
   const lines = [
     "可用指令：",
     "/help - 查看可用指令和使用说明",
@@ -12165,8 +12176,6 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/next - 打断当前任务，并执行队列中的下一条消息",
     "/steer - 将队列中的下一批消息注入当前任务",
     "/queue [message] - 不带 message 时开启排队模式；带 message 时将消息加入下一轮队列",
-    "/workspace [dir|num] - 查看或设置当前 conversation workspace；会同步主会话 thread",
-    "/cd [dir|num] - 查看或设置当前非主 thread workspace",
     "/goal <objective> - 设置并自动实现 Codex goal；运行中再次使用会更新目标",
     "/plan [message] - 开启 plan mode；带 message 时直接以 plan mode 处理",
     "/exit - 退出 plan mode；默认加入下一轮队列",
@@ -12178,7 +12187,14 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/fork [message] - 从当前 Codex thread fork 出新话题",
     "/watch <lark_doc_url> [owner|all|none] - 监听文档 @bot 评论；不带参数查看当前 thread 监听"
   ];
-  if (isGroupConversationType(context.type) && profileForSender(config, message.senderOpenId) === "host") {
+  if (isOwner) {
+    lines.push(
+      "/workspace [dir|num] - 查看或设置当前 conversation workspace；会同步主会话 thread",
+      "/cd [dir|num] - 查看或设置当前非主 thread workspace",
+      "/resume [thread_id|num] [session|local] - 查看或恢复本机 Codex thread"
+    );
+  }
+  if (isGroupConversationType(context.type) && isOwner) {
     lines.push(
       "/activate <owner_at|owner|all_at|all> [profile] - 激活群聊、设置响应模式并刷新群名",
       "/deactivate - 停用当前群聊"
@@ -12210,6 +12226,10 @@ function controlMessageTypeForParsedCommand(parsed: ParsedCommand): ControlMessa
     return undefined;
   }
   return parsed.kind;
+}
+
+function isOwnerOnlyParsedCommand(parsed: ParsedCommand): boolean {
+  return parsed.kind === "workspace" || parsed.kind === "cd" || parsed.kind === "resume";
 }
 
 function classifyInitialRoute(

@@ -847,8 +847,8 @@ describe("renderTwinnyResumeListCard", () => {
 
     expect(card.header).toBeUndefined();
     const serialized = JSON.stringify(card);
-    expect(serialized).toContain("/resume <thread_id|序号> 恢复本机 Codex 会话。");
-    expect(serialized).toContain("默认使用原会话 cwd；追加 `local` 使用当前会话 cwd。");
+    expect(serialized).toContain("Usage: `/resume [thread_id|序号] [session|local]`");
+    expect(serialized).toContain("参数：`session` 使用原会话 `cwd`（默认）；`local` 使用当前会话 `cwd`。");
     expect(serialized).toContain("| 序号 | thread_id | name | cwd |");
     expect(serialized).toContain("thread_external");
     expect(findButton(card, "上一页")).toBeUndefined();
@@ -912,8 +912,9 @@ describe("renderTwinnyWorkspaceSelectionMarkdown", () => {
     });
 
     expect(markdown).toBe([
-      "/workspace <路径|序号> 设置当前 conversation 的 cwd。",
-      "当前 conversation cwd：`/tmp/current`",
+      "Usage: `/workspace [路径|序号]`",
+      "说明：设置当前 `conversation` 的 `cwd`；不带参数时列出最近使用的 workspace。",
+      "当前 `conversation` `cwd`：`/tmp/current`",
       "",
       "| 序号 | cwd |",
       "| --- | --- |",

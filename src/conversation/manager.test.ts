@@ -463,27 +463,27 @@ describe("ConversationManager", () => {
       const secondWorkspace = path.join(tempDir, "second");
       fs.mkdirSync(firstWorkspace);
       fs.mkdirSync(secondWorkspace);
-      const store = createRepository(conversationRecord());
+      const store = createRepository(ownerConversationRecord());
       const { repository } = store;
       vi.mocked(repository.listRecentThreadWorkspaces).mockReturnValue([firstWorkspace, secondWorkspace]);
       const codex = createCodex();
       const lark = createLarkResponder();
       const manager = createManager({ repository, codex, lark });
 
-      manager.submitIncoming(message("m_workspace_list", "/workspace"));
+      manager.submitIncoming(ownerMessage("m_workspace_list", "/workspace"));
 
       await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("m_workspace_list", expect.any(Object)));
       const listCard = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
       const serializedListCard = JSON.stringify(listCard);
       expect(listCard.header).toBeUndefined();
-      expect(serializedListCard).toContain("/workspace <路径|序号> 设置当前 conversation 的 cwd。");
-      expect(serializedListCard).toContain("当前 conversation cwd：`/tmp/twinny/workspaces/p2p_ou_guest`");
+      expect(serializedListCard).toContain("Usage: `/workspace [路径|序号]`");
+      expect(serializedListCard).toContain("当前 `conversation` `cwd`：`/tmp/twinny/workspaces/p2p_ou_owner`");
       expect(serializedListCard).toContain("| 序号 | cwd |");
       expect(serializedListCard).toContain(`| 1 | ${firstWorkspace} |`);
       expect(serializedListCard).toContain(`| 2 | ${secondWorkspace} |`);
       expect(codex.startTurn).not.toHaveBeenCalled();
 
-      manager.submitIncoming(message("m_workspace_select", "/workspace 2"));
+      manager.submitIncoming(ownerMessage("m_workspace_select", "/workspace 2"));
 
       await waitForExpect(() =>
         expect(lark.replyText).toHaveBeenCalledWith(
@@ -505,11 +505,11 @@ describe("ConversationManager", () => {
   it("rejects missing workspace directories", async () => {
     const missingWorkspace = path.join(os.tmpdir(), `twinny-missing-workspace-${Date.now()}`);
     fs.rmSync(missingWorkspace, { recursive: true, force: true });
-    const { repository } = createRepository(conversationRecord());
+    const { repository } = createRepository(ownerConversationRecord());
     const lark = createLarkResponder();
     const manager = createManager({ repository, lark });
 
-    manager.submitIncoming(message("m_workspace_missing", `/workspace ${missingWorkspace}`));
+    manager.submitIncoming(ownerMessage("m_workspace_missing", `/workspace ${missingWorkspace}`));
 
     await waitForExpect(() =>
       expect(lark.replyText).toHaveBeenCalledWith(
@@ -517,6 +517,26 @@ describe("ConversationManager", () => {
         `workspace 路径不存在：${missingWorkspace}`
       )
     );
+  });
+
+  it("rejects workspace, cd, and resume commands from non-owner senders", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const codex = createCodex({
+      listThreads: vi.fn(async () => ({ data: [], nextCursor: null, backwardsCursor: null }))
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m_workspace_guest", "/workspace"));
+    manager.submitIncoming(message("m_cd_guest", "/cd"));
+    manager.submitIncoming(message("m_resume_guest", "/resume"));
+
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledTimes(3));
+    expect(lark.replyText).toHaveBeenCalledWith("m_workspace_guest", "只有 owner 可以执行 /workspace。");
+    expect(lark.replyText).toHaveBeenCalledWith("m_cd_guest", "只有 owner 可以执行 /cd。");
+    expect(lark.replyText).toHaveBeenCalledWith("m_resume_guest", "只有 owner 可以执行 /resume。");
+    expect(repository.listRecentThreadWorkspaces).not.toHaveBeenCalled();
+    expect(codex.listThreads).not.toHaveBeenCalled();
   });
 
   it("shares workspace selection lists between /workspace and /cd on the same thread", async () => {
@@ -547,7 +567,7 @@ describe("ConversationManager", () => {
         larkRootMessageId: "topic_root"
       };
 
-      manager.submitIncoming(groupMessage("m_topic_workspace_list", "/workspace", topicContext));
+      manager.submitIncoming(ownerGroupMessage("m_topic_workspace_list", "/workspace", topicContext));
 
       await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("m_topic_workspace_list", expect.any(Object)));
       const workspaceCard = vi.mocked(lark.replyCard).mock.calls.find(([messageId]) => messageId === "m_topic_workspace_list")?.[1] as
@@ -555,12 +575,12 @@ describe("ConversationManager", () => {
         | undefined;
       expect(workspaceCard?.header).toBeUndefined();
       const serializedWorkspaceCard = JSON.stringify(workspaceCard);
-      expect(serializedWorkspaceCard).toContain("/workspace <路径|序号> 设置当前 conversation 的 cwd。");
-      expect(serializedWorkspaceCard).toContain("当前 conversation cwd：`/tmp/twinny/workspaces/group_oc_group`");
+      expect(serializedWorkspaceCard).toContain("Usage: `/workspace [路径|序号]`");
+      expect(serializedWorkspaceCard).toContain("当前 `conversation` `cwd`：`/tmp/twinny/workspaces/group_oc_group`");
       expect(serializedWorkspaceCard).toContain("| 序号 | cwd |");
       expect(serializedWorkspaceCard).toContain(`| 1 | ${topicWorkspace} |`);
 
-      manager.submitIncoming(groupMessage("m_topic_cd_list", "/cd", topicContext));
+      manager.submitIncoming(ownerGroupMessage("m_topic_cd_list", "/cd", topicContext));
 
       await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("m_topic_cd_list", expect.any(Object)));
       const cdCard = vi.mocked(lark.replyCard).mock.calls.find(([messageId]) => messageId === "m_topic_cd_list")?.[1] as
@@ -568,12 +588,12 @@ describe("ConversationManager", () => {
         | undefined;
       expect(cdCard?.header).toBeUndefined();
       const serializedCdCard = JSON.stringify(cdCard);
-      expect(serializedCdCard).toContain("/cd <路径|序号> 设置当前 thread 的 cwd。");
-      expect(serializedCdCard).toContain("当前 thread cwd：`/tmp/twinny/workspaces/group_oc_group/topic`");
+      expect(serializedCdCard).toContain("Usage: `/cd [路径|序号]`");
+      expect(serializedCdCard).toContain("当前 `thread` `cwd`：`/tmp/twinny/workspaces/group_oc_group/topic`");
       expect(serializedCdCard).toContain("| 序号 | cwd |");
       expect(serializedCdCard).toContain(`| 1 | ${topicWorkspace} |`);
 
-      manager.submitIncoming(groupMessage("m_topic_cd_select", "/cd 1", topicContext));
+      manager.submitIncoming(ownerGroupMessage("m_topic_cd_select", "/cd 1", topicContext));
 
       await waitForExpect(() =>
         expect(lark.replyText).toHaveBeenCalledWith(
@@ -597,11 +617,11 @@ describe("ConversationManager", () => {
   });
 
   it("rejects /cd on the main thread", async () => {
-    const { repository } = createRepository(conversationRecord());
+    const { repository } = createRepository(ownerConversationRecord());
     const lark = createLarkResponder();
     const manager = createManager({ repository, lark });
 
-    manager.submitIncoming(message("m_cd_main", "/cd"));
+    manager.submitIncoming(ownerMessage("m_cd_main", "/cd"));
 
     await waitForExpect(() =>
       expect(lark.replyText).toHaveBeenCalledWith("m_cd_main", "主会话请使用 /workspace 设置 workspace。")
@@ -3146,9 +3166,25 @@ describe("ConversationManager", () => {
     ]) {
       expect(helpText).toContain(usage);
     }
+    expect(helpText).not.toContain("/workspace [dir|num]");
+    expect(helpText).not.toContain("/cd [dir|num]");
+    expect(helpText).not.toContain("/resume [thread_id|num]");
     expect(helpText).not.toContain("/activate all_at guest");
     expect(helpText).not.toContain("/deactivate");
     expect(codex.startTurn).not.toHaveBeenCalled();
+  });
+
+  it("shows owner-only slash commands in /help for the owner", async () => {
+    const lark = createLarkResponder();
+    const manager = createManager({ lark });
+
+    manager.submitIncoming(ownerMessage("m_owner_help", "/help"));
+
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledTimes(1));
+    const helpText = vi.mocked(lark.replyText).mock.calls[0]?.[1] ?? "";
+    expect(helpText).toContain("/workspace [dir|num] - 查看或设置当前 conversation workspace；会同步主会话 thread");
+    expect(helpText).toContain("/cd [dir|num] - 查看或设置当前非主 thread workspace");
+    expect(helpText).toContain("/resume [thread_id|num] [session|local] - 查看或恢复本机 Codex thread");
   });
 
   it("runs /reload without waiting on its own control queue", async () => {
@@ -4622,15 +4658,13 @@ describe("ConversationManager", () => {
     const lark = createLarkResponder();
     const manager = createManager({ repository, codex, lark });
 
-    manager.submitIncoming(groupMessage("g_resume_list", "/resume", {
-      senderOpenId: "ou_guest"
-    }));
+    manager.submitIncoming(ownerGroupMessage("g_resume_list", "/resume"));
 
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
     const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
     const serialized = JSON.stringify(card);
     expect(card.header).toBeUndefined();
-    expect(serialized).toContain("/resume <thread_id|序号> 恢复本机 Codex 会话。");
+    expect(serialized).toContain("Usage: `/resume [thread_id|序号] [session|local]`");
     expect(serialized).toContain("当前 profile：`host`");
     expect(serialized).toContain("第 1 页，每页 10 个。");
     expect(serialized).toContain("| 序号 | thread_id | name | cwd |");
@@ -4671,9 +4705,7 @@ describe("ConversationManager", () => {
     const lark = createLarkResponder();
     const manager = createManager({ repository, codex, lark });
 
-    manager.submitIncoming(groupMessage("g_resume_list", "/resume", {
-      senderOpenId: "ou_guest"
-    }));
+    manager.submitIncoming(ownerGroupMessage("g_resume_list", "/resume"));
 
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
     const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
@@ -4683,7 +4715,7 @@ describe("ConversationManager", () => {
 
     manager.submitCardAction({
       eventId: "event_resume_next",
-      operatorOpenId: "ou_guest",
+      operatorOpenId: "ou_owner",
       openMessageId: "card_resume_list",
       openChatId: "oc_group",
       actionTag: "button",
@@ -4696,6 +4728,45 @@ describe("ConversationManager", () => {
     expect(secondPage).toContain("thread_external_11");
     expect(secondPage).toContain("thread_external_20");
     expect(secondPage).not.toContain("thread_external_10");
+    expect(codex.listThreads).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects /resume list card actions from non-owner operators", async () => {
+    const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      listThreads: vi.fn(async () => ({
+        data: Array.from({ length: 11 }, (_, index) => ({
+          id: `thread_external_${index + 1}`,
+          name: `External ${index + 1}`,
+          cwd: `/tmp/external-${index + 1}`,
+          updatedAt: 100 - index
+        })),
+        nextCursor: null,
+        backwardsCursor: null
+      }))
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(ownerGroupMessage("g_resume_list", "/resume"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
+
+    manager.submitCardAction({
+      eventId: "event_resume_next_guest",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_resume_list",
+      openChatId: "oc_group",
+      actionTag: "button",
+      actionValue: findTwinnyCardActionValue(card, "resume_next"),
+      raw: { event_id: "event_resume_next_guest" }
+    });
+
+    await waitForExpect(() =>
+      expect(lark.sendTextToOpenId).toHaveBeenCalledWith("ou_guest", "只有 owner 可以操作 /resume 卡片。")
+    );
+    expect(lark.patchCard).not.toHaveBeenCalled();
     expect(codex.listThreads).toHaveBeenCalledTimes(1);
   });
 
@@ -4747,14 +4818,10 @@ describe("ConversationManager", () => {
     });
     const manager = createManager({ repository, codex, lark });
 
-    manager.submitIncoming(groupMessage("g_resume_list", "/resume", {
-      senderOpenId: "ou_guest"
-    }));
+    manager.submitIncoming(ownerGroupMessage("g_resume_list", "/resume"));
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
 
-    manager.submitIncoming(groupMessage("g_resume_select", "/resume 1 local", {
-      senderOpenId: "ou_guest"
-    }));
+    manager.submitIncoming(ownerGroupMessage("g_resume_select", "/resume 1 local"));
 
     await waitForExpect(() => expect(codex.forkThread).toHaveBeenCalledTimes(1));
     expect(codex.forkThread).toHaveBeenCalledWith({
@@ -10876,6 +10943,18 @@ function conversationRecord(overrides: Partial<ConversationRecord> = {}): Conver
   return record;
 }
 
+function ownerConversationRecord(overrides: Partial<ConversationRecord> = {}): ConversationRecord {
+  return conversationRecord({
+    conversationKey: "p2p_ou_owner",
+    chatId: "ou_owner",
+    name: "Owner",
+    profile: "host",
+    workspace: "/tmp/twinny/workspaces/p2p_ou_owner",
+    profileCodexHome: "/tmp/twinny/profiles/host/codex",
+    ...overrides
+  });
+}
+
 function groupConversationRecord(overrides: Partial<ConversationRecord> = {}): ConversationRecord {
   return conversationRecord({
     conversationKey: "group_oc_group",
@@ -10978,6 +11057,14 @@ function message(messageId: string, text: string, overrides: Partial<IncomingLar
   };
 }
 
+function ownerMessage(messageId: string, text: string, overrides: Partial<IncomingLarkMessage> = {}): IncomingLarkMessage {
+  return message(messageId, text, {
+    senderOpenId: "ou_owner",
+    senderName: "Owner",
+    ...overrides
+  });
+}
+
 function botMenuAction(
   eventId: string,
   action: IncomingLarkBotMenuAction["action"],
@@ -11010,6 +11097,14 @@ function groupMessage(messageId: string, text: string, overrides: Partial<Incomi
     chatId: "oc_group",
     chatType: "group",
     larkGroupId: "oc_group",
+    ...overrides
+  });
+}
+
+function ownerGroupMessage(messageId: string, text: string, overrides: Partial<IncomingLarkMessage> = {}): IncomingLarkMessage {
+  return groupMessage(messageId, text, {
+    senderOpenId: "ou_owner",
+    senderName: "Owner",
     ...overrides
   });
 }

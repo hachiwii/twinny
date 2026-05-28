@@ -372,8 +372,9 @@ export function renderTwinnyResumeListCard(options: RenderTwinnyResumeListCardOp
     ? `第 ${options.pageNumber} 页，每页 ${options.pageSize} 个。`
     : undefined;
   const content = selectionMarkdown([
-    "/resume <thread_id|序号> 恢复本机 Codex 会话。",
-    "默认使用原会话 cwd；追加 `local` 使用当前会话 cwd。",
+    `Usage: ${inlineCode("/resume [thread_id|序号] [session|local]")}`,
+    `说明：恢复本机 Codex 会话；不带参数时列出可恢复的 ${inlineCode("thread")}。`,
+    `参数：${inlineCode("session")} 使用原会话 ${inlineCode("cwd")}（默认）；${inlineCode("local")} 使用当前会话 ${inlineCode("cwd")}。`,
     options.profile ? `当前 profile：${inlineCode(options.profile)}` : undefined,
     pageLine
   ], resumeListTable(options.items));
@@ -465,8 +466,9 @@ export function renderHiddenTwinnyStatusCard(): LarkCardJson {
 
 export function renderTwinnyWorkspaceSelectionMarkdown(options: RenderTwinnyWorkspaceSelectionMarkdownOptions): string {
   return selectionMarkdown([
-    `${options.command} <路径|序号> 设置当前 ${options.target} 的 cwd。`,
-    `当前 ${options.target} cwd：${inlineCode(options.currentWorkspace)}`
+    `Usage: ${inlineCode(`${options.command} [路径|序号]`)}`,
+    `说明：设置当前 ${inlineCode(options.target)} 的 ${inlineCode("cwd")}；不带参数时列出最近使用的 workspace。`,
+    `当前 ${inlineCode(options.target)} ${inlineCode("cwd")}：${inlineCode(options.currentWorkspace)}`
   ], workspaceSelectionTable(options.workspaces));
 }
 
