@@ -193,6 +193,7 @@ describe("ConversationRepository", () => {
     });
     expect(topicThread.workspace).toBe(topicWorkspace);
     expect(topicThread.category).toBe("thread");
+    expect(topicThread.createMethod).toBe("fresh");
 
     now = 1300;
     expect(repo.updateConversationWorkspace("p2p_ou_456", conversationWorkspace)).toMatchObject({
@@ -1031,6 +1032,118 @@ describe("ConversationRepository", () => {
     });
     expect(repo.hasUserMessageForCodexThread("thread-topic-2")).toBe(true);
     expect(repo.hasUserMessageForCodexThread("thread-topic-2", ["om_doc"])).toBe(false);
+  });
+
+  it("lists fresh and fork child threads created since the latest message or doc comment", () => {
+    const repo = createConversationRepository(db, { now: () => now });
+
+    repo.upsertCodexThread({
+      codexThreadId: "thread-parent",
+      conversationKey: "group_oc_group",
+      profile: "guest"
+    });
+
+    now = 1100;
+    repo.insertLarkMessage({
+      larkMessageId: "om_previous",
+      eventId: "event_previous",
+      larkUserId: "ou_456",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread-parent",
+      routeKind: "message",
+      status: "completed",
+      text: "previous source message"
+    });
+
+    now = 1120;
+    repo.insertLarkMessage({
+      larkMessageId: "om_queued",
+      eventId: "event_queued",
+      larkUserId: "ou_456",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread-parent",
+      routeKind: "queued_message",
+      status: "queued",
+      text: "queued text should not reset the window"
+    });
+
+    now = 1200;
+    repo.upsertCodexThread({
+      codexThreadId: "thread-fresh",
+      conversationKey: "group_oc_group",
+      larkThreadId: "topic_fresh",
+      profile: "guest",
+      parentCodexThreadId: "thread-parent",
+      createMethod: "fresh",
+      createRequestText: "fresh request"
+    });
+
+    now = 1250;
+    repo.upsertCodexThread({
+      codexThreadId: "thread-fork",
+      conversationKey: "group_oc_group",
+      larkThreadId: "topic_fork",
+      profile: "guest",
+      parentCodexThreadId: "thread-parent",
+      createMethod: "fork",
+      createRequestText: "fork request"
+    });
+
+    now = 1275;
+    repo.upsertCodexThread({
+      codexThreadId: "thread-resume",
+      conversationKey: "group_oc_group",
+      larkThreadId: "topic_resume",
+      profile: "guest",
+      parentCodexThreadId: "thread-parent",
+      createMethod: "resume"
+    });
+
+    now = 1300;
+    repo.insertLarkMessage({
+      larkMessageId: "om_current",
+      eventId: "event_current",
+      larkUserId: "ou_456",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread-parent",
+      routeKind: "message",
+      status: "processing",
+      text: "current source message"
+    });
+
+    expect(
+      repo.listCreatedThreadsSinceLatestUserMessage("thread-parent", ["om_current"])
+        .map((thread) => thread.codexThreadId)
+    ).toEqual(["thread-fresh", "thread-fork"]);
+    expect(repo.listCreatedThreadsSinceLatestUserMessage("thread-parent")).toEqual([]);
+
+    now = 1400;
+    repo.insertLarkMessage({
+      larkMessageId: "om_doc",
+      eventId: "event_doc",
+      larkUserId: "ou_456",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread-parent",
+      routeKind: "doc_comment",
+      status: "completed",
+      text: "doc comment",
+      docCommentId: "comment_1"
+    });
+
+    now = 1500;
+    repo.upsertCodexThread({
+      codexThreadId: "thread-after-doc",
+      conversationKey: "group_oc_group",
+      larkThreadId: "topic_after_doc",
+      profile: "guest",
+      parentCodexThreadId: "thread-parent",
+      createMethod: "fresh",
+      createRequestText: "doc follow up branch"
+    });
+
+    expect(repo.listCreatedThreadsSinceLatestUserMessage("thread-parent").map((thread) => thread.codexThreadId)).toEqual([
+      "thread-after-doc"
+    ]);
   });
 
   it("rejects mismatched or unsafe conversation keys", () => {

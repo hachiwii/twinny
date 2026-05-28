@@ -675,6 +675,7 @@ export function adaptConversationRepository(repository: ConversationRepository) 
     getCodexThreadByConversationAndLarkThread: repository.getCodexThreadByConversationAndLarkThread.bind(repository),
     listCodexThreadIds: repository.listCodexThreadIds.bind(repository),
     listCodexThreadsByConversation: repository.listCodexThreadsByConversation.bind(repository),
+    listCreatedThreadsSinceLatestUserMessage: repository.listCreatedThreadsSinceLatestUserMessage.bind(repository),
     countUnfinishedLarkMessagesByThread: repository.countUnfinishedLarkMessagesByThread.bind(repository),
     getLarkMessageById: repository.getLarkMessageById.bind(repository),
     getLarkMessageByEventId: repository.getLarkMessageByEventId.bind(repository),

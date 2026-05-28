@@ -24,7 +24,7 @@ export type CodexThreadMode = "default" | "plan";
 export type CodexThreadStatus = "idle" | "working" | "waiting";
 
 export type CodexThreadCategory = "main" | "thread" | "previous_main";
-export type CodexThreadForkSource = "external_resume";
+export type CodexThreadCreateMethod = "init_main" | "new_main" | "fresh" | "fork" | "resume";
 
 export type CodexThreadGoalStatus =
   | "none"
@@ -234,9 +234,10 @@ export interface CodexThreadRecord {
   status: CodexThreadStatus;
   goalStatus: CodexThreadGoalStatus;
   goalUpdatedAt?: number;
-  forkedFromCodexThreadId?: string;
+  parentCodexThreadId?: string;
   forkedAt?: number;
-  forkSource?: CodexThreadForkSource;
+  createMethod?: CodexThreadCreateMethod;
+  createRequestText?: string;
   creatorOpenId?: string;
   cardMessageId?: string;
   codexThreadHasRollout: boolean;

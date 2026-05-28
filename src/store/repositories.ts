@@ -2,7 +2,7 @@ import path from "node:path";
 
 import { TwinnyError } from "../errors.js";
 import type {
-  CodexThreadForkSource,
+  CodexThreadCreateMethod,
   CodexThreadRecord,
   CodexThreadGoalStatus,
   CodexThreadMode,
@@ -64,9 +64,10 @@ interface CodexThreadRow {
   status: CodexThreadStatus;
   goal_status: CodexThreadGoalStatus;
   goal_updated_at: number | null;
-  forked_from_thread_id: string | null;
+  parent_thread: string | null;
   forked_at: number | null;
-  fork_source: CodexThreadForkSource | null;
+  create_method: CodexThreadCreateMethod;
+  create_request_text: string | null;
   creator_open_id: string | null;
   card_message_id: string | null;
   thread_has_rollout: 0 | 1;
@@ -159,9 +160,10 @@ export interface UpsertCodexThreadInput {
   effort?: string;
   larkThreadId?: string;
   codexThreadHasRollout?: boolean;
-  forkedFromCodexThreadId?: string;
+  parentCodexThreadId?: string;
   forkedAt?: number;
-  forkSource?: CodexThreadForkSource;
+  createMethod?: CodexThreadCreateMethod;
+  createRequestText?: string;
 }
 
 export interface InsertLarkMessageInput {
@@ -452,9 +454,10 @@ export class ConversationRepository {
         profile,
         model,
         effort,
-        forked_from_thread_id,
+        parent_thread,
         forked_at,
-        fork_source,
+        create_method,
+        create_request_text,
         thread_has_rollout,
         total_tokens,
         token_usage_json,
@@ -469,9 +472,10 @@ export class ConversationRepository {
         @profile,
         @model,
         @effort,
-        @forkedFromCodexThreadId,
+        @parentCodexThreadId,
         @forkedAt,
-        @forkSource,
+        COALESCE(@createMethod, CASE WHEN @larkThreadId IS NOT NULL THEN 'fresh' ELSE 'init_main' END),
+        @createRequestText,
         @codexThreadHasRollout,
         @totalTokens,
         @tokenUsageJson,
@@ -486,9 +490,13 @@ export class ConversationRepository {
         profile = excluded.profile,
         model = COALESCE(excluded.model, threads.model),
         effort = COALESCE(excluded.effort, threads.effort),
-        forked_from_thread_id = COALESCE(excluded.forked_from_thread_id, threads.forked_from_thread_id),
+        parent_thread = COALESCE(excluded.parent_thread, threads.parent_thread),
         forked_at = COALESCE(excluded.forked_at, threads.forked_at),
-        fork_source = COALESCE(excluded.fork_source, threads.fork_source),
+        create_method = CASE
+          WHEN @createMethod IS NULL THEN threads.create_method
+          ELSE excluded.create_method
+        END,
+        create_request_text = COALESCE(excluded.create_request_text, threads.create_request_text),
         thread_has_rollout = CASE
           WHEN threads.thread_has_rollout = 1 OR excluded.thread_has_rollout = 1 THEN 1
           ELSE 0
@@ -1265,9 +1273,10 @@ export class ConversationRepository {
       profile,
       model: input.model ?? null,
       effort: input.effort ?? null,
-      forkedFromCodexThreadId: input.forkedFromCodexThreadId ?? null,
+      parentCodexThreadId: input.parentCodexThreadId ?? null,
       forkedAt: input.forkedAt ?? null,
-      forkSource: input.forkSource ?? null,
+      createMethod: input.createMethod ?? null,
+      createRequestText: input.createRequestText ?? null,
       codexThreadHasRollout: input.codexThreadHasRollout === true ? 1 : 0,
       totalTokens: 0,
       tokenUsageJson: "{}",
@@ -1298,6 +1307,38 @@ export class ConversationRepository {
   listCodexThreadsByConversation(conversationKey: string): CodexThreadRecord[] {
     assertValidConversationKey(conversationKey);
     return this.selectCodexThreadsByConversation.all(conversationKey)
+      .map((row) => mapCodexThreadRow(row))
+      .filter((thread): thread is CodexThreadRecord => thread !== undefined);
+  }
+
+  listCreatedThreadsSinceLatestUserMessage(
+    parentCodexThreadId: string,
+    excludeLarkMessageIds: readonly string[] = []
+  ): CodexThreadRecord[] {
+    assertNonEmpty(parentCodexThreadId, "parentCodexThreadId");
+    const excludedIds = [...new Set(excludeLarkMessageIds.filter((id) => id.length > 0))];
+    const excludeClause = excludedIds.length > 0
+      ? `AND (lark_message_id IS NULL OR lark_message_id NOT IN (${excludedIds.map(() => "?").join(", ")}))`
+      : "";
+    const latestUserMessage = this.db.prepare<unknown[], { received_at: number | null }>(`
+      SELECT MAX(received_at) AS received_at
+      FROM lark_messages
+      WHERE thread_id = ?
+        AND route_kind IN ('message', 'doc_comment')
+        ${excludeClause}
+    `).get(parentCodexThreadId, ...excludedIds);
+    if (latestUserMessage?.received_at === undefined || latestUserMessage.received_at === null) {
+      return [];
+    }
+
+    return this.db.prepare<[string, number], CodexThreadRow>(`
+      SELECT *
+      FROM threads
+      WHERE parent_thread = ?
+        AND create_method IN ('fresh', 'fork')
+        AND created_at > ?
+      ORDER BY created_at ASC, id ASC
+    `).all(parentCodexThreadId, latestUserMessage.received_at)
       .map((row) => mapCodexThreadRow(row))
       .filter((thread): thread is CodexThreadRecord => thread !== undefined);
   }
@@ -1376,8 +1417,10 @@ export class ConversationRepository {
           profile,
           model: input.model ?? null,
           effort: input.effort ?? null,
-          forkedFromCodexThreadId: null,
+          parentCodexThreadId: null,
           forkedAt: null,
+          createMethod: null,
+          createRequestText: null,
           codexThreadHasRollout,
           totalTokens: 0,
           tokenUsageJson: "{}",
@@ -1961,9 +2004,10 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     status: validCodexThreadStatus(row.status) ? row.status : "idle",
     goalStatus: validCodexThreadGoalStatus(row.goal_status) ? row.goal_status : "none",
     goalUpdatedAt: row.goal_updated_at ?? undefined,
-    forkedFromCodexThreadId: row.forked_from_thread_id ?? undefined,
+    parentCodexThreadId: row.parent_thread ?? undefined,
     forkedAt: row.forked_at ?? undefined,
-    forkSource: row.fork_source === "external_resume" ? row.fork_source : undefined,
+    createMethod: validCodexThreadCreateMethod(row.create_method) ? row.create_method : "init_main",
+    createRequestText: row.create_request_text ?? undefined,
     creatorOpenId: row.creator_open_id ?? undefined,
     cardMessageId: row.card_message_id ?? undefined,
     codexThreadHasRollout: row.thread_has_rollout === 1,
@@ -2071,11 +2115,14 @@ function validateCodexThreadInput(input: UpsertCodexThreadInput): void {
   if (input.larkThreadId !== undefined) {
     assertNonEmpty(input.larkThreadId, "larkThreadId");
   }
-  if (input.forkedFromCodexThreadId !== undefined) {
-    assertNonEmpty(input.forkedFromCodexThreadId, "forkedFromCodexThreadId");
+  if (input.parentCodexThreadId !== undefined) {
+    assertNonEmpty(input.parentCodexThreadId, "parentCodexThreadId");
   }
-  if (input.forkSource !== undefined && input.forkSource !== "external_resume") {
-    throw new TwinnyError(`Unsupported Codex thread fork source: ${input.forkSource}`, "CODEX_THREAD_FORK_SOURCE_INVALID");
+  if (input.createMethod !== undefined && !validCodexThreadCreateMethod(input.createMethod)) {
+    throw new TwinnyError(`Unsupported Codex thread create method: ${input.createMethod}`, "CODEX_THREAD_CREATE_METHOD_INVALID");
+  }
+  if (input.createRequestText !== undefined) {
+    assertNonEmpty(input.createRequestText, "createRequestText");
   }
 }
 
@@ -2252,6 +2299,10 @@ function validCodexThreadMode(mode: unknown): mode is CodexThreadMode {
 
 function validCodexThreadStatus(status: unknown): status is CodexThreadStatus {
   return status === "idle" || status === "working" || status === "waiting";
+}
+
+function validCodexThreadCreateMethod(method: unknown): method is CodexThreadCreateMethod {
+  return method === "init_main" || method === "new_main" || method === "fresh" || method === "fork" || method === "resume";
 }
 
 function validCodexThreadGoalStatus(status: unknown): status is CodexThreadGoalStatus {

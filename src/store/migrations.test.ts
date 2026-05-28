@@ -18,8 +18,8 @@ describe("store migrations", () => {
   it("loads the bundled store migrations", () => {
     const migrations = loadStoreMigrations();
 
-    expect(currentStoreSchemaVersion).toBe(4);
-    expect(migrations).toHaveLength(4);
+    expect(currentStoreSchemaVersion).toBe(5);
+    expect(migrations).toHaveLength(5);
     expect(migrations[0]).toMatchObject({
       version: 1,
       name: "0001_initial"
@@ -35,6 +35,10 @@ describe("store migrations", () => {
     expect(migrations[3]).toMatchObject({
       version: 4,
       name: "0004_thread_workspace"
+    });
+    expect(migrations[4]).toMatchObject({
+      version: 5,
+      name: "0005_thread_create_method"
     });
   });
 
@@ -96,9 +100,15 @@ describe("store migrations", () => {
         { name: "id", type: "INTEGER", notnull: 0, pk: 1 },
         { name: "thread_id", type: "TEXT", notnull: 1, pk: 0 },
         { name: "conversation_key", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "workspace", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "name", type: "TEXT", notnull: 1, pk: 0 },
         { name: "lark_thread_id", type: "TEXT", notnull: 0, pk: 0 },
         { name: "profile", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "forked_from_thread_id", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "model", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "effort", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "parent_thread", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "create_method", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "create_request_text", type: "TEXT", notnull: 0, pk: 0 },
         { name: "forked_at", type: "INTEGER", notnull: 0, pk: 0 },
         { name: "total_tokens", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "token_usage_json", type: "TEXT", notnull: 1, pk: 0 },
@@ -115,13 +125,8 @@ describe("store migrations", () => {
         { name: "thread_has_rollout", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "mode", type: "TEXT", notnull: 1, pk: 0 },
         { name: "status", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "name", type: "TEXT", notnull: 1, pk: 0 },
         { name: "goal_status", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "goal_updated_at", type: "INTEGER", notnull: 0, pk: 0 },
-        { name: "model", type: "TEXT", notnull: 0, pk: 0 },
-        { name: "effort", type: "TEXT", notnull: 0, pk: 0 },
-        { name: "workspace", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "fork_source", type: "TEXT", notnull: 0, pk: 0 }
+        { name: "goal_updated_at", type: "INTEGER", notnull: 0, pk: 0 }
       ]);
 
       const threadIndexes = db
@@ -133,6 +138,7 @@ describe("store migrations", () => {
       expect(threadIndexes).toEqual([
         "idx_threads_conversation_key",
         "idx_threads_conversation_lark_thread",
+        "idx_threads_parent_create_method",
         "sqlite_autoindex_threads_1"
       ]);
 
@@ -400,6 +406,88 @@ describe("store migrations", () => {
         { thread_id: "thread_main", workspace: "/tmp/twinny/workspaces/group_oc_group" },
         { thread_id: "thread_previous", workspace: "/tmp/twinny/workspaces/group_oc_group" },
         { thread_id: "thread_topic", workspace: "/tmp/twinny/workspaces/group_oc_group" }
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("renames thread parent and create method fields when upgrading to version 5", () => {
+    const db = new TwinnyDatabase(":memory:");
+    const migrations = loadStoreMigrations();
+    try {
+      expect(runStoreMigrations(db, { migrations: migrations.slice(0, 4) })).toBe(4);
+
+      db.exec(`
+        INSERT INTO threads (
+          thread_id,
+          conversation_key,
+          workspace,
+          lark_thread_id,
+          profile,
+          forked_from_thread_id,
+          fork_source,
+          forked_at,
+          created_at,
+          updated_at
+        ) VALUES
+          ('thread_main', 'group_oc_group', '/tmp/workspace', NULL, 'guest', NULL, NULL, NULL, 100, 100),
+          ('thread_topic', 'group_oc_group', '/tmp/workspace', 'topic_1', 'guest', NULL, NULL, NULL, 110, 110),
+          ('thread_fork', 'group_oc_group', '/tmp/workspace', 'topic_2', 'guest', 'thread_main', NULL, 120, 120, 120),
+          ('thread_resume', 'group_oc_group', '/tmp/workspace', 'topic_3', 'guest', 'thread_external', 'external_resume', 130, 130, 130);
+      `);
+
+      expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
+
+      const threadColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(threads)").all().map((row) => row.name);
+      expect(threadColumns).toContain("parent_thread");
+      expect(threadColumns).toContain("create_method");
+      expect(threadColumns).toContain("create_request_text");
+      expect(threadColumns).not.toContain("forked_from_thread_id");
+      expect(threadColumns).not.toContain("fork_source");
+
+      const rows = db
+        .prepare<[], {
+          thread_id: string;
+          parent_thread: string | null;
+          create_method: string;
+          create_request_text: string | null;
+          forked_at: number | null;
+        }>(
+          `SELECT thread_id, parent_thread, create_method, create_request_text, forked_at
+           FROM threads
+           ORDER BY thread_id ASC`
+        )
+        .all();
+      expect(rows).toEqual([
+        {
+          thread_id: "thread_fork",
+          parent_thread: "thread_main",
+          create_method: "fork",
+          create_request_text: null,
+          forked_at: 120
+        },
+        {
+          thread_id: "thread_main",
+          parent_thread: null,
+          create_method: "init_main",
+          create_request_text: null,
+          forked_at: null
+        },
+        {
+          thread_id: "thread_resume",
+          parent_thread: "thread_external",
+          create_method: "resume",
+          create_request_text: null,
+          forked_at: 130
+        },
+        {
+          thread_id: "thread_topic",
+          parent_thread: null,
+          create_method: "fresh",
+          create_request_text: null,
+          forked_at: null
+        }
       ]);
     } finally {
       db.close();

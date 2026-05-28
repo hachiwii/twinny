@@ -238,6 +238,10 @@ export interface ConversationRepository {
   ): Promise<CodexThreadRecord | undefined> | CodexThreadRecord | undefined;
   listCodexThreadIds(): Promise<string[]> | string[];
   listCodexThreadsByConversation(conversationKey: string): Promise<CodexThreadRecord[]> | CodexThreadRecord[];
+  listCreatedThreadsSinceLatestUserMessage(
+    parentCodexThreadId: string,
+    excludeLarkMessageIds?: readonly string[]
+  ): Promise<CodexThreadRecord[]> | CodexThreadRecord[];
   countUnfinishedLarkMessagesByThread(codexThreadId: string): Promise<number> | number;
   getLarkMessageById(larkMessageId: string): Promise<unknown | undefined> | unknown | undefined;
   getLarkMessageByEventId(eventId: string): Promise<unknown | undefined> | unknown | undefined;
@@ -262,9 +266,10 @@ export interface ConversationRepository {
     effort?: string;
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
-    forkedFromCodexThreadId?: string;
+    parentCodexThreadId?: string;
     forkedAt?: number;
-    forkSource?: CodexThreadRecord["forkSource"];
+    createMethod?: CodexThreadRecord["createMethod"];
+    createRequestText?: string;
     name?: string;
   }): Promise<unknown> | unknown;
   replaceCodexThreadForLarkThread?(
@@ -839,6 +844,9 @@ interface NewSessionTopicRequest {
   anchorMessage?: IncomingLarkMessage;
   codexThread?: NewSessionTopicCodexThread;
   name?: string;
+  parentCodexThreadId?: string;
+  createMethod?: CodexThreadRecord["createMethod"];
+  createRequestText?: string;
 }
 
 interface NewSessionTopicCodexThread {
@@ -847,9 +855,10 @@ interface NewSessionTopicCodexThread {
   model?: string;
   effort?: string;
   codexThreadHasRollout: boolean;
-  forkedFromCodexThreadId?: string;
+  parentCodexThreadId?: string;
   forkedAt?: number;
-  forkSource?: CodexThreadRecord["forkSource"];
+  createMethod?: CodexThreadRecord["createMethod"];
+  createRequestText?: string;
 }
 
 interface CreatedSessionTopic {
@@ -2462,7 +2471,7 @@ export class ConversationManager {
       return;
     }
     if (parsed.kind === "thread") {
-      await this.handleThreadCommand(context, message, parsed.text);
+      await this.handleThreadCommand(state, context, message, parsed.text);
       return;
     }
     if (parsed.kind === "fork") {
@@ -3046,6 +3055,7 @@ export class ConversationManager {
   }
 
   private async handleThreadCommand(
+    state: ConversationState,
     context: MessageContext,
     message: IncomingLarkMessage,
     text: string
@@ -3068,12 +3078,17 @@ export class ConversationManager {
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
+    const parentCodexThreadId = await this.resolveSourceThreadIdForContext(state, context);
+    const createRequestText = threadCreateRequestTextForCommand(text, message);
     let topic = await this.createNewSessionTopic(context, {
       chatId,
       operatorOpenId: message.senderOpenId,
       eventId: message.eventId,
       anchorMessage: message,
-      name: initialThreadNameForCommand(text, message, "新会话")
+      name: initialThreadNameForCommand(text, message, "新会话"),
+      parentCodexThreadId,
+      createMethod: "fresh",
+      createRequestText
     });
     if (!topic) {
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -3181,8 +3196,10 @@ export class ConversationManager {
         threadId: forkedThreadId,
         workspace: sourceWorkspace,
         codexThreadHasRollout: true,
-        forkedFromCodexThreadId: sourceThread.threadId,
-        forkedAt
+        parentCodexThreadId: sourceThread.threadId,
+        forkedAt,
+        createMethod: "fork",
+        createRequestText: threadCreateRequestTextForCommand(text, message)
       }
     });
     if (!topic) {
@@ -3409,9 +3426,9 @@ export class ConversationManager {
         model: forked.model ?? modelSettings.model,
         effort: forked.effort ?? modelSettings.effort,
         codexThreadHasRollout: true,
-        forkedFromCodexThreadId: source.threadId,
+        parentCodexThreadId: source.threadId,
         forkedAt,
-        forkSource: "external_resume"
+        createMethod: "resume"
       }
     });
     if (!topic) {
@@ -3708,6 +3725,27 @@ export class ConversationManager {
     return { threadId: conversation.codexThreadId, record };
   }
 
+  private async resolveSourceThreadIdForContext(
+    state: ConversationState,
+    context: MessageContext
+  ): Promise<string | undefined> {
+    if (state.active?.threadId) {
+      return state.active.threadId;
+    }
+    const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+    if (!conversation) {
+      return undefined;
+    }
+    if (context.larkThreadId) {
+      const record = await this.options.repository.getCodexThreadByConversationAndLarkThread(
+        context.conversationKey,
+        context.larkThreadId
+      );
+      return record?.codexThreadId;
+    }
+    return conversation.codexThreadId;
+  }
+
   private async replyThreadCommandMessage(
     anchorMessageId: string,
     message: IncomingLarkMessage,
@@ -3886,9 +3924,10 @@ export class ConversationManager {
       effort: threadEffort,
       ...(threadName ? { name: threadName } : {}),
       codexThreadHasRollout: request.codexThread?.codexThreadHasRollout ?? false,
-      forkedFromCodexThreadId: request.codexThread?.forkedFromCodexThreadId,
+      parentCodexThreadId: request.codexThread?.parentCodexThreadId ?? request.parentCodexThreadId,
       forkedAt: request.codexThread?.forkedAt,
-      forkSource: request.codexThread?.forkSource
+      createMethod: request.codexThread?.createMethod ?? request.createMethod ?? "fresh",
+      createRequestText: request.codexThread?.createRequestText ?? request.createRequestText
     });
     const initialRecord = await this.options.repository.updateCodexThreadCard({
       conversationKey: context.conversationKey,
@@ -4261,7 +4300,7 @@ export class ConversationManager {
         const result = await this.options.codex.startTurn({
           profile: params.profile,
           threadId: activeRuntimeThreadId(active),
-          input: formatPendingMessageForCodexInput(message),
+          input: await this.formatPendingMessageForThreadCodexInput(active.threadId, message),
           cwd: params.workspace,
           approvalPolicy: "never",
           mode: "default",
@@ -5299,7 +5338,7 @@ export class ConversationManager {
     }
 
     const batch = state.pendingBatch.slice(0, nextBatchSize);
-    const input = formatPendingMessagesForCodexInput(batch);
+    const input = await this.formatPendingMessagesForThreadCodexInput(active.threadId, batch);
     try {
       await this.options.codex.steerTurn({
         profile: active.profile,
@@ -5428,7 +5467,8 @@ export class ConversationManager {
         profile,
         workspace,
         name: MAIN_THREAD_NAME,
-        codexThreadHasRollout: false
+        codexThreadHasRollout: false,
+        createMethod: "new_main"
       });
       this.syncMainConversationThreadNameToCodexBestEffort(
         profile,
@@ -5469,7 +5509,7 @@ export class ConversationManager {
         profile: active.profile,
         threadId: active.threadId,
         turnId: active.turnId,
-        input: formatPendingMessageForCodexInput(message),
+        input: await this.formatPendingMessageForThreadCodexInput(active.threadId, message),
         cwd: active.workspace,
         approvalPolicy: "never"
       });
@@ -6022,9 +6062,50 @@ export class ConversationManager {
       profile: resolved.profile,
       threadId: resolved.threadId,
       workspace: resolved.workspace,
-      input: inputOverride ?? formatPendingMessagesForCodexInput(messages),
+      input: inputOverride ?? await this.formatPendingMessagesForThreadCodexInput(resolved.threadId, messages),
       initialCardMessages
     });
+  }
+
+  private async formatPendingMessageForThreadCodexInput(
+    codexThreadId: string,
+    message: PendingMessage
+  ): Promise<CodexTurnInput> {
+    return this.prependCreatedThreadContextForMessages(
+      codexThreadId,
+      [message],
+      formatPendingMessageForCodexInput(message)
+    );
+  }
+
+  private async formatPendingMessagesForThreadCodexInput(
+    codexThreadId: string,
+    messages: PendingMessage[]
+  ): Promise<CodexTurnInput> {
+    return this.prependCreatedThreadContextForMessages(
+      codexThreadId,
+      messages,
+      formatPendingMessagesForCodexInput(messages)
+    );
+  }
+
+  private async prependCreatedThreadContextForMessages(
+    codexThreadId: string,
+    messages: PendingMessage[],
+    input: CodexTurnInput
+  ): Promise<CodexTurnInput> {
+    let threads: CodexThreadRecord[];
+    try {
+      threads = await this.options.repository.listCreatedThreadsSinceLatestUserMessage(
+        codexThreadId,
+        messages.map((message) => message.messageId)
+      );
+    } catch (error) {
+      this.log.warn({ error, codexThreadId }, "failed to read created thread context");
+      return input;
+    }
+    const prefix = formatCreatedThreadContextForCodex(threads);
+    return prefix ? prependCodexTextToInput(`${prefix}\n`, input) : input;
   }
 
   private async beginGoalTurn(
@@ -6637,7 +6718,7 @@ export class ConversationManager {
           profile: active.profile,
           threadId: active.threadId,
           turnId: active.turnId,
-          input: formatPendingMessageForCodexInput(message),
+          input: await this.formatPendingMessageForThreadCodexInput(active.threadId, message),
           cwd: active.workspace,
           approvalPolicy: "never"
         });
@@ -7580,6 +7661,9 @@ export class ConversationManager {
     name?: string;
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
+    parentCodexThreadId?: string;
+    createMethod?: CodexThreadRecord["createMethod"];
+    createRequestText?: string;
   }): Promise<void> {
     try {
       if (params.name === MAIN_THREAD_NAME) {
@@ -7606,7 +7690,7 @@ export class ConversationManager {
     thread: CodexThreadRecord | undefined,
     excludeLarkMessageIds: readonly string[] = []
   ): Promise<boolean> {
-    if (!thread?.forkedFromCodexThreadId) {
+    if (!thread?.parentCodexThreadId || (thread.createMethod !== "fork" && thread.createMethod !== "resume")) {
       return false;
     }
 
@@ -10733,10 +10817,15 @@ function goalWorkingTitle(content: string): string {
 }
 
 function initialThreadNameForCommand(text: string, message: IncomingLarkMessage, fallback: string): string {
+  const content = threadCreateRequestTextForCommand(text, message);
+  return content ? truncateGoalTitle(content) : fallback;
+}
+
+function threadCreateRequestTextForCommand(text: string, message: IncomingLarkMessage): string | undefined {
   const nested = parseSlashCommand(text);
   const titleText = parsedCommandTitleText(nested) ?? text;
   const content = goalContentForPendingMessage(toPendingMessage(message, titleText));
-  return content ? truncateGoalTitle(content) : fallback;
+  return content || undefined;
 }
 
 function parsedCommandTitleText(command: ParsedCommand): string | undefined {
@@ -12448,6 +12537,26 @@ function activeTurnMentionOpenIds(active: ActiveTurn): string[] {
     openIds.push(openId);
   }
   return openIds;
+}
+
+function formatCreatedThreadContextForCodex(threads: CodexThreadRecord[]): string | undefined {
+  const rendered: string[] = [];
+  for (const thread of threads) {
+    if (thread.createMethod !== "fresh" && thread.createMethod !== "fork") {
+      continue;
+    }
+    const requestText = nonEmptyString(thread.createRequestText);
+    rendered.push([
+      formatXmlOpenTag("new_thread_created", [
+        ["thread_id", thread.codexThreadId],
+        ["thread_name", thread.name],
+        ["type", thread.createMethod]
+      ]),
+      requestText ? `created with request: ${escapeXmlText(requestText)}` : "",
+      "</new_thread_created>"
+    ].join("\n"));
+  }
+  return rendered.length > 0 ? rendered.join("\n") : undefined;
 }
 
 function formatPendingMessageForCodex(message: PendingMessage): string {

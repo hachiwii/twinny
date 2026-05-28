@@ -2006,7 +2006,8 @@ describe("ConversationManager", () => {
           codexThreadId: "thread_forked",
           conversationKey: "group_oc_group",
           larkThreadId: "topic_forked",
-          forkedFromCodexThreadId: "thread_parent"
+          parentCodexThreadId: "thread_parent",
+          createMethod: "fork"
         })
       ]
     });
@@ -4063,6 +4064,12 @@ describe("ConversationManager", () => {
         cardMessageId: "card_oc_group_1"
       })
     );
+    expect(repository.getCodexThreadById("thread_initial")).toMatchObject({
+      codexThreadId: "thread_initial",
+      parentCodexThreadId: "thread_group",
+      createMethod: "fresh",
+      createRequestText: "topic first"
+    });
     expect(lark.replyText).toHaveBeenNthCalledWith(
       1,
       cardMessageId,
@@ -4372,7 +4379,9 @@ describe("ConversationManager", () => {
       name: "try alternate path",
       larkThreadId: "topic_fork_1",
       profile: "host",
-      forkedFromCodexThreadId: "thread_group",
+      parentCodexThreadId: "thread_group",
+      createMethod: "fork",
+      createRequestText: "try alternate path",
       codexThreadHasRollout: true
     });
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
@@ -4395,6 +4404,93 @@ describe("ConversationManager", () => {
     expect(forkInput).toEqual(expect.stringContaining(wrappedMessage("try alternate path", "reply_fork_1", "ou_guest")));
     expect(repository.hasUserMessageForCodexThread).toHaveBeenCalledWith("thread_forked", ["reply_fork_1"]);
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_fork"]);
+  });
+
+  it("prepends fresh and forked child thread context to the next source thread message", async () => {
+    const row = groupConversationRecord({ responseMode: "all" });
+    const { repository } = createRepository(row, {
+      larkMessages: [
+        larkMessageRecord({
+          id: 10,
+          larkMessageId: "g_prev",
+          eventId: "e_g_prev",
+          conversationKey: "group_oc_group",
+          codexThreadId: "thread_group",
+          routeKind: "message",
+          status: "completed",
+          text: "previous main message",
+          receivedAt: 100,
+          updatedAt: 100
+        })
+      ],
+      codexThreads: [
+        codexThreadRecord({
+          id: 2,
+          codexThreadId: "thread_child_fresh",
+          conversationKey: "group_oc_group",
+          larkThreadId: "topic_child_fresh",
+          profile: "guest",
+          name: "Child Fresh",
+          parentCodexThreadId: "thread_group",
+          createMethod: "fresh",
+          createRequestText: "build <b>raw</b>",
+          createdAt: 200,
+          updatedAt: 200
+        }),
+        codexThreadRecord({
+          id: 3,
+          codexThreadId: "thread_child_fork",
+          conversationKey: "group_oc_group",
+          larkThreadId: "topic_child_fork",
+          profile: "guest",
+          name: "Child Fork",
+          parentCodexThreadId: "thread_group",
+          createMethod: "fork",
+          createRequestText: "alternate path",
+          createdAt: 250,
+          updatedAt: 250
+        }),
+        codexThreadRecord({
+          id: 4,
+          codexThreadId: "thread_child_resume",
+          conversationKey: "group_oc_group",
+          larkThreadId: "topic_child_resume",
+          profile: "guest",
+          name: "Child Resume",
+          parentCodexThreadId: "thread_group",
+          createMethod: "resume",
+          createdAt: 300,
+          updatedAt: 300
+        })
+      ]
+    });
+    const codex = createCodex({
+      resumeThread: vi.fn(async ({ threadId }) => ({ threadId })),
+      startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
+        await onTurnStarted?.("turn_1");
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_next", "continue main", {
+      senderOpenId: "ou_guest"
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    const input = vi.mocked(codex.startTurn).mock.calls[0]![0].input as string;
+    const freshOpenTag = '<new_thread_created thread_id="thread_child_fresh" thread_name="Child Fresh" type="fresh">';
+    expect(input).toContain(freshOpenTag);
+    expect(input).toContain(
+      '<new_thread_created thread_id="thread_child_fork" thread_name="Child Fork" type="fork">'
+    );
+    expect(input).toContain("created with request: build &lt;b&gt;raw&lt;/b&gt;");
+    expect(input).toContain("created with request: alternate path");
+    expect(input).not.toContain("thread_child_resume");
+    expect(input.indexOf(freshOpenTag)).toBeLessThan(input.indexOf('<lark_message lark_message_id="g_next"'));
+    expect(input).toContain(wrappedMessage("continue main", "g_next", "ou_guest"));
+    expect(repository.listCreatedThreadsSinceLatestUserMessage).toHaveBeenCalledWith("thread_group", ["g_next"]);
   });
 
   it("uses the default branch title for an empty /fork topic", async () => {
@@ -4431,7 +4527,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() =>
       expect(repository.getCodexThreadById("thread_forked_empty")).toMatchObject({
         name: "新分支会话",
-        forkedFromCodexThreadId: "thread_group"
+        parentCodexThreadId: "thread_group"
       })
     );
     expect(codex.startTurn).not.toHaveBeenCalled();
@@ -4607,8 +4703,8 @@ describe("ConversationManager", () => {
     expect(repository.getCodexThreadById("thread_resume_fork")).toMatchObject({
       codexThreadId: "thread_resume_fork",
       larkThreadId: "topic_resume",
-      forkedFromCodexThreadId: "thread_external",
-      forkSource: "external_resume",
+      parentCodexThreadId: "thread_external",
+      createMethod: "resume",
       codexThreadHasRollout: true
     });
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_resume_select"]);
@@ -4682,7 +4778,7 @@ describe("ConversationManager", () => {
     expect(lark.recallMessage).not.toHaveBeenCalledWith("g_fork_nested");
     expect(repository.getCodexThreadById("thread_topic_fork")).toMatchObject({
       larkThreadId: "topic_fork_nested",
-      forkedFromCodexThreadId: "thread_topic_source",
+      parentCodexThreadId: "thread_topic_source",
       codexThreadHasRollout: true
     });
     expect(codex.startTurn).toHaveBeenCalledWith(
@@ -9975,9 +10071,10 @@ function createRepository(initial?: ConversationRecord, options: {
     category?: CodexThreadRecord["category"];
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
-    forkedFromCodexThreadId?: string;
+    parentCodexThreadId?: string;
     forkedAt?: number;
-    forkSource?: CodexThreadRecord["forkSource"];
+    createMethod?: CodexThreadRecord["createMethod"];
+    createRequestText?: string;
     name?: string;
   }): CodexThreadRecord => {
     const existing = codexThreads.get(input.codexThreadId);
@@ -9988,14 +10085,15 @@ function createRepository(initial?: ConversationRecord, options: {
       conversationKey: input.conversationKey,
       workspace: input.workspace ?? existing?.workspace ?? row?.workspace ?? "/tmp/twinny/workspaces/p2p_ou_guest",
       name: input.name ?? existing?.name ?? "新会话",
-      category: existing?.category ?? (input.larkThreadId ? "thread" : "previous_main"),
+      category: input.category ?? existing?.category ?? (input.larkThreadId ? "thread" : "previous_main"),
       larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
       profile: input.profile,
       model: input.model ?? existing?.model,
       effort: input.effort ?? existing?.effort,
-      forkedFromCodexThreadId: input.forkedFromCodexThreadId ?? existing?.forkedFromCodexThreadId,
+      parentCodexThreadId: input.parentCodexThreadId ?? existing?.parentCodexThreadId,
       forkedAt: input.forkedAt ?? existing?.forkedAt,
-      forkSource: input.forkSource ?? existing?.forkSource,
+      createMethod: input.createMethod ?? existing?.createMethod ?? (input.larkThreadId ? "fresh" : "init_main"),
+      createRequestText: input.createRequestText ?? existing?.createRequestText,
       codexThreadHasRollout: existing?.codexThreadHasRollout === true || input.codexThreadHasRollout === true,
       createdAt: existing?.createdAt ?? Date.now(),
       updatedAt: Date.now()
@@ -10030,6 +10128,10 @@ function createRepository(initial?: ConversationRecord, options: {
       profile: update.profile,
       model: update.model ?? existing?.model,
       effort: update.effort ?? existing?.effort,
+      parentCodexThreadId: existing?.parentCodexThreadId,
+      forkedAt: existing?.forkedAt,
+      createMethod: existing?.createMethod ?? "fresh",
+      createRequestText: existing?.createRequestText,
       codexThreadHasRollout: update.codexThreadHasRollout ?? false,
       totalTokens: 0,
       tokenUsageJson: "{}",
@@ -10196,6 +10298,26 @@ function createRepository(initial?: ConversationRecord, options: {
             message.routeKind === "doc_comment_reply_steer"
           )
         );
+      }),
+      listCreatedThreadsSinceLatestUserMessage: vi.fn((parentCodexThreadId, excludeLarkMessageIds = []) => {
+        const excluded = new Set(excludeLarkMessageIds);
+        const latestUserMessage = [...larkMessages.values()]
+          .filter((message) =>
+            message.codexThreadId === parentCodexThreadId &&
+            !excluded.has(message.larkMessageId ?? "") &&
+            (message.routeKind === "message" || message.routeKind === "doc_comment")
+          )
+          .sort((left, right) => right.receivedAt - left.receivedAt || right.id - left.id)[0];
+        if (!latestUserMessage) {
+          return [];
+        }
+        return [...codexThreads.values()]
+          .filter((thread) =>
+            thread.parentCodexThreadId === parentCodexThreadId &&
+            (thread.createMethod === "fresh" || thread.createMethod === "fork") &&
+            thread.createdAt > latestUserMessage.receivedAt
+          )
+          .sort((left, right) => left.createdAt - right.createdAt || left.id - right.id);
       }),
       upsertCodexThread: vi.fn(putCodexThread),
       replaceCodexThreadForLarkThread: vi.fn(replaceCodexThreadForLarkThread),
@@ -10659,6 +10781,7 @@ function codexThreadRecord(overrides: Partial<CodexThreadRecord> = {}): CodexThr
     mode: "default",
     status: "idle",
     goalStatus: "none",
+    createMethod: overrides.larkThreadId ? "fresh" : "init_main",
     inputTokens: 0,
     outputTokens: 0,
     cachedInputTokens: 0,

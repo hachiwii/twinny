@@ -14,12 +14,13 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 4;
+export const currentStoreSchemaVersion = 5;
 
 const baselineMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const larkDocWatcherMigrationFile = fileURLToPath(new URL("../../migrations/0002_lark_doc_watcher.sql", import.meta.url));
 const larkMessageDocCommentIdMigrationFile = fileURLToPath(new URL("../../migrations/0003_lark_message_doc_comment_id.sql", import.meta.url));
 const threadWorkspaceMigrationFile = fileURLToPath(new URL("../../migrations/0004_thread_workspace.sql", import.meta.url));
+const threadCreateMethodMigrationFile = fileURLToPath(new URL("../../migrations/0005_thread_create_method.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -42,6 +43,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 4,
       name: "0004_thread_workspace",
       sql: fs.readFileSync(threadWorkspaceMigrationFile, "utf8")
+    },
+    {
+      version: 5,
+      name: "0005_thread_create_method",
+      sql: fs.readFileSync(threadCreateMethodMigrationFile, "utf8")
     }
   ];
 }
@@ -129,7 +135,34 @@ function validateSchemaBeforeMigration(db: TwinnyDatabase, currentVersion: numbe
       "last_comment_received_at"
     ]);
   }
-  if (currentVersion >= 4) {
+  if (currentVersion >= 5) {
+    requiredColumnsByTable.set("threads", [
+      "thread_id",
+      "conversation_key",
+      "profile",
+      "thread_has_rollout",
+      "mode",
+      "status",
+      "name",
+      "goal_status",
+      "model",
+      "effort",
+      "workspace",
+      "parent_thread",
+      "create_method",
+      "create_request_text"
+    ]);
+    requiredColumnsByTable.set("lark_messages", [
+      "event_id",
+      "lark_user_id",
+      "doc_comment_id",
+      "conversation_key",
+      "thread_id",
+      "route_kind",
+      "status",
+      "token_usage_json"
+    ]);
+  } else if (currentVersion >= 4) {
     requiredColumnsByTable.set("threads", [
       "thread_id",
       "conversation_key",
@@ -167,7 +200,22 @@ function validateBaselineSchema(db: TwinnyDatabase): void {
     ],
     [
       "threads",
-      ["thread_id", "conversation_key", "profile", "thread_has_rollout", "mode", "status", "name", "goal_status", "model", "effort", "workspace", "fork_source"]
+      [
+        "thread_id",
+        "conversation_key",
+        "profile",
+        "thread_has_rollout",
+        "mode",
+        "status",
+        "name",
+        "goal_status",
+        "model",
+        "effort",
+        "workspace",
+        "parent_thread",
+        "create_method",
+        "create_request_text"
+      ]
     ],
     [
       "lark_messages",
