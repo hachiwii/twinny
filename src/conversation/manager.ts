@@ -15,6 +15,7 @@ import {
   markdownElement,
   mediaElement,
   PLAN_IMPLEMENT_INSTRUCTION_FORM_NAME,
+  renderHiddenTwinnyStatusCard,
   renderTwinnyBannerCard,
   renderTwinnyAgentCard,
   renderTwinnyStatusCard,
@@ -1008,8 +1009,9 @@ interface ParsedActiveCardActionCommand {
 }
 
 interface ParsedStatusCardActionCommand {
-  action: "status_hide";
+  action: "status_hide" | "status_refresh";
   stateKey: string;
+  larkThreadId?: string;
   text: string;
 }
 
@@ -1130,9 +1132,9 @@ export class ConversationManager {
       return;
     }
 
-    if (command.action === "status_hide") {
-      void this.processStatusCardHideAction(action, command).catch((error) => {
-        this.log.error({ error, eventId: action.eventId }, "conversation status card hide action failed");
+    if (isStatusCardAction(command)) {
+      void this.processStatusCardAction(action, command).catch((error) => {
+        this.log.error({ error, eventId: action.eventId }, "conversation status card action failed");
       });
       return;
     }
@@ -3821,9 +3823,9 @@ export class ConversationManager {
       chatId: message.chatId,
       chatName: message.chatName
     });
-    if (context.type === "group") {
+    if (context.type === "group" && !context.larkThreadId) {
       await this.sendEphemeralStatusCardBestEffort(message.chatId, message.senderOpenId, card);
-    } else if (context.type === "topic_group") {
+    } else if (context.larkThreadId) {
       const anchorMessageId = topicReplyAnchorMessageId(message);
       await this.replyStatusCardBestEffort(anchorMessageId, card, { replyInThread: true });
     } else {
@@ -4105,13 +4107,8 @@ export class ConversationManager {
         openId: actor.senderOpenId,
         identity: userIdentityForSender(this.options.config, actor.senderOpenId)
       },
-      hideAction: context.type === "group"
-        ? {
-            twinny: true,
-            action: "status_hide",
-            stateKey: context.stateKey
-          }
-        : undefined,
+      hideAction: statusCardActionValue(context, "status_hide"),
+      refreshAction: statusCardActionValue(context, "status_refresh"),
       system
     });
   }
@@ -4248,7 +4245,7 @@ export class ConversationManager {
     };
   }
 
-  private async processStatusCardHideAction(
+  private async processStatusCardAction(
     action: IncomingLarkCardAction,
     command: ParsedStatusCardActionCommand
   ): Promise<void> {
@@ -4261,10 +4258,25 @@ export class ConversationManager {
     try {
       if (!action.openMessageId) {
         status = "failed";
-        this.log.warn({ eventId: action.eventId }, "status card hide action missing message id");
+        this.log.warn({ eventId: action.eventId, action: command.action }, "status card action missing message id");
         return;
       }
-      await this.options.lark.deleteEphemeralMessage(action.openMessageId);
+      if (command.action === "status_hide") {
+        if (isMainGroupStatusCardAction(command)) {
+          await this.options.lark.deleteEphemeralMessage(action.openMessageId);
+        } else {
+          await this.options.lark.patchCard(action.openMessageId, renderHiddenTwinnyStatusCard());
+        }
+      } else {
+        const context = statusCardActionContext(command);
+        const state = this.getState(context.stateKey);
+        const card = await this.formatStatusCard(state, context, {
+          senderOpenId: action.operatorOpenId,
+          senderName: undefined,
+          chatId: action.openChatId
+        });
+        await this.options.lark.patchCard(action.openMessageId, card);
+      }
     } catch (error) {
       status = "failed";
       throw error;
@@ -4502,7 +4514,7 @@ export class ConversationManager {
         eventId: action.eventId,
         larkUserId: action.operatorOpenId,
         larkGroupId: action.openChatId,
-        larkThreadId: active?.context.larkThreadId,
+        larkThreadId: active?.context.larkThreadId ?? (isStatusCardAction(command) ? statusCardActionLarkThreadId(command) : undefined),
         conversationKey: active?.conversationKey ?? conversationKeyFromStateKey(command.stateKey),
         codexThreadId: active?.threadId,
         codexTurnId: active?.turnId,
@@ -4613,6 +4625,11 @@ export class ConversationManager {
       return;
     }
     const conversationKey = active?.conversationKey ?? conversationKeyFromStateKey(command.stateKey);
+    const conversationType = active?.context.type ?? (
+      isStatusCardAction(command) && statusCardActionLarkThreadId(command)
+        ? statusCardActionContext(command).type
+        : conversationTypeForConversationKey(conversationKey)
+    );
     telemetry.capture(
       "twinny_message_received",
       {
@@ -4628,7 +4645,7 @@ export class ConversationManager {
         control_message_type: null,
         menu_button_type: null,
         card_action_type: command.action,
-        conversation_type: active?.context.type ?? conversationTypeForConversationKey(conversationKey),
+        conversation_type: conversationType,
         route_kind: "card_action",
         status_at_receive: status,
         queue_reason: null,
@@ -9051,10 +9068,14 @@ function parseTwinnyCardAction(value: Record<string, unknown>): ParsedCardAction
   if (!isTwinnyCardAction(action) || !stateKey) {
     return undefined;
   }
-  if (action === "status_hide") {
+  if (action === "status_hide" || action === "status_refresh") {
+    const larkThreadId = typeof value.larkThreadId === "string" && value.larkThreadId.trim()
+      ? value.larkThreadId.trim()
+      : undefined;
     return {
       action,
       stateKey,
+      ...(larkThreadId ? { larkThreadId } : {}),
       text: twinnyCardActionText(action)
     };
   }
@@ -9078,7 +9099,8 @@ function isTwinnyCardAction(value: unknown): value is ParsedCardActionCommand["a
     value === "request_input_interrupt" ||
     value === "plan_implement" ||
     value === "plan_interrupt" ||
-    value === "status_hide"
+    value === "status_hide" ||
+    value === "status_refresh"
   );
 }
 
@@ -9100,6 +9122,8 @@ function twinnyCardActionText(action: ParsedCardActionCommand["action"]): string
       return "/plan interrupt";
     case "status_hide":
       return "/status hide";
+    case "status_refresh":
+      return "/status refresh";
   }
 }
 
@@ -9734,6 +9758,50 @@ function topicReplyAnchorMessageId(message: IncomingLarkMessage): string {
     nonEmptyString(message.larkParentMessageId) ??
     message.messageId
   );
+}
+
+function statusCardActionValue(context: MessageContext, action: ParsedStatusCardActionCommand["action"]) {
+  return {
+    twinny: true as const,
+    action,
+    stateKey: context.stateKey,
+    ...(context.larkThreadId ? { larkThreadId: context.larkThreadId } : {})
+  };
+}
+
+function isStatusCardAction(command: ParsedCardActionCommand): command is ParsedStatusCardActionCommand {
+  return command.action === "status_hide" || command.action === "status_refresh";
+}
+
+function statusCardActionLarkThreadId(command: ParsedStatusCardActionCommand): string | undefined {
+  return command.larkThreadId ?? larkThreadIdFromStateKey(command.stateKey);
+}
+
+function statusCardActionContext(command: ParsedStatusCardActionCommand): MessageContext {
+  const conversationKey = conversationKeyFromStateKey(command.stateKey);
+  const larkThreadId = statusCardActionLarkThreadId(command);
+  const baseType = conversationTypeForConversationKey(conversationKey);
+  return {
+    type: larkThreadId && baseType !== "p2p" ? "topic_group" : baseType,
+    conversationKey,
+    stateKey: command.stateKey,
+    ...(larkThreadId ? { larkThreadId } : {})
+  };
+}
+
+function isMainGroupStatusCardAction(command: ParsedStatusCardActionCommand): boolean {
+  return conversationTypeForConversationKey(conversationKeyFromStateKey(command.stateKey)) === "group" &&
+    !statusCardActionLarkThreadId(command);
+}
+
+function larkThreadIdFromStateKey(stateKey: string): string | undefined {
+  const threadMarker = "_thread_";
+  const threadIndex = stateKey.indexOf(threadMarker);
+  if (threadIndex < 0) {
+    return undefined;
+  }
+  const larkThreadId = stateKey.slice(threadIndex + threadMarker.length);
+  return larkThreadId || undefined;
 }
 
 function createThreadReplyContext(context: MessageContext, larkThreadId: string): MessageContext {

@@ -38,8 +38,9 @@ export interface TwinnyAgentCardActionValue {
 
 export interface TwinnyStatusCardActionValue {
   twinny: true;
-  action: "status_hide";
+  action: "status_hide" | "status_refresh";
   stateKey: string;
+  larkThreadId?: string;
 }
 
 export interface TwinnyAgentCardInputQuestion {
@@ -168,6 +169,7 @@ export interface RenderTwinnyStatusCardOptions {
     sevenDayRemainingLimit: string;
   };
   hideAction?: TwinnyStatusCardActionValue;
+  refreshAction?: TwinnyStatusCardActionValue;
 }
 
 export interface RenderTwinnyBannerCardOptions {
@@ -290,8 +292,11 @@ export function renderTwinnyStatusCard(options: RenderTwinnyStatusCardOptions): 
     ]));
   }
 
-  if (options.hideAction) {
-    elements.push(statusHideButtonElement(options.hideAction));
+  if (options.hideAction || options.refreshAction) {
+    elements.push(statusActionButtonsElement({
+      hideAction: options.hideAction,
+      refreshAction: options.refreshAction
+    }));
   }
 
   return {
@@ -316,6 +321,41 @@ export function renderTwinnyStatusCard(options: RenderTwinnyStatusCardOptions): 
       vertical_align: "top",
       padding: "12px 12px 12px 12px",
       elements
+    }
+  };
+}
+
+export function renderHiddenTwinnyStatusCard(): LarkCardJson {
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      style: {
+        text_size: {
+          normal_v2: {
+            default: "normal",
+            pc: "normal",
+            mobile: "heading"
+          }
+        }
+      }
+    },
+    body: {
+      direction: "vertical",
+      horizontal_spacing: "0px",
+      vertical_spacing: "0px",
+      horizontal_align: "left",
+      vertical_align: "top",
+      padding: "0px 0px 0px 0px",
+      elements: []
+    },
+    header: {
+      title: {
+        tag: "plain_text",
+        content: "已隐藏的状态卡片"
+      },
+      template: "grey",
+      padding: "12px 12px 12px 12px"
     }
   };
 }
@@ -839,21 +879,28 @@ function buttonsElement(options: RenderTwinnyAgentCardOptions): LarkCardElement 
   };
 }
 
-function statusHideButtonElement(action: TwinnyStatusCardActionValue): LarkCardElement {
-  const button = buttonElement("隐藏", "default", action);
+function statusActionButtonsElement(options: {
+  hideAction?: TwinnyStatusCardActionValue;
+  refreshAction?: TwinnyStatusCardActionValue;
+}): LarkCardElement {
+  const buttons: LarkCardElement[] = [];
+  if (options.refreshAction) {
+    buttons.push(buttonElement("刷新", "default", options.refreshAction));
+  }
+  if (options.hideAction) {
+    buttons.push(buttonElement("隐藏", "default", options.hideAction));
+  }
   return {
     tag: "column_set",
     horizontal_spacing: "8px",
     horizontal_align: "left",
-    columns: [
-      {
-        tag: "column",
-        width: "auto",
-        elements: [button],
-        direction: "horizontal",
-        vertical_align: "top"
-      }
-    ],
+    columns: buttons.map((button) => ({
+      tag: "column",
+      width: "auto",
+      elements: [button],
+      direction: "horizontal",
+      vertical_align: "top"
+    })),
     margin: "0px 0px 0px 0px"
   };
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   markdownElement,
+  renderHiddenTwinnyStatusCard,
   renderTwinnyBannerCard,
   renderTwinnyAgentCard,
   renderTwinnyStatusCard,
@@ -750,7 +751,7 @@ describe("renderTwinnyStatusCard", () => {
     expect(serialized).toContain("77% (重置于 23:59)");
   });
 
-  it("renders an optional bottom hide button", () => {
+  it("renders optional bottom status action buttons", () => {
     const card = renderTwinnyStatusCard({
       topic: {
         mode: "default",
@@ -783,10 +784,33 @@ describe("renderTwinnyStatusCard", () => {
       hideAction: {
         twinny: true,
         action: "status_hide",
-        stateKey: "group_oc_group"
+        stateKey: "group_oc_group",
+        larkThreadId: "omt_thread"
+      },
+      refreshAction: {
+        twinny: true,
+        action: "status_refresh",
+        stateKey: "group_oc_group",
+        larkThreadId: "omt_thread"
       }
     });
 
+    const refreshButton = findButton(card, "刷新");
+    expect(refreshButton).toMatchObject({
+      tag: "button",
+      type: "default",
+      behaviors: [
+        {
+          type: "callback",
+          value: {
+            twinny: true,
+            action: "status_refresh",
+            stateKey: "group_oc_group",
+            larkThreadId: "omt_thread"
+          }
+        }
+      ]
+    });
     const button = findButton(card, "隐藏");
     expect(button).toMatchObject({
       tag: "button",
@@ -797,12 +821,20 @@ describe("renderTwinnyStatusCard", () => {
           value: {
             twinny: true,
             action: "status_hide",
-            stateKey: "group_oc_group"
+            stateKey: "group_oc_group",
+            larkThreadId: "omt_thread"
           }
         }
       ]
     });
     expect(((card.body as { elements: unknown[] }).elements.at(-1) as Record<string, unknown>).tag).toBe("column_set");
+  });
+
+  it("renders a hidden status card with only the hidden title", () => {
+    const card = renderHiddenTwinnyStatusCard();
+
+    expect(JSON.stringify(card)).toContain("已隐藏的状态卡片");
+    expect((card.body as { elements: unknown[] }).elements).toEqual([]);
   });
 });
 

@@ -2840,6 +2840,7 @@ describe("ConversationManager", () => {
       expect.objectContaining({ schema: "2.0" })
     );
     expect(JSON.stringify(vi.mocked(lark.sendEphemeralCardToChatId).mock.calls[0]![2])).toContain("group_oc_group");
+    expect(JSON.stringify(vi.mocked(lark.sendEphemeralCardToChatId).mock.calls[0]![2])).toContain("刷新");
     expect(lark.replyCard).not.toHaveBeenCalled();
     expect(codex.startTurn).not.toHaveBeenCalled();
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_status"]);
@@ -2884,6 +2885,133 @@ describe("ConversationManager", () => {
     }));
   });
 
+  it("hides a default /status card by patching it to a hidden title", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_status" });
+    const { repository } = createRepository(row);
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(message("m1", "/status"));
+
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    manager.submitCardAction({
+      eventId: "event_status_hide",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m1_1",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "status_hide",
+        stateKey: "p2p_ou_guest"
+      },
+      raw: { event_id: "event_status_hide" }
+    });
+
+    await waitForExpect(() => expect(lark.patchCard).toHaveBeenCalledWith("card_m1_1", expect.any(Object)));
+    const patched = vi.mocked(lark.patchCard).mock.calls[0]![1] as Record<string, unknown>;
+    expect(JSON.stringify(patched)).toContain("已隐藏的状态卡片");
+    expect(lark.deleteEphemeralMessage).not.toHaveBeenCalled();
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
+      eventId: "event_status_hide",
+      routeKind: "card_action",
+      status: "completed",
+      text: "/status hide",
+      conversationKey: "p2p_ou_guest"
+    }));
+  });
+
+  it("refreshes a default /status card in place with latest status", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_status" });
+    const { repository } = createRepository(row);
+    vi.mocked(repository.getCodexThreadById)
+      .mockReturnValueOnce(codexThreadRecord({
+        codexThreadId: "thread_status",
+        conversationKey: "p2p_ou_guest",
+        name: "before refresh"
+      }))
+      .mockReturnValue(codexThreadRecord({
+        codexThreadId: "thread_status",
+        conversationKey: "p2p_ou_guest",
+        name: "after refresh",
+        model: "gpt-5.6",
+        effort: "medium"
+      }));
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(message("m1", "/status"));
+
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    manager.submitCardAction({
+      eventId: "event_status_refresh",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m1_1",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "status_refresh",
+        stateKey: "p2p_ou_guest"
+      },
+      raw: { event_id: "event_status_refresh" }
+    });
+
+    await waitForExpect(() => expect(lark.patchCard).toHaveBeenCalledWith("card_m1_1", expect.any(Object)));
+    const patched = vi.mocked(lark.patchCard).mock.calls[0]![1] as Record<string, unknown>;
+    const serialized = JSON.stringify(patched);
+    expect(serialized).toContain("after refresh");
+    expect(serialized).toContain("gpt-5.6 medium");
+    expect(serialized).toContain("刷新");
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
+      eventId: "event_status_refresh",
+      routeKind: "card_action",
+      status: "completed",
+      text: "/status refresh",
+      conversationKey: "p2p_ou_guest"
+    }));
+  });
+
+  it("refreshes an ephemeral /status card in place", async () => {
+    const row = groupConversationRecord({ responseMode: "all", codexThreadId: "thread_group" });
+    const { repository } = createRepository(row);
+    vi.mocked(repository.getCodexThreadById)
+      .mockReturnValueOnce(codexThreadRecord({
+        codexThreadId: "thread_group",
+        conversationKey: "group_oc_group",
+        name: "before refresh"
+      }))
+      .mockReturnValue(codexThreadRecord({
+        codexThreadId: "thread_group",
+        conversationKey: "group_oc_group",
+        name: "after refresh"
+      }));
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("g_status", "/status"));
+
+    await waitForExpect(() => expect(lark.sendEphemeralCardToChatId).toHaveBeenCalledTimes(1));
+    manager.submitCardAction({
+      eventId: "event_status_refresh",
+      operatorOpenId: "ou_guest",
+      openMessageId: "ephemeral_oc_group_1",
+      openChatId: "oc_group",
+      actionTag: "button",
+      actionValue: {
+        twinny: true,
+        action: "status_refresh",
+        stateKey: "group_oc_group"
+      },
+      raw: { event_id: "event_status_refresh" }
+    });
+
+    await waitForExpect(() => expect(lark.patchCard).toHaveBeenCalledWith("ephemeral_oc_group_1", expect.any(Object)));
+    expect(JSON.stringify(vi.mocked(lark.patchCard).mock.calls[0]![1])).toContain("after refresh");
+    expect(lark.deleteEphemeralMessage).not.toHaveBeenCalled();
+  });
+
   it("replies to /status with a default card inside topic groups", async () => {
     const row = groupConversationRecord({ responseMode: "all", codexThreadId: "thread_group" });
     const { repository } = createRepository(row);
@@ -2903,6 +3031,30 @@ describe("ConversationManager", () => {
       expect.objectContaining({ schema: "2.0" }),
       { replyInThread: true }
     );
+    expect(lark.sendEphemeralCardToChatId).not.toHaveBeenCalled();
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["topic_status"]);
+  });
+
+  it("replies to /status inside Lark threads as a normal threaded card even when chat_type is group", async () => {
+    const row = groupConversationRecord({ responseMode: "all", codexThreadId: "thread_group" });
+    const { repository } = createRepository(row);
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("topic_status", "/status", {
+      larkThreadId: "omt_topic",
+      larkRootMessageId: "topic_root"
+    }));
+
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    expect(lark.replyCard).toHaveBeenCalledWith(
+      "topic_root",
+      expect.objectContaining({ schema: "2.0" }),
+      { replyInThread: true }
+    );
+    const card = vi.mocked(lark.replyCard).mock.calls[0]![1] as Record<string, unknown>;
+    expect(JSON.stringify(card)).toContain("\"larkThreadId\":\"omt_topic\"");
     expect(lark.sendEphemeralCardToChatId).not.toHaveBeenCalled();
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["topic_status"]);
   });
