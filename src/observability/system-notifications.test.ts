@@ -63,11 +63,11 @@ describe("TwinnySystemNotifier", () => {
         skipped: false,
         missingScopes: ["im:resource"],
         missingEvents: ["im.message.receive_v1"],
-        missingCallbacks: ["card.action.trigger"],
+        missingCallbacks: [],
         nonLongConnectionEvents: [],
         nonLongConnectionCallbacks: [],
         scopeApplyUrl: "https://open.larkoffice.com/page/scope-apply?clientID=cli_app&scopes=im%3Aresource",
-        eventConfigUrl: "https://open.larkoffice.com/app/cli_app/event",
+        eventConfigUrl: "https://open.larkoffice.com/app/cli_app/event?tab=event",
         hasPublishedVersion: true
       }
     ]);
@@ -80,7 +80,8 @@ describe("TwinnySystemNotifier", () => {
     const card = JSON.stringify(sender.sendInteractiveCardToOpenId.mock.calls[0]![1]);
     expect(card).toContain("Twinny Lark 配置未完成");
     expect(card).toContain("im:resource");
-    expect(card).toContain("card.action.trigger");
+    expect(card).toContain("im.message.receive_v1");
+    expect(card).not.toContain("card.action.trigger");
   });
 });
 

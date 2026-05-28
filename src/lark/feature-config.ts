@@ -1,7 +1,6 @@
 import { toErrorMessage } from "../errors.js";
 import {
   LARK_BOT_MENU_EVENT,
-  LARK_CARD_ACTION_TRIGGER_EVENT,
   LARK_DOC_COMMENT_ADD_EVENT,
   LARK_GROUP_ALL_MESSAGES_SCOPE,
   LARK_GROUP_MENTION_SCOPE,
@@ -18,8 +17,6 @@ export interface LarkFeatureSetDefinition {
   label: string;
   scopes: readonly string[];
   events: readonly string[];
-  callbacks: readonly string[];
-  requireLongConnection: boolean;
 }
 
 export interface LarkFeatureCheckResult {
@@ -50,7 +47,6 @@ export interface LarkAppVersionSnapshot {
 
 export interface LarkEventSubscriptionState {
   eventType: string;
-  longConnection: boolean | "unknown";
 }
 
 export interface LarkFeatureConfigurationCheckerOptions {
@@ -90,33 +86,25 @@ export const LARK_FEATURE_SET_DEFINITIONS: Readonly<Record<LarkFeatureSetKey, La
     key: "necessary",
     label: "必要配置",
     scopes: LARK_NECESSARY_FEATURE_SCOPES,
-    events: [LARK_MESSAGE_RECEIVE_EVENT, LARK_MESSAGE_RECALLED_EVENT],
-    callbacks: [LARK_CARD_ACTION_TRIGGER_EVENT],
-    requireLongConnection: true
+    events: [LARK_MESSAGE_RECEIVE_EVENT, LARK_MESSAGE_RECALLED_EVENT]
   },
   group_non_at: {
     key: "group_non_at",
     label: "群聊非 at 消息",
     scopes: LARK_GROUP_NON_AT_FEATURE_SCOPES,
-    events: [LARK_MESSAGE_RECEIVE_EVENT],
-    callbacks: [],
-    requireLongConnection: true
+    events: [LARK_MESSAGE_RECEIVE_EVENT]
   },
   doc_watch: {
     key: "doc_watch",
     label: "文档监听",
     scopes: LARK_DOC_WATCH_FEATURE_SCOPES,
-    events: [LARK_DOC_COMMENT_ADD_EVENT],
-    callbacks: [],
-    requireLongConnection: true
+    events: [LARK_DOC_COMMENT_ADD_EVENT]
   },
   bot_menu: {
     key: "bot_menu",
     label: "Bot 菜单",
     scopes: [],
-    events: [LARK_BOT_MENU_EVENT],
-    callbacks: [],
-    requireLongConnection: true
+    events: [LARK_BOT_MENU_EVENT]
   }
 };
 
@@ -257,33 +245,16 @@ export function evaluateLarkFeatureSet(
       missingEvents.push(event);
       continue;
     }
-    if (definition.requireLongConnection && subscription.longConnection !== true) {
-      nonLongConnectionEvents.push(event);
-    }
-  }
-
-  for (const callback of definition.callbacks) {
-    const subscription = snapshot.subscriptions.get(callback);
-    if (!subscription) {
-      missingCallbacks.push(callback);
-      continue;
-    }
-    if (definition.requireLongConnection && subscription.longConnection !== true) {
-      nonLongConnectionCallbacks.push(callback);
-    }
   }
 
   const eventConfigUrl = buildLarkEventConfigUrl(appId, {
-    hasEventIssues: missingEvents.length > 0 || nonLongConnectionEvents.length > 0,
-    hasCallbackIssues: missingCallbacks.length > 0 || nonLongConnectionCallbacks.length > 0
+    hasEventIssues: missingEvents.length > 0,
+    hasCallbackIssues: false
   });
   const ok =
     snapshot.hasPublishedVersion &&
     missingScopes.length === 0 &&
-    missingEvents.length === 0 &&
-    missingCallbacks.length === 0 &&
-    nonLongConnectionEvents.length === 0 &&
-    nonLongConnectionCallbacks.length === 0;
+    missingEvents.length === 0;
 
   return {
     key: definition.key,
@@ -292,7 +263,7 @@ export function evaluateLarkFeatureSet(
     skipped: false,
     missingScopes: snapshot.hasPublishedVersion ? missingScopes : [...definition.scopes],
     missingEvents: snapshot.hasPublishedVersion ? missingEvents : [...definition.events],
-    missingCallbacks: snapshot.hasPublishedVersion ? missingCallbacks : [...definition.callbacks],
+    missingCallbacks,
     nonLongConnectionEvents,
     nonLongConnectionCallbacks,
     scopeApplyUrl: missingScopes.length > 0 ? buildLarkScopeApplyUrl(appId, missingScopes) : undefined,
@@ -327,15 +298,8 @@ export function parseCurrentPublishedLarkAppVersion(raw: unknown): LarkAppVersio
       if (!eventType) {
         continue;
       }
-      const longConnection = parseLongConnectionState(eventRecord);
-      const existing = subscriptions.get(eventType);
       subscriptions.set(eventType, {
-        eventType,
-        longConnection: existing?.longConnection === true || longConnection === true
-          ? true
-          : existing?.longConnection === false || longConnection === false
-            ? false
-            : "unknown"
+        eventType
       });
     }
 
@@ -467,42 +431,6 @@ function isOnlyMissingDocMediaDownload(result: LarkFeatureCheckResult): boolean 
 
 function hasLarkScope(scope: string, grantedScopes: Set<string>): boolean {
   return grantedScopes.has(scope) || (LARK_FEATURE_SCOPE_ALTERNATIVES[scope]?.some((alternative) => grantedScopes.has(alternative)) ?? false);
-}
-
-function parseLongConnectionState(record: Record<string, unknown>): boolean | "unknown" {
-  for (const key of ["is_long_connection", "use_long_connection", "use_websocket", "long_connection"]) {
-    const value = record[key];
-    if (typeof value === "boolean") {
-      return value;
-    }
-  }
-
-  for (const key of ["subscription_type", "subscribe_type", "receive_type", "receive_mode", "event_receive_mode", "event_mode", "mode"]) {
-    const value = record[key];
-    if (typeof value === "number") {
-      if (value === 1) {
-        return true;
-      }
-      if (value === 0) {
-        return false;
-      }
-    }
-    if (typeof value !== "string") {
-      continue;
-    }
-    const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
-    if (!normalized) {
-      continue;
-    }
-    if (normalized.includes("long") || normalized.includes("websocket") || normalized === "ws") {
-      return true;
-    }
-    if (normalized.includes("callback") || normalized.includes("webhook") || normalized.includes("http") || normalized.includes("url")) {
-      return false;
-    }
-  }
-
-  return "unknown";
 }
 
 function publishTimeSet(value: unknown): boolean {

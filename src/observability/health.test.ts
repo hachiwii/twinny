@@ -210,12 +210,8 @@ describe("doctor health checks", () => {
               scope,
               token_types: ["tenant"]
             })),
-            event_infos: [
-              ...LARK_FEATURE_SET_DEFINITIONS.necessary.events,
-              ...LARK_FEATURE_SET_DEFINITIONS.necessary.callbacks
-            ].map((event) => ({
-              event_type: event,
-              receive_mode: "long_connection"
+            event_infos: LARK_FEATURE_SET_DEFINITIONS.necessary.events.map((event) => ({
+              event_type: event
             }))
           }
         ]

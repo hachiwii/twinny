@@ -10,7 +10,7 @@ import {
 } from "./feature-config.js";
 
 describe("Lark feature configuration checks", () => {
-  it("parses the current published app version scopes and subscriptions", () => {
+  it("parses the current published app version scopes and event subscriptions", () => {
     const snapshot = parseCurrentPublishedLarkAppVersion({
       data: {
         items: [
@@ -27,8 +27,8 @@ describe("Lark feature configuration checks", () => {
             status: 1,
             publish_time: "2026-05-28 12:00:00",
             event_infos: [
-              { event_type: "im.message.receive_v1", receive_mode: "long_connection" },
-              { event_type: "card.action.trigger", receive_mode: "webhook" }
+              { event_type: "im.message.receive_v1" },
+              { event_type: "im.message.recalled_v1" }
             ],
             scopes: [
               { scope: "im:message.p2p_msg:readonly", token_types: ["tenant"] },
@@ -48,11 +48,11 @@ describe("Lark feature configuration checks", () => {
     expect(snapshot.scopes.has("im:message.p2p_msg:readonly")).toBe(true);
     expect(snapshot.scopes.has("im:message:send_as_bot")).toBe(true);
     expect(snapshot.scopes.has("contact:user.base")).toBe(false);
-    expect(snapshot.subscriptions.get("im.message.receive_v1")).toMatchObject({ longConnection: true });
-    expect(snapshot.subscriptions.get("card.action.trigger")).toMatchObject({ longConnection: false });
+    expect(snapshot.subscriptions.get("im.message.receive_v1")).toEqual({ eventType: "im.message.receive_v1" });
+    expect(snapshot.subscriptions.get("im.message.recalled_v1")).toEqual({ eventType: "im.message.recalled_v1" });
   });
 
-  it("evaluates necessary scopes, events, callbacks, and callback long-connection mode", () => {
+  it("evaluates necessary scopes and observable events", () => {
     const snapshot = parseCurrentPublishedLarkAppVersion({
       data: {
         items: [
@@ -62,9 +62,8 @@ describe("Lark feature configuration checks", () => {
             status: 1,
             publish_time: "2026-05-28",
             event_infos: [
-              { event_type: "im.message.receive_v1", receive_mode: "long_connection" },
-              { event_type: "im.message.recalled_v1", receive_mode: "long_connection" },
-              { event_type: "card.action.trigger", receive_mode: "webhook" }
+              { event_type: "im.message.receive_v1" },
+              { event_type: "im.message.recalled_v1" }
             ],
             scopes: LARK_FEATURE_SET_DEFINITIONS.necessary.scopes
               .filter((scope) => scope !== "im:resource")
@@ -78,12 +77,14 @@ describe("Lark feature configuration checks", () => {
 
     expect(result.ok).toBe(false);
     expect(result.missingScopes).toEqual(["im:resource"]);
-    expect(result.nonLongConnectionCallbacks).toEqual(["card.action.trigger"]);
+    expect(result.missingCallbacks).toEqual([]);
+    expect(result.nonLongConnectionEvents).toEqual([]);
+    expect(result.nonLongConnectionCallbacks).toEqual([]);
     expect(result.scopeApplyUrl).toBe("https://open.larkoffice.com/page/scope-apply?clientID=cli_app&scopes=im%3Aresource");
-    expect(result.eventConfigUrl).toBe("https://open.larkoffice.com/app/cli_app/event?tab=callback");
+    expect(result.eventConfigUrl).toBeUndefined();
   });
 
-  it("treats unknown subscription modes as not long-connection mode", () => {
+  it("accepts the real app version event shape without long-connection metadata", () => {
     const snapshot = parseCurrentPublishedLarkAppVersion({
       data: {
         items: [
@@ -93,9 +94,16 @@ describe("Lark feature configuration checks", () => {
             status: 1,
             publish_time: "2026-05-28",
             event_infos: [
-              { event_type: "im.message.receive_v1", receive_mode: "long_connection" },
-              { event_type: "im.message.recalled_v1" },
-              { event_type: "card.action.trigger" }
+              {
+                event_description: "用户发送新消息至机器人或群聊后推送事件",
+                event_name: "接收消息",
+                event_type: "im.message.receive_v1"
+              },
+              {
+                event_description: "某条消息被撤回",
+                event_name: "消息撤回",
+                event_type: "im.message.recalled_v1"
+              }
             ],
             scopes: LARK_FEATURE_SET_DEFINITIONS.necessary.scopes.map((scope) => ({ scope, token_types: ["tenant"] }))
           }
@@ -105,10 +113,14 @@ describe("Lark feature configuration checks", () => {
 
     const result = evaluateLarkFeatureSet(LARK_FEATURE_SET_DEFINITIONS.necessary, snapshot, "cli_app");
 
-    expect(result.ok).toBe(false);
-    expect(result.nonLongConnectionEvents).toEqual(["im.message.recalled_v1"]);
-    expect(result.nonLongConnectionCallbacks).toEqual(["card.action.trigger"]);
-    expect(result.eventConfigUrl).toBe("https://open.larkoffice.com/app/cli_app/event");
+    expect(result).toMatchObject({
+      ok: true,
+      missingEvents: [],
+      missingCallbacks: [],
+      nonLongConnectionEvents: [],
+      nonLongConnectionCallbacks: []
+    });
+    expect(result.eventConfigUrl).toBeUndefined();
   });
 
   it("builds event configuration links for event and callback combinations", () => {
