@@ -125,7 +125,7 @@ describe("LarkChatDirectory", () => {
     expect(fetch).toHaveBeenLastCalledWith(
       "https://open.feishu.cn/open-apis/im/v1/chats/oc_project/link",
       {
-        method: "GET",
+        method: "POST",
         headers: {
           authorization: "Bearer tenant-token",
           "content-type": "application/json"

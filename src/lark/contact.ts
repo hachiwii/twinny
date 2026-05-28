@@ -88,7 +88,7 @@ export class LarkChatDirectory {
 
   async getChatLink(chatId: string): Promise<string | undefined> {
     const raw = await this.options.openApiClient.request(`/im/v1/chats/${encodePathSegment(chatId)}/link`, {
-      method: "GET"
+      method: "POST"
     });
     return extractChatLink(raw);
   }

@@ -281,16 +281,13 @@ function parseJsonBodyText(text: string): unknown {
 }
 
 async function readJsonBody(response: { json(): Promise<unknown>; text?: () => Promise<string> }): Promise<unknown> {
+  if (response.text) {
+    const text = await response.text();
+    return parseJsonBodyText(text);
+  }
   try {
     return await response.json();
   } catch (error) {
-    if (response.text) {
-      try {
-        return { raw: await response.text() };
-      } catch {
-        throw error;
-      }
-    }
     throw new LarkOpenApiError(`Lark OpenAPI returned invalid JSON: ${toErrorMessage(error)}`, {}, error);
   }
 }

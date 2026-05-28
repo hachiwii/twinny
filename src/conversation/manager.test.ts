@@ -1303,6 +1303,70 @@ describe("ConversationManager", () => {
     }
   });
 
+  it("keeps a created Twinny conversation when the share link lookup fails", async () => {
+    const turn = deferred<CodexTurnResult>();
+    let turnParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_new_conversation" })),
+      startTurn: vi.fn((params) => {
+        turnParams = params;
+        void params.onTurnStarted?.("turn_1");
+        return turn.promise;
+      })
+    });
+    const { repository } = createRepository(groupConversationRecord({
+      codexThreadId: "thread_main",
+      profile: "host"
+    }));
+    const larkChats: LarkChatDirectory = {
+      createChat: vi.fn(async () => ({ chatId: "oc_new", raw: {} })),
+      getChatLink: vi.fn(async () => {
+        throw new Error("Unexpected non-whitespace character after JSON at position 4 (line 1 column 5)");
+      })
+    };
+    const manager = createManager({ repository, codex, larkChats });
+
+    try {
+      manager.submitIncoming(groupMessage("g1", "hello", { senderOpenId: "ou_owner", senderName: "Owner" }));
+      await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+      const payload = dynamicToolPayload(await turnParams?.onDynamicToolCall?.({
+        requestId: "req_create",
+        threadId: "thread_main",
+        turnId: "turn_1",
+        callId: "call_create",
+        tool: "create_conversation",
+        name: "New Project",
+        memberOpenIds: [],
+        rawArguments: { name: "New Project" }
+      }));
+
+      expect(repository.findByConversationKey("group_oc_new")).toMatchObject({
+        conversationKey: "group_oc_new",
+        chatId: "oc_new",
+        name: "New Project",
+        codexThreadId: "thread_new_conversation"
+      });
+      expect(payload).toMatchObject({
+        ok: true,
+        conversation: {
+          conversation_key: "group_oc_new",
+          chat_id: "oc_new",
+          codex_thread_id: "thread_new_conversation"
+        },
+        warning: {
+          code: "LARK_CHAT_LINK_FAILED",
+          message: expect.stringContaining("Unexpected non-whitespace character after JSON")
+        }
+      });
+      expect(payload.conversation).not.toHaveProperty("share_link");
+    } finally {
+      turn.resolve(completed("thread_main", "turn_1"));
+      await turn.promise;
+      await waitForDelay();
+    }
+  });
+
   it("applies a Codex thread name update that arrives before the thread card is stored", async () => {
     const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);

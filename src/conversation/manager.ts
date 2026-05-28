@@ -7056,12 +7056,21 @@ export class ConversationManager {
       codexThreadHasRollout: false
     });
     this.syncMainConversationThreadNameToCodexBestEffort(profile, thread.threadId, request.name);
-    const shareLink = await this.options.larkChats.getChatLink(chat.chatId);
-    if (!shareLink) {
-      return dynamicToolErrorResponse("LARK_CHAT_LINK_FAILED", "Lark chat link response did not include a share link.", {
-        conversation_key: conversationKey,
-        chat_id: chat.chatId
-      });
+    let shareLink: string | undefined;
+    let warning: { code: string; message: string } | undefined;
+    try {
+      shareLink = await this.options.larkChats.getChatLink(chat.chatId);
+      if (!shareLink) {
+        warning = {
+          code: "LARK_CHAT_LINK_FAILED",
+          message: "Lark chat link response did not include a share link."
+        };
+      }
+    } catch (error) {
+      warning = {
+        code: "LARK_CHAT_LINK_FAILED",
+        message: `Lark chat share link is unavailable: ${toErrorMessage(error)}`
+      };
     }
     return dynamicToolJsonResponse(true, {
       ok: true,
@@ -7072,8 +7081,9 @@ export class ConversationManager {
         response_mode: responseMode,
         profile,
         codex_thread_id: thread.threadId,
-        share_link: shareLink
-      }
+        ...(shareLink ? { share_link: shareLink } : {})
+      },
+      ...(warning ? { warning } : {})
     });
   }
 
