@@ -23,7 +23,7 @@ export type CodexThreadMode = "default" | "plan";
 
 export type CodexThreadStatus = "idle" | "working" | "waiting";
 
-export type CodexThreadCategory = "main" | "thread" | "side" | "previous_main";
+export type CodexThreadCategory = "main" | "thread" | "previous_main";
 export type CodexThreadForkSource = "external_resume";
 
 export type CodexThreadGoalStatus =
@@ -273,7 +273,6 @@ export interface LarkMessageRecord {
   completedAt?: number;
   failedAt?: number;
   clearedAt?: number;
-  sideId?: number;
   agentCardMessageId?: string;
   rawEventJson?: string;
   inputTokens: number;

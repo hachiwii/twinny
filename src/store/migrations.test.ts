@@ -18,8 +18,8 @@ describe("store migrations", () => {
   it("loads the bundled store migrations", () => {
     const migrations = loadStoreMigrations();
 
-    expect(currentStoreSchemaVersion).toBe(6);
-    expect(migrations).toHaveLength(6);
+    expect(currentStoreSchemaVersion).toBe(7);
+    expect(migrations).toHaveLength(7);
     expect(migrations[0]).toMatchObject({
       version: 1,
       name: "0001_initial"
@@ -43,6 +43,10 @@ describe("store migrations", () => {
     expect(migrations[5]).toMatchObject({
       version: 6,
       name: "0006_thread_fork_source"
+    });
+    expect(migrations[6]).toMatchObject({
+      version: 7,
+      name: "0007_drop_side_persistent_fields"
     });
   });
 
@@ -129,7 +133,6 @@ describe("store migrations", () => {
         { name: "model", type: "TEXT", notnull: 0, pk: 0 },
         { name: "effort", type: "TEXT", notnull: 0, pk: 0 },
         { name: "workspace", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "category", type: "TEXT", notnull: 1, pk: 0 },
         { name: "fork_source", type: "TEXT", notnull: 0, pk: 0 }
       ]);
 
@@ -172,7 +175,6 @@ describe("store migrations", () => {
         { name: "failed_at", type: "INTEGER", notnull: 0, pk: 0 },
         { name: "cleared_at", type: "INTEGER", notnull: 0, pk: 0 },
         { name: "raw_event_json", type: "TEXT", notnull: 0, pk: 0 },
-        { name: "side_id", type: "INTEGER", notnull: 0, pk: 0 },
         { name: "agent_card_message_id", type: "TEXT", notnull: 0, pk: 0 },
         { name: "input_tokens", type: "INTEGER", notnull: 1, pk: 0 },
         { name: "output_tokens", type: "INTEGER", notnull: 1, pk: 0 },
@@ -309,7 +311,7 @@ describe("store migrations", () => {
     }
   });
 
-  it("backfills thread category when upgrading to version 5", () => {
+  it("drops persisted side thread fields when upgrading to version 7", () => {
     const db = new TwinnyDatabase(":memory:");
     const migrations = loadStoreMigrations();
     try {
@@ -383,17 +385,24 @@ describe("store migrations", () => {
 
       expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
 
-      const rows = db
-        .prepare<[], { thread_id: string; category: string }>(
-          "SELECT thread_id, category FROM threads ORDER BY thread_id ASC"
-        )
+      const threadColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(threads)").all().map((row) => row.name);
+      const messageColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(lark_messages)").all().map((row) => row.name);
+      expect(threadColumns).not.toContain("category");
+      expect(messageColumns).not.toContain("side_id");
+
+      const threads = db
+        .prepare<[], { thread_id: string }>("SELECT thread_id FROM threads ORDER BY thread_id ASC")
         .all();
-      expect(rows).toEqual([
-        { thread_id: "thread_main", category: "main" },
-        { thread_id: "thread_previous", category: "previous_main" },
-        { thread_id: "thread_side", category: "side" },
-        { thread_id: "thread_topic", category: "thread" }
+      expect(threads).toEqual([
+        { thread_id: "thread_main" },
+        { thread_id: "thread_previous" },
+        { thread_id: "thread_topic" }
       ]);
+
+      const sideMessage = db
+        .prepare<[], { thread_id: string }>("SELECT thread_id FROM lark_messages WHERE event_id = 'event_side'")
+        .get();
+      expect(sideMessage).toEqual({ thread_id: "thread_main" });
     } finally {
       db.close();
     }

@@ -984,14 +984,6 @@ describe("ConversationManager", () => {
           updatedAt: 300
         }),
         codexThreadRecord({
-          id: 12,
-          codexThreadId: "thread_side",
-          conversationKey: "group_oc_group",
-          name: "Side",
-          category: "side",
-          updatedAt: 250
-        }),
-        codexThreadRecord({
           id: 13,
           codexThreadId: "thread_previous",
           conversationKey: "group_oc_group",
@@ -1029,7 +1021,6 @@ describe("ConversationManager", () => {
       expect(payload.threads.map((thread: { thread_id: string }) => thread.thread_id)).toEqual([
         "thread_main",
         "thread_topic",
-        "thread_side",
         "thread_previous"
       ]);
       expect(payload.threads[0]).toMatchObject({
@@ -1047,8 +1038,7 @@ describe("ConversationManager", () => {
         mode: "default",
         lark_thread_id: "topic_1"
       });
-      expect(payload.threads[2]).toMatchObject({ category: "side" });
-      expect(payload.threads[3]).toMatchObject({ category: "previous_main", lark_thread_id: null });
+      expect(payload.threads[2]).toMatchObject({ category: "previous_main", lark_thread_id: null });
     } finally {
       turn.resolve(completed("thread_main", "turn_1"));
       await turn.promise;
@@ -4776,28 +4766,21 @@ describe("ConversationManager", () => {
         text: "/plan inspect this"
       })
     );
-    expect(repository.updateLarkMessageSideMetadata).toHaveBeenCalledWith("m_side", { sideId: 1 });
-    expect(repository.updateLarkMessageSideMetadata).toHaveBeenCalledWith("m_side", {
+    expect(repository.updateLarkMessageAgentCardMetadata).toHaveBeenCalledWith("m_side", {
       agentCardMessageId: "card_m_side_1"
     });
     expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m_side"], {
       conversationKey: "p2p_ou_guest",
-      codexThreadId: "thread_1_side_1"
+      codexThreadId: "thread_1"
     });
     expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m_side"], {
       conversationKey: "p2p_ou_guest",
-      codexThreadId: "thread_1_side_1",
+      codexThreadId: "thread_1",
       codexTurnId: "side_turn_1"
     });
-    expect(repository.upsertCodexThread).toHaveBeenCalledWith({
-      conversationKey: "p2p_ou_guest",
-      codexThreadId: "thread_1_side_1",
-      workspace: "/tmp/twinny/workspaces/p2p_ou_guest",
-      profile: "guest",
-      model: "gpt-5.5",
-      effort: "medium",
-      category: "side"
-    });
+    expect(repository.upsertCodexThread).not.toHaveBeenCalledWith(
+      expect.objectContaining({ codexThreadId: "thread_1_side_1" })
+    );
     const rawUsage = {
       threadId: "thread_1_side_1",
       turnId: "side_turn_1",
@@ -4899,11 +4882,7 @@ describe("ConversationManager", () => {
         })
       });
     });
-    expect(repository.updateCodexThreadGoalStatus).toHaveBeenCalledWith({
-      codexThreadId: "thread_1_side_goal",
-      goalStatus: "active",
-      goalUpdatedAt: 2
-    });
+    expect(repository.updateCodexThreadGoalStatus).not.toHaveBeenCalled();
     expect(codex.runGoal).not.toHaveBeenCalled();
 
     sideTurn.resolve(completed("thread_1_side_goal", "side_goal_turn_1", "interrupted"));
@@ -4917,15 +4896,22 @@ describe("ConversationManager", () => {
     vi.mocked(codex.forkThread).mockImplementation(async ({ threadId }) => ({
       threadId: `${threadId}_side_${++forkCount}`
     }));
-    const manager = createManager({ repository, codex });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
 
     manager.submitIncoming(message("m_side_1", "/side first"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m_side_2", "/btw second"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
 
-    expect(repository.updateLarkMessageSideMetadata).toHaveBeenCalledWith("m_side_1", { sideId: 1 });
-    expect(repository.updateLarkMessageSideMetadata).toHaveBeenCalledWith("m_side_2", { sideId: 2 });
+    expect(lark.replyCard).toHaveBeenCalledWith(
+      "m_side_1",
+      expect.objectContaining({ header: expect.objectContaining({ subtitle: { tag: "plain_text", content: "临时会话 [1]" } }) })
+    );
+    expect(lark.replyCard).toHaveBeenCalledWith(
+      "m_side_2",
+      expect.objectContaining({ header: expect.objectContaining({ subtitle: { tag: "plain_text", content: "临时会话 [2]" } }) })
+    );
 
     turns[0]!.resolve(completed("thread_1_side_1", "turn_1"));
     await waitForExpect(() => expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m_side_1"]));
@@ -4936,7 +4922,10 @@ describe("ConversationManager", () => {
 
     manager.submitIncoming(message("m_side_3", "/side third"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
-    expect(repository.updateLarkMessageSideMetadata).toHaveBeenCalledWith("m_side_3", { sideId: 1 });
+    expect(lark.replyCard).toHaveBeenCalledWith(
+      "m_side_3",
+      expect.objectContaining({ header: expect.objectContaining({ subtitle: { tag: "plain_text", content: "临时会话 [1]" } }) })
+    );
 
     turns[1]!.resolve(completed("thread_1_side_2", "turn_2"));
     turns[2]!.resolve(completed("thread_1_side_3", "turn_3"));
@@ -9326,7 +9315,6 @@ describe("ConversationManager", () => {
       text: "stale side",
       codexThreadId: "thread_side_recover",
       codexTurnId: "turn_side_recover",
-      sideId: 1,
       agentCardMessageId: "card_side_recover"
     });
     const { repository } = createRepository(conversationRecord(), { larkMessages: [record] });
@@ -9897,7 +9885,7 @@ function createRepository(initial?: ConversationRecord, options: {
       conversationKey: input.conversationKey,
       workspace: input.workspace ?? existing?.workspace ?? row?.workspace ?? "/tmp/twinny/workspaces/p2p_ou_guest",
       name: input.name ?? existing?.name ?? "新会话",
-      category: input.category ?? existing?.category ?? (input.larkThreadId ? "thread" : "previous_main"),
+      category: existing?.category ?? (input.larkThreadId ? "thread" : "previous_main"),
       larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
       profile: input.profile,
       model: input.model ?? existing?.model,
@@ -10332,7 +10320,6 @@ function createRepository(initial?: ConversationRecord, options: {
           status: input.status,
           text: input.text,
           larkCreateTime: input.larkCreateTime,
-          sideId: input.sideId,
           agentCardMessageId: input.agentCardMessageId,
           rawEventJson: input.rawEventJson
         });
@@ -10353,12 +10340,11 @@ function createRepository(initial?: ConversationRecord, options: {
         existing.updatedAt = Date.now();
         return true;
       }),
-      updateLarkMessageSideMetadata: vi.fn((larkMessageId, update) => {
+      updateLarkMessageAgentCardMetadata: vi.fn((larkMessageId, update) => {
         const existing = larkMessages.get(larkMessageId);
         if (!existing) {
           return false;
         }
-        existing.sideId = update.sideId ?? existing.sideId;
         existing.agentCardMessageId = update.agentCardMessageId ?? existing.agentCardMessageId;
         existing.updatedAt = Date.now();
         return true;

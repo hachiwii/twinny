@@ -256,7 +256,6 @@ export interface ConversationRepository {
     profile: ProfileName;
     model?: string;
     effort?: string;
-    category?: CodexThreadRecord["category"];
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
     forkedFromCodexThreadId?: string;
@@ -375,7 +374,6 @@ export interface ConversationRepository {
     status: LarkMessageStatus;
     text: string;
     larkCreateTime?: number;
-    sideId?: number;
     agentCardMessageId?: string;
     rawEventJson?: string;
   }): Promise<unknown> | unknown;
@@ -386,9 +384,9 @@ export interface ConversationRepository {
     larkMessageId: string,
     update: { text: string; rawEventJson?: string }
   ): Promise<boolean> | boolean;
-  updateLarkMessageSideMetadata?(
+  updateLarkMessageAgentCardMetadata?(
     larkMessageId: string,
-    update: { sideId?: number; agentCardMessageId?: string }
+    update: { agentCardMessageId?: string }
   ): Promise<boolean> | boolean;
   updateLarkMessageTokenUsage(input: {
     larkMessageId: string;
@@ -971,6 +969,7 @@ interface ActiveTurn {
   profile: ProfileName;
   triggerOpenId: string;
   threadId: string;
+  runtimeThreadId?: string;
   workspace: string;
   conversationKey: string;
   context: MessageContext;
@@ -1807,7 +1806,6 @@ export class ConversationManager {
             profile,
             workspace,
             name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
-            category: isMainSessionContext(context) ? "main" : "thread",
             larkThreadId: context.larkThreadId
           });
           await this.setThreadModeBestEffort(context.conversationKey, recoveredThread.codexThreadId, "default");
@@ -1839,7 +1837,6 @@ export class ConversationManager {
       profile,
       workspace: activeThread.workspace,
       name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
-      category: isMainSessionContext(context) ? "main" : "thread",
       larkThreadId: context.larkThreadId
     });
     const usageTarget = activeThread.replacedMissingThread
@@ -1924,7 +1921,6 @@ export class ConversationManager {
       profile,
       workspace,
       name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
-      category: isMainSessionContext(context) ? "main" : "thread",
       codexThreadHasRollout: recoveredThreadId !== undefined
     });
     if (recoveredThreadId === undefined && isMainSessionContext(context)) {
@@ -2834,7 +2830,6 @@ export class ConversationManager {
         profile,
         workspace,
         name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
-        category: isMainSessionContext(context) ? "main" : "thread",
         codexThreadHasRollout: false
       });
       if (isMainSessionContext(context)) {
@@ -2920,7 +2915,6 @@ export class ConversationManager {
       profile: parsed.profile,
       workspace,
       name: MAIN_THREAD_NAME,
-      category: "main",
       codexThreadHasRollout: false
     });
     this.syncMainConversationThreadNameToCodexBestEffort(parsed.profile, thread.threadId, parsed.guestOpenId);
@@ -3868,7 +3862,6 @@ export class ConversationManager {
       profile,
       model: threadModel,
       effort: threadEffort,
-      category: "thread",
       ...(threadName ? { name: threadName } : {}),
       codexThreadHasRollout: request.codexThread?.codexThreadHasRollout ?? false,
       forkedFromCodexThreadId: request.codexThread?.forkedFromCodexThreadId,
@@ -4143,7 +4136,6 @@ export class ConversationManager {
     const sourceWorkspace = sourceThread.record?.workspace || conversation.workspace;
 
     const sideId = allocateSideId(state);
-    await this.updateSideMessageMetadataBestEffort(message.messageId, { sideId });
     const pending = toPendingMessage(message, sideText, { queueBoundary: true });
     await this.beginSideTurn(state, context, {
       message: pending,
@@ -4195,18 +4187,9 @@ export class ConversationManager {
       return;
     }
 
-    await this.recordCodexThreadBestEffort({
-      conversationKey: context.conversationKey,
-      codexThreadId: forkedThreadId,
-      profile: params.profile,
-      workspace: params.workspace,
-      model: modelSettings.model,
-      effort: modelSettings.effort,
-      category: "side"
-    });
     await this.markPendingMessagesProcessingBestEffort([message], {
       conversationKey: context.conversationKey,
-      codexThreadId: forkedThreadId
+      codexThreadId: params.sourceThreadId
     });
     const active: ActiveTurn = {
       kind: "side",
@@ -4214,7 +4197,8 @@ export class ConversationManager {
       runId: ++state.nextRunId,
       profile: params.profile,
       triggerOpenId: message.original.senderOpenId,
-      threadId: forkedThreadId,
+      threadId: params.sourceThreadId,
+      runtimeThreadId: forkedThreadId,
       workspace: params.workspace,
       conversationKey: context.conversationKey,
       context,
@@ -4251,10 +4235,10 @@ export class ConversationManager {
 
     const runTurn = async (): Promise<void> => {
       try {
-        this.markThreadRuntimeHasUserMessage(active.threadId);
+        this.markThreadRuntimeHasUserMessage(activeRuntimeThreadId(active));
         const result = await this.options.codex.startTurn({
           profile: params.profile,
-          threadId: active.threadId,
+          threadId: activeRuntimeThreadId(active),
           input: formatPendingMessageForCodexInput(message),
           cwd: params.workspace,
           approvalPolicy: "never",
@@ -4279,7 +4263,7 @@ export class ConversationManager {
             messageId: message.messageId,
             conversationKey: context.conversationKey,
             profile: params.profile,
-            codexThreadId: active.threadId,
+            codexThreadId: activeRuntimeThreadId(active),
             turnId: result.turnId,
             sideId: params.sideId,
             status: result.status,
@@ -4300,7 +4284,10 @@ export class ConversationManager {
             codexThreadId: active.threadId,
             codexTurnId: active.turnId,
             larkSenderOpenId: active.triggerOpenId,
-            larkMessageId: active.replyMessageId
+            larkMessageId: active.replyMessageId,
+            properties: {
+              codex_runtime_thread_id: activeRuntimeThreadId(active)
+            }
           });
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
           this.log.error({ error, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation side turn failed");
@@ -4572,7 +4559,6 @@ export class ConversationManager {
         profile: target.profile,
         workspace: target.workspace,
         name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
-        category: isMainSessionContext(context) ? "main" : "thread",
         larkThreadId: context.larkThreadId
       });
     }
@@ -4640,7 +4626,7 @@ export class ConversationManager {
       ? await this.options.repository.getCodexThreadStatusStats(threadId)
       : { userMessageCount: 0, turnCount: 0, totalWorkDurationMs: 0 };
     const conversationStats = await this.options.repository.getConversationStatusStats(context.conversationKey);
-    const threadTokens = extractThreadTokenBreakdown(thread);
+    const threadTokens = extractThreadTokenBreakdown(thread, { preferRecordFields: true });
     const topicModelSettings = this.threadModelSettings(thread, thread?.profile ?? conversation?.profile ?? profile);
     const threadWorkspace = active && active.threadId === threadId
       ? active.workspace
@@ -5420,7 +5406,6 @@ export class ConversationManager {
         profile,
         workspace,
         name: MAIN_THREAD_NAME,
-        category: "main",
         codexThreadHasRollout: false
       });
       this.syncMainConversationThreadNameToCodexBestEffort(
@@ -6231,7 +6216,6 @@ export class ConversationManager {
       profile,
       workspace: activeThread.workspace,
       name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
-      category: isMainSessionContext(context) ? "main" : "thread",
       larkThreadId: context.larkThreadId
     });
     await this.backfillThreadSummaryCardForLarkThread(context, message, {
@@ -6598,6 +6582,7 @@ export class ConversationManager {
       active.threadTokenUsage = tokenUsage;
       active.turnTokenUsage = subtractThreadTokenUsage(tokenUsage, active.turnStartThreadTokenUsage);
       await this.recordLarkMessageTokenUsageBestEffort(active, usage);
+      await this.updateThreadSummaryCardBestEffort(active.threadId);
       this.patchActiveAgentCardTokenUsageBestEffort(state, active);
     } catch (error) {
       this.log.warn({ error, threadId: usage.threadId, totalTokens: usage.totalTokens }, "failed to record side token usage");
@@ -6752,7 +6737,7 @@ export class ConversationManager {
     const current = active.kind === "side" ? isSideTurnCurrent(state, active) : isActiveTurnCurrent(state, active);
     return current &&
       !active.cancelRequested &&
-      active.threadId === request.threadId &&
+      activeRuntimeThreadId(active) === request.threadId &&
       (active.turnId === undefined || active.turnId === request.turnId);
   }
 
@@ -6959,7 +6944,6 @@ export class ConversationManager {
       profile,
       workspace,
       name: MAIN_THREAD_NAME,
-      category: "main",
       codexThreadHasRollout: false
     });
     this.syncMainConversationThreadNameToCodexBestEffort(profile, thread.threadId, request.name);
@@ -7243,10 +7227,9 @@ export class ConversationManager {
     if (!active.cancelRequested && hasClearableTerminalGoal(active)) {
       await this.clearActiveGoalBestEffort(active);
     }
+    await this.updateThreadSummaryCardBestEffort(active.threadId);
     this.stopAgentCardTimer(active);
     await this.unsubscribeSideThreadBestEffort(active);
-    await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
-    this.notifyThreadIdleWatchersBestEffort(active.threadId);
   }
 
   private captureTurnEnd(state: ConversationState, active: ActiveTurn): void {
@@ -7520,14 +7503,15 @@ export class ConversationManager {
       return "missing";
     }
     try {
+      const runtimeThreadId = activeRuntimeThreadId(active);
       await this.options.codex.interruptTurn({
         profile: active.profile,
-        threadId: active.threadId,
+        threadId: runtimeThreadId,
         turnId: active.turnId
       });
       return "interrupted";
     } catch (error) {
-      this.log.warn({ error, threadId: active.threadId, turnId: active.turnId }, "failed to interrupt codex turn");
+      this.log.warn({ error, threadId: activeRuntimeThreadId(active), turnId: active.turnId }, "failed to interrupt codex turn");
       return isNoActiveTurnToInterruptError(error) ? "missing" : "failed";
     }
   }
@@ -7540,10 +7524,10 @@ export class ConversationManager {
       try {
         await this.options.codex.clearThreadGoal({
           profile: active.profile,
-          threadId: active.threadId
+          threadId: activeRuntimeThreadId(active)
         });
       } catch (error) {
-        this.log.warn({ error, threadId: active.threadId }, "failed to clear active codex goal");
+        this.log.warn({ error, threadId: activeRuntimeThreadId(active) }, "failed to clear active codex goal");
       }
     }
     await this.clearThreadGoalStatusAwaitBestEffort(active.threadId);
@@ -7554,12 +7538,13 @@ export class ConversationManager {
       return;
     }
     try {
+      const runtimeThreadId = activeRuntimeThreadId(active);
       await this.options.codex.unsubscribeThread({
         profile: active.profile,
-        threadId: active.threadId
+        threadId: runtimeThreadId
       });
     } catch (error) {
-      this.log.warn({ error, threadId: active.threadId }, "failed to unsubscribe side codex thread");
+      this.log.warn({ error, threadId: activeRuntimeThreadId(active) }, "failed to unsubscribe side codex thread");
     }
   }
 
@@ -7570,7 +7555,6 @@ export class ConversationManager {
     workspace?: string;
     model?: string;
     effort?: string;
-    category?: CodexThreadRecord["category"];
     name?: string;
     larkThreadId?: string;
     codexThreadHasRollout?: boolean;
@@ -7673,7 +7657,6 @@ export class ConversationManager {
     workspace?: string;
     model?: string;
     effort?: string;
-    category?: CodexThreadRecord["category"];
     larkThreadId: string;
     codexThreadHasRollout?: boolean;
     replaceExistingLarkThread?: boolean;
@@ -8137,17 +8120,17 @@ export class ConversationManager {
     }
   }
 
-  private async updateSideMessageMetadataBestEffort(
+  private async updateAgentCardMessageMetadataBestEffort(
     messageId: string,
-    update: { sideId?: number; agentCardMessageId?: string }
+    update: { agentCardMessageId?: string }
   ): Promise<void> {
-    if (!this.options.repository.updateLarkMessageSideMetadata) {
+    if (!this.options.repository.updateLarkMessageAgentCardMetadata) {
       return;
     }
     try {
-      await this.options.repository.updateLarkMessageSideMetadata(messageId, update);
+      await this.options.repository.updateLarkMessageAgentCardMetadata(messageId, update);
     } catch (error) {
-      this.log.warn({ error, messageId }, "failed to update side lark message metadata");
+      this.log.warn({ error, messageId }, "failed to update lark message agent card metadata");
     }
   }
 
@@ -8262,7 +8245,6 @@ export class ConversationManager {
           profile: params.profile,
           workspace: binding.conversation.workspace,
           name: MAIN_THREAD_NAME,
-          category: "main",
           codexThreadHasRollout: false
         });
         this.syncMainConversationThreadNameToCodexBestEffort(
@@ -8434,7 +8416,6 @@ export class ConversationManager {
       effort: params.effort,
       workspace: params.workspace,
       name: MAIN_THREAD_NAME,
-      category: "main",
       codexThreadHasRollout: params.codexThreadHasRollout
     });
     this.syncMainConversationThreadNameToCodexBestEffort(
@@ -8905,10 +8886,12 @@ export class ConversationManager {
     if (!isActiveTurnCurrent(state, active) || active.cancelRequested) {
       return;
     }
-    if (goal.threadId !== active.threadId) {
+    if (goal.threadId !== activeRuntimeThreadId(active)) {
       return;
     }
-    this.updateThreadGoalStatusBestEffort(goal);
+    if (active.kind !== "side") {
+      this.updateThreadGoalStatusBestEffort(goal);
+    }
     if (active.kind === "compact") {
       return;
     }
@@ -8942,7 +8925,9 @@ export class ConversationManager {
     if (!isActiveTurnCurrent(state, active)) {
       return;
     }
-    this.clearThreadGoalStatusBestEffort(active.threadId);
+    if (active.kind !== "side") {
+      this.clearThreadGoalStatusBestEffort(active.threadId);
+    }
     if (active.goal) {
       active.goal.completed = true;
       active.goal.status = "complete";
@@ -9116,7 +9101,7 @@ export class ConversationManager {
       card.messageId = result.messageId;
       active.lastAgentReplyMessageId = result.messageId;
       if (active.kind === "side") {
-        await this.updateSideMessageMetadataBestEffort(active.replyMessageId, { agentCardMessageId: result.messageId });
+        await this.updateAgentCardMessageMetadataBestEffort(active.replyMessageId, { agentCardMessageId: result.messageId });
       }
       card.lastRenderedJson = JSON.stringify(rendered);
       this.startAgentCardTimer(state, active);
@@ -9414,7 +9399,7 @@ export class ConversationManager {
           runId: 0,
           iconImageKey: this.logoImageKey(),
           mode: "default",
-          subtitle: sideCardSubtitle("failed", record.sideId),
+          subtitle: sideCardSubtitle("failed", undefined),
           hideQueueControls: true,
           error
         })
@@ -10307,6 +10292,10 @@ function isSideTurnCurrent(state: ConversationState, active: ActiveTurn): boolea
   return active.kind === "side" && active.sideId !== undefined && state.sideTurns.get(active.sideId) === active;
 }
 
+function activeRuntimeThreadId(active: ActiveTurn): string {
+  return active.runtimeThreadId ?? active.threadId;
+}
+
 function isActiveTurnCurrent(state: ConversationState, active: ActiveTurn): boolean {
   return active.kind === "side" ? isSideTurnCurrent(state, active) : state.active === active;
 }
@@ -10839,9 +10828,6 @@ function isMainSessionContext(context: MessageContext): boolean {
 function threadCategoryForList(thread: CodexThreadRecord, conversation: ConversationRecord): CodexThreadRecord["category"] {
   if (thread.codexThreadId === conversation.codexThreadId) {
     return "main";
-  }
-  if (thread.category === "side") {
-    return "side";
   }
   if (thread.larkThreadId) {
     return "thread";
@@ -12648,7 +12634,7 @@ interface RateLimitWindowStatus {
 }
 
 function formatThreadTokenStatus(thread: CodexThreadRecord | undefined): string[] {
-  const breakdown = extractThreadTokenBreakdown(thread);
+  const breakdown = extractThreadTokenBreakdown(thread, { preferRecordFields: true });
   const cacheHitRate = breakdown.inputTokens > 0 ? breakdown.cachedInputTokens / breakdown.inputTokens : 0;
   const contextUsage = breakdown.contextWindow > 0 ? breakdown.contextTokens / breakdown.contextWindow : 0;
   return [
@@ -12663,7 +12649,10 @@ function formatThreadTokenStatus(thread: CodexThreadRecord | undefined): string[
   ];
 }
 
-function extractThreadTokenBreakdown(thread: CodexThreadRecord | undefined): ThreadTokenUsageSnapshot {
+function extractThreadTokenBreakdown(
+  thread: CodexThreadRecord | undefined,
+  options: { preferRecordFields?: boolean } = {}
+): ThreadTokenUsageSnapshot {
   const raw = parseStoredRawEvent(thread?.tokenUsageJson);
   const total = firstRecord(
     nestedRecord(raw, ["tokenUsage", "total"]),
@@ -12675,14 +12664,27 @@ function extractThreadTokenBreakdown(thread: CodexThreadRecord | undefined): Thr
     nestedRecord(raw, ["usage", "last"]),
     nestedRecord(raw, ["last"])
   );
+  const totalTokens = options.preferRecordFields
+    ? preferredRecordToken(thread?.totalTokens, total?.totalTokens, total?.total_tokens)
+    : finiteNumber(total?.totalTokens, total?.total_tokens, thread?.totalTokens);
+  const inputTokens = options.preferRecordFields
+    ? preferredRecordToken(thread?.inputTokens, total?.inputTokens, total?.input_tokens, total?.prompt_tokens)
+    : finiteNumber(total?.inputTokens, total?.input_tokens, total?.prompt_tokens, thread?.inputTokens);
+  const cachedInputTokens = options.preferRecordFields
+    ? preferredRecordToken(thread?.cachedInputTokens, total?.cachedInputTokens, total?.cached_input_tokens, total?.cached_tokens)
+    : finiteNumber(total?.cachedInputTokens, total?.cached_input_tokens, total?.cached_tokens, thread?.cachedInputTokens);
+  const outputTokens = options.preferRecordFields
+    ? preferredRecordToken(thread?.outputTokens, total?.outputTokens, total?.output_tokens, total?.completion_tokens)
+    : finiteNumber(total?.outputTokens, total?.output_tokens, total?.completion_tokens, thread?.outputTokens);
+  const reasoningOutputTokens = options.preferRecordFields
+    ? preferredRecordToken(thread?.reasoningOutputTokens, total?.reasoningOutputTokens, total?.reasoning_output_tokens)
+    : finiteNumber(total?.reasoningOutputTokens, total?.reasoning_output_tokens, thread?.reasoningOutputTokens);
   return {
-    totalTokens: finiteNumber(total?.totalTokens, total?.total_tokens, thread?.totalTokens) ?? 0,
-    inputTokens: finiteNumber(total?.inputTokens, total?.input_tokens, total?.prompt_tokens, thread?.inputTokens) ?? 0,
-    cachedInputTokens:
-      finiteNumber(total?.cachedInputTokens, total?.cached_input_tokens, total?.cached_tokens, thread?.cachedInputTokens) ?? 0,
-    outputTokens: finiteNumber(total?.outputTokens, total?.output_tokens, total?.completion_tokens, thread?.outputTokens) ?? 0,
-    reasoningOutputTokens:
-      finiteNumber(total?.reasoningOutputTokens, total?.reasoning_output_tokens, thread?.reasoningOutputTokens) ?? 0,
+    totalTokens: totalTokens ?? 0,
+    inputTokens: inputTokens ?? 0,
+    cachedInputTokens: cachedInputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    reasoningOutputTokens: reasoningOutputTokens ?? 0,
     contextTokens:
       finiteNumber(
         last?.totalTokens,
@@ -12715,6 +12717,14 @@ function extractThreadTokenBreakdown(thread: CodexThreadRecord | undefined): Thr
         thread?.contextWindow
       ) ?? 0
   };
+}
+
+function preferredRecordToken(recordValue: unknown, ...rawValues: unknown[]): number | undefined {
+  const record = finiteNumber(recordValue);
+  if (record !== undefined && record > 0) {
+    return record;
+  }
+  return finiteNumber(...rawValues, record);
 }
 
 function extractThreadTokenUsage(usage: CodexThreadTokenUsageUpdate): ThreadTokenUsageSnapshot {

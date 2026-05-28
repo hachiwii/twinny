@@ -2,7 +2,6 @@ import path from "node:path";
 
 import { TwinnyError } from "../errors.js";
 import type {
-  CodexThreadCategory,
   CodexThreadForkSource,
   CodexThreadRecord,
   CodexThreadGoalStatus,
@@ -61,7 +60,6 @@ interface CodexThreadRow {
   profile: ProfileName;
   model: string | null;
   effort: string | null;
-  category: CodexThreadCategory;
   mode: CodexThreadMode;
   status: CodexThreadStatus;
   goal_status: CodexThreadGoalStatus;
@@ -79,6 +77,11 @@ interface CodexThreadRow {
   total_tokens: number;
   context_tokens: number;
   context_window: number;
+  effective_input_tokens?: number | null;
+  effective_output_tokens?: number | null;
+  effective_cached_input_tokens?: number | null;
+  effective_reasoning_output_tokens?: number | null;
+  effective_total_tokens?: number | null;
   token_usage_json: string;
   created_at: number;
   updated_at: number;
@@ -125,7 +128,6 @@ interface LarkMessageRow {
   completed_at: number | null;
   failed_at: number | null;
   cleared_at: number | null;
-  side_id: number | null;
   agent_card_message_id: string | null;
   raw_event_json: string | null;
   input_tokens: number;
@@ -155,7 +157,6 @@ export interface UpsertCodexThreadInput {
   name?: string;
   model?: string;
   effort?: string;
-  category?: CodexThreadCategory;
   larkThreadId?: string;
   codexThreadHasRollout?: boolean;
   forkedFromCodexThreadId?: string;
@@ -177,7 +178,6 @@ export interface InsertLarkMessageInput {
   status: LarkMessageStatus;
   text: string;
   larkCreateTime?: number;
-  sideId?: number;
   agentCardMessageId?: string;
   rawEventJson?: string;
 }
@@ -353,7 +353,7 @@ export class ConversationRepository {
   ]>;
   private readonly updateLarkMessageQueuedStatement: TwinnyStatement<[number, string]>;
   private readonly updateQueuedLarkMessageStatement: TwinnyStatement<[string, string | null, number, string]>;
-  private readonly updateLarkMessageSideMetadataStatement: TwinnyStatement<[number | null, string | null, number, string]>;
+  private readonly updateLarkMessageAgentCardMetadataStatement: TwinnyStatement<[string | null, number, string]>;
   private readonly updateLarkMessageRecalledStatement: TwinnyStatement<[number, string]>;
   private readonly updateLarkMessageCompletedStatement: TwinnyStatement<[number, number, string]>;
   private readonly updateLarkMessageFailedStatement: TwinnyStatement<[number, number, string]>;
@@ -452,7 +452,6 @@ export class ConversationRepository {
         profile,
         model,
         effort,
-        category,
         forked_from_thread_id,
         forked_at,
         fork_source,
@@ -470,7 +469,6 @@ export class ConversationRepository {
         @profile,
         @model,
         @effort,
-        COALESCE(@category, CASE WHEN @larkThreadId IS NOT NULL THEN 'thread' ELSE 'previous_main' END),
         @forkedFromCodexThreadId,
         @forkedAt,
         @forkSource,
@@ -488,7 +486,6 @@ export class ConversationRepository {
         profile = excluded.profile,
         model = COALESCE(excluded.model, threads.model),
         effort = COALESCE(excluded.effort, threads.effort),
-        category = COALESCE(@category, threads.category),
         forked_from_thread_id = COALESCE(excluded.forked_from_thread_id, threads.forked_from_thread_id),
         forked_at = COALESCE(excluded.forked_at, threads.forked_at),
         fork_source = COALESCE(excluded.fork_source, threads.fork_source),
@@ -498,19 +495,52 @@ export class ConversationRepository {
         END,
         updated_at = excluded.updated_at
     `);
+    const codexThreadSelectColumns = `
+      threads.*,
+      threads.input_tokens + COALESCE((
+        SELECT SUM(input_tokens)
+        FROM lark_messages
+        WHERE lark_messages.thread_id = threads.thread_id
+          AND lark_messages.route_kind = 'side_message'
+      ), 0) AS effective_input_tokens,
+      threads.output_tokens + COALESCE((
+        SELECT SUM(output_tokens)
+        FROM lark_messages
+        WHERE lark_messages.thread_id = threads.thread_id
+          AND lark_messages.route_kind = 'side_message'
+      ), 0) AS effective_output_tokens,
+      threads.cached_input_tokens + COALESCE((
+        SELECT SUM(cached_input_tokens)
+        FROM lark_messages
+        WHERE lark_messages.thread_id = threads.thread_id
+          AND lark_messages.route_kind = 'side_message'
+      ), 0) AS effective_cached_input_tokens,
+      threads.reasoning_output_tokens + COALESCE((
+        SELECT SUM(reasoning_output_tokens)
+        FROM lark_messages
+        WHERE lark_messages.thread_id = threads.thread_id
+          AND lark_messages.route_kind = 'side_message'
+      ), 0) AS effective_reasoning_output_tokens,
+      threads.total_tokens + COALESCE((
+        SELECT SUM(input_tokens + output_tokens)
+        FROM lark_messages
+        WHERE lark_messages.thread_id = threads.thread_id
+          AND lark_messages.route_kind = 'side_message'
+      ), 0) AS effective_total_tokens
+    `;
     this.selectCodexThreadById = this.db.prepare(`
-      SELECT * FROM threads WHERE thread_id = ?
+      SELECT ${codexThreadSelectColumns} FROM threads WHERE thread_id = ?
     `);
     this.selectCodexThreadIds = this.db.prepare(`
       SELECT thread_id FROM threads
     `);
     this.selectCodexThreadByConversationAndLarkThread = this.db.prepare(`
-      SELECT * FROM threads
+      SELECT ${codexThreadSelectColumns} FROM threads
       WHERE conversation_key = ?
         AND lark_thread_id = ?
     `);
     this.selectCodexThreadsByConversation = this.db.prepare(`
-      SELECT * FROM threads
+      SELECT ${codexThreadSelectColumns} FROM threads
       WHERE conversation_key = ?
       ORDER BY updated_at DESC, id DESC
     `);
@@ -519,6 +549,7 @@ export class ConversationRepository {
       FROM lark_messages
       WHERE thread_id = ?
         AND status IN ('queued', 'processing')
+        AND route_kind <> 'side_message'
     `);
     this.selectCodexThreadHasUserMessage = this.db.prepare(`
       SELECT EXISTS (
@@ -541,7 +572,6 @@ export class ConversationRepository {
           profile = @profile,
           model = @model,
           effort = @effort,
-          category = 'thread',
           workspace = COALESCE(@workspace, workspace),
           input_tokens = 0,
           output_tokens = 0,
@@ -628,7 +658,6 @@ export class ConversationRepository {
         profile,
         model,
         effort,
-        category,
         creator_open_id,
         card_message_id,
         thread_has_rollout,
@@ -643,7 +672,6 @@ export class ConversationRepository {
         @profile,
         @model,
         @effort,
-        CASE WHEN @larkThreadId IS NOT NULL THEN 'thread' ELSE 'previous_main' END,
         @creatorOpenId,
         @cardMessageId,
         0,
@@ -658,10 +686,6 @@ export class ConversationRepository {
         profile = excluded.profile,
         model = COALESCE(excluded.model, threads.model),
         effort = COALESCE(excluded.effort, threads.effort),
-        category = CASE
-          WHEN excluded.lark_thread_id IS NOT NULL THEN 'thread'
-          ELSE threads.category
-        END,
         creator_open_id = COALESCE(excluded.creator_open_id, threads.creator_open_id),
         card_message_id = COALESCE(excluded.card_message_id, threads.card_message_id),
         updated_at = excluded.updated_at
@@ -771,26 +795,51 @@ export class ConversationRepository {
           SELECT COALESCE(SUM(input_tokens), 0)
           FROM threads
           WHERE conversation_key = @conversationKey
+        ) + (
+          SELECT COALESCE(SUM(input_tokens), 0)
+          FROM lark_messages
+          WHERE conversation_key = @conversationKey
+            AND route_kind = 'side_message'
         ) AS input_tokens,
         (
           SELECT COALESCE(SUM(output_tokens), 0)
           FROM threads
           WHERE conversation_key = @conversationKey
+        ) + (
+          SELECT COALESCE(SUM(output_tokens), 0)
+          FROM lark_messages
+          WHERE conversation_key = @conversationKey
+            AND route_kind = 'side_message'
         ) AS output_tokens,
         (
           SELECT COALESCE(SUM(cached_input_tokens), 0)
           FROM threads
           WHERE conversation_key = @conversationKey
+        ) + (
+          SELECT COALESCE(SUM(cached_input_tokens), 0)
+          FROM lark_messages
+          WHERE conversation_key = @conversationKey
+            AND route_kind = 'side_message'
         ) AS cached_input_tokens,
         (
           SELECT COALESCE(SUM(reasoning_output_tokens), 0)
           FROM threads
           WHERE conversation_key = @conversationKey
+        ) + (
+          SELECT COALESCE(SUM(reasoning_output_tokens), 0)
+          FROM lark_messages
+          WHERE conversation_key = @conversationKey
+            AND route_kind = 'side_message'
         ) AS reasoning_output_tokens,
         (
           SELECT COALESCE(SUM(total_tokens), 0)
           FROM threads
           WHERE conversation_key = @conversationKey
+        ) + (
+          SELECT COALESCE(SUM(input_tokens + output_tokens), 0)
+          FROM lark_messages
+          WHERE conversation_key = @conversationKey
+            AND route_kind = 'side_message'
         ) AS total_tokens,
         COALESCE(SUM(CASE
           WHEN terminal_at IS NOT NULL AND started_at IS NOT NULL AND terminal_at > started_at
@@ -839,7 +888,6 @@ export class ConversationRepository {
         status,
         text,
         lark_create_time,
-        side_id,
         agent_card_message_id,
         received_at,
         updated_at,
@@ -858,7 +906,6 @@ export class ConversationRepository {
         @status,
         @text,
         @larkCreateTime,
-        @sideId,
         @agentCardMessageId,
         @receivedAt,
         @updatedAt,
@@ -976,10 +1023,9 @@ export class ConversationRepository {
       WHERE lark_message_id = ?
         AND status = 'queued'
     `);
-    this.updateLarkMessageSideMetadataStatement = this.db.prepare(`
+    this.updateLarkMessageAgentCardMetadataStatement = this.db.prepare(`
       UPDATE lark_messages
-      SET side_id = COALESCE(?, side_id),
-          agent_card_message_id = COALESCE(?, agent_card_message_id),
+      SET agent_card_message_id = COALESCE(?, agent_card_message_id),
           updated_at = ?
       WHERE lark_message_id = ?
     `);
@@ -1219,7 +1265,6 @@ export class ConversationRepository {
       profile,
       model: input.model ?? null,
       effort: input.effort ?? null,
-      category: input.category ?? null,
       forkedFromCodexThreadId: input.forkedFromCodexThreadId ?? null,
       forkedAt: input.forkedAt ?? null,
       forkSource: input.forkSource ?? null,
@@ -1331,7 +1376,6 @@ export class ConversationRepository {
           profile,
           model: input.model ?? null,
           effort: input.effort ?? null,
-          category: "thread",
           forkedFromCodexThreadId: null,
           forkedAt: null,
           codexThreadHasRollout,
@@ -1570,7 +1614,6 @@ export class ConversationRepository {
       status: input.status,
       text: input.text,
       larkCreateTime: input.larkCreateTime ?? null,
-      sideId: input.sideId ?? null,
       agentCardMessageId: input.agentCardMessageId ?? null,
       receivedAt: now,
       updatedAt: now,
@@ -1658,13 +1701,12 @@ export class ConversationRepository {
     return result.changes > 0;
   }
 
-  updateLarkMessageSideMetadata(
+  updateLarkMessageAgentCardMetadata(
     larkMessageId: string,
-    update: { sideId?: number; agentCardMessageId?: string }
+    update: { agentCardMessageId?: string }
   ): boolean {
     assertNonEmpty(larkMessageId, "larkMessageId");
-    const result = this.updateLarkMessageSideMetadataStatement.run(
-      update.sideId ?? null,
+    const result = this.updateLarkMessageAgentCardMetadataStatement.run(
       update.agentCardMessageId ?? null,
       this.now(),
       larkMessageId
@@ -1914,7 +1956,7 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     profile: row.profile,
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
-    category: validCodexThreadCategory(row.category) ? row.category : row.lark_thread_id ? "thread" : "previous_main",
+    category: row.lark_thread_id ? "thread" : "previous_main",
     mode: validCodexThreadMode(row.mode) ? row.mode : "default",
     status: validCodexThreadStatus(row.status) ? row.status : "idle",
     goalStatus: validCodexThreadGoalStatus(row.goal_status) ? row.goal_status : "none",
@@ -1925,11 +1967,11 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     creatorOpenId: row.creator_open_id ?? undefined,
     cardMessageId: row.card_message_id ?? undefined,
     codexThreadHasRollout: row.thread_has_rollout === 1,
-    inputTokens: row.input_tokens,
-    outputTokens: row.output_tokens,
-    cachedInputTokens: row.cached_input_tokens,
-    reasoningOutputTokens: row.reasoning_output_tokens,
-    totalTokens: row.total_tokens,
+    inputTokens: row.effective_input_tokens ?? row.input_tokens,
+    outputTokens: row.effective_output_tokens ?? row.output_tokens,
+    cachedInputTokens: row.effective_cached_input_tokens ?? row.cached_input_tokens,
+    reasoningOutputTokens: row.effective_reasoning_output_tokens ?? row.reasoning_output_tokens,
+    totalTokens: row.effective_total_tokens ?? row.total_tokens,
     contextTokens: row.context_tokens,
     contextWindow: row.context_window,
     tokenUsageJson: row.token_usage_json,
@@ -1967,7 +2009,6 @@ function mapRequiredLarkMessageRow(row: LarkMessageRow): LarkMessageRecord {
     completedAt: row.completed_at ?? undefined,
     failedAt: row.failed_at ?? undefined,
     clearedAt: row.cleared_at ?? undefined,
-    sideId: row.side_id ?? undefined,
     agentCardMessageId: row.agent_card_message_id ?? undefined,
     rawEventJson: row.raw_event_json ?? undefined,
     inputTokens: row.input_tokens,
@@ -2026,9 +2067,6 @@ function validateCodexThreadInput(input: UpsertCodexThreadInput): void {
   }
   if (input.effort !== undefined) {
     assertNonEmpty(input.effort, "effort");
-  }
-  if (input.category !== undefined && !validCodexThreadCategory(input.category)) {
-    throw new TwinnyError(`Unsupported Codex thread category: ${input.category}`, "CODEX_THREAD_CATEGORY_INVALID");
   }
   if (input.larkThreadId !== undefined) {
     assertNonEmpty(input.larkThreadId, "larkThreadId");
@@ -2214,10 +2252,6 @@ function validCodexThreadMode(mode: unknown): mode is CodexThreadMode {
 
 function validCodexThreadStatus(status: unknown): status is CodexThreadStatus {
   return status === "idle" || status === "working" || status === "waiting";
-}
-
-function validCodexThreadCategory(category: unknown): category is CodexThreadCategory {
-  return category === "main" || category === "thread" || category === "side" || category === "previous_main";
 }
 
 function validCodexThreadGoalStatus(status: unknown): status is CodexThreadGoalStatus {

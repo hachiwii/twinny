@@ -105,7 +105,7 @@ export const SEND_THREAD_REF_TOOL_SPEC: DynamicToolSpec = {
   namespace: "twinny",
   name: "send_thread_ref",
   description:
-    "Forward a Twinny conversation thread reference into the current conversation. The target must be a normal thread with a Lark thread id; main, side, previous main, or unbound threads are rejected.",
+    "Forward a Twinny conversation thread reference into the current conversation. The target must be a normal thread with a Lark thread id; main, previous main, or unbound threads are rejected.",
   inputSchema: {
     type: "object",
     additionalProperties: false,

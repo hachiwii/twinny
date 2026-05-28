@@ -702,7 +702,7 @@ export function adaptConversationRepository(repository: ConversationRepository) 
     markLarkMessageQueued: repository.markLarkMessageQueued.bind(repository),
     markLarkMessageRecalled: repository.markLarkMessageRecalled.bind(repository),
     updateQueuedLarkMessage: repository.updateQueuedLarkMessage.bind(repository),
-    updateLarkMessageSideMetadata: repository.updateLarkMessageSideMetadata.bind(repository),
+    updateLarkMessageAgentCardMetadata: repository.updateLarkMessageAgentCardMetadata.bind(repository),
     updateLarkMessageTokenUsage: repository.updateLarkMessageTokenUsage.bind(repository),
     markLarkMessagesProcessing: repository.markLarkMessagesProcessing.bind(repository),
     markLarkMessagesSteered: repository.markLarkMessagesSteered.bind(repository),

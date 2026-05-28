@@ -704,7 +704,6 @@ describe("ConversationRepository", () => {
       routeKind: "side_message",
       status: "processing",
       text: "side",
-      sideId: 1,
       agentCardMessageId: "om_side_card",
       rawEventJson: "{}"
     });
@@ -714,13 +713,29 @@ describe("ConversationRepository", () => {
       codexThreadId: "thread-1",
       codexTurnId: "turn-side"
     });
+    repo.updateLarkMessageTokenUsage({
+      larkMessageId: "om_side",
+      inputTokens: 7,
+      outputTokens: 2,
+      cachedInputTokens: 3,
+      reasoningOutputTokens: 1,
+      tokenUsageJson: '{"turn":"side"}'
+    });
     now = 2800;
     repo.markLarkMessagesCompleted(["om_side"]);
     expect(repo.getLarkMessageById("om_side")).toMatchObject({
       routeKind: "side_message",
-      sideId: 1,
       agentCardMessageId: "om_side_card",
       codexTurnId: "turn-side"
+    });
+    expect(repo.getCodexThreadById("thread-1")).toMatchObject({
+      inputTokens: 87,
+      outputTokens: 42,
+      cachedInputTokens: 23,
+      reasoningOutputTokens: 11,
+      totalTokens: 132,
+      contextTokens: 60,
+      contextWindow: 200
     });
     expect(repo.getLarkMessageUsageTargetForTurn("thread-1", "turn-1")).toMatchObject({
       larkMessageId: "om_1"
@@ -737,11 +752,11 @@ describe("ConversationRepository", () => {
     expect(repo.getConversationStatusStats("p2p_ou_456")).toEqual({
       topicCount: 1,
       userMessageCount: 5,
-      inputTokens: 80,
-      outputTokens: 40,
-      cachedInputTokens: 20,
-      reasoningOutputTokens: 10,
-      totalTokens: 123,
+      inputTokens: 87,
+      outputTokens: 42,
+      cachedInputTokens: 23,
+      reasoningOutputTokens: 11,
+      totalTokens: 132,
       totalWorkDurationMs: 200
     });
 
