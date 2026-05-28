@@ -257,7 +257,7 @@ export function evaluateLarkFeatureSet(
       missingEvents.push(event);
       continue;
     }
-    if (definition.requireLongConnection && subscription.longConnection === false) {
+    if (definition.requireLongConnection && subscription.longConnection !== true) {
       nonLongConnectionEvents.push(event);
     }
   }
@@ -268,7 +268,7 @@ export function evaluateLarkFeatureSet(
       missingCallbacks.push(callback);
       continue;
     }
-    if (definition.requireLongConnection && subscription.longConnection === false) {
+    if (definition.requireLongConnection && subscription.longConnection !== true) {
       nonLongConnectionCallbacks.push(callback);
     }
   }

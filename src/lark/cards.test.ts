@@ -841,7 +841,7 @@ describe("renderTwinnyStatusCard", () => {
 });
 
 describe("renderTwinnyResumeListCard", () => {
-  it("renders an untitled thread table with paging actions", () => {
+  it("renders an untitled thread table with available paging actions", () => {
     const card = renderTwinnyResumeListCard({
       stateKey: "p2p_ou_guest",
       browserId: "browser_1",
@@ -861,12 +861,24 @@ describe("renderTwinnyResumeListCard", () => {
     const serialized = JSON.stringify(card);
     expect(serialized).toContain("| 序号 | thread_id | name | 工作目录 |");
     expect(serialized).toContain("thread_external");
-    expect(findButton(card, "上一页")).toMatchObject({
-      behaviors: [{ value: { twinny: true, action: "resume_prev", stateKey: "p2p_ou_guest", browserId: "browser_1" } }]
-    });
+    expect(findButton(card, "上一页")).toBeUndefined();
     expect(findButton(card, "下一页")).toMatchObject({
       behaviors: [{ value: { twinny: true, action: "resume_next", stateKey: "p2p_ou_guest", browserId: "browser_1" } }]
     });
+  });
+
+  it("omits paging actions when there are no available pages", () => {
+    const card = renderTwinnyResumeListCard({
+      stateKey: "p2p_ou_guest",
+      browserId: "browser_1",
+      hasPreviousPage: false,
+      hasNextPage: false,
+      items: []
+    });
+
+    expect(findButton(card, "上一页")).toBeUndefined();
+    expect(findButton(card, "下一页")).toBeUndefined();
+    expect(findElementByTag(card, "column_set")).toBeUndefined();
   });
 });
 

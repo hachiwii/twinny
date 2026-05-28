@@ -358,6 +358,11 @@ export function renderTwinnyStatusCard(options: RenderTwinnyStatusCardOptions): 
 
 export function renderTwinnyResumeListCard(options: RenderTwinnyResumeListCardOptions): LarkCardJson {
   const table = resumeListTable(options.items);
+  const elements = [markdownElement(table)];
+  const actionButtons = resumeListActionButtonsElement(options);
+  if (actionButtons) {
+    elements.push(actionButtons);
+  }
   return {
     schema: "2.0",
     config: {
@@ -379,10 +384,7 @@ export function renderTwinnyResumeListCard(options: RenderTwinnyResumeListCardOp
       horizontal_align: "left",
       vertical_align: "top",
       padding: "12px 12px 12px 12px",
-      elements: [
-        markdownElement(table),
-        resumeListActionButtonsElement(options)
-      ]
+      elements
     }
   };
 }
@@ -1006,21 +1008,27 @@ function statusActionButtonsElement(options: {
   };
 }
 
-function resumeListActionButtonsElement(options: RenderTwinnyResumeListCardOptions): LarkCardElement {
-  const buttons = [
-    buttonElement("上一页", "default", {
+function resumeListActionButtonsElement(options: RenderTwinnyResumeListCardOptions): LarkCardElement | undefined {
+  const buttons: LarkCardElement[] = [];
+  if (options.hasPreviousPage) {
+    buttons.push(buttonElement("上一页", "default", {
       twinny: true,
       action: "resume_prev",
       stateKey: options.stateKey,
       browserId: options.browserId
-    }),
-    buttonElement("下一页", "default", {
+    }));
+  }
+  if (options.hasNextPage) {
+    buttons.push(buttonElement("下一页", "default", {
       twinny: true,
       action: "resume_next",
       stateKey: options.stateKey,
       browserId: options.browserId
-    })
-  ];
+    }));
+  }
+  if (buttons.length === 0) {
+    return undefined;
+  }
   return {
     tag: "column_set",
     horizontal_spacing: "8px",

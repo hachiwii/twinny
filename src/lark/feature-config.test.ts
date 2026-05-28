@@ -83,6 +83,34 @@ describe("Lark feature configuration checks", () => {
     expect(result.eventConfigUrl).toBe("https://open.larkoffice.com/app/cli_app/event?tab=callback");
   });
 
+  it("treats unknown subscription modes as not long-connection mode", () => {
+    const snapshot = parseCurrentPublishedLarkAppVersion({
+      data: {
+        items: [
+          {
+            version_id: "published",
+            version: "1.0.0",
+            status: 1,
+            publish_time: "2026-05-28",
+            event_infos: [
+              { event_type: "im.message.receive_v1", receive_mode: "long_connection" },
+              { event_type: "im.message.recalled_v1" },
+              { event_type: "card.action.trigger" }
+            ],
+            scopes: LARK_FEATURE_SET_DEFINITIONS.necessary.scopes.map((scope) => ({ scope, token_types: ["tenant"] }))
+          }
+        ]
+      }
+    });
+
+    const result = evaluateLarkFeatureSet(LARK_FEATURE_SET_DEFINITIONS.necessary, snapshot, "cli_app");
+
+    expect(result.ok).toBe(false);
+    expect(result.nonLongConnectionEvents).toEqual(["im.message.recalled_v1"]);
+    expect(result.nonLongConnectionCallbacks).toEqual(["card.action.trigger"]);
+    expect(result.eventConfigUrl).toBe("https://open.larkoffice.com/app/cli_app/event");
+  });
+
   it("builds event configuration links for event and callback combinations", () => {
     expect(buildLarkEventConfigUrl("cli_app", { hasEventIssues: true, hasCallbackIssues: false })).toBe(
       "https://open.larkoffice.com/app/cli_app/event?tab=event"
