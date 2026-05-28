@@ -118,6 +118,10 @@ const TWINNY_CODEX_THREAD_NAME_PREFIX = "[twinny]";
 const DOC_COMMENT_AGENT_CARD_SUBTITLE = "文档评论触发";
 const RESUME_LIST_PAGE_SIZE = 20;
 const RESUME_CODEX_PAGE_SIZE = 100;
+const LARK_SINGLE_MESSAGE_UPDATE_FREQUENCY_LIMIT_CODE = 230020;
+const AGENT_CARD_TIMER_INTERVAL_MS = 10_000;
+const NON_TERMINAL_AGENT_CARD_RATE_LIMIT_FALLBACK_THRESHOLD = 3;
+const COMPLETED_AGENT_CARD_PATCH_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000] as const;
 const RESUME_HISTORY_MESSAGE_LIMIT = 20;
 const RESUME_BROWSER_TTL_MS = 60 * 60 * 1000;
 const RESUME_CODEX_SOURCE_KINDS: ThreadSourceKind[] = [
@@ -1021,6 +1025,8 @@ interface ActiveTurnCardState {
   startedAt: number;
   messages: TwinnyAgentCardMessage[];
   timer?: NodeJS.Timeout;
+  completedPatchRetryTimer?: NodeJS.Timeout;
+  consecutiveRateLimitedPatches?: number;
   fallbackPlain: boolean;
   lastRenderedJson?: string;
 }
@@ -1028,6 +1034,22 @@ interface ActiveTurnCardState {
 type ActiveTurnCardDelivery =
   | { kind: "reply"; messageId: string; options?: LarkReplyOptions }
   | { kind: "direct"; conversationType: ConversationType; chatId: string; uuid?: string };
+
+type AgentCardPatchStatus =
+  | "working"
+  | "interrupted"
+  | "paused"
+  | "failed"
+  | "waiting_input"
+  | "waiting_plan"
+  | "interrupted_input"
+  | "interrupted_plan"
+  | "accepted_plan";
+
+type NonTerminalAgentCardStatus = Extract<
+  AgentCardPatchStatus,
+  "working" | "waiting_input" | "waiting_plan" | "accepted_plan"
+>;
 
 interface CodexTurnModelSettings {
   model: string;
@@ -9073,7 +9095,10 @@ export class ConversationManager {
         }
         return;
       }
-      await this.patchAgentCardBestEffort(state, active, "working");
+      const updated = await this.patchAgentCardBestEffort(state, active, "working");
+      if (!updated && card.fallbackPlain) {
+        await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
+      }
     } catch (error) {
       this.log.warn({ error, messageId: active.replyMessageId }, "failed to send or update agent card; falling back to plain");
       card.fallbackPlain = true;
@@ -9088,7 +9113,10 @@ export class ConversationManager {
       return false;
     }
     if (card.messageId) {
-      await this.patchAgentCardBestEffort(state, active, "working");
+      const updated = await this.patchAgentCardBestEffort(state, active, "working");
+      if (!updated && card.fallbackPlain) {
+        return false;
+      }
       this.startAgentCardTimer(state, active);
       return true;
     }
@@ -9134,16 +9162,7 @@ export class ConversationManager {
   private async patchAgentCardBestEffort(
     state: ConversationState,
     active: ActiveTurn,
-    status:
-      | "working"
-      | "interrupted"
-      | "paused"
-      | "failed"
-      | "waiting_input"
-      | "waiting_plan"
-      | "interrupted_input"
-      | "interrupted_plan"
-      | "accepted_plan",
+    status: AgentCardPatchStatus,
     error?: string
   ): Promise<boolean> {
     const card = active.card;
@@ -9161,9 +9180,42 @@ export class ConversationManager {
     if (serialized === card.lastRenderedJson) {
       return true;
     }
-    await this.options.lark.patchCard(card.messageId, rendered);
+    try {
+      await this.options.lark.patchCard(card.messageId, rendered);
+    } catch (patchError) {
+      if (isNonTerminalAgentCardStatus(effectiveStatus) && isLarkSingleMessageUpdateFrequencyLimit(patchError)) {
+        this.recordNonTerminalAgentCardRateLimit(active, card, card.messageId, effectiveStatus, patchError);
+        return false;
+      }
+      throw patchError;
+    }
+    card.consecutiveRateLimitedPatches = 0;
     card.lastRenderedJson = serialized;
     return true;
+  }
+
+  private recordNonTerminalAgentCardRateLimit(
+    active: ActiveTurn,
+    card: ActiveTurnCardState,
+    messageId: string,
+    status: NonTerminalAgentCardStatus,
+    error: unknown
+  ): void {
+    const consecutiveRateLimitedPatches = (card.consecutiveRateLimitedPatches ?? 0) + 1;
+    card.consecutiveRateLimitedPatches = consecutiveRateLimitedPatches;
+    if (consecutiveRateLimitedPatches < NON_TERMINAL_AGENT_CARD_RATE_LIMIT_FALLBACK_THRESHOLD) {
+      this.log.warn(
+        { error, messageId, status, consecutiveRateLimitedPatches },
+        "Lark rate limited non-terminal agent card update"
+      );
+      return;
+    }
+    this.log.warn(
+      { error, messageId, status, consecutiveRateLimitedPatches, threshold: NON_TERMINAL_AGENT_CARD_RATE_LIMIT_FALLBACK_THRESHOLD },
+      "Lark repeatedly rate limited non-terminal agent card update; falling back to plain"
+    );
+    card.fallbackPlain = true;
+    this.stopAgentCardTimer(active);
   }
 
   private async notifyAgentCardBestEffort(
@@ -9218,6 +9270,10 @@ export class ConversationManager {
       card.lastRenderedJson = serialized;
       await this.options.lark.recallMessage(previousMessageId);
     } catch (error) {
+      if (card.messageId && isLarkSingleMessageUpdateFrequencyLimit(error)) {
+        this.recordNonTerminalAgentCardRateLimit(active, card, card.messageId, status, error);
+        return;
+      }
       this.log.warn({ error, messageId: active.replyMessageId }, "failed to notify waiting agent card");
     }
   }
@@ -9292,9 +9348,66 @@ export class ConversationManager {
     messageId: string,
     rendered: LarkCardJson
   ): Promise<void> {
-    await this.options.lark.patchCard(messageId, rendered);
-    active.lastAgentReplyMessageId = messageId;
-    card.lastRenderedJson = JSON.stringify(rendered);
+    try {
+      await this.options.lark.patchCard(messageId, rendered);
+      active.lastAgentReplyMessageId = messageId;
+      card.lastRenderedJson = JSON.stringify(rendered);
+    } catch (error) {
+      if (!isLarkSingleMessageUpdateFrequencyLimit(error)) {
+        throw error;
+      }
+      this.log.warn({ error, messageId }, "Lark rate limited completed agent card update; retrying");
+      this.scheduleCompletedAgentCardPatchRetry(active, card, messageId, rendered, 0);
+    }
+  }
+
+  private scheduleCompletedAgentCardPatchRetry(
+    active: ActiveTurn,
+    card: ActiveTurnCardState,
+    messageId: string,
+    rendered: LarkCardJson,
+    attempt: number
+  ): void {
+    if (card.fallbackPlain || card.messageId !== messageId) {
+      return;
+    }
+    const delayMs = COMPLETED_AGENT_CARD_PATCH_RETRY_DELAYS_MS[attempt];
+    if (delayMs === undefined) {
+      this.log.warn({ messageId }, "exhausted completed agent card update retries after Lark rate limits");
+      return;
+    }
+    if (card.completedPatchRetryTimer) {
+      clearTimeout(card.completedPatchRetryTimer);
+    }
+    card.completedPatchRetryTimer = setTimeout(() => {
+      card.completedPatchRetryTimer = undefined;
+      void this.retryCompletedAgentCardPatch(active, card, messageId, rendered, attempt);
+    }, delayMs);
+    card.completedPatchRetryTimer.unref?.();
+  }
+
+  private async retryCompletedAgentCardPatch(
+    active: ActiveTurn,
+    card: ActiveTurnCardState,
+    messageId: string,
+    rendered: LarkCardJson,
+    attempt: number
+  ): Promise<void> {
+    if (card.fallbackPlain || card.messageId !== messageId) {
+      return;
+    }
+    try {
+      await this.options.lark.patchCard(messageId, rendered);
+      active.lastAgentReplyMessageId = messageId;
+      card.lastRenderedJson = JSON.stringify(rendered);
+    } catch (error) {
+      if (isLarkSingleMessageUpdateFrequencyLimit(error)) {
+        this.log.warn({ error, messageId, attempt: attempt + 1 }, "Lark still rate limited completed agent card update");
+        this.scheduleCompletedAgentCardPatchRetry(active, card, messageId, rendered, attempt + 1);
+        return;
+      }
+      this.log.warn({ error, messageId }, "failed to retry completed agent card update");
+    }
   }
 
   private async resendCompletedAgentCard(
@@ -9449,7 +9562,7 @@ export class ConversationManager {
         .catch((error) => {
           this.log.warn({ error, messageId: card.messageId }, "failed to update agent card elapsed time");
         });
-    }, 5_000);
+    }, AGENT_CARD_TIMER_INTERVAL_MS);
     card.timer.unref?.();
   }
 
@@ -10261,6 +10374,17 @@ function activeTurnElapsedMs(active: ActiveTurn, now = Date.now()): number {
 
 function isRecoverableGoalStatus(status: ThreadGoal["status"] | CodexThreadGoalStatus | undefined): boolean {
   return status === "active" || status === "paused";
+}
+
+function isLarkSingleMessageUpdateFrequencyLimit(error: unknown): boolean {
+  const detail = error && typeof error === "object"
+    ? (error as { detail?: { code?: unknown } }).detail
+    : undefined;
+  return detail?.code === LARK_SINGLE_MESSAGE_UPDATE_FREQUENCY_LIMIT_CODE;
+}
+
+function isNonTerminalAgentCardStatus(status: AgentCardPatchStatus): status is NonTerminalAgentCardStatus {
+  return status === "working" || status === "waiting_input" || status === "waiting_plan" || status === "accepted_plan";
 }
 
 function activeHasGoal(active: ActiveTurn): boolean {
@@ -12240,7 +12364,8 @@ function cloneActiveTurnCardForRecovery(card: ActiveTurnCardState | undefined): 
   return {
     ...card,
     messages: [...card.messages],
-    timer: undefined
+    timer: undefined,
+    completedPatchRetryTimer: undefined
   };
 }
 

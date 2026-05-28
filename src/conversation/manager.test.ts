@@ -6,6 +6,7 @@ import { describe, expect, it, vi, type Mock } from "vitest";
 import { TwinnyError } from "../errors.js";
 import type { LarkFeatureCheckResult } from "../lark/feature-config.js";
 import { LarkMessageUnavailableError } from "../lark/messages.js";
+import { LarkOpenApiError } from "../lark/openapi.js";
 import type { TelemetryCaptureOptions, TelemetryClient, TelemetryErrorContext, TelemetryProperties } from "../telemetry/index.js";
 import type {
   CodexThreadRecord,
@@ -7092,6 +7093,99 @@ describe("ConversationManager", () => {
     expect(lark.recallMessage).not.toHaveBeenCalledWith("card_m1_1");
   });
 
+  it("retries a rate-limited completed card update while starting the queued batch", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("m1", expect.any(Object)));
+
+    manager.submitIncoming(message("m2", "/queue queued"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+
+    let rateLimitFirstCompletionPatch = true;
+    vi.mocked(lark.patchCard).mockImplementation(async (messageId) => {
+      if (messageId === "card_m1_1" && rateLimitFirstCompletionPatch) {
+        rateLimitFirstCompletionPatch = false;
+        throw larkSingleMessageUpdateRateLimitError();
+      }
+      return { messageId };
+    });
+
+    vi.useFakeTimers();
+    try {
+      turns[0]!.resolve({ ...completed("thread_1", "turn_1"), text: "first complete" });
+      for (let index = 0; index < 10 && vi.mocked(codex.startTurn).mock.calls.length < 2; index += 1) {
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      }
+
+      expect(codex.startTurn).toHaveBeenCalledTimes(2);
+      expect(lark.replyCard).toHaveBeenCalledWith("m2", expect.any(Object));
+
+      const firstAttempt = vi.mocked(lark.patchCard).mock.calls.find(([messageId, card]) =>
+        messageId === "card_m1_1" && JSON.stringify(card).includes("first complete")
+      );
+      expect(firstAttempt).toBeDefined();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(lark.patchCard).toHaveBeenCalledWith(
+        "card_m1_1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to plain after three consecutive rate-limited non-terminal card updates", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("m1", expect.any(Object)));
+
+    const outcomes = ["rate_limit", "success", "rate_limit", "rate_limit", "rate_limit"] as const;
+    let outcomeIndex = 0;
+    vi.mocked(lark.patchCard).mockImplementation(async (messageId) => {
+      if (messageId !== "card_m1_1") {
+        return { messageId };
+      }
+      const outcome = outcomes[outcomeIndex++] ?? "success";
+      if (outcome === "rate_limit") {
+        throw larkSingleMessageUpdateRateLimitError();
+      }
+      return { messageId };
+    });
+
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_1", text: "first progress", phase: "commentary" });
+    expect(lark.replyMarkdown).not.toHaveBeenCalled();
+
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_2", text: "successful progress", phase: "commentary" });
+    expect(lark.replyMarkdown).not.toHaveBeenCalled();
+
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_3", text: "second streak one", phase: "commentary" });
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_4", text: "second streak two", phase: "commentary" });
+    expect(lark.replyMarkdown).not.toHaveBeenCalled();
+
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_5", text: "second streak three", phase: "commentary" });
+    expect(lark.replyMarkdown).toHaveBeenCalledWith("m1", "second streak three");
+
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_6", text: "plain after fallback", phase: "commentary" });
+    expect(lark.replyMarkdown).toHaveBeenCalledWith("m1", "plain after fallback");
+    expect(lark.patchCard).toHaveBeenCalledTimes(5);
+  });
+
   it("updates the completed card in place when all turn senders have not read the working card", async () => {
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();
@@ -9827,6 +9921,15 @@ function createLarkResponder(): LarkResponder {
     deleteEphemeralMessage: vi.fn(async () => undefined),
     getMessageReadOpenIds: vi.fn(async () => ["ou_guest", "ou_owner", "ou_first", "ou_second"])
   };
+}
+
+function larkSingleMessageUpdateRateLimitError(): LarkOpenApiError {
+  return new LarkOpenApiError("single message update frequency limit", {
+    status: 400,
+    code: 230020,
+    responseBody: { code: 230020 },
+    retryable: false
+  });
 }
 
 function createRepository(initial?: ConversationRecord, options: {
