@@ -192,6 +192,7 @@ Before using Twinny in shared groups:
 - Configure Codex sandbox, filesystem, network, and approval-related settings for that profile.
 - Add workspace-level `.codex` overrides where your Codex setup supports project-local safety policy.
 - Keep `permissions.p2p_default_profile = "none"` unless you intentionally want unpaired P2P users to get access.
+- Keep `permissions.group_default_profile = "none"` and `permissions.group_default_mode = "none"` unless you intentionally want new groups to auto-activate on the first matching message.
 - Use `owner_at` or `owner` instead of `all` or `all_at` unless the group is tightly controlled.
 
 ## Advanced Configuration
@@ -210,6 +211,10 @@ Recognized fields:
 | `[lark.redaction].email`                | Redaction strategy for email addresses in outgoing Lark payloads. `mask` keeps the domain and masks the local part, for example `alice@example.com` becomes `a***e@example.com`; `whitespace` inserts spaces, for example `alice @ example.com`; `none` sends raw email addresses. Feishu may reject bot messages that contain raw email addresses or phone numbers. Defaults to `mask`. |
 | `[lark.redaction].chinese_phone_number` | Redaction strategy for Chinese phone numbers in outgoing Lark payloads. `mask` keeps the first 3 and last 4 digits, for example `138****5678`; `whitespace` inserts spaces, for example `138 1234 5678`; `none` sends raw phone numbers. Feishu may reject bot messages that contain raw email addresses or phone numbers. Defaults to `mask`.                                           |
 | `[permissions].p2p_default_profile`     | Profile used when an unpaired P2P user first messages Twinny. Use `none` to deny by default, or a configured profile name to auto-authorize. Defaults to `none`.                                                                                                                                                                                                                         |
+| `[permissions].p2p_default_workspace`   | Default workspace template for new P2P conversations. Supports `{{twinny_home}}` and `{{conversation_key}}` variables. Defaults to `{{twinny_home}}/workspaces/{{conversation_key}}`. If the rendered directory already exists, Twinny reuses it; otherwise it creates it.                                                                                                               |
+| `[permissions].group_default_profile`   | Profile used when a new group auto-activates. It only takes effect when both this field and `group_default_mode` are not `none`. Defaults to `none`.                                                                                                                                                                                                                                      |
+| `[permissions].group_default_mode`      | Group response mode after auto-activation. Values are `owner_at`, `owner`, `all_at`, `all`, or `none`. When this and `group_default_profile` are both not `none`, the first new-group message matching the mode creates the workspace and activates the group. Defaults to `none`.                                                                                                       |
+| `[permissions].group_default_workspace` | Default workspace template for new group conversations. Supports `{{twinny_home}}` and `{{conversation_key}}` variables. Defaults to `{{twinny_home}}/workspaces/{{conversation_key}}`. If the rendered directory already exists, Twinny reuses it; otherwise it creates it.                                                                                                             |
 | `[service.launchd].mode`                | macOS launchd placement. `gui` uses the current `gui/<uid>` LaunchAgent by default; `daemon` uses a system LaunchDaemon. Usually written by `twinny install --system-daemon`.                                                                                                                                                                                                              |
 | `[service.launchd].user_name`           | The plist `UserName` when `mode = "daemon"`. Usually written automatically by `twinny install --system-daemon` from the current user.                                                                                                                                                                                                                                                      |
 | `[profiles.<name>].codex_home`          | `CODEX_HOME` for that profile. Absolute paths are used as-is; relative paths are resolved under `TWINNY_HOME`. `host` defaults to `~/.codex`; other profiles inherit `host` unless set.                                                                                                                                                                                                  |
@@ -237,6 +242,10 @@ chinese_phone_number = "mask"
 
 [permissions]
 p2p_default_profile = "none"
+p2p_default_workspace = "{{twinny_home}}/workspaces/{{conversation_key}}"
+group_default_profile = "none"
+group_default_mode = "none"
+group_default_workspace = "{{twinny_home}}/workspaces/{{conversation_key}}"
 
 [profiles.host]
 codex_home = "~/.codex"
