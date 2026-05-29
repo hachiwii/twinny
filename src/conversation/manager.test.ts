@@ -1090,10 +1090,10 @@ describe("ConversationManager", () => {
       threadId: "thread_main",
       turnId: "turn_2",
       callId: "call_wait",
-      tool: "wait_for_thread",
-      targetThreadId: "thread_topic",
+      tool: "wait_for_threads",
+      targetThreadIds: ["thread_topic"],
       timeoutMs: 5_000,
-      rawArguments: { thread_id: "thread_topic" }
+      rawArguments: { thread_ids: ["thread_topic"] }
     }));
     let settled = false;
     void waitPromise.then(() => {
@@ -1110,17 +1110,19 @@ describe("ConversationManager", () => {
     const payload = dynamicToolPayload(await waitPromise);
     expect(payload).toMatchObject({
       ok: true,
-      thread_id: "thread_topic",
-      outcome: "completed",
-      status: "idle",
-      turn_id: "turn_1",
-      final_message: "final from target",
-      omitted_process_lines: 5
+      threads: [{
+        thread_id: "thread_topic",
+        outcome: "completed",
+        status: "idle",
+        turn_id: "turn_1",
+        final_message: "final from target",
+        omitted_process_lines: 5
+      }]
     });
-    expect(payload.process_tail).toContain("前面省略 5 行工作过程。");
-    expect(payload.process_tail.split("\n")).not.toContain("line 5");
-    expect(payload.process_tail.split("\n")).toContain("line 6");
-    expect(payload.process_tail.split("\n")).toContain("line 105");
+    expect(payload.threads[0].process_tail).toContain("前面省略 5 行工作过程。");
+    expect(payload.threads[0].process_tail.split("\n")).not.toContain("line 5");
+    expect(payload.threads[0].process_tail.split("\n")).toContain("line 6");
+    expect(payload.threads[0].process_tail.split("\n")).toContain("line 105");
 
     turns[1]!.resolve(completed("thread_main", "turn_2"));
     await waitForDelay();
@@ -1153,22 +1155,227 @@ describe("ConversationManager", () => {
       threadId: "thread_main",
       turnId: "turn_2",
       callId: "call_wait",
-      tool: "wait_for_thread",
-      targetThreadId: "thread_topic",
+      tool: "wait_for_threads",
+      targetThreadIds: ["thread_topic"],
       timeoutMs: 5_000,
-      rawArguments: { thread_id: "thread_topic" }
+      rawArguments: { thread_ids: ["thread_topic"] }
     }));
 
     expect(payload).toMatchObject({
       ok: true,
-      thread_id: "thread_topic",
-      outcome: "interrupted",
-      interrupted_reason: "failed",
-      process_tail: "before failure"
+      threads: [{
+        thread_id: "thread_topic",
+        outcome: "interrupted",
+        interrupted_reason: "failed",
+        process_tail: "before failure"
+      }]
     });
-    expect(payload).not.toHaveProperty("final_message");
+    expect(payload.threads[0]).not.toHaveProperty("final_message");
 
     turns[1]!.resolve(completed("thread_main", "turn_2"));
+    await waitForDelay();
+  });
+
+  it("waits for every requested thread before returning wait_for_threads output", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic_a",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_a"
+        }),
+        codexThreadRecord({
+          codexThreadId: "thread_topic_b",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_b"
+        })
+      ]
+    });
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(groupMessage("topic_a_msg", "target a", { chatType: "topic_group", larkThreadId: "topic_a" }));
+    manager.submitIncoming(groupMessage("topic_b_msg", "target b", { chatType: "topic_group", larkThreadId: "topic_b" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+
+    const waitPromise = Promise.resolve(turns[2]!.params.onDynamicToolCall!({
+      requestId: "req_wait",
+      threadId: "thread_main",
+      turnId: "turn_3",
+      callId: "call_wait",
+      tool: "wait_for_threads",
+      targetThreadIds: ["thread_topic_a", "thread_topic_b"],
+      timeoutMs: 5_000,
+      rawArguments: { thread_ids: ["thread_topic_a", "thread_topic_b"] }
+    }));
+    let settled = false;
+    void waitPromise.then(() => {
+      settled = true;
+    });
+
+    turns[0]!.resolve(completed("thread_topic_a", "turn_1"));
+    await waitForDelay();
+    expect(settled).toBe(false);
+
+    turns[1]!.resolve(completed("thread_topic_b", "turn_2"));
+    const payload = dynamicToolPayload(await waitPromise);
+    expect(payload).toMatchObject({
+      ok: true,
+      threads: [
+        { thread_id: "thread_topic_a", outcome: "completed", status: "idle" },
+        { thread_id: "thread_topic_b", outcome: "completed", status: "idle" }
+      ]
+    });
+
+    turns[2]!.resolve(completed("thread_main", "turn_3"));
+    await waitForDelay();
+  });
+
+  it("creates a fresh topic through new_thread and starts an initial plan-mode message", async () => {
+    const turns: Array<Deferred<CodexTurnResult> & { params: Parameters<CodexBridge["startTurn"]>[0] }> = [];
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_child" })),
+      startTurn: vi.fn((params) => {
+        const turn = deferred<CodexTurnResult>();
+        turns.push({ ...turn, params });
+        void params.onTurnStarted?.(`turn_${turns.length}`);
+        return turn.promise;
+      })
+    });
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }));
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyText)
+      .mockResolvedValueOnce({ messageId: "reply_intro", raw: { data: { thread_id: "topic_child" } } })
+      .mockResolvedValueOnce({ messageId: "reply_initial", raw: { data: { thread_id: "topic_child" } } });
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    const payload = dynamicToolPayload(await turns[0]!.params.onDynamicToolCall!({
+      requestId: "req_new",
+      threadId: "thread_main",
+      turnId: "turn_1",
+      callId: "call_new",
+      tool: "new_thread",
+      fork: false,
+      mode: "plan",
+      name: "Child Plan",
+      initialMessage: "investigate this",
+      rawArguments: { mode: "plan", name: "Child Plan", initial_message: "investigate this" }
+    }));
+
+    expect(payload).toMatchObject({
+      ok: true,
+      thread_id: "thread_child",
+      lark_thread_id: "topic_child",
+      card_message_id: expect.any(String),
+      type: "fresh",
+      workspace: "/tmp/twinny/workspaces/group_oc_group",
+      mode: "plan",
+      initial_message_status: "processing"
+    });
+    expect(lark.replyText).toHaveBeenNthCalledWith(
+      1,
+      payload.card_message_id,
+      '话题由 <at user_id="ou_bot">Twinny</at> (thread_child) 创建',
+      { replyInThread: true }
+    );
+    expect(repository.updateCodexThreadMode).toHaveBeenCalledWith("group_oc_group", "thread_child", "plan");
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    const childTurn = vi.mocked(codex.startTurn).mock.calls[1]![0];
+    expect(childTurn).toMatchObject({ threadId: "thread_child", mode: "plan" });
+    expect(childTurn.input).toContain('lark_message lark_message_id="reply_initial"');
+    expect(childTurn.input).toContain('sender_ouid="ou_bot"');
+    expect(childTurn.input).toContain('sender_name="Twinny"');
+    expect(childTurn.input).toContain("investigate this");
+    expect(repository.getCodexThreadById("thread_child")).toMatchObject({
+      name: "Child Plan",
+      parentCodexThreadId: "thread_main",
+      createMethod: "fresh",
+      createRequestText: "investigate this",
+      model: expect.any(String),
+      effort: expect.any(String)
+    });
+
+    turns[1]!.resolve(completed("thread_child", "turn_2"));
+    turns[0]!.resolve(completed("thread_main", "turn_1"));
+    await waitForDelay();
+  });
+
+  it("creates a forked topic through new_thread using requested model settings", async () => {
+    const turns: Array<Deferred<CodexTurnResult> & { params: Parameters<CodexBridge["startTurn"]>[0] }> = [];
+    const codex = createCodex({
+      forkThread: vi.fn(async () => ({ threadId: "thread_forked", model: "gpt-5.5", effort: "high" })),
+      startTurn: vi.fn((params) => {
+        const turn = deferred<CodexTurnResult>();
+        turns.push({ ...turn, params });
+        void params.onTurnStarted?.(`turn_${turns.length}`);
+        return turn.promise;
+      })
+    });
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      mainThreadHasRollout: true
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_fork_intro",
+      raw: { data: { thread_id: "topic_forked" } }
+    });
+    const manager = createManager({ repository, codex, lark, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    const payload = dynamicToolPayload(await turns[0]!.params.onDynamicToolCall!({
+      requestId: "req_new",
+      threadId: "thread_main",
+      turnId: "turn_1",
+      callId: "call_new_fork",
+      tool: "new_thread",
+      model: "gpt-5.5",
+      effort: "high",
+      fork: true,
+      mode: "default",
+      name: "Forked Child",
+      initialMessage: "",
+      rawArguments: { model: "gpt-5.5", effort: "high", fork: true, name: "Forked Child" }
+    }));
+
+    expect(codex.forkThread).toHaveBeenCalledWith(expect.objectContaining({
+      profile: "guest",
+      threadId: "thread_main",
+      cwd: "/tmp/twinny/workspaces/group_oc_group",
+      model: "gpt-5.5",
+      effort: "high"
+    }));
+    expect(lark.replyText).toHaveBeenCalledWith(
+      payload.card_message_id,
+      '话题由 <at user_id="ou_bot">Twinny</at> (thread_forked) 创建，分叉自 thread_main',
+      { replyInThread: true }
+    );
+    expect(payload).toMatchObject({
+      ok: true,
+      thread_id: "thread_forked",
+      lark_thread_id: "topic_forked",
+      type: "fork",
+      model: "gpt-5.5",
+      effort: "high"
+    });
+    expect(repository.getCodexThreadById("thread_forked")).toMatchObject({
+      name: "Forked Child",
+      parentCodexThreadId: "thread_main",
+      createMethod: "fork",
+      codexThreadHasRollout: true,
+      model: "gpt-5.5",
+      effort: "high"
+    });
+
+    turns[0]!.resolve(completed("thread_main", "turn_1"));
     await waitForDelay();
   });
 

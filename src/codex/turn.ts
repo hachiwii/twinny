@@ -139,9 +139,20 @@ export interface CodexListThreadsToolRequest extends CodexDynamicToolRequestBase
   pageSize: number;
 }
 
-export interface CodexWaitForThreadToolRequest extends CodexDynamicToolRequestBase {
-  tool: "wait_for_thread";
-  targetThreadId: string;
+export interface CodexNewThreadToolRequest extends CodexDynamicToolRequestBase {
+  tool: "new_thread";
+  workspace?: string;
+  model?: string;
+  effort?: string;
+  fork: boolean;
+  mode: CodexThreadMode;
+  name?: string;
+  initialMessage: string;
+}
+
+export interface CodexWaitForThreadsToolRequest extends CodexDynamicToolRequestBase {
+  tool: "wait_for_threads";
+  targetThreadIds: string[];
   timeoutMs: number;
 }
 
@@ -166,7 +177,8 @@ export interface CodexCreateConversationToolRequest extends CodexDynamicToolRequ
 
 export type CodexTwinnyDynamicToolRequest =
   | CodexListThreadsToolRequest
-  | CodexWaitForThreadToolRequest
+  | CodexNewThreadToolRequest
+  | CodexWaitForThreadsToolRequest
   | CodexSendThreadRefToolRequest
   | CodexTellThreadToolRequest
   | CodexCreateConversationToolRequest;
@@ -1014,22 +1026,55 @@ function parseTwinnyDynamicToolRequest(
         rawArguments: params.arguments
       };
     }
-    case "wait_for_thread": {
-      if (!isRecord(params.arguments)) {
-        return "Invalid wait_for_thread arguments: expected an object.";
-      }
-      const targetThreadId = trimmedString(params.arguments.thread_id);
-      const timeoutMs = optionalInteger(params.arguments.timeout_ms, 300_000, 1_000, 3_600_000);
-      if (!targetThreadId || timeoutMs === undefined) {
-        return "Invalid wait_for_thread arguments: thread_id is required and timeout_ms must be 1000..3600000.";
+    case "new_thread": {
+      const args = isRecord(params.arguments) ? params.arguments : {};
+      const workspace = trimmedString(args.workspace);
+      const model = trimmedString(args.model);
+      const effort = trimmedString(args.effort);
+      const fork = optionalBoolean(args.fork, false);
+      const mode = parseThreadMode(args.mode, "default");
+      const name = trimmedString(args.name);
+      const initialMessage = optionalString(args.initial_message, "");
+      if (
+        fork === undefined ||
+        mode === undefined ||
+        initialMessage === undefined ||
+        (args.name !== undefined && (!name || name.length > 80))
+      ) {
+        return "Invalid new_thread arguments: workspace/model/effort/name/initial_message must be strings, fork must be boolean, and mode must be default or plan.";
       }
       return {
         requestId,
         threadId: params.threadId,
         turnId: params.turnId,
         callId: params.callId,
-        tool: "wait_for_thread",
-        targetThreadId,
+        tool: "new_thread",
+        ...(workspace ? { workspace } : {}),
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
+        fork,
+        mode,
+        ...(name ? { name } : {}),
+        initialMessage,
+        rawArguments: params.arguments
+      };
+    }
+    case "wait_for_threads": {
+      if (!isRecord(params.arguments)) {
+        return "Invalid wait_for_threads arguments: expected an object.";
+      }
+      const targetThreadIds = parseThreadIds(params.arguments.thread_ids);
+      const timeoutMs = optionalInteger(params.arguments.timeout_ms, 300_000, 1_000, 3_600_000);
+      if (!targetThreadIds || timeoutMs === undefined) {
+        return "Invalid wait_for_threads arguments: thread_ids must be a non-empty string array and timeout_ms must be 1000..3600000.";
+      }
+      return {
+        requestId,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        callId: params.callId,
+        tool: "wait_for_threads",
+        targetThreadIds,
         timeoutMs,
         rawArguments: params.arguments
       };
@@ -1118,6 +1163,44 @@ function optionalInteger(value: unknown, defaultValue: number, min: number, max:
     return undefined;
   }
   return value;
+}
+
+function optionalBoolean(value: unknown, defaultValue: boolean): boolean | undefined {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function optionalString(value: unknown, defaultValue: string): string | undefined {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+  return typeof value === "string" ? value : undefined;
+}
+
+function parseThreadMode(value: unknown, defaultValue: CodexThreadMode): CodexThreadMode | undefined {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+  return value === "default" || value === "plan" ? value : undefined;
+}
+
+function parseThreadIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) {
+    return undefined;
+  }
+  const ids: string[] = [];
+  for (const item of value) {
+    const id = trimmedString(item);
+    if (!id) {
+      return undefined;
+    }
+    if (!ids.includes(id)) {
+      ids.push(id);
+    }
+  }
+  return ids;
 }
 
 function trimmedString(value: unknown): string | undefined {

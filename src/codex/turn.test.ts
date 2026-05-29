@@ -251,6 +251,66 @@ describe("handleTurnServerRequest", () => {
         onDynamicToolCall
       },
       {
+        id: "req-new-thread",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_new_thread",
+          namespace: "twinny",
+          tool: "new_thread",
+          arguments: {
+            workspace: "/tmp/work",
+            model: "gpt-5.5",
+            effort: "high",
+            fork: true,
+            mode: "plan",
+            name: "Child Thread",
+            initial_message: "start here"
+          }
+        }
+      }
+    );
+
+    await Promise.resolve();
+
+    expect(onDynamicToolCall).toHaveBeenLastCalledWith({
+      requestId: "req-new-thread",
+      threadId: "thread_123",
+      turnId: "turn_1",
+      callId: "call_new_thread",
+      tool: "new_thread",
+      workspace: "/tmp/work",
+      model: "gpt-5.5",
+      effort: "high",
+      fork: true,
+      mode: "plan",
+      name: "Child Thread",
+      initialMessage: "start here",
+      rawArguments: {
+        workspace: "/tmp/work",
+        model: "gpt-5.5",
+        effort: "high",
+        fork: true,
+        mode: "plan",
+        name: "Child Thread",
+        initial_message: "start here"
+      }
+    });
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-new-thread", {
+      success: true,
+      contentItems: [{ type: "inputText", text: "new_thread:call_new_thread" }]
+    });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
         id: "req-tell",
         method: "item/tool/call",
         params: {
@@ -302,7 +362,7 @@ describe("handleTurnServerRequest", () => {
           turnId: "turn_1",
           callId: "call_wait",
           namespace: "twinny",
-          tool: "wait_for_thread",
+          tool: "wait_for_threads",
           arguments: { timeout_ms: 999 }
         }
       }
@@ -313,7 +373,7 @@ describe("handleTurnServerRequest", () => {
       success: false,
       contentItems: [{
         type: "inputText",
-        text: "Invalid wait_for_thread arguments: thread_id is required and timeout_ms must be 1000..3600000."
+        text: "Invalid wait_for_threads arguments: thread_ids must be a non-empty string array and timeout_ms must be 1000..3600000."
       }]
     });
 

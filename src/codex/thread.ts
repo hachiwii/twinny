@@ -84,17 +84,42 @@ export const LIST_THREADS_TOOL_SPEC: DynamicToolSpec = {
   deferLoading: false
 };
 
-export const WAIT_FOR_THREAD_TOOL_SPEC: DynamicToolSpec = {
+export const NEW_THREAD_TOOL_SPEC: DynamicToolSpec = {
   namespace: "twinny",
-  name: "wait_for_thread",
+  name: "new_thread",
   description:
-    "Wait for a Twinny-managed thread to become idle and for its queued work to clear. Returns the last turn final message and the latest 100 lines of process output when completed; interrupted or failed turns return the process tail instead of a final message.",
+    "Create a new Twinny topic thread or fork in the current conversation. workspace, model, and effort default to the current thread when omitted. fork=false creates a fresh thread; fork=true forks the current thread. mode defaults to default, name defaults to Twinny's normal new thread/fork thread title, and initial_message defaults to empty. This operation automatically sends the topic to the user, so do not call send_thread_ref afterward.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["thread_id"],
     properties: {
-      thread_id: { type: "string", minLength: 1 },
+      workspace: { type: "string", minLength: 1 },
+      model: { type: "string", minLength: 1 },
+      effort: { type: "string", minLength: 1 },
+      fork: { type: "boolean", default: false },
+      mode: { type: "string", enum: ["default", "plan"], default: "default" },
+      name: { type: "string", minLength: 1, maxLength: 80 },
+      initial_message: { type: "string", default: "" }
+    }
+  },
+  deferLoading: false
+};
+
+export const WAIT_FOR_THREADS_TOOL_SPEC: DynamicToolSpec = {
+  namespace: "twinny",
+  name: "wait_for_threads",
+  description:
+    "Wait for Twinny-managed threads to become idle and for their queued work to clear. Accepts a list of thread IDs and returns only after every thread is idle. A thread counts as waited once it has sent an idle signal. Returns each thread's last turn final message and latest 100 lines of process output; interrupted or failed turns return the process tail instead of a final message.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["thread_ids"],
+    properties: {
+      thread_ids: {
+        type: "array",
+        minItems: 1,
+        items: { type: "string", minLength: 1 }
+      },
       timeout_ms: { type: "integer", minimum: 1000, maximum: 3600000, default: 300000 }
     }
   },
@@ -164,7 +189,8 @@ export const CREATE_CONVERSATION_TOOL_SPEC: DynamicToolSpec = {
 export const TWINNY_DYNAMIC_TOOL_SPECS: DynamicToolSpec[] = [
   SET_THREAD_NAME_TOOL_SPEC,
   LIST_THREADS_TOOL_SPEC,
-  WAIT_FOR_THREAD_TOOL_SPEC,
+  NEW_THREAD_TOOL_SPEC,
+  WAIT_FOR_THREADS_TOOL_SPEC,
   SEND_THREAD_REF_TOOL_SPEC,
   TELL_THREAD_TOOL_SPEC,
   CREATE_CONVERSATION_TOOL_SPEC

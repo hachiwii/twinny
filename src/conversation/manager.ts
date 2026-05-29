@@ -848,6 +848,8 @@ interface NewSessionTopicRequest {
   anchorMessage?: IncomingLarkMessage;
   codexThread?: NewSessionTopicCodexThread;
   name?: string;
+  model?: string;
+  effort?: string;
   parentCodexThreadId?: string;
   createMethod?: CodexThreadRecord["createMethod"];
   createRequestText?: string;
@@ -3944,8 +3946,8 @@ export class ConversationManager {
         });
     const threadName = this.consumePendingThreadName(thread.threadId) ?? request.name;
     const modelSettings = this.profileDefaultModelSettings(profile);
-    const threadModel = request.codexThread?.model ?? modelSettings.model;
-    const threadEffort = request.codexThread?.effort ?? modelSettings.effort;
+    const threadModel = request.codexThread?.model ?? request.model ?? modelSettings.model;
+    const threadEffort = request.codexThread?.effort ?? request.effort ?? modelSettings.effort;
     await this.options.repository.upsertCodexThread({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
@@ -4619,7 +4621,10 @@ export class ConversationManager {
     if (!path.isAbsolute(expanded)) {
       return { kind: "invalid", message: "workspace 路径必须是绝对路径，或使用 ~/...。" };
     }
-    return validateWorkspaceDirectory(path.resolve(expanded));
+    const target = await validateWorkspaceDirectory(path.resolve(expanded));
+    return target.kind === "workspace"
+      ? target
+      : { kind: "invalid", message: target.kind === "invalid" ? target.message : "workspace 路径无效。" };
   }
 
   private async handleModelCommand(
@@ -6863,8 +6868,10 @@ export class ConversationManager {
       switch (request.tool) {
         case "list_threads":
           return await this.handleListThreadsToolCall(active, request);
-        case "wait_for_thread":
-          return await this.handleWaitForThreadToolCall(active, request);
+        case "new_thread":
+          return await this.handleNewThreadToolCall(active, request);
+        case "wait_for_threads":
+          return await this.handleWaitForThreadsToolCall(active, request);
         case "send_thread_ref":
           return await this.handleSendThreadRefToolCall(active, request);
         case "tell_thread":
@@ -6955,57 +6962,257 @@ export class ConversationManager {
     return thread.status === "working" ? "working" : "idle";
   }
 
-  private async handleWaitForThreadToolCall(
+  private async handleNewThreadToolCall(
     active: ActiveTurn,
-    request: Extract<CodexTwinnyDynamicToolRequest, { tool: "wait_for_thread" }>
+    request: Extract<CodexTwinnyDynamicToolRequest, { tool: "new_thread" }>
   ): Promise<CodexDynamicToolCallResponse> {
-    const target = await this.options.repository.getCodexThreadById(request.targetThreadId);
-    if (!target) {
-      return dynamicToolErrorResponse("THREAD_NOT_MANAGED", `Thread ${request.targetThreadId} is not managed by Twinny.`);
+    const conversation = await this.options.repository.findByConversationKey(active.conversationKey);
+    if (!conversation) {
+      return dynamicToolErrorResponse("CONVERSATION_NOT_FOUND", `Conversation ${active.conversationKey} was not found.`);
     }
-    if (request.targetThreadId === active.threadId || this.wouldCreateWaitCycle(active.threadId, request.targetThreadId)) {
-      return dynamicToolErrorResponse("WAIT_CYCLE_DETECTED", "wait_for_thread would create a circular wait chain.");
+    const botOpenId = nonEmptyString(this.options.botOpenId);
+    if (!botOpenId) {
+      return dynamicToolErrorResponse("BOT_OPEN_ID_MISSING", "new_thread requires Twinny to know its bot open_id.");
+    }
+    const workspace = await this.resolveNewThreadToolWorkspace(active, request.workspace);
+    if (workspace.kind === "invalid") {
+      return dynamicToolErrorResponse("WORKSPACE_INVALID", workspace.message);
     }
 
-    const ready = await this.threadWaitSnapshotIfReady(request.targetThreadId);
-    if (ready) {
-      return dynamicToolJsonResponse(true, waitSnapshotResponse(ready, 0));
+    const model = request.model ?? active.model;
+    const effort = request.effort ?? active.modelReasoningEffort;
+    const threadName = request.name ?? (request.fork ? "新分支会话" : "新会话");
+    const initialMessage = request.initialMessage.trim();
+    const syntheticMessage = createDynamicThreadToolMessage(conversation, active.context, {
+      eventId: `dynamic_new_thread:${request.callId}`,
+      messageId: `dynamic_new_thread:${request.callId}`,
+      senderOpenId: botOpenId,
+      senderName: "Twinny",
+      text: initialMessage
+    });
+    const createRequestText = initialMessage || undefined;
+    let topic: CreatedSessionTopic | undefined;
+    let forkedFromThreadId: string | undefined;
+
+    if (request.fork) {
+      forkedFromThreadId = active.threadId;
+      const sourceThread = await this.options.repository.getCodexThreadById(active.threadId);
+      if (sourceThread && !sourceThread.codexThreadHasRollout) {
+        return dynamicToolErrorResponse("THREAD_NOT_FORKABLE", "Current Codex thread does not have rollout history to fork.");
+      }
+      const forkedAt = Date.now();
+      let forked: { threadId: string; model?: string; effort?: string; cwd?: string };
+      try {
+        forked = await this.options.codex.forkThread({
+          profile: active.profile,
+          threadId: active.threadId,
+          cwd: workspace.workspace,
+          approvalPolicy: "never",
+          developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, active.context),
+          model,
+          effort
+        });
+      } catch (error) {
+        if (!isMissingRolloutError(error)) {
+          throw error;
+        }
+        return dynamicToolErrorResponse("THREAD_NOT_FORKABLE", "Current Codex thread does not have rollout history to fork.");
+      }
+      topic = await this.createNewSessionTopic(active.context, {
+        chatId: conversation.chatId,
+        operatorOpenId: botOpenId,
+        eventId: syntheticMessage.eventId,
+        anchorMessage: syntheticMessage,
+        name: threadName,
+        codexThread: {
+          threadId: forked.threadId,
+          workspace: forked.cwd ?? workspace.workspace,
+          model: forked.model ?? model,
+          effort: forked.effort ?? effort,
+          codexThreadHasRollout: true,
+          parentCodexThreadId: active.threadId,
+          forkedAt,
+          createMethod: "fork",
+          createRequestText
+        }
+      });
+    } else {
+      topic = await this.createNewSessionTopic(active.context, {
+        chatId: conversation.chatId,
+        operatorOpenId: botOpenId,
+        eventId: syntheticMessage.eventId,
+        anchorMessage: syntheticMessage,
+        name: threadName,
+        model,
+        effort,
+        parentCodexThreadId: active.threadId,
+        createMethod: "fresh",
+        createRequestText
+      });
     }
-    if (await this.threadIsIdleWithoutWaitSnapshot(request.targetThreadId)) {
-      return dynamicToolErrorResponse(
-        "THREAD_LAST_TURN_UNAVAILABLE",
-        `Thread ${request.targetThreadId} is idle, but its last turn result is not available in memory.`
+
+    if (!topic) {
+      return dynamicToolErrorResponse("THREAD_CREATE_FAILED", "Twinny could not create the topic thread.");
+    }
+
+    const intro = await this.replyThreadTextMessage(
+      topic.cardMessageId,
+      formatDynamicToolTopicCreatedMessage(botOpenId, topic.codexThreadId, { forkedFromThreadId })
+    );
+    topic = await this.updateSessionTopicThreadId(active.context, topic, intro.larkThreadId);
+    if (request.mode !== "default") {
+      await this.setThreadModeBestEffort(active.conversationKey, topic.codexThreadId, request.mode);
+    }
+    await this.forwardSessionTopicToSourceThreadBestEffort(active.context, syntheticMessage, topic);
+
+    let initialMessageStatus: LarkMessageStatus | undefined;
+    if (initialMessage) {
+      const proxy = await this.replyThreadCommandMessage(topic.cardMessageId, syntheticMessage, initialMessage);
+      const proxyContext = createThreadReplyContext(active.context, topic.larkThreadId);
+      const proxyMessage = createThreadReplyMessage(
+        active.context,
+        syntheticMessage,
+        proxy.messageId,
+        topic.larkThreadId,
+        proxy.text
       );
+      const proxyState = this.getState(proxyContext.stateKey);
+      const proxyParsed = parseSlashCommand(proxyMessage.text);
+      const route = await this.recordIncomingMessage(proxyState, proxyContext, proxyMessage, proxyParsed);
+      initialMessageStatus = route.status;
+      void this.handleRecordedParsedCommand(proxyState, proxyContext, proxyMessage, proxyParsed).catch(async (error) => {
+        this.log.warn(
+          { error, threadId: topic?.codexThreadId, messageId: proxyMessage.messageId },
+          "failed to process new_thread initial message"
+        );
+        await this.replyErrorBestEffort(proxyMessage.messageId, error);
+        await this.markMessagesFailedBestEffort([proxyMessage.messageId]);
+      });
+    }
+
+    return dynamicToolJsonResponse(true, {
+      ok: true,
+      thread_id: topic.codexThreadId,
+      lark_thread_id: topic.larkThreadId,
+      card_message_id: topic.cardMessageId,
+      type: request.fork ? "fork" : "fresh",
+      workspace: workspace.workspace,
+      model,
+      effort,
+      mode: request.mode,
+      ...(initialMessageStatus ? { initial_message_status: initialMessageStatus } : {})
+    });
+  }
+
+  private async resolveNewThreadToolWorkspace(
+    active: ActiveTurn,
+    workspace: string | undefined
+  ): Promise<{ kind: "workspace"; workspace: string } | { kind: "invalid"; message: string }> {
+    if (!workspace) {
+      return { kind: "workspace", workspace: active.workspace };
+    }
+    const expanded = expandHomePath(workspace);
+    if (!path.isAbsolute(expanded)) {
+      return { kind: "invalid", message: "workspace 路径必须是绝对路径，或使用 ~/...。" };
+    }
+    const target = await validateWorkspaceDirectory(path.resolve(expanded));
+    return target.kind === "workspace"
+      ? target
+      : { kind: "invalid", message: target.kind === "invalid" ? target.message : "workspace 路径无效。" };
+  }
+
+  private async handleWaitForThreadsToolCall(
+    active: ActiveTurn,
+    request: Extract<CodexTwinnyDynamicToolRequest, { tool: "wait_for_threads" }>
+  ): Promise<CodexDynamicToolCallResponse> {
+    for (const targetThreadId of request.targetThreadIds) {
+      const target = await this.options.repository.getCodexThreadById(targetThreadId);
+      if (!target) {
+        return dynamicToolErrorResponse("THREAD_NOT_MANAGED", `Thread ${targetThreadId} is not managed by Twinny.`);
+      }
+      if (targetThreadId === active.threadId || this.wouldCreateWaitCycle(active.threadId, targetThreadId)) {
+        return dynamicToolErrorResponse("WAIT_CYCLE_DETECTED", "wait_for_threads would create a circular wait chain.");
+      }
     }
 
     const startedAt = Date.now();
-    let watcher: ThreadIdleWatcher | undefined;
+    const snapshots = new Map<string, ThreadWaitSnapshot>();
+    const pendingThreadIds: string[] = [];
     try {
-      this.addWaitEdge(active.threadId, request.targetThreadId);
-      const snapshot = await new Promise<ThreadWaitSnapshot>((resolve, reject) => {
-        watcher = {
-          callerThreadId: active.threadId,
-          targetThreadId: request.targetThreadId,
-          startedAt,
-          resolve,
-          reject
-        };
-        watcher.timeout = setTimeout(() => {
-          this.removeThreadIdleWatcher(watcher!);
-          reject(new TwinnyError(`Timed out waiting for thread ${request.targetThreadId} to become idle`, "THREAD_WAIT_TIMEOUT"));
-        }, request.timeoutMs);
-        watcher.timeout.unref?.();
-        this.addThreadIdleWatcher(watcher);
-        void this.resolveThreadIdleWatchersIfReady(request.targetThreadId);
+      for (const targetThreadId of request.targetThreadIds) {
+        const ready = await this.threadWaitSnapshotIfReady(targetThreadId);
+        if (ready) {
+          snapshots.set(targetThreadId, ready);
+          continue;
+        }
+        if (await this.threadIsIdleWithoutWaitSnapshot(targetThreadId)) {
+          return dynamicToolErrorResponse(
+            "THREAD_LAST_TURN_UNAVAILABLE",
+            `Thread ${targetThreadId} is idle, but its last turn result is not available in memory.`
+          );
+        }
+        pendingThreadIds.push(targetThreadId);
+      }
+
+      if (pendingThreadIds.length > 0) {
+        const pendingSnapshots = await this.waitForThreadIdleSnapshots(
+          active.threadId,
+          pendingThreadIds,
+          request.timeoutMs,
+          startedAt
+        );
+        for (const snapshot of pendingSnapshots) {
+          snapshots.set(snapshot.threadId, snapshot);
+        }
+      }
+      const waitedMs = Date.now() - startedAt;
+      return dynamicToolJsonResponse(true, {
+        ok: true,
+        waited_ms: waitedMs,
+        threads: request.targetThreadIds.map((threadId) => waitSnapshotResponse(snapshots.get(threadId)!, waitedMs))
       });
-      return dynamicToolJsonResponse(true, waitSnapshotResponse(snapshot, Date.now() - startedAt));
     } catch (error) {
       return dynamicToolErrorResponse(errorCodeForDynamicTool(error), toErrorMessage(error));
+    }
+  }
+
+  private async waitForThreadIdleSnapshots(
+    callerThreadId: string,
+    targetThreadIds: string[],
+    timeoutMs: number,
+    startedAt: number
+  ): Promise<ThreadWaitSnapshot[]> {
+    const watchers: ThreadIdleWatcher[] = [];
+    try {
+      for (const targetThreadId of targetThreadIds) {
+        this.addWaitEdge(callerThreadId, targetThreadId);
+      }
+      return await Promise.all(targetThreadIds.map((targetThreadId) =>
+        new Promise<ThreadWaitSnapshot>((resolve, reject) => {
+          const watcher: ThreadIdleWatcher = {
+            callerThreadId,
+            targetThreadId,
+            startedAt,
+            resolve,
+            reject
+          };
+          watcher.timeout = setTimeout(() => {
+            this.removeThreadIdleWatcher(watcher);
+            reject(new TwinnyError(`Timed out waiting for thread ${targetThreadId} to become idle`, "THREAD_WAIT_TIMEOUT"));
+          }, timeoutMs);
+          watcher.timeout.unref?.();
+          watchers.push(watcher);
+          this.addThreadIdleWatcher(watcher);
+          void this.resolveThreadIdleWatchersIfReady(targetThreadId);
+        })
+      ));
     } finally {
-      if (watcher) {
+      for (const watcher of watchers) {
         this.removeThreadIdleWatcher(watcher);
       }
-      this.removeWaitEdge(active.threadId, request.targetThreadId);
+      for (const targetThreadId of targetThreadIds) {
+        this.removeWaitEdge(callerThreadId, targetThreadId);
+      }
     }
   }
 
@@ -11211,6 +11418,52 @@ function formatThreadMessageProxyText(sourceLabel: string, message: string): str
   return `收到来自 ${sourceLabel} 的消息：\n\n${message}`;
 }
 
+function createDynamicThreadToolMessage(
+  conversation: ConversationRecord,
+  context: MessageContext,
+  input: {
+    eventId: string;
+    messageId: string;
+    senderOpenId: string;
+    senderName: string;
+    text: string;
+  }
+): IncomingLarkMessage {
+  const createTime = Date.now();
+  const chatType: ConversationType = context.larkThreadId && conversation.type !== "p2p" ? "topic_group" : conversation.type;
+  return {
+    eventId: input.eventId,
+    messageId: input.messageId,
+    chatId: conversation.chatId,
+    chatType,
+    messageType: "text",
+    senderOpenId: input.senderOpenId,
+    senderName: input.senderName,
+    larkGroupId: isGroupConversationType(chatType) ? conversation.chatId : undefined,
+    larkThreadId: context.larkThreadId,
+    text: input.text,
+    createTime,
+    raw: {
+      kind: "dynamic_new_thread",
+      conversation_key: conversation.conversationKey,
+      message: {
+        message_id: input.messageId,
+        create_time: String(createTime),
+        chat_id: conversation.chatId,
+        chat_type: chatType,
+        message_type: "text",
+        ...(context.larkThreadId ? { thread_id: context.larkThreadId } : {}),
+        content: JSON.stringify({ text: input.text })
+      },
+      sender: {
+        sender_id: { open_id: input.senderOpenId },
+        sender_type: "bot",
+        name: input.senderName
+      }
+    }
+  };
+}
+
 function threadMessageRawContext(input: {
   conversation: ConversationRecord;
   sourceThreadId: string;
@@ -11476,7 +11729,7 @@ function createThreadReplyMessage(
 ): IncomingLarkMessage {
   const createTime = message.createTime ?? Date.now();
   const chatType: ConversationType = context.type === "p2p" ? "p2p" : "topic_group";
-  const chatId = chatType === "p2p" ? message.senderOpenId : message.larkGroupId ?? message.chatId;
+  const chatId = chatType === "p2p" ? message.chatId : message.larkGroupId ?? message.chatId;
   return {
     ...message,
     eventId: `thread_reply:${message.eventId}`,
@@ -12367,6 +12620,16 @@ function formatTopicCreatedMessage(
 ): string {
   const creatorName = escapeLarkText(nonEmptyString(message.senderName) ?? message.senderOpenId);
   const creator = `<at user_id="${escapeLarkTextAttribute(message.senderOpenId)}">${creatorName}</at>`;
+  const forkSuffix = options.forkedFromThreadId ? `，分叉自 ${escapeLarkText(options.forkedFromThreadId)}` : "";
+  return `话题由 ${creator} 创建${forkSuffix}`;
+}
+
+function formatDynamicToolTopicCreatedMessage(
+  botOpenId: string,
+  threadId: string,
+  options: { forkedFromThreadId?: string } = {}
+): string {
+  const creator = `<at user_id="${escapeLarkTextAttribute(botOpenId)}">Twinny</at> (${escapeLarkText(threadId)})`;
   const forkSuffix = options.forkedFromThreadId ? `，分叉自 ${escapeLarkText(options.forkedFromThreadId)}` : "";
   return `话题由 ${creator} 创建${forkSuffix}`;
 }
