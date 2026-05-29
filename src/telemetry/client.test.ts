@@ -21,7 +21,13 @@ const config: TwinnyConfig = {
       larkAppSecret: "twinny.home.0123456789abcdef0123456789abcdef.lark.app_secret"
     }
   },
-  permissions: { p2pDefaultProfile: "guest", groupDefaultProfile: "none", groupDefaultMode: "none" },
+  permissions: {
+    p2pDefaultProfile: "guest",
+    p2pDefaultWorkspace: "{{twinny_home}}/workspaces/{{conversation_key}}",
+    groupDefaultProfile: "none",
+    groupDefaultMode: "none",
+    groupDefaultWorkspace: "{{twinny_home}}/workspaces/{{conversation_key}}"
+  },
   service: { launchd: { mode: "gui" } },
   telemetry: { enabled: true, posthogProjectToken: "ph_test", posthogHost: "https://posthog.example" },
   owner: { openId: "ou_owner", displayName: "Owner" },

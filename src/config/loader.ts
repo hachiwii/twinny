@@ -8,6 +8,7 @@ import {
   DEFAULT_LARK_MESSAGE_REDACTION_STRATEGY,
   DEFAULT_LARK_QUEUED_REACTION,
   DEFAULT_LARK_WORKING_REACTION,
+  DEFAULT_CONVERSATION_WORKSPACE_TEMPLATE,
   GUEST_PROFILE_NAME,
   HOST_PROFILE_NAME,
   NONE_PROFILE_NAME,
@@ -76,8 +77,10 @@ const rawConfigSchema = z
     permissions: z
       .object({
         p2p_default_profile: z.string().optional(),
+        p2p_default_workspace: z.string().optional(),
         group_default_profile: z.string().optional(),
-        group_default_mode: z.enum(["all", "all_at", "owner", "owner_at", "none"]).optional()
+        group_default_mode: z.enum(["all", "all_at", "owner", "owner_at", "none"]).optional(),
+        group_default_workspace: z.string().optional()
       })
       .strict()
       .optional(),
@@ -182,8 +185,10 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
     homeIdentity,
     permissions: {
       p2pDefaultProfile: normalizeProfileName(input.permissions?.p2pDefaultProfile) ?? NONE_PROFILE_NAME,
+      p2pDefaultWorkspace: normalizeWorkspaceTemplate(input.permissions?.p2pDefaultWorkspace),
       groupDefaultProfile: normalizeProfileName(input.permissions?.groupDefaultProfile) ?? NONE_PROFILE_NAME,
-      groupDefaultMode: normalizeGroupDefaultMode(input.permissions?.groupDefaultMode)
+      groupDefaultMode: normalizeGroupDefaultMode(input.permissions?.groupDefaultMode),
+      groupDefaultWorkspace: normalizeWorkspaceTemplate(input.permissions?.groupDefaultWorkspace)
     },
     service: normalizeServiceConfig(input.service),
     telemetry: normalizeTelemetryConfig(input.telemetry),
@@ -409,6 +414,7 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   } else if (p2pDefault !== NONE_PROFILE_NAME && !config.profiles[p2pDefault]) {
     issues.push(`permissions.p2p_default_profile references unknown profile: ${p2pDefault}`);
   }
+  issues.push(...validateWorkspaceTemplate(config.permissions.p2pDefaultWorkspace, "permissions.p2p_default_workspace"));
   const groupDefaultProfile = config.permissions.groupDefaultProfile;
   if (!groupDefaultProfile) {
     issues.push("permissions.group_default_profile is required after defaults");
@@ -419,6 +425,7 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   if (!isConversationResponseMode(groupDefaultMode)) {
     issues.push("permissions.group_default_mode must be owner_at, owner, all_at, all, or none");
   }
+  issues.push(...validateWorkspaceTemplate(config.permissions.groupDefaultWorkspace, "permissions.group_default_workspace"));
   return issues;
 }
 
@@ -453,8 +460,10 @@ function createRuntimeConfig(
     homeIdentity: runtime.homeIdentity,
     permissions: {
       p2pDefaultProfile: normalizeProfileName(parsed.permissions?.p2p_default_profile) ?? NONE_PROFILE_NAME,
+      p2pDefaultWorkspace: normalizeWorkspaceTemplate(parsed.permissions?.p2p_default_workspace),
       groupDefaultProfile: normalizeProfileName(parsed.permissions?.group_default_profile) ?? NONE_PROFILE_NAME,
-      groupDefaultMode: normalizeGroupDefaultMode(parsed.permissions?.group_default_mode)
+      groupDefaultMode: normalizeGroupDefaultMode(parsed.permissions?.group_default_mode),
+      groupDefaultWorkspace: normalizeWorkspaceTemplate(parsed.permissions?.group_default_workspace)
     },
     service: normalizeServiceConfig({
       launchd: {
@@ -558,8 +567,10 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
     },
     permissions: {
       p2p_default_profile: config.permissions.p2pDefaultProfile,
+      p2p_default_workspace: config.permissions.p2pDefaultWorkspace,
       group_default_profile: config.permissions.groupDefaultProfile,
-      group_default_mode: config.permissions.groupDefaultMode
+      group_default_mode: config.permissions.groupDefaultMode,
+      group_default_workspace: config.permissions.groupDefaultWorkspace
     },
     profiles
   };
@@ -635,6 +646,26 @@ function normalizeProfileName(value: string | undefined): string | undefined {
 
 function normalizeGroupDefaultMode(value: ConversationResponseMode | undefined): ConversationResponseMode {
   return isConversationResponseMode(value) ? value : NONE_PROFILE_NAME;
+}
+
+function normalizeWorkspaceTemplate(value: string | undefined): string {
+  return normalizeOptionalString(value) ?? DEFAULT_CONVERSATION_WORKSPACE_TEMPLATE;
+}
+
+function validateWorkspaceTemplate(value: string, field: string): string[] {
+  const issues: string[] = [];
+  if (!normalizeOptionalString(value)) {
+    issues.push(`${field} is required after defaults`);
+    return issues;
+  }
+  const supportedVariables = new Set(["twinny_home", "conversation_key"]);
+  for (const match of value.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)) {
+    const variable = match[1]?.trim() ?? "";
+    if (!supportedVariables.has(variable)) {
+      issues.push(`${field} references unsupported variable: ${variable}`);
+    }
+  }
+  return issues;
 }
 
 function isConversationResponseMode(value: unknown): value is ConversationResponseMode {

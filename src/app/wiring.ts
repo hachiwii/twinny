@@ -191,7 +191,7 @@ export class TwinnyRuntime {
         startupFeatureChecks.filter((result) => result.key === "necessary")
       );
       const repository = createConversationRepository(this.db);
-      const workspaceManager = WorkspaceManager.fromRuntimePaths(this.paths);
+      const workspaceManager = WorkspaceManager.fromRuntimePaths(this.paths, this.config.permissions);
       const conversation = new ConversationManager({
         config: this.config,
         repository: adaptConversationRepository(repository),

@@ -49,6 +49,35 @@ describe("WorkspaceManager", () => {
     expect(getGroupChatIdFromConversationKey(conversationKey)).toBe("oc_group");
   });
 
+  it("renders configured P2P and group workspace templates", () => {
+    const manager = WorkspaceManager.fromTwinnyHome(tempDir, {
+      p2pDefaultWorkspace: "{{twinny_home}}/dm/{{conversation_key}}",
+      groupDefaultWorkspace: "{{twinny_home}}/rooms/{{conversation_key}}"
+    });
+
+    const p2pWorkspace = manager.ensureWorkspace(createP2PConversationKey("ou_abc"));
+    const groupWorkspace = manager.ensureWorkspace(createGroupConversationKey("oc_group"));
+
+    expect(p2pWorkspace).toBe(path.join(tempDir, "dm", "p2p_ou_abc"));
+    expect(groupWorkspace).toBe(path.join(tempDir, "rooms", "group_oc_group"));
+    expect(fs.statSync(p2pWorkspace).isDirectory()).toBe(true);
+    expect(fs.statSync(groupWorkspace).isDirectory()).toBe(true);
+  });
+
+  it("uses an existing configured workspace directory when present", () => {
+    const existingWorkspace = path.join(tempDir, "existing", "p2p_ou_abc");
+    fs.mkdirSync(existingWorkspace, { recursive: true });
+    fs.writeFileSync(path.join(existingWorkspace, "marker.txt"), "keep");
+    const manager = WorkspaceManager.fromTwinnyHome(tempDir, {
+      p2pDefaultWorkspace: "{{twinny_home}}/existing/{{conversation_key}}"
+    });
+
+    const workspace = manager.ensureWorkspace(createP2PConversationKey("ou_abc"));
+
+    expect(workspace).toBe(existingWorkspace);
+    expect(fs.readFileSync(path.join(workspace, "marker.txt"), "utf8")).toBe("keep");
+  });
+
   it("rejects keys with slashes, empty ids, or dot traversal", () => {
     const manager = WorkspaceManager.fromTwinnyHome(tempDir);
 

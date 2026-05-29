@@ -29,7 +29,7 @@ export async function runStartupInitializationProbe(
     const conversation = new ConversationManager({
       config: options.config,
       repository: adaptConversationRepository(repository),
-      workspaces: WorkspaceManager.fromRuntimePaths(paths),
+      workspaces: WorkspaceManager.fromRuntimePaths(paths, options.config.permissions),
       codex: createFailingCodexBridge(),
       lark: createFailingLarkResponder(),
       profiles: { codexHomeFor: (profile) => getProfileCodexHome(options.config, profile) },

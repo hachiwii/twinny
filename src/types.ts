@@ -93,6 +93,7 @@ export const DEFAULT_LARK_COMPLETED_REACTION = "DONE";
 export const DEFAULT_LARK_QUEUED_REACTION = "OneSecond";
 export const DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS = 60;
 export const DEFAULT_LARK_MESSAGE_REDACTION_STRATEGY: LarkMessageRedactionStrategy = "mask";
+export const DEFAULT_CONVERSATION_WORKSPACE_TEMPLATE = "{{twinny_home}}/workspaces/{{conversation_key}}";
 
 export interface LarkMessageRedactionConfig {
   email: LarkMessageRedactionStrategy;
@@ -142,8 +143,10 @@ export interface ProfileConfig {
 
 export interface PermissionsConfig {
   p2pDefaultProfile: ProfileName;
+  p2pDefaultWorkspace: string;
   groupDefaultProfile: ProfileName;
   groupDefaultMode: ConversationResponseMode;
+  groupDefaultWorkspace: string;
 }
 
 export interface TelemetryConfig {

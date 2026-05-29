@@ -207,8 +207,10 @@ Twinny 从 `TWINNY_HOME` 读取 `config.toml`。
 | `[lark.redaction].email` | 发往 Lark 的 payload 中邮箱地址的脱敏策略。`mask` 保留域名并遮蔽邮箱用户名，例如 `alice@example.com` 会变成 `a***e@example.com`；`whitespace` 插入空格，例如 `alice @ example.com`；`none` 发送明文邮箱。飞书可能会拦截包含明文邮箱或手机号的 bot message。默认是 `mask`。 |
 | `[lark.redaction].chinese_phone_number` | 发往 Lark 的 payload 中中国手机号的脱敏策略。`mask` 保留前 3 位和后 4 位，例如 `138****5678`；`whitespace` 插入空格，例如 `138 1234 5678`；`none` 发送明文手机号。飞书可能会拦截包含明文邮箱或手机号的 bot message。默认是 `mask`。 |
 | `[permissions].p2p_default_profile` | 未配对 P2P 用户第一次给 Twinny 发消息时使用的 profile。用 `none` 表示默认拒绝，也可以填已配置的 profile 名称来自动授权。默认是 `none`。 |
+| `[permissions].p2p_default_workspace` | 新 P2P conversation 的默认 workspace 模板。支持 `{{twinny_home}}` 和 `{{conversation_key}}` 变量；默认是 `{{twinny_home}}/workspaces/{{conversation_key}}`。如果渲染后的目录已存在会直接使用，否则会创建。 |
 | `[permissions].group_default_profile` | 新群聊自动激活时使用的 profile。必须和 `group_default_mode` 同时为非 `none` 才会生效；默认是 `none`。 |
 | `[permissions].group_default_mode` | 新群聊自动激活后的群响应模式，取值为 `owner_at`、`owner`、`all_at`、`all` 或 `none`。当它和 `group_default_profile` 都不是 `none` 时，新群聊收到第一条满足该模式触发条件的消息会自动创建 workspace 并激活。默认是 `none`。 |
+| `[permissions].group_default_workspace` | 新 group conversation 的默认 workspace 模板。支持 `{{twinny_home}}` 和 `{{conversation_key}}` 变量；默认是 `{{twinny_home}}/workspaces/{{conversation_key}}`。如果渲染后的目录已存在会直接使用，否则会创建。 |
 | `[service.launchd].mode` | macOS launchd 安装位置。`gui` 使用当前 `gui/<uid>` LaunchAgent（默认）；`daemon` 使用系统 LaunchDaemon。通常由 `twinny install --system-daemon` 写入。 |
 | `[service.launchd].user_name` | `mode = "daemon"` 时写入 plist 的 `UserName`。通常由 `twinny install --system-daemon` 自动写入当前用户。 |
 | `[profiles.<name>].codex_home` | 该 profile 使用的 `CODEX_HOME`。绝对路径会直接使用；相对路径会以 `TWINNY_HOME` 为基准解析。`host` 默认是 `~/.codex`；其他 profile 未设置时继承 `host`。 |
@@ -235,8 +237,10 @@ chinese_phone_number = "mask"
 
 [permissions]
 p2p_default_profile = "none"
+p2p_default_workspace = "{{twinny_home}}/workspaces/{{conversation_key}}"
 group_default_profile = "none"
 group_default_mode = "none"
+group_default_workspace = "{{twinny_home}}/workspaces/{{conversation_key}}"
 
 [profiles.host]
 codex_home = "~/.codex"

@@ -69,8 +69,10 @@ describe("Twinny config loading and bootstrap", () => {
     expect(loaded.lark.messageRedaction).toEqual({ email: "whitespace", chinesePhoneNumber: "mask" });
     expect(loaded.permissions).toEqual({
       p2pDefaultProfile: "none",
+      p2pDefaultWorkspace: "{{twinny_home}}/workspaces/{{conversation_key}}",
       groupDefaultProfile: "none",
-      groupDefaultMode: "none"
+      groupDefaultMode: "none",
+      groupDefaultWorkspace: "{{twinny_home}}/workspaces/{{conversation_key}}"
     });
     expect(loaded.profiles.host.codexHome).toBe(path.join(home, ".codex"));
     expect(loaded.profiles.guest.codexHome).toBe(path.join(home, ".codex"));
@@ -105,8 +107,10 @@ describe("Twinny config loading and bootstrap", () => {
     expect(serialized).toContain("[profiles.host]");
     expect(serialized).toContain("[profiles.guest]");
     expect(serialized).toContain("[permissions]");
+    expect(serialized).toContain('p2p_default_workspace = "{{twinny_home}}/workspaces/{{conversation_key}}"');
     expect(serialized).toContain('group_default_profile = "none"');
     expect(serialized).toContain('group_default_mode = "none"');
+    expect(serialized).toContain('group_default_workspace = "{{twinny_home}}/workspaces/{{conversation_key}}"');
     expect(serialized).toContain('working = "JubilantRabbit"');
     expect(serialized).not.toContain("masquerade_as_codex_cli");
     expect(serialized).not.toContain("[service]");
@@ -148,8 +152,10 @@ describe("Twinny config loading and bootstrap", () => {
       auth: { larkAppId: "cli_test", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner" },
       permissions: {
         p2pDefaultProfile: "none",
+        p2pDefaultWorkspace: "{{twinny_home}}/dm/{{conversation_key}}",
         groupDefaultProfile: "guest",
-        groupDefaultMode: "all_at"
+        groupDefaultMode: "all_at",
+        groupDefaultWorkspace: "/srv/twinny/groups/{{conversation_key}}"
       },
       profiles: {
         host: {},
@@ -162,10 +168,14 @@ describe("Twinny config loading and bootstrap", () => {
 
     expect(serialized).toContain('group_default_profile = "guest"');
     expect(serialized).toContain('group_default_mode = "all_at"');
+    expect(serialized).toContain('p2p_default_workspace = "{{twinny_home}}/dm/{{conversation_key}}"');
+    expect(serialized).toContain('group_default_workspace = "/srv/twinny/groups/{{conversation_key}}"');
     expect(parsed.permissions).toEqual({
       p2pDefaultProfile: "none",
+      p2pDefaultWorkspace: "{{twinny_home}}/dm/{{conversation_key}}",
       groupDefaultProfile: "guest",
-      groupDefaultMode: "all_at"
+      groupDefaultMode: "all_at",
+      groupDefaultWorkspace: "/srv/twinny/groups/{{conversation_key}}"
     });
   });
 
@@ -303,6 +313,38 @@ describe("Twinny config loading and bootstrap", () => {
         { home: "/tmp/twinny" }
       )
     ).toThrow();
+  });
+
+  it("reports unsupported default workspace template variables", async () => {
+    const home = await tempHome();
+    await fs.mkdir(path.join(home, "runtime"), { recursive: true });
+    await fs.writeFile(
+      path.join(home, "auth.json"),
+      JSON.stringify({
+        lark_app_id: "cli_test",
+        lark_brand: "feishu",
+        owner_open_id: "ou_owner",
+        displayName: "Owner"
+      })
+    );
+    await fs.writeFile(path.join(home, "runtime", "home-random"), `${homeRandom}\n`);
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      [
+        "[permissions]",
+        'p2p_default_workspace = "{{bad_variable}}/{{conversation_key}}"',
+        "",
+        "[profiles.host]",
+        'codex_home = "~/.codex"',
+        "",
+        "[profiles.guest]"
+      ].join("\n")
+    );
+
+    const status = await readConfigStatus({ home, env: {} });
+
+    expect(status.complete).toBe(false);
+    expect(status.issues).toContain("permissions.p2p_default_workspace references unsupported variable: bad_variable");
   });
 
   it("reports missing auth.json and runtime/home-random as incomplete setup", async () => {
