@@ -257,6 +257,7 @@ export interface CodexThreadRecord {
   contextTokens: number;
   contextWindow: number;
   tokenUsageJson: string;
+  forkBaseTokenUsageJson: string;
   createdAt: number;
   updatedAt: number;
 }

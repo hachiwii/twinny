@@ -85,6 +85,7 @@ interface CodexThreadRow {
   effective_reasoning_output_tokens?: number | null;
   effective_total_tokens?: number | null;
   token_usage_json: string;
+  fork_base_token_usage_json: string;
   created_at: number;
   updated_at: number;
 }
@@ -212,6 +213,7 @@ export interface UpdateCodexThreadTokenUsageInput {
   contextTokens: number;
   contextWindow: number;
   tokenUsageJson: string;
+  forkBaseTokenUsageJson?: string;
 }
 
 export interface UpdateLarkMessageTokenUsageInput {
@@ -622,6 +624,7 @@ export class ConversationRepository {
           context_window = 0,
           thread_has_rollout = @codexThreadHasRollout,
           token_usage_json = '{}',
+          fork_base_token_usage_json = '{}',
           goal_status = 'none',
           goal_updated_at = NULL,
           updated_at = @updatedAt
@@ -647,6 +650,7 @@ export class ConversationRepository {
         context_window,
         thread_has_rollout,
         token_usage_json,
+        fork_base_token_usage_json,
         created_at,
         updated_at
       ) VALUES (
@@ -667,6 +671,7 @@ export class ConversationRepository {
         @contextWindow,
         1,
         @tokenUsageJson,
+        COALESCE(@forkBaseTokenUsageJson, '{}'),
         @createdAt,
         @updatedAt
       )
@@ -686,6 +691,7 @@ export class ConversationRepository {
         context_window = excluded.context_window,
         thread_has_rollout = 1,
         token_usage_json = excluded.token_usage_json,
+        fork_base_token_usage_json = COALESCE(@forkBaseTokenUsageJson, threads.fork_base_token_usage_json),
         updated_at = excluded.updated_at
     `);
     this.updateCodexThreadCardStatement = this.db.prepare(`
@@ -1536,6 +1542,9 @@ export class ConversationRepository {
     assertNonNegativeFinite(input.contextTokens, "contextTokens");
     assertNonNegativeFinite(input.contextWindow, "contextWindow");
     assertNonEmpty(input.tokenUsageJson, "tokenUsageJson");
+    if (input.forkBaseTokenUsageJson !== undefined) {
+      assertNonEmpty(input.forkBaseTokenUsageJson, "forkBaseTokenUsageJson");
+    }
     const now = this.now();
     this.updateCodexThreadUsageStatement.run({
       codexThreadId: input.codexThreadId,
@@ -1553,6 +1562,7 @@ export class ConversationRepository {
       contextTokens: Math.trunc(input.contextTokens),
       contextWindow: Math.trunc(input.contextWindow),
       tokenUsageJson: input.tokenUsageJson,
+      forkBaseTokenUsageJson: input.forkBaseTokenUsageJson ?? null,
       createdAt: now,
       updatedAt: now
     });
@@ -2169,6 +2179,7 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     contextTokens: row.context_tokens,
     contextWindow: row.context_window,
     tokenUsageJson: row.token_usage_json,
+    forkBaseTokenUsageJson: row.fork_base_token_usage_json,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };

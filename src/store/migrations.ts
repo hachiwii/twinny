@@ -14,7 +14,7 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 6;
+export const currentStoreSchemaVersion = 7;
 
 const baselineMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const larkDocWatcherMigrationFile = fileURLToPath(new URL("../../migrations/0002_lark_doc_watcher.sql", import.meta.url));
@@ -22,6 +22,7 @@ const larkMessageDocCommentIdMigrationFile = fileURLToPath(new URL("../../migrat
 const threadWorkspaceMigrationFile = fileURLToPath(new URL("../../migrations/0004_thread_workspace.sql", import.meta.url));
 const threadCreateMethodMigrationFile = fileURLToPath(new URL("../../migrations/0005_thread_create_method.sql", import.meta.url));
 const cronJobsMigrationFile = fileURLToPath(new URL("../../migrations/0006_cron_jobs.sql", import.meta.url));
+const threadForkBaseTokenUsageMigrationFile = fileURLToPath(new URL("../../migrations/0007_thread_fork_base_token_usage.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -54,6 +55,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 6,
       name: "0006_cron_jobs",
       sql: fs.readFileSync(cronJobsMigrationFile, "utf8")
+    },
+    {
+      version: 7,
+      name: "0007_thread_fork_base_token_usage",
+      sql: fs.readFileSync(threadForkBaseTokenUsageMigrationFile, "utf8")
     }
   ];
 }
@@ -194,6 +200,25 @@ function validateSchemaBeforeMigration(db: TwinnyDatabase, currentVersion: numbe
       "token_usage_json"
     ]);
   }
+  if (currentVersion >= 7) {
+    requiredColumnsByTable.set("threads", [
+      "thread_id",
+      "conversation_key",
+      "profile",
+      "thread_has_rollout",
+      "mode",
+      "status",
+      "name",
+      "goal_status",
+      "model",
+      "effort",
+      "workspace",
+      "parent_thread",
+      "create_method",
+      "create_request_text",
+      "fork_base_token_usage_json"
+    ]);
+  }
 
   validateRequiredColumns(db, requiredColumnsByTable);
 }
@@ -220,7 +245,8 @@ function validateBaselineSchema(db: TwinnyDatabase): void {
         "workspace",
         "parent_thread",
         "create_method",
-        "create_request_text"
+        "create_request_text",
+        "fork_base_token_usage_json"
       ]
     ],
     [

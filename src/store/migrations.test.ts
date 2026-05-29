@@ -18,8 +18,8 @@ describe("store migrations", () => {
   it("loads the bundled store migrations", () => {
     const migrations = loadStoreMigrations();
 
-    expect(currentStoreSchemaVersion).toBe(6);
-    expect(migrations).toHaveLength(6);
+    expect(currentStoreSchemaVersion).toBe(7);
+    expect(migrations).toHaveLength(7);
     expect(migrations[0]).toMatchObject({
       version: 1,
       name: "0001_initial"
@@ -43,6 +43,10 @@ describe("store migrations", () => {
     expect(migrations[5]).toMatchObject({
       version: 6,
       name: "0006_cron_jobs"
+    });
+    expect(migrations[6]).toMatchObject({
+      version: 7,
+      name: "0007_thread_fork_base_token_usage"
     });
   });
 
@@ -130,7 +134,8 @@ describe("store migrations", () => {
         { name: "mode", type: "TEXT", notnull: 1, pk: 0 },
         { name: "status", type: "TEXT", notnull: 1, pk: 0 },
         { name: "goal_status", type: "TEXT", notnull: 1, pk: 0 },
-        { name: "goal_updated_at", type: "INTEGER", notnull: 0, pk: 0 }
+        { name: "goal_updated_at", type: "INTEGER", notnull: 0, pk: 0 },
+        { name: "fork_base_token_usage_json", type: "TEXT", notnull: 1, pk: 0 }
       ]);
 
       const threadIndexes = db

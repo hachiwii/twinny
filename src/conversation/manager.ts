@@ -306,6 +306,7 @@ export interface ConversationRepository {
     contextTokens: number;
     contextWindow: number;
     tokenUsageJson: string;
+    forkBaseTokenUsageJson?: string;
   }): Promise<unknown> | unknown;
   updateCodexThreadCard(input: {
     codexThreadId: string;
@@ -1035,8 +1036,11 @@ interface ActiveTurn {
   initialMessageCount: number;
   steerMessageCount: number;
   threadTokenUsage: ThreadTokenUsageSnapshot;
+  threadTokenUsageBase: ThreadTokenUsageSnapshot;
+  shouldPersistThreadTokenUsageBase: boolean;
   turnStartThreadTokenUsage: ThreadTokenUsageSnapshot;
   turnTokenUsage: ThreadTokenUsageSnapshot;
+  turnTokenUsageBaseInitialized: boolean;
   usageTargetMessageId?: string;
   usageCarryover: LarkMessageTokenUsageSnapshot;
   messageTokenUsage: LarkMessageTokenUsageSnapshot;
@@ -4585,8 +4589,11 @@ export class ConversationManager {
       initialMessageCount: 1,
       steerMessageCount: 0,
       threadTokenUsage: emptyThreadTokenUsageSnapshot(),
+      threadTokenUsageBase: emptyThreadTokenUsageSnapshot(),
+      shouldPersistThreadTokenUsageBase: false,
       turnStartThreadTokenUsage: emptyThreadTokenUsageSnapshot(),
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      turnTokenUsageBaseInitialized: false,
       usageTargetMessageId: message.messageId,
       usageCarryover: emptyLarkMessageTokenUsageSnapshot(),
       messageTokenUsage: emptyLarkMessageTokenUsageSnapshot(),
@@ -6206,6 +6213,7 @@ export class ConversationManager {
     await this.addDocWorkingReactionsBestEffort([message]);
     const threadRecord = await this.options.repository.getCodexThreadById(params.threadId);
     const mode = threadRecord?.mode ?? "default";
+    const threadTokenUsageBase = extractThreadForkBaseTokenUsage(threadRecord);
     const startedAt = Date.now();
     const active: ActiveTurn = {
       kind: "compact",
@@ -6224,8 +6232,11 @@ export class ConversationManager {
       initialMessageCount: 1,
       steerMessageCount: 0,
       threadTokenUsage,
+      threadTokenUsageBase,
+      shouldPersistThreadTokenUsageBase: shouldPersistThreadTokenUsageBase(threadRecord),
       turnStartThreadTokenUsage: threadTokenUsage,
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      turnTokenUsageBaseInitialized: false,
       usageTargetMessageId: params.usageTargetMessageId ?? message.messageId,
       usageCarryover: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       messageTokenUsage: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
@@ -6549,10 +6560,12 @@ export class ConversationManager {
       conversationKey: context.conversationKey,
       codexThreadId: params.threadId
     });
-    const [modelSettings, threadTokenUsage] = await Promise.all([
+    const [modelSettings, threadTokenUsage, threadRecord] = await Promise.all([
       this.readCodexTurnModelSettingsBestEffort(params.profile, params.threadId),
-      this.readThreadTokenUsageBestEffort(params.threadId)
+      this.readThreadTokenUsageBestEffort(params.threadId),
+      this.options.repository.getCodexThreadById(params.threadId)
     ]);
+    const threadTokenUsageBase = extractThreadForkBaseTokenUsage(threadRecord);
     const startedAt = Date.now();
     const active: ActiveTurn = {
       kind: "goal",
@@ -6571,8 +6584,11 @@ export class ConversationManager {
       initialMessageCount: params.messages.length,
       steerMessageCount: 0,
       threadTokenUsage,
+      threadTokenUsageBase,
+      shouldPersistThreadTokenUsageBase: shouldPersistThreadTokenUsageBase(threadRecord),
       turnStartThreadTokenUsage: threadTokenUsage,
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      turnTokenUsageBaseInitialized: false,
       usageTargetMessageId: params.usageTargetMessageId ?? params.messages[0]?.messageId,
       usageCarryover: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       messageTokenUsage: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
@@ -6846,6 +6862,7 @@ export class ConversationManager {
     const currentThreadName = isMainSessionContext(context) ? undefined : threadRecord?.name ?? "";
     const input = inputWithForkBoundaryForFirstMessage(params.input, prependForkBoundary);
     const mode = hasDocComment && threadRecord?.mode === "plan" ? "default" : threadRecord?.mode ?? "default";
+    const threadTokenUsageBase = extractThreadForkBaseTokenUsage(threadRecord);
     const startedAt = Date.now();
     const initialCardMessages = [
       ...docCommentCardMessagesForPending(activeMessages),
@@ -6869,8 +6886,11 @@ export class ConversationManager {
       initialMessageCount: params.messages.length,
       steerMessageCount: 0,
       threadTokenUsage,
+      threadTokenUsageBase,
+      shouldPersistThreadTokenUsageBase: shouldPersistThreadTokenUsageBase(threadRecord),
       turnStartThreadTokenUsage: threadTokenUsage,
       turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      turnTokenUsageBaseInitialized: false,
       usageTargetMessageId: params.usageTargetMessageId ?? params.messages[0]?.messageId,
       usageCarryover: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       messageTokenUsage: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
@@ -7026,8 +7046,11 @@ export class ConversationManager {
     });
     active.threadId = replacement.threadId;
     active.threadTokenUsage = await this.readThreadTokenUsageBestEffort(active.threadId);
+    active.threadTokenUsageBase = emptyThreadTokenUsageSnapshot();
+    active.shouldPersistThreadTokenUsageBase = false;
     active.turnStartThreadTokenUsage = active.threadTokenUsage;
     active.turnTokenUsage = emptyThreadTokenUsageSnapshot();
+    active.turnTokenUsageBaseInitialized = false;
     await this.setThreadModeBestEffort(active.conversationKey, active.threadId, active.mode);
     await this.markMessagesProcessingBestEffort([...active.processingMessageIds], {
       conversationKey: active.conversationKey,
@@ -7088,6 +7111,7 @@ export class ConversationManager {
   ): Promise<void> {
     try {
       const tokenUsage = extractThreadTokenUsage(usage);
+      this.initializeTurnTokenUsageBaseFromFirstUpdate(active, tokenUsage, usage);
       active.threadTokenUsage = tokenUsage;
       active.turnTokenUsage = subtractThreadTokenUsage(tokenUsage, active.turnStartThreadTokenUsage);
       await this.recordLarkMessageTokenUsageBestEffort(active, usage);
@@ -8963,7 +8987,7 @@ export class ConversationManager {
 
   private async readThreadTokenUsageBestEffort(codexThreadId: string): Promise<ThreadTokenUsageSnapshot> {
     try {
-      return extractThreadTokenBreakdown(await this.options.repository.getCodexThreadById(codexThreadId));
+      return extractThreadTokenBreakdown(await this.options.repository.getCodexThreadById(codexThreadId), { preferRecordFields: true });
     } catch (error) {
       this.log.warn({ error, codexThreadId }, "failed to read thread token usage");
       return emptyThreadTokenUsageSnapshot();
@@ -9025,7 +9049,10 @@ export class ConversationManager {
     usage: CodexThreadTokenUsageUpdate
   ): Promise<void> {
     try {
-      const tokenUsage = extractThreadTokenUsage(usage);
+      const rawTokenUsage = extractThreadTokenUsage(usage);
+      const forkBaseTokenUsageJson = this.initializeThreadTokenUsageBaseFromFirstUpdate(active, rawTokenUsage, usage);
+      const tokenUsage = subtractThreadTokenUsage(rawTokenUsage, active.threadTokenUsageBase);
+      this.initializeTurnTokenUsageBaseFromFirstUpdate(active, tokenUsage, usage);
       active.threadTokenUsage = tokenUsage;
       active.turnTokenUsage = subtractThreadTokenUsage(tokenUsage, active.turnStartThreadTokenUsage);
       await this.options.repository.updateCodexThreadTokenUsage({
@@ -9039,7 +9066,8 @@ export class ConversationManager {
         totalTokens: tokenUsage.totalTokens,
         contextTokens: tokenUsage.contextTokens,
         contextWindow: tokenUsage.contextWindow,
-        tokenUsageJson: safeJsonStringify(usage.raw) ?? "{}"
+        tokenUsageJson: safeJsonStringify(usage.raw) ?? "{}",
+        ...(forkBaseTokenUsageJson ? { forkBaseTokenUsageJson } : {})
       });
       await this.recordLarkMessageTokenUsageBestEffort(active, usage);
       await this.updateThreadSummaryCardBestEffort(usage.threadId, { active });
@@ -9047,6 +9075,46 @@ export class ConversationManager {
     } catch (error) {
       this.log.warn({ error, threadId: usage.threadId, totalTokens: usage.totalTokens }, "failed to record token usage");
     }
+  }
+
+  private initializeThreadTokenUsageBaseFromFirstUpdate(
+    active: ActiveTurn,
+    rawTokenUsage: ThreadTokenUsageSnapshot,
+    usage: CodexThreadTokenUsageUpdate
+  ): string | undefined {
+    if (!active.shouldPersistThreadTokenUsageBase || !isEmptyThreadTokenUsage(active.threadTokenUsageBase)) {
+      return undefined;
+    }
+    const lastUsage = extractThreadLastTokenUsage(usage);
+    if (!lastUsage && hasThreadLastTokenUsage(usage)) {
+      return undefined;
+    }
+    const effectiveLastUsage = lastUsage ?? emptyThreadTokenUsageSnapshot();
+    if (effectiveLastUsage.totalTokens > rawTokenUsage.totalTokens) {
+      return undefined;
+    }
+    const base = subtractThreadTokenUsage(rawTokenUsage, effectiveLastUsage);
+    if (isEmptyThreadTokenUsage(base)) {
+      return undefined;
+    }
+    active.threadTokenUsageBase = base;
+    return safeJsonStringify(threadTokenUsageSnapshotRaw(base)) ?? "{}";
+  }
+
+  private initializeTurnTokenUsageBaseFromFirstUpdate(
+    active: ActiveTurn,
+    tokenUsage: ThreadTokenUsageSnapshot,
+    usage: CodexThreadTokenUsageUpdate
+  ): void {
+    if (active.turnTokenUsageBaseInitialized) {
+      return;
+    }
+    active.turnTokenUsageBaseInitialized = true;
+    const lastUsage = extractThreadLastTokenUsage(usage);
+    if (!lastUsage || lastUsage.totalTokens > tokenUsage.totalTokens) {
+      return;
+    }
+    active.turnStartThreadTokenUsage = subtractThreadTokenUsage(tokenUsage, lastUsage);
   }
 
   private async recordLarkMessageTokenUsageBestEffort(
@@ -10070,6 +10138,9 @@ export class ConversationManager {
     active.resultError = undefined;
     active.resultText = undefined;
     active.finalAgentMessageText = undefined;
+    active.turnStartThreadTokenUsage = active.threadTokenUsage;
+    active.turnTokenUsage = emptyThreadTokenUsageSnapshot();
+    active.turnTokenUsageBaseInitialized = false;
     if (active.goal) {
       active.goal.recovering = true;
     }
@@ -14239,20 +14310,23 @@ function extractThreadTokenBreakdown(
     nestedRecord(raw, ["usage", "last"]),
     nestedRecord(raw, ["last"])
   );
+  const forceRecordFields = Boolean(
+    options.preferRecordFields && !isEmptyThreadTokenUsage(extractThreadForkBaseTokenUsage(thread))
+  );
   const totalTokens = options.preferRecordFields
-    ? preferredRecordToken(thread?.totalTokens, total?.totalTokens, total?.total_tokens)
+    ? preferredRecordToken(thread?.totalTokens, forceRecordFields, total?.totalTokens, total?.total_tokens)
     : finiteNumber(total?.totalTokens, total?.total_tokens, thread?.totalTokens);
   const inputTokens = options.preferRecordFields
-    ? preferredRecordToken(thread?.inputTokens, total?.inputTokens, total?.input_tokens, total?.prompt_tokens)
+    ? preferredRecordToken(thread?.inputTokens, forceRecordFields, total?.inputTokens, total?.input_tokens, total?.prompt_tokens)
     : finiteNumber(total?.inputTokens, total?.input_tokens, total?.prompt_tokens, thread?.inputTokens);
   const cachedInputTokens = options.preferRecordFields
-    ? preferredRecordToken(thread?.cachedInputTokens, total?.cachedInputTokens, total?.cached_input_tokens, total?.cached_tokens)
+    ? preferredRecordToken(thread?.cachedInputTokens, forceRecordFields, total?.cachedInputTokens, total?.cached_input_tokens, total?.cached_tokens)
     : finiteNumber(total?.cachedInputTokens, total?.cached_input_tokens, total?.cached_tokens, thread?.cachedInputTokens);
   const outputTokens = options.preferRecordFields
-    ? preferredRecordToken(thread?.outputTokens, total?.outputTokens, total?.output_tokens, total?.completion_tokens)
+    ? preferredRecordToken(thread?.outputTokens, forceRecordFields, total?.outputTokens, total?.output_tokens, total?.completion_tokens)
     : finiteNumber(total?.outputTokens, total?.output_tokens, total?.completion_tokens, thread?.outputTokens);
   const reasoningOutputTokens = options.preferRecordFields
-    ? preferredRecordToken(thread?.reasoningOutputTokens, total?.reasoningOutputTokens, total?.reasoning_output_tokens)
+    ? preferredRecordToken(thread?.reasoningOutputTokens, forceRecordFields, total?.reasoningOutputTokens, total?.reasoning_output_tokens)
     : finiteNumber(total?.reasoningOutputTokens, total?.reasoning_output_tokens, thread?.reasoningOutputTokens);
   return {
     totalTokens: totalTokens ?? 0,
@@ -14294,12 +14368,34 @@ function extractThreadTokenBreakdown(
   };
 }
 
-function preferredRecordToken(recordValue: unknown, ...rawValues: unknown[]): number | undefined {
+function extractThreadForkBaseTokenUsage(thread: CodexThreadRecord | undefined): ThreadTokenUsageSnapshot {
+  return extractStoredThreadTokenUsageSnapshot(thread?.forkBaseTokenUsageJson);
+}
+
+function extractStoredThreadTokenUsageSnapshot(tokenUsageJson: string | undefined): ThreadTokenUsageSnapshot {
+  const parsed = parseStoredRawEvent(tokenUsageJson);
+  const raw = isRecord(parsed) ? parsed : undefined;
+  return {
+    totalTokens: finiteNumber(raw?.totalTokens) ?? 0,
+    inputTokens: finiteNumber(raw?.inputTokens) ?? 0,
+    cachedInputTokens: finiteNumber(raw?.cachedInputTokens) ?? 0,
+    outputTokens: finiteNumber(raw?.outputTokens) ?? 0,
+    reasoningOutputTokens: finiteNumber(raw?.reasoningOutputTokens) ?? 0,
+    contextTokens: 0,
+    contextWindow: 0
+  };
+}
+
+function shouldPersistThreadTokenUsageBase(thread: CodexThreadRecord | undefined): boolean {
+  return thread?.createMethod === "fork" || thread?.createMethod === "resume";
+}
+
+function preferredRecordToken(recordValue: unknown, forceRecordValue: boolean, ...rawValues: unknown[]): number | undefined {
   const record = finiteNumber(recordValue);
-  if (record !== undefined && record > 0) {
+  if (record !== undefined && (forceRecordValue || record > 0)) {
     return record;
   }
-  return finiteNumber(...rawValues, record);
+  return finiteNumber(...rawValues) ?? record;
 }
 
 function extractThreadTokenUsage(usage: CodexThreadTokenUsageUpdate): ThreadTokenUsageSnapshot {
@@ -14323,10 +14419,21 @@ function extractThreadTokenUsage(usage: CodexThreadTokenUsageUpdate): ThreadToke
         nestedValue(raw, ["tokenUsage", "totalTokens"]),
         nestedValue(raw, ["tokenUsage", "total_tokens"]),
         nestedValue(raw, ["usage", "totalTokens"]),
-        nestedValue(raw, ["usage", "total_tokens"])
+        nestedValue(raw, ["usage", "total_tokens"]),
+        nestedValue(raw, ["totalTokens"]),
+        nestedValue(raw, ["total_tokens"])
       ) ?? 0,
     inputTokens:
-      finiteNumber(total?.inputTokens, total?.input_tokens, total?.promptTokens, total?.prompt_tokens) ?? 0,
+      finiteNumber(
+        total?.inputTokens,
+        total?.input_tokens,
+        total?.promptTokens,
+        total?.prompt_tokens,
+        nestedValue(raw, ["inputTokens"]),
+        nestedValue(raw, ["input_tokens"]),
+        nestedValue(raw, ["promptTokens"]),
+        nestedValue(raw, ["prompt_tokens"])
+      ) ?? 0,
     cachedInputTokens:
       finiteNumber(
         total?.cachedInputTokens,
@@ -14334,16 +14441,33 @@ function extractThreadTokenUsage(usage: CodexThreadTokenUsageUpdate): ThreadToke
         total?.cacheInputTokens,
         total?.cache_input_tokens,
         total?.cachedTokens,
-        total?.cached_tokens
+        total?.cached_tokens,
+        nestedValue(raw, ["cachedInputTokens"]),
+        nestedValue(raw, ["cached_input_tokens"]),
+        nestedValue(raw, ["cachedTokens"]),
+        nestedValue(raw, ["cached_tokens"])
       ) ?? 0,
     outputTokens:
-      finiteNumber(total?.outputTokens, total?.output_tokens, total?.completionTokens, total?.completion_tokens) ?? 0,
+      finiteNumber(
+        total?.outputTokens,
+        total?.output_tokens,
+        total?.completionTokens,
+        total?.completion_tokens,
+        nestedValue(raw, ["outputTokens"]),
+        nestedValue(raw, ["output_tokens"]),
+        nestedValue(raw, ["completionTokens"]),
+        nestedValue(raw, ["completion_tokens"])
+      ) ?? 0,
     reasoningOutputTokens:
       finiteNumber(
         total?.reasoningOutputTokens,
         total?.reasoning_output_tokens,
         total?.reasoningTokens,
-        total?.reasoning_tokens
+        total?.reasoning_tokens,
+        nestedValue(raw, ["reasoningOutputTokens"]),
+        nestedValue(raw, ["reasoning_output_tokens"]),
+        nestedValue(raw, ["reasoningTokens"]),
+        nestedValue(raw, ["reasoning_tokens"])
       ) ?? 0,
     contextTokens:
       finiteNumber(
@@ -14354,7 +14478,9 @@ function extractThreadTokenUsage(usage: CodexThreadTokenUsageUpdate): ThreadToke
         nestedValue(raw, ["usage", "lastTotal"]),
         nestedValue(raw, ["usage", "last_total"]),
         nestedValue(raw, ["lastTotal"]),
-        nestedValue(raw, ["last_total"])
+        nestedValue(raw, ["last_total"]),
+        nestedValue(raw, ["contextTokens"]),
+        nestedValue(raw, ["context_tokens"])
       ) ?? 0,
     contextWindow:
       finiteNumber(
@@ -14375,6 +14501,61 @@ function extractThreadTokenUsage(usage: CodexThreadTokenUsageUpdate): ThreadToke
         nestedValue(raw, ["usage", "window"])
       ) ?? 0
   };
+}
+
+function extractThreadLastTokenUsage(usage: CodexThreadTokenUsageUpdate): ThreadTokenUsageSnapshot | undefined {
+  const raw = usage.raw;
+  const last = firstRecord(
+    nestedRecord(raw, ["tokenUsage", "last"]),
+    nestedRecord(raw, ["usage", "last"]),
+    nestedRecord(raw, ["last"])
+  );
+  if (!last) {
+    return undefined;
+  }
+  const totalTokens = finiteNumber(last.totalTokens, last.total_tokens);
+  const inputTokens = finiteNumber(last.inputTokens, last.input_tokens, last.promptTokens, last.prompt_tokens);
+  const cachedInputTokens = finiteNumber(
+    last.cachedInputTokens,
+    last.cached_input_tokens,
+    last.cacheInputTokens,
+    last.cache_input_tokens,
+    last.cachedTokens,
+    last.cached_tokens
+  );
+  const outputTokens = finiteNumber(last.outputTokens, last.output_tokens, last.completionTokens, last.completion_tokens);
+  const reasoningOutputTokens = finiteNumber(
+    last.reasoningOutputTokens,
+    last.reasoning_output_tokens,
+    last.reasoningTokens,
+    last.reasoning_tokens
+  );
+  const hasBreakdown =
+    inputTokens !== undefined ||
+    cachedInputTokens !== undefined ||
+    outputTokens !== undefined ||
+    reasoningOutputTokens !== undefined;
+  if (totalTokens === undefined || !hasBreakdown) {
+    return undefined;
+  }
+  return {
+    totalTokens,
+    inputTokens: inputTokens ?? 0,
+    cachedInputTokens: cachedInputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    reasoningOutputTokens: reasoningOutputTokens ?? 0,
+    contextTokens: 0,
+    contextWindow: 0
+  };
+}
+
+function hasThreadLastTokenUsage(usage: CodexThreadTokenUsageUpdate): boolean {
+  const raw = usage.raw;
+  return firstRecord(
+    nestedRecord(raw, ["tokenUsage", "last"]),
+    nestedRecord(raw, ["usage", "last"]),
+    nestedRecord(raw, ["last"])
+  ) !== undefined;
 }
 
 function subtractThreadTokenUsage(
@@ -14406,6 +14587,24 @@ function emptyThreadTokenUsageSnapshot(): ThreadTokenUsageSnapshot {
     reasoningOutputTokens: 0,
     contextTokens: 0,
     contextWindow: 0
+  };
+}
+
+function isEmptyThreadTokenUsage(usage: ThreadTokenUsageSnapshot): boolean {
+  return usage.totalTokens <= 0 &&
+    usage.inputTokens <= 0 &&
+    usage.cachedInputTokens <= 0 &&
+    usage.outputTokens <= 0 &&
+    usage.reasoningOutputTokens <= 0;
+}
+
+function threadTokenUsageSnapshotRaw(usage: ThreadTokenUsageSnapshot): Record<string, unknown> {
+  return {
+    totalTokens: usage.totalTokens,
+    inputTokens: usage.inputTokens,
+    cachedInputTokens: usage.cachedInputTokens,
+    outputTokens: usage.outputTokens,
+    reasoningOutputTokens: usage.reasoningOutputTokens
   };
 }
 

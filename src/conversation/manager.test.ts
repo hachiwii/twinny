@@ -5433,6 +5433,256 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_fork"]);
   });
 
+  it("excludes inherited source tokens from the first forked topic message", async () => {
+    const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
+    const { repository } = createRepository(row, {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_group",
+          conversationKey: "group_oc_group",
+          workspace: "/tmp/twinny/workspaces/group_oc_group",
+          profile: "host",
+          inputTokens: 80,
+          outputTokens: 20,
+          cachedInputTokens: 30,
+          reasoningOutputTokens: 5,
+          totalTokens: 100,
+          tokenUsageJson: JSON.stringify({
+            tokenUsage: {
+              total: {
+                totalTokens: 100,
+                inputTokens: 80,
+                cachedInputTokens: 30,
+                outputTokens: 20,
+                reasoningOutputTokens: 5
+              }
+            }
+          })
+        })
+      ]
+    });
+    const rawUsage = {
+      threadId: "thread_forked",
+      turnId: "turn_1",
+      tokenUsage: {
+        total: {
+          totalTokens: 128,
+          inputTokens: 103,
+          cachedInputTokens: 37,
+          outputTokens: 25,
+          reasoningOutputTokens: 7
+        },
+        last: {
+          totalTokens: 28,
+          inputTokens: 23,
+          cachedInputTokens: 7,
+          outputTokens: 5,
+          reasoningOutputTokens: 2
+        }
+      }
+    };
+    const codex = createCodex({
+      forkThread: vi.fn(async () => ({ threadId: "thread_forked" })),
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onTokenUsage }) => {
+        await onTurnStarted?.("turn_1");
+        await onTokenUsage?.({ threadId, turnId: "turn_1", totalTokens: 128, raw: rawUsage });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: "card_oc_group_1",
+      raw: {}
+    });
+    vi.mocked(lark.replyText)
+      .mockResolvedValueOnce({
+        messageId: "reply_fork_intro_1",
+        raw: { data: { thread_id: "topic_fork_1" } }
+      })
+      .mockResolvedValueOnce({
+        messageId: "reply_fork_1",
+        raw: { data: { thread_id: "topic_fork_1" } }
+      });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_fork", "/fork try alternate path", {
+      senderOpenId: "ou_guest"
+    }));
+
+    await waitForExpect(() => expect(repository.updateLarkMessageTokenUsage).toHaveBeenCalledWith({
+      larkMessageId: "reply_fork_1",
+      inputTokens: 23,
+      outputTokens: 5,
+      cachedInputTokens: 7,
+      reasoningOutputTokens: 2,
+      tokenUsageJson: JSON.stringify(rawUsage)
+    }));
+    expect(repository.getCodexThreadById("thread_forked")).toMatchObject({
+      inputTokens: 23,
+      outputTokens: 5,
+      cachedInputTokens: 7,
+      reasoningOutputTokens: 2,
+      totalTokens: 28,
+      forkBaseTokenUsageJson: JSON.stringify({
+        totalTokens: 100,
+        inputTokens: 80,
+        cachedInputTokens: 30,
+        outputTokens: 20,
+        reasoningOutputTokens: 5
+      })
+    });
+  });
+
+  it("uses the first forked total usage as the base when last usage is missing", async () => {
+    const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
+    const { repository } = createRepository(row);
+    const rawUsage = {
+      threadId: "thread_forked",
+      turnId: "turn_1",
+      tokenUsage: {
+        total: {
+          totalTokens: 128,
+          inputTokens: 103,
+          cachedInputTokens: 37,
+          outputTokens: 25,
+          reasoningOutputTokens: 7
+        }
+      }
+    };
+    const codex = createCodex({
+      forkThread: vi.fn(async () => ({ threadId: "thread_forked" })),
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onTokenUsage }) => {
+        await onTurnStarted?.("turn_1");
+        await onTokenUsage?.({ threadId, turnId: "turn_1", totalTokens: 128, raw: rawUsage });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: "card_oc_group_1",
+      raw: {}
+    });
+    vi.mocked(lark.replyText)
+      .mockResolvedValueOnce({
+        messageId: "reply_fork_intro_1",
+        raw: { data: { thread_id: "topic_fork_1" } }
+      })
+      .mockResolvedValueOnce({
+        messageId: "reply_fork_1",
+        raw: { data: { thread_id: "topic_fork_1" } }
+      });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_fork", "/fork try alternate path", {
+      senderOpenId: "ou_guest"
+    }));
+
+    await waitForExpect(() => expect(repository.updateLarkMessageTokenUsage).toHaveBeenCalledWith({
+      larkMessageId: "reply_fork_1",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      tokenUsageJson: JSON.stringify(rawUsage)
+    }));
+    expect(repository.getCodexThreadById("thread_forked")).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      forkBaseTokenUsageJson: JSON.stringify({
+        totalTokens: 128,
+        inputTokens: 103,
+        cachedInputTokens: 37,
+        outputTokens: 25,
+        reasoningOutputTokens: 7
+      })
+    });
+  });
+
+  it("subtracts the stored fork base from later forked topic usage updates", async () => {
+    const forkBaseTokenUsageJson = JSON.stringify({
+      totalTokens: 100,
+      inputTokens: 80,
+      cachedInputTokens: 30,
+      outputTokens: 20,
+      reasoningOutputTokens: 5
+    });
+    const row = groupConversationRecord({ profile: "host", responseMode: "all" });
+    const { repository } = createRepository(row, {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_forked",
+          conversationKey: "group_oc_group",
+          larkThreadId: "topic_fork_1",
+          profile: "host",
+          parentCodexThreadId: "thread_group",
+          createMethod: "fork",
+          inputTokens: 23,
+          outputTokens: 5,
+          cachedInputTokens: 7,
+          reasoningOutputTokens: 2,
+          totalTokens: 28,
+          forkBaseTokenUsageJson
+        })
+      ]
+    });
+    const rawUsage = {
+      threadId: "thread_forked",
+      turnId: "turn_2",
+      tokenUsage: {
+        total: {
+          totalTokens: 140,
+          inputTokens: 112,
+          cachedInputTokens: 38,
+          outputTokens: 28,
+          reasoningOutputTokens: 8
+        },
+        last: {
+          totalTokens: 12,
+          inputTokens: 9,
+          cachedInputTokens: 1,
+          outputTokens: 3,
+          reasoningOutputTokens: 1
+        }
+      }
+    };
+    const codex = createCodex({
+      resumeThread: vi.fn(async ({ threadId }) => ({ threadId })),
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onTokenUsage }) => {
+        await onTurnStarted?.("turn_2");
+        await onTokenUsage?.({ threadId, turnId: "turn_2", totalTokens: 140, raw: rawUsage });
+        return completed(threadId, "turn_2");
+      })
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_fork_next", "continue fork", {
+      chatType: "topic_group",
+      larkThreadId: "topic_fork_1"
+    }));
+
+    await waitForExpect(() => expect(repository.updateLarkMessageTokenUsage).toHaveBeenCalledWith({
+      larkMessageId: "g_fork_next",
+      inputTokens: 9,
+      outputTokens: 3,
+      cachedInputTokens: 1,
+      reasoningOutputTokens: 1,
+      tokenUsageJson: JSON.stringify(rawUsage)
+    }));
+    expect(repository.getCodexThreadById("thread_forked")).toMatchObject({
+      inputTokens: 32,
+      outputTokens: 8,
+      cachedInputTokens: 8,
+      reasoningOutputTokens: 3,
+      totalTokens: 40,
+      forkBaseTokenUsageJson,
+      tokenUsageJson: JSON.stringify(rawUsage)
+    });
+  });
+
   it("prepends fresh and forked child thread context to the next source thread message", async () => {
     const row = groupConversationRecord({ responseMode: "all" });
     const { repository } = createRepository(row, {
@@ -5803,6 +6053,89 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_resume_select"]);
   });
 
+  it("excludes inherited external tokens from the first resumed topic message", async () => {
+    const row = groupConversationRecord({ profile: "host", responseMode: "all" });
+    const { repository } = createRepository(row);
+    const rawUsage = {
+      threadId: "thread_resume_fork",
+      turnId: "turn_1",
+      tokenUsage: {
+        total: {
+          totalTokens: 150,
+          inputTokens: 123,
+          cachedInputTokens: 47,
+          outputTokens: 27,
+          reasoningOutputTokens: 10
+        },
+        last: {
+          totalTokens: 30,
+          inputTokens: 23,
+          cachedInputTokens: 7,
+          outputTokens: 7,
+          reasoningOutputTokens: 2
+        }
+      }
+    };
+    const codex = createCodex({
+      forkThread: vi.fn(async () => ({ threadId: "thread_resume_fork" })),
+      readThread: vi.fn(async ({ threadId, includeTurns }) => ({
+        id: threadId,
+        name: "External Thread",
+        cwd: "/tmp/session-workspace",
+        turns: includeTurns ? [] : undefined
+      })),
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onTokenUsage }) => {
+        await onTurnStarted?.("turn_1");
+        await onTokenUsage?.({ threadId, turnId: "turn_1", totalTokens: 150, raw: rawUsage });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: "card_oc_group_resume",
+      raw: { data: { thread_id: "topic_resume" } }
+    });
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_resume_intro",
+      raw: { data: { thread_id: "topic_resume" } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(ownerGroupMessage("g_resume_select", "/resume thread_external local"));
+    await waitForExpect(() => expect(repository.getCodexThreadById("thread_resume_fork")).toMatchObject({
+      parentCodexThreadId: "thread_external",
+      createMethod: "resume"
+    }));
+
+    manager.submitIncoming(groupMessage("g_resume_first", "continue resumed", {
+      chatType: "topic_group",
+      larkThreadId: "topic_resume"
+    }));
+
+    await waitForExpect(() => expect(repository.updateLarkMessageTokenUsage).toHaveBeenCalledWith({
+      larkMessageId: "g_resume_first",
+      inputTokens: 23,
+      outputTokens: 7,
+      cachedInputTokens: 7,
+      reasoningOutputTokens: 2,
+      tokenUsageJson: JSON.stringify(rawUsage)
+    }));
+    expect(repository.getCodexThreadById("thread_resume_fork")).toMatchObject({
+      inputTokens: 23,
+      outputTokens: 7,
+      cachedInputTokens: 7,
+      reasoningOutputTokens: 2,
+      totalTokens: 30,
+      forkBaseTokenUsageJson: JSON.stringify({
+        totalTokens: 120,
+        inputTokens: 100,
+        cachedInputTokens: 40,
+        outputTokens: 20,
+        reasoningOutputTokens: 8
+      })
+    });
+  });
+
   it("allows /fork inside a Lark thread and forks that topic's Codex thread", async () => {
     const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
     const { repository } = createRepository(row, {
@@ -6032,6 +6365,86 @@ describe("ConversationManager", () => {
     expect(lark.replyCard).toHaveBeenCalledTimes(1);
     expect(lark.getMessageReadOpenIds).not.toHaveBeenCalled();
     expect(lark.recallMessage).not.toHaveBeenCalledWith("card_m_side_1");
+  });
+
+  it("excludes inherited source tokens from side turn message usage", async () => {
+    let sideParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_1",
+          conversationKey: "p2p_ou_guest",
+          profile: "guest",
+          inputTokens: 90,
+          outputTokens: 15,
+          cachedInputTokens: 25,
+          reasoningOutputTokens: 4,
+          totalTokens: 105,
+          tokenUsageJson: JSON.stringify({
+            tokenUsage: {
+              total: {
+                totalTokens: 105,
+                inputTokens: 90,
+                cachedInputTokens: 25,
+                outputTokens: 15,
+                reasoningOutputTokens: 4
+              }
+            }
+          })
+        })
+      ]
+    });
+    const codex = createCodex({
+      forkThread: vi.fn(async () => ({ threadId: "thread_1_side_1" })),
+      startTurn: vi.fn(async (params) => {
+        sideParams = params;
+        await params.onTurnStarted?.("side_turn_1");
+        return completed(params.threadId, "side_turn_1");
+      })
+    });
+    const manager = createManager({ repository, codex, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m_side", "/side inspect this"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    const rawUsage = {
+      threadId: "thread_1_side_1",
+      turnId: "side_turn_1",
+      tokenUsage: {
+        total: {
+          totalTokens: 130,
+          inputTokens: 111,
+          cachedInputTokens: 31,
+          outputTokens: 19,
+          reasoningOutputTokens: 6
+        },
+        last: {
+          totalTokens: 25,
+          inputTokens: 21,
+          cachedInputTokens: 6,
+          outputTokens: 4,
+          reasoningOutputTokens: 2
+        }
+      }
+    };
+    await sideParams?.onTokenUsage?.({
+      threadId: "thread_1_side_1",
+      turnId: "side_turn_1",
+      totalTokens: 130,
+      raw: rawUsage
+    });
+
+    expect(repository.updateLarkMessageTokenUsage).toHaveBeenCalledWith({
+      larkMessageId: "m_side",
+      inputTokens: 21,
+      outputTokens: 4,
+      cachedInputTokens: 6,
+      reasoningOutputTokens: 2,
+      tokenUsageJson: JSON.stringify(rawUsage)
+    });
+    expect(repository.updateCodexThreadTokenUsage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ codexThreadId: "thread_1_side_1" })
+    );
   });
 
   it("switches a side turn to a goal card only after a passive Codex goal notification", async () => {
@@ -11550,6 +11963,7 @@ function createRepository(initial?: ConversationRecord, options: {
           contextWindow: input.contextWindow,
           codexThreadHasRollout: true,
           tokenUsageJson: input.tokenUsageJson,
+          forkBaseTokenUsageJson: input.forkBaseTokenUsageJson ?? existing?.forkBaseTokenUsageJson ?? "{}",
           updatedAt: Date.now()
         });
         codexThreads.set(record.codexThreadId, record);
@@ -12059,6 +12473,7 @@ function codexThreadRecord(overrides: Partial<CodexThreadRecord> = {}): CodexThr
     contextTokens: 0,
     contextWindow: 0,
     tokenUsageJson: "{}",
+    forkBaseTokenUsageJson: "{}",
     codexThreadHasRollout: true,
     createdAt: 100,
     updatedAt: 100,
