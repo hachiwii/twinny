@@ -1843,17 +1843,21 @@ describe("ConversationManager", () => {
       createdByOpenId: "ou_guest"
     });
     expect(lark.replyText).toHaveBeenCalledWith("cron_create", expect.stringContaining("已创建 cron #1"));
+    manager.submitIncoming(groupMessage("cron_create_2", "/cron */10 * * * * second ping"));
+    await waitForExpect(() => expect(repository.createCronJob).toHaveBeenCalledTimes(2));
 
     manager.submitIncoming(groupMessage("cron_list", "/cron"));
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("cron_list", expect.any(Object)));
     const cardJson = JSON.stringify(vi.mocked(lark.replyCard).mock.calls.at(-1)?.[1]);
+    expect(cardJson).toContain("| id | cron | message | thread_id | next_run_at |");
+    expect(cardJson).not.toContain("| 序号 | cron |");
     expect(cardJson).toContain("next_run_at");
     expect(cardJson).not.toContain("last_run_at");
     expect(cardJson).not.toContain("last_lark_message_id");
 
-    manager.submitIncoming(groupMessage("cron_rm", "/cron rm 1"));
-    await waitForExpect(() => expect(repository.deleteCronJobByConversationAndId).toHaveBeenCalledWith("group_oc_group", 1));
-    expect(await repository.listCronJobsByConversation("group_oc_group")).toEqual([]);
+    manager.submitIncoming(groupMessage("cron_rm", "/cron rm 2"));
+    await waitForExpect(() => expect(repository.deleteCronJobByConversationAndId).toHaveBeenCalledWith("group_oc_group", 2));
+    expect((await repository.listCronJobsByConversation("group_oc_group")).map((job) => job.id)).toEqual([1]);
   });
 
   it("lets dynamic tools manage cron jobs and includes last run fields in list_cron", async () => {
@@ -1957,9 +1961,17 @@ describe("ConversationManager", () => {
 
       expect(lark.sendTextToChatId).toHaveBeenCalledWith(
         "oc_group",
-        "定时任务触发：\n\ncron ping",
+        `定时任务 #${job.id} 触发：\n\ncron ping`,
         { uuid: expect.stringMatching(UUID_PATTERN) }
       );
+      await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith(
+        "text_oc_group_1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            subtitle: { tag: "plain_text", content: `定时任务 #${job.id} 触发` }
+          })
+        })
+      ));
       expect(codex.startTurn).toHaveBeenCalledTimes(1);
       expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({
         threadId: "thread_main",

@@ -207,7 +207,7 @@ export interface RenderTwinnyResumeHistoryCardOptions {
 }
 
 export interface TwinnyCronListItem {
-  index: number;
+  id: number;
   cronExpression: string;
   messageText: string;
   threadId: string;
@@ -454,7 +454,7 @@ export function renderTwinnyCronListCard(options: RenderTwinnyCronListCardOption
   const content = selectionMarkdown([
     `Usage: ${inlineCode("/cron")}`,
     `Usage: ${inlineCode("/cron <cron exp> <message>")}`,
-    `Usage: ${inlineCode("/cron rm <序号>")}`,
+    `Usage: ${inlineCode("/cron rm <id>")}`,
     `说明：定时向当前 conversation 的指定 thread 发送消息。时区：${inlineCode(options.timezone)}。`
   ], cronListTable(options.items));
   return renderMarkdownOnlyCard(content);
@@ -1621,12 +1621,12 @@ function resumeListTable(items: TwinnyResumeListItem[]): string {
 
 function cronListTable(items: TwinnyCronListItem[]): string {
   if (items.length === 0) {
-    return markdownTable(["序号", "cron", "message", "thread_id", "next_run_at"], [["-", "-", "-", "-", "暂无 cron 配置"]]);
+    return markdownTable(["id", "cron", "message", "thread_id", "next_run_at"], [["-", "-", "-", "-", "暂无 cron 配置"]]);
   }
   return markdownTable(
-    ["序号", "cron", "message", "thread_id", "next_run_at"],
+    ["id", "cron", "message", "thread_id", "next_run_at"],
     items.map((item) => [
-      String(item.index),
+      String(item.id),
       item.cronExpression,
       item.messageText,
       item.threadId,

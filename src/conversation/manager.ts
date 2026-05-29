@@ -1238,7 +1238,6 @@ export class ConversationManager {
   private readonly pendingThreadNames = new Map<string, string>();
   private readonly workspaceSelectionsByThread = new Map<string, string[]>();
   private readonly resumeBrowsers = new Map<string, ResumeBrowserState>();
-  private readonly cronSelectionsByConversation = new Map<string, number[]>();
   private readonly cronNextRuns = new Map<number, number>();
   private readonly threadIdleWatchers = new Map<string, Set<ThreadIdleWatcher>>();
   private readonly threadWaitEdges = new Map<string, Set<string>>();
@@ -1657,11 +1656,12 @@ export class ConversationManager {
       return;
     }
 
+    const larkText = formatCronMessageProxyText(job.id, job.messageText);
     const result = await this.injectSyntheticMessage({
       conversation,
       target,
       codexText: job.messageText,
-      larkText: formatCronMessageProxyText(job.messageText),
+      larkText,
       eventIdPrefix: `cron_message:${job.id}:${dueAt}`,
       uuid: createLarkUuid("twinny-cron", String(job.id), String(dueAt)),
       routeKind: "cron_message",
@@ -1670,7 +1670,7 @@ export class ConversationManager {
         target,
         cronId: job.id,
         messageId,
-        messageText: job.messageText,
+        larkText,
         createTime,
         larkThreadId
       }),
@@ -4800,19 +4800,12 @@ export class ConversationManager {
       return;
     }
     if (parsed.kind === "remove") {
-      const ids = this.cronSelectionsByConversation.get(context.conversationKey) ?? [];
-      const cronId = ids[parsed.index - 1];
-      if (!cronId) {
-        await this.replyControlBestEffort(message.messageId, "没有可用的 cron 序号，请先使用 /cron 获取列表。");
-        await this.markMessagesCompletedBestEffort([message.messageId]);
-        return;
-      }
-      const deleted = await this.options.repository.deleteCronJobByConversationAndId(context.conversationKey, cronId);
-      this.cronNextRuns.delete(cronId);
+      const deleted = await this.options.repository.deleteCronJobByConversationAndId(context.conversationKey, parsed.cronId);
+      this.cronNextRuns.delete(parsed.cronId);
       this.scheduleNextCronTimer();
       await this.replyControlBestEffort(
         message.messageId,
-        deleted ? `已删除 cron #${parsed.index}。` : `cron #${parsed.index} 已不存在。`
+        deleted ? `已删除 cron #${parsed.cronId}。` : `cron #${parsed.cronId} 已不存在。`
       );
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
@@ -4849,15 +4842,14 @@ export class ConversationManager {
   private async replyCronList(messageId: string, conversationKey: string): Promise<void> {
     const jobs = await this.options.repository.listCronJobsByConversation(conversationKey);
     const now = Date.now();
-    this.cronSelectionsByConversation.set(conversationKey, jobs.map((job) => job.id));
     await this.replyControlCardBestEffort(
       messageId,
       renderTwinnyCronListCard({
         timezone: localTimezone(),
-        items: jobs.map((job, index) => {
+        items: jobs.map((job) => {
           const nextRunAt = this.cronNextRuns.get(job.id) ?? cronNextRunBestEffort(job, now, this.log);
           return {
-            index: index + 1,
+            id: job.id,
             cronExpression: job.cronExpression,
             messageText: job.messageText,
             threadId: job.threadId,
@@ -11450,7 +11442,20 @@ function agentCardSubtitle(active: ActiveTurn, status: TwinnyAgentCardStatus): s
   if (active.kind === "side") {
     return sideCardSubtitle(status, active.sideId);
   }
+  const cronId = activeTurnCronId(active);
+  if (cronId !== undefined) {
+    return `定时任务 #${cronId} 触发`;
+  }
   return activeTurnHasDocComment(active) ? DOC_COMMENT_AGENT_CARD_SUBTITLE : undefined;
+}
+
+function activeTurnCronId(active: ActiveTurn): number | undefined {
+  for (const message of active.messagesById.values()) {
+    if (message.syntheticEnvelope?.kind === "cron_message") {
+      return message.syntheticEnvelope.cronId;
+    }
+  }
+  return undefined;
 }
 
 function activeTurnHasDocComment(active: ActiveTurn): boolean {
@@ -11861,7 +11866,7 @@ function parseWatchCommand(text: string):
 
 function parseCronCommand(text: string, timezone: string):
   | { kind: "list" }
-  | { kind: "remove"; index: number }
+  | { kind: "remove"; cronId: number }
   | { kind: "create"; cronExpression: string; messageText: string }
   | { kind: "invalid"; message: string } {
   const trimmed = text.trim();
@@ -11870,14 +11875,14 @@ function parseCronCommand(text: string, timezone: string):
   }
   const removeMatch = /^rm\s+(\d+)$/i.exec(trimmed);
   if (removeMatch) {
-    const index = Number.parseInt(removeMatch[1]!, 10);
-    if (index < 1) {
-      return { kind: "invalid", message: "cron 序号必须大于 0。" };
+    const cronId = Number.parseInt(removeMatch[1]!, 10);
+    if (cronId < 1) {
+      return { kind: "invalid", message: "cron id 必须大于 0。" };
     }
-    return { kind: "remove", index };
+    return { kind: "remove", cronId };
   }
   if (/^rm\b/i.test(trimmed)) {
-    return { kind: "invalid", message: "用法：/cron rm <序号>" };
+    return { kind: "invalid", message: "用法：/cron rm <id>" };
   }
   const split = splitCronExpressionAndMessage(trimmed, timezone);
   if (split.kind === "invalid") {
@@ -12086,8 +12091,8 @@ function formatThreadMessageProxyText(sourceLabel: string, message: string): str
   return `收到来自 ${sourceLabel} 的消息：\n\n${message}`;
 }
 
-function formatCronMessageProxyText(message: string): string {
-  return `定时任务触发：\n\n${message}`;
+function formatCronMessageProxyText(cronId: number, message: string): string {
+  return `定时任务 #${cronId} 触发：\n\n${message}`;
 }
 
 function createDynamicThreadToolMessage(
@@ -12174,7 +12179,7 @@ function cronMessageRawContext(input: {
   target: CodexThreadRecord;
   cronId: number;
   messageId: string;
-  messageText: string;
+  larkText: string;
   createTime: number;
   larkThreadId?: string;
 }): Record<string, unknown> {
@@ -12196,7 +12201,7 @@ function cronMessageRawContext(input: {
       chat_type: input.larkThreadId && input.conversation.type !== "p2p" ? "topic_group" : input.conversation.type,
       message_type: "text",
       ...(input.larkThreadId ? { thread_id: input.larkThreadId } : {}),
-      content: JSON.stringify({ text: input.messageText })
+      content: JSON.stringify({ text: input.larkText })
     }
   };
 }
@@ -13301,7 +13306,7 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/thread [message] - 创建新话题",
     "/fork [message] - 从当前 Codex thread fork 出新话题",
     "/watch <lark_doc_url> [owner|all|none] - 监听文档 @bot 评论；不带参数查看当前 thread 监听",
-    "/cron [cron exp message|rm 序号] - 管理当前 conversation 的定时任务"
+    "/cron [cron exp message|rm id] - 管理当前 conversation 的定时任务"
   ];
   if (isOwner) {
     lines.push(
