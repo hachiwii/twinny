@@ -7628,15 +7628,76 @@ export class ConversationManager {
     const destination = active.context.larkThreadId
       ? { type: "thread" as const, id: active.context.larkThreadId, receiveIdType: "thread_id" as const }
       : { type: "chat" as const, id: conversation.chatId, receiveIdType: "chat_id" as const };
-    await this.options.lark.forwardThread(target.larkThreadId, destination.id, destination.receiveIdType, {
-      uuid: createLarkUuid("twinny-thread-ref", request.callId, target.larkThreadId, destination.id)
-    });
+    let link: string | undefined;
+    const getLink = async (): Promise<string> => {
+      link ??= await this.resolveThreadReferenceAppLink(conversation, target);
+      return link;
+    };
+    let delivery: "forward" | "link" = "link";
+    if (destination.type === "thread") {
+      try {
+        await this.options.lark.forwardThread(target.larkThreadId, destination.id, destination.receiveIdType, {
+          uuid: createLarkUuid("twinny-thread-ref", request.callId, target.larkThreadId, destination.id)
+        });
+        delivery = "forward";
+      } catch (error) {
+        this.log.warn(
+          { error, targetThreadId: target.codexThreadId, larkThreadId: target.larkThreadId, destination },
+          "failed to forward thread reference; falling back to app link"
+        );
+        await this.sendThreadReferenceLink(active, conversation, target, await getLink(), {
+          uuid: createLarkUuid("twinny-thread-ref-link", request.callId, target.larkThreadId, destination.id)
+        });
+      }
+    } else {
+      await this.sendThreadReferenceLink(active, conversation, target, await getLink(), {
+        uuid: createLarkUuid("twinny-thread-ref-link", request.callId, target.larkThreadId, destination.id)
+      });
+    }
     return dynamicToolJsonResponse(true, {
       ok: true,
       thread_id: target.codexThreadId,
       lark_thread_id: target.larkThreadId,
-      destination: { type: destination.type, id: destination.id }
+      destination: { type: destination.type, id: destination.id },
+      delivery
     });
+  }
+
+  private async resolveThreadReferenceAppLink(conversation: ConversationRecord, target: CodexThreadRecord): Promise<string> {
+    if (target.cardMessageId && this.options.larkMessages) {
+      try {
+        const message = await this.options.larkMessages.getMessage(target.cardMessageId);
+        const link = extractLarkMessageAppLink(message);
+        if (link) {
+          return link;
+        }
+      } catch (error) {
+        this.log.warn(
+          { error, targetThreadId: target.codexThreadId, cardMessageId: target.cardMessageId },
+          "failed to fetch thread card app link; using synthesized thread app link"
+        );
+      }
+    }
+    return buildLarkThreadAppLink(this.options.config.auth.larkBrand, conversation.chatId, target.larkThreadId ?? target.codexThreadId);
+  }
+
+  private async sendThreadReferenceLink(
+    active: ActiveTurn,
+    conversation: ConversationRecord,
+    target: CodexThreadRecord,
+    link: string,
+    options: { uuid: string }
+  ): Promise<void> {
+    const text = formatThreadReferenceLinkMessage(target, link);
+    if (active.context.larkThreadId) {
+      await this.options.lark.replyText(active.replyMessageId, text, { replyInThread: true, uuid: options.uuid });
+      return;
+    }
+    if (conversation.type === "p2p") {
+      await this.options.lark.sendTextToOpenId(conversation.chatId, text, { uuid: options.uuid });
+      return;
+    }
+    await this.options.lark.sendTextToChatId(conversation.chatId, text, { uuid: options.uuid });
   }
 
   private async injectSyntheticMessage(input: {
@@ -14654,6 +14715,41 @@ function extractLarkMessageThreadId(raw: unknown): string | undefined {
     return threadId.trim();
   }
   return undefined;
+}
+
+function extractLarkMessageAppLink(raw: unknown): string | undefined {
+  if (!isRecord(raw)) {
+    return undefined;
+  }
+
+  const data = isRecord(raw.data) ? raw.data : undefined;
+  const message = isRecord(raw.message) ? raw.message : undefined;
+  return nonEmptyString(stringRecordValue(raw, "message_app_link")) ??
+    nonEmptyString(data ? stringRecordValue(data, "message_app_link") : undefined) ??
+    nonEmptyString(message ? stringRecordValue(message, "message_app_link") : undefined);
+}
+
+function buildLarkThreadAppLink(brand: TwinnyConfig["auth"]["larkBrand"], chatId: string, threadId: string): string {
+  const base = brand === "lark"
+    ? "https://applink.larksuite.com/client/thread/open"
+    : "https://applink.feishu.cn/client/thread/open";
+  const params = new URLSearchParams({
+    open_chat_id: chatId,
+    open_thread_id: threadId,
+    openchatid: chatId,
+    openthreadid: threadId,
+    thread_position: "-1"
+  });
+  return `${base}?${params.toString()}`;
+}
+
+function formatThreadReferenceLinkMessage(thread: CodexThreadRecord, link: string): string {
+  const name = nonEmptyString(thread.name.replace(/\s+/g, " ")) ?? "Untitled thread";
+  return [
+    `Thread: ${name}`,
+    `Codex Thread ID: ${thread.codexThreadId}`,
+    link
+  ].join("\n");
 }
 
 function lastDefined<T>(values: Array<T | undefined>): T | undefined {

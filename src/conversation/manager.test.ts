@@ -1451,7 +1451,7 @@ describe("ConversationManager", () => {
     await waitForDelay();
   });
 
-  it("forwards normal thread references and rejects unbound thread references", async () => {
+  it("sends normal thread references to main chat as app links and rejects unbound thread references", async () => {
     const turn = deferred<CodexTurnResult>();
     let turnParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
     const codex = createCodex({
@@ -1467,7 +1467,9 @@ describe("ConversationManager", () => {
           codexThreadId: "thread_topic",
           conversationKey: "group_oc_group",
           category: "thread",
-          larkThreadId: "topic_1"
+          larkThreadId: "topic_1",
+          name: "Topic One",
+          cardMessageId: "card_topic_1"
         }),
         codexThreadRecord({
           codexThreadId: "thread_unbound",
@@ -1477,7 +1479,10 @@ describe("ConversationManager", () => {
       ]
     });
     const lark = createLarkResponder();
-    const manager = createManager({ repository, codex, lark });
+    const larkMessages = createLarkMessageReader({
+      card_topic_1: { message_app_link: "https://example.feishu.cn/client/thread/open?open_thread_id=topic_1" }
+    });
+    const manager = createManager({ repository, codex, lark, larkMessages });
 
     try {
       manager.submitIncoming(groupMessage("g1", "hello"));
@@ -1496,11 +1501,23 @@ describe("ConversationManager", () => {
         ok: true,
         thread_id: "thread_topic",
         lark_thread_id: "topic_1",
-        destination: { type: "chat", id: "oc_group" }
+        destination: { type: "chat", id: "oc_group" },
+        delivery: "link"
       });
-      expect(lark.forwardThread).toHaveBeenCalledWith("topic_1", "oc_group", "chat_id", {
+      expect(lark.forwardThread).not.toHaveBeenCalled();
+      expect(lark.sendTextToChatId).toHaveBeenCalledWith("oc_group", expect.stringContaining("Topic One"), {
         uuid: expect.stringMatching(UUID_PATTERN)
       });
+      expect(lark.sendTextToChatId).toHaveBeenCalledWith("oc_group", expect.stringContaining("thread_topic"), {
+        uuid: expect.stringMatching(UUID_PATTERN)
+      });
+      expect(lark.sendTextToChatId).toHaveBeenCalledWith(
+        "oc_group",
+        expect.stringContaining("https://example.feishu.cn/client/thread/open?open_thread_id=topic_1"),
+        {
+          uuid: expect.stringMatching(UUID_PATTERN)
+        }
+      );
 
       const errorResponse = await turnParams?.onDynamicToolCall?.({
         requestId: "req_ref_bad",
@@ -1518,6 +1535,66 @@ describe("ConversationManager", () => {
       });
     } finally {
       turn.resolve(completed("thread_main", "turn_1"));
+      await turn.promise;
+      await waitForDelay();
+    }
+  });
+
+  it("forwards normal thread references into topic contexts", async () => {
+    const turn = deferred<CodexTurnResult>();
+    let turnParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
+    const codex = createCodex({
+      startTurn: vi.fn((params) => {
+        turnParams = params;
+        void params.onTurnStarted?.("turn_1");
+        return turn.promise;
+      })
+    });
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_current",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_current"
+        }),
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_1"
+        })
+      ]
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    try {
+      manager.submitIncoming(groupMessage("g1", "hello", { chatType: "topic_group", larkThreadId: "topic_current" }));
+      await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+      const okPayload = dynamicToolPayload(await turnParams?.onDynamicToolCall?.({
+        requestId: "req_ref",
+        threadId: "thread_current",
+        turnId: "turn_1",
+        callId: "call_ref",
+        tool: "send_thread_ref",
+        targetThreadId: "thread_topic",
+        rawArguments: { thread_id: "thread_topic" }
+      }));
+      expect(okPayload).toMatchObject({
+        ok: true,
+        thread_id: "thread_topic",
+        lark_thread_id: "topic_1",
+        destination: { type: "thread", id: "topic_current" },
+        delivery: "forward"
+      });
+      expect(lark.forwardThread).toHaveBeenCalledWith("topic_1", "topic_current", "thread_id", {
+        uuid: expect.stringMatching(UUID_PATTERN)
+      });
+      expect(lark.sendTextToChatId).not.toHaveBeenCalled();
+    } finally {
+      turn.resolve(completed("thread_current", "turn_1"));
       await turn.promise;
       await waitForDelay();
     }
