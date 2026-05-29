@@ -1975,6 +1975,43 @@ describe("ConversationManager", () => {
     }
   });
 
+  it("does not trigger cron jobs for inactive conversations", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-29T00:00:00+08:00"));
+    const { codex } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({
+      codexThreadId: "thread_main",
+      responseMode: "none"
+    }));
+    const lark = createLarkResponder();
+    await repository.createCronJob({
+      conversationKey: "group_oc_group",
+      threadId: "thread_main",
+      cronExpression: "* * * * *",
+      messageText: "cron ping",
+      timezone: "Asia/Shanghai",
+      createdByOpenId: "ou_owner"
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    try {
+      await manager.startCronScheduler();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(lark.sendTextToChatId).not.toHaveBeenCalled();
+      expect(codex.startTurn).not.toHaveBeenCalled();
+      expect(repository.updateCronJobLastRun).not.toHaveBeenCalled();
+      const storedJob = (await repository.listCronJobsByConversation("group_oc_group"))[0];
+      expect(storedJob?.lastRunAt).toBeUndefined();
+      expect(storedJob?.lastLarkMessageId).toBeUndefined();
+    } finally {
+      await manager.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
   it("creates a new Twinny conversation group from an owner-profile dynamic tool call", async () => {
     const turn = deferred<CodexTurnResult>();
     let turnParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;

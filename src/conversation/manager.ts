@@ -1647,6 +1647,10 @@ export class ConversationManager {
       await this.options.repository.updateCronJobLastRun(job.id, dueAt);
       return;
     }
+    if (conversation.responseMode === "none") {
+      this.log.info({ cronId: job.id, conversationKey: conversation.conversationKey }, "ignored cron job for inactive conversation");
+      return;
+    }
     if (!threadIsDeliverable(conversation, target)) {
       this.log.warn({ cronId: job.id, threadId: job.threadId }, "ignored cron job for undeliverable thread");
       await this.options.repository.updateCronJobLastRun(job.id, dueAt);
