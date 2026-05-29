@@ -67,6 +67,11 @@ describe("Twinny config loading and bootstrap", () => {
     expect(loaded.lark.completedReaction).toBe("DONE");
     expect(loaded.lark.queuedReaction).toBe("OneSecond");
     expect(loaded.lark.messageRedaction).toEqual({ email: "whitespace", chinesePhoneNumber: "mask" });
+    expect(loaded.permissions).toEqual({
+      p2pDefaultProfile: "none",
+      groupDefaultProfile: "none",
+      groupDefaultMode: "none"
+    });
     expect(loaded.profiles.host.codexHome).toBe(path.join(home, ".codex"));
     expect(loaded.profiles.guest.codexHome).toBe(path.join(home, ".codex"));
     expect(rawRandom.trim()).toBe(homeRandom);
@@ -100,6 +105,8 @@ describe("Twinny config loading and bootstrap", () => {
     expect(serialized).toContain("[profiles.host]");
     expect(serialized).toContain("[profiles.guest]");
     expect(serialized).toContain("[permissions]");
+    expect(serialized).toContain('group_default_profile = "none"');
+    expect(serialized).toContain('group_default_mode = "none"');
     expect(serialized).toContain('working = "JubilantRabbit"');
     expect(serialized).not.toContain("masquerade_as_codex_cli");
     expect(serialized).not.toContain("[service]");
@@ -131,6 +138,34 @@ describe("Twinny config loading and bootstrap", () => {
     expect(parsed.codex).toEqual({
       binary: "/opt/homebrew/bin/codex",
       masqueradeAsCodexCli: true
+    });
+  });
+
+  it("round-trips group default activation permissions", () => {
+    const config = createTwinnyConfig({
+      home: "/tmp/twinny",
+      homeRandom,
+      auth: { larkAppId: "cli_test", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner" },
+      permissions: {
+        p2pDefaultProfile: "none",
+        groupDefaultProfile: "guest",
+        groupDefaultMode: "all_at"
+      },
+      profiles: {
+        host: {},
+        guest: {}
+      }
+    });
+
+    const serialized = serializeTwinnyConfig(config);
+    const parsed = parseTwinnyConfig(serialized, { home: "/tmp/twinny" });
+
+    expect(serialized).toContain('group_default_profile = "guest"');
+    expect(serialized).toContain('group_default_mode = "all_at"');
+    expect(parsed.permissions).toEqual({
+      p2pDefaultProfile: "none",
+      groupDefaultProfile: "guest",
+      groupDefaultMode: "all_at"
     });
   });
 

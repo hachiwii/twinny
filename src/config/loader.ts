@@ -15,6 +15,7 @@ import {
   type LarkMessageRedactionStrategy,
   type LarkCliProfileConfig,
   type LarkBrand,
+  type ConversationResponseMode,
   type LaunchdServiceConfig,
   type PermissionsConfig,
   type ProfileConfig,
@@ -74,7 +75,9 @@ const rawConfigSchema = z
       .optional(),
     permissions: z
       .object({
-        p2p_default_profile: z.string().optional()
+        p2p_default_profile: z.string().optional(),
+        group_default_profile: z.string().optional(),
+        group_default_mode: z.enum(["all", "all_at", "owner", "owner_at", "none"]).optional()
       })
       .strict()
       .optional(),
@@ -178,7 +181,9 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
     auth: normalizeAuthFile(input.auth),
     homeIdentity,
     permissions: {
-      p2pDefaultProfile: normalizeProfileName(input.permissions?.p2pDefaultProfile) ?? NONE_PROFILE_NAME
+      p2pDefaultProfile: normalizeProfileName(input.permissions?.p2pDefaultProfile) ?? NONE_PROFILE_NAME,
+      groupDefaultProfile: normalizeProfileName(input.permissions?.groupDefaultProfile) ?? NONE_PROFILE_NAME,
+      groupDefaultMode: normalizeGroupDefaultMode(input.permissions?.groupDefaultMode)
     },
     service: normalizeServiceConfig(input.service),
     telemetry: normalizeTelemetryConfig(input.telemetry),
@@ -404,6 +409,16 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   } else if (p2pDefault !== NONE_PROFILE_NAME && !config.profiles[p2pDefault]) {
     issues.push(`permissions.p2p_default_profile references unknown profile: ${p2pDefault}`);
   }
+  const groupDefaultProfile = config.permissions.groupDefaultProfile;
+  if (!groupDefaultProfile) {
+    issues.push("permissions.group_default_profile is required after defaults");
+  } else if (groupDefaultProfile !== NONE_PROFILE_NAME && !config.profiles[groupDefaultProfile]) {
+    issues.push(`permissions.group_default_profile references unknown profile: ${groupDefaultProfile}`);
+  }
+  const groupDefaultMode = config.permissions.groupDefaultMode;
+  if (!isConversationResponseMode(groupDefaultMode)) {
+    issues.push("permissions.group_default_mode must be owner_at, owner, all_at, all, or none");
+  }
   return issues;
 }
 
@@ -437,7 +452,9 @@ function createRuntimeConfig(
     auth,
     homeIdentity: runtime.homeIdentity,
     permissions: {
-      p2pDefaultProfile: normalizeProfileName(parsed.permissions?.p2p_default_profile) ?? NONE_PROFILE_NAME
+      p2pDefaultProfile: normalizeProfileName(parsed.permissions?.p2p_default_profile) ?? NONE_PROFILE_NAME,
+      groupDefaultProfile: normalizeProfileName(parsed.permissions?.group_default_profile) ?? NONE_PROFILE_NAME,
+      groupDefaultMode: normalizeGroupDefaultMode(parsed.permissions?.group_default_mode)
     },
     service: normalizeServiceConfig({
       launchd: {
@@ -540,7 +557,9 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
       }
     },
     permissions: {
-      p2p_default_profile: config.permissions.p2pDefaultProfile
+      p2p_default_profile: config.permissions.p2pDefaultProfile,
+      group_default_profile: config.permissions.groupDefaultProfile,
+      group_default_mode: config.permissions.groupDefaultMode
     },
     profiles
   };
@@ -612,6 +631,14 @@ function normalizeProfileName(value: string | undefined): string | undefined {
     return undefined;
   }
   return normalized;
+}
+
+function normalizeGroupDefaultMode(value: ConversationResponseMode | undefined): ConversationResponseMode {
+  return isConversationResponseMode(value) ? value : NONE_PROFILE_NAME;
+}
+
+function isConversationResponseMode(value: unknown): value is ConversationResponseMode {
+  return value === "all" || value === "all_at" || value === "owner" || value === "owner_at" || value === "none";
 }
 
 function normalizeMessageRedactionConfig(

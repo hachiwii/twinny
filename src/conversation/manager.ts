@@ -2712,6 +2712,13 @@ export class ConversationManager {
       if (isInactiveGroupCommandAllowed) {
         return { kind: "allow", text, parsed, conversation };
       }
+      if (!conversation) {
+        const defaultActivation = this.groupDefaultActivationForMessage(message, hasBotMention);
+        if (defaultActivation) {
+          const activated = await this.activateNewGroupConversationFromDefaults(context, message, defaultActivation);
+          return { kind: "allow", text, parsed, conversation: activated };
+        }
+      }
       return hasBotMention ? { kind: "unauthorized" } : { kind: "ignored" };
     }
 
@@ -2731,6 +2738,77 @@ export class ConversationManager {
       return { kind: "ignored" };
     }
     return { kind: "allow", text, parsed, conversation };
+  }
+
+  private groupDefaultActivationForMessage(
+    message: IncomingLarkMessage,
+    hasBotMention: boolean
+  ): { responseMode: Exclude<ConversationResponseMode, "none">; profile: ProfileName } | undefined {
+    const { groupDefaultMode, groupDefaultProfile } = this.options.config.permissions;
+    if (groupDefaultMode === "none" || groupDefaultProfile === "none") {
+      return undefined;
+    }
+    if (!this.options.config.profiles[groupDefaultProfile]) {
+      this.log.warn({ profile: groupDefaultProfile }, "ignored group default activation with unknown profile");
+      return undefined;
+    }
+    if (
+      groupResponseModeRequiresOwner(groupDefaultMode) &&
+      profileForSender(this.options.config, message.senderOpenId) !== "host"
+    ) {
+      return undefined;
+    }
+    if (groupResponseModeRequiresMention(groupDefaultMode) && !hasBotMention) {
+      return undefined;
+    }
+    return { responseMode: groupDefaultMode, profile: groupDefaultProfile };
+  }
+
+  private async activateNewGroupConversationFromDefaults(
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    defaults: { responseMode: Exclude<ConversationResponseMode, "none">; profile: ProfileName }
+  ): Promise<ConversationRecord> {
+    const groupInfo = await this.resolveGroupInfo(message);
+    const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
+    const thread = await this.options.codex.startThread({
+      profile: defaults.profile,
+      cwd: workspace,
+      approvalPolicy: "never",
+      developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context, { mainThread: true })
+    });
+    const conversation = await this.options.repository.create({
+      conversationKey: context.conversationKey,
+      type: context.type,
+      chatId: message.chatId,
+      name: groupInfo.name,
+      responseMode: defaults.responseMode,
+      profile: defaults.profile,
+      codexThreadId: thread.threadId,
+      workspace,
+      profileCodexHome: this.options.profiles.codexHomeFor(defaults.profile)
+    });
+    await this.recordCodexThreadBestEffort({
+      conversationKey: context.conversationKey,
+      codexThreadId: thread.threadId,
+      profile: defaults.profile,
+      workspace,
+      name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
+      codexThreadHasRollout: false
+    });
+    if (isMainSessionContext(context)) {
+      this.syncMainConversationThreadNameToCodexBestEffort(defaults.profile, thread.threadId, groupInfo.name);
+    }
+    this.log.info(
+      {
+        conversationKey: context.conversationKey,
+        profile: defaults.profile,
+        responseMode: defaults.responseMode,
+        codexThreadId: thread.threadId
+      },
+      "auto-activated group conversation from defaults"
+    );
+    return conversation;
   }
 
   private async rejectUnauthorizedP2pBestEffort(

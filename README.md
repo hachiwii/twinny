@@ -189,6 +189,7 @@ Twinny 运行在 owner 的本地机器上。请把它当作本地自动化桥接
 - 为该 profile 配置 Codex sandbox、filesystem、network 和 approval 相关安全设置。
 - 如果你的 Codex 设置支持项目级安全策略，在 workspace 的 `.codex` 中加入 override。
 - 除非你明确希望未配对 P2P 用户获得访问权限，否则保持 `permissions.p2p_default_profile = "none"`。
+- 除非你明确希望新群聊在第一条满足触发条件的消息上自动激活，否则保持 `permissions.group_default_profile = "none"` 和 `permissions.group_default_mode = "none"`。
 - 除非群成员范围非常可控，否则优先使用 `owner_at` 或 `owner`，不要直接使用 `all` 或 `all_at`。
 
 ## 进阶配置
@@ -206,6 +207,8 @@ Twinny 从 `TWINNY_HOME` 读取 `config.toml`。
 | `[lark.redaction].email` | 发往 Lark 的 payload 中邮箱地址的脱敏策略。`mask` 保留域名并遮蔽邮箱用户名，例如 `alice@example.com` 会变成 `a***e@example.com`；`whitespace` 插入空格，例如 `alice @ example.com`；`none` 发送明文邮箱。飞书可能会拦截包含明文邮箱或手机号的 bot message。默认是 `mask`。 |
 | `[lark.redaction].chinese_phone_number` | 发往 Lark 的 payload 中中国手机号的脱敏策略。`mask` 保留前 3 位和后 4 位，例如 `138****5678`；`whitespace` 插入空格，例如 `138 1234 5678`；`none` 发送明文手机号。飞书可能会拦截包含明文邮箱或手机号的 bot message。默认是 `mask`。 |
 | `[permissions].p2p_default_profile` | 未配对 P2P 用户第一次给 Twinny 发消息时使用的 profile。用 `none` 表示默认拒绝，也可以填已配置的 profile 名称来自动授权。默认是 `none`。 |
+| `[permissions].group_default_profile` | 新群聊自动激活时使用的 profile。必须和 `group_default_mode` 同时为非 `none` 才会生效；默认是 `none`。 |
+| `[permissions].group_default_mode` | 新群聊自动激活后的群响应模式，取值为 `owner_at`、`owner`、`all_at`、`all` 或 `none`。当它和 `group_default_profile` 都不是 `none` 时，新群聊收到第一条满足该模式触发条件的消息会自动创建 workspace 并激活。默认是 `none`。 |
 | `[service.launchd].mode` | macOS launchd 安装位置。`gui` 使用当前 `gui/<uid>` LaunchAgent（默认）；`daemon` 使用系统 LaunchDaemon。通常由 `twinny install --system-daemon` 写入。 |
 | `[service.launchd].user_name` | `mode = "daemon"` 时写入 plist 的 `UserName`。通常由 `twinny install --system-daemon` 自动写入当前用户。 |
 | `[profiles.<name>].codex_home` | 该 profile 使用的 `CODEX_HOME`。绝对路径会直接使用；相对路径会以 `TWINNY_HOME` 为基准解析。`host` 默认是 `~/.codex`；其他 profile 未设置时继承 `host`。 |
@@ -232,6 +235,8 @@ chinese_phone_number = "mask"
 
 [permissions]
 p2p_default_profile = "none"
+group_default_profile = "none"
+group_default_mode = "none"
 
 [profiles.host]
 codex_home = "~/.codex"

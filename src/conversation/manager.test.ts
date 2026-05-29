@@ -56,7 +56,7 @@ const config: TwinnyConfig = {
       larkAppSecret: "twinny.home.0123456789abcdef0123456789abcdef.lark.app_secret"
     }
   },
-  permissions: { p2pDefaultProfile: "guest" },
+  permissions: { p2pDefaultProfile: "guest", groupDefaultProfile: "none", groupDefaultMode: "none" },
   service: { launchd: { mode: "gui" } },
   owner: { openId: "ou_owner", displayName: "Owner" },
   profiles: {
@@ -6168,6 +6168,63 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).not.toHaveBeenCalled();
   });
 
+  it("auto-activates a new group from default permissions when the configured mode matches", async () => {
+    const { repository } = createRepository();
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const larkChats: LarkChatDirectory = {
+      getChatInfo: vi.fn(async () => ({ name: "Default Room", chatMode: "group" as const }))
+    };
+    const manager = createManager({
+      repository,
+      codex,
+      lark,
+      larkChats,
+      botOpenId: "ou_bot",
+      config: groupDefaultConfig({ profile: "guest", mode: "all_at" })
+    });
+
+    manager.submitIncoming(groupMessage("g_default_ignored", "hello"));
+    await waitForDelay();
+    expect(repository.findByConversationKey("group_oc_group")).toBeNull();
+    expect(codex.startThread).not.toHaveBeenCalled();
+
+    manager.submitIncoming(groupMessage("g_default", "@_bot hello group", { mentions: [botMention()] }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(lark.replyText).not.toHaveBeenCalledWith("g_default", "群聊未授权，需要 owner 发送 /activate 激活。");
+    expect(codex.startThread).toHaveBeenCalledWith({
+      profile: "guest",
+      cwd: "/tmp/twinny/workspaces/group_oc_group",
+      approvalPolicy: "never",
+      developerInstructions: expect.stringContaining("The current Twinny conversation key is group_oc_group. The current conversation type is group_chat.")
+    });
+    expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
+      conversationKey: "group_oc_group",
+      name: "Default Room",
+      responseMode: "all_at",
+      profile: "guest",
+      workspace: "/tmp/twinny/workspaces/group_oc_group"
+    });
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "g_default",
+        larkGroupId: "oc_group",
+        conversationKey: "group_oc_group",
+        routeKind: "message",
+        text: "hello group"
+      })
+    );
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profile: "guest",
+        threadId: "thread_1",
+        cwd: "/tmp/twinny/workspaces/group_oc_group",
+        input: wrappedMessage("hello group", "g_default")
+      })
+    );
+  });
+
   it("lets the owner activate a group with default at/guest mode and records the control message", async () => {
     const { repository, row } = createRepository();
     const codex = createCodex();
@@ -6453,13 +6510,22 @@ describe("ConversationManager", () => {
     const larkChats: LarkChatDirectory = {
       getChatName: vi.fn(async () => "Reenabled Room")
     };
-    const manager = createManager({ repository, lark, larkChats, botOpenId: "ou_bot" });
+    const codex = createCodex();
+    const manager = createManager({
+      repository,
+      lark,
+      codex,
+      larkChats,
+      botOpenId: "ou_bot",
+      config: groupDefaultConfig({ profile: "guest", mode: "all_at" })
+    });
 
     manager.submitIncoming(groupMessage("g1", "@_bot hello", { mentions: [botMention()] }));
     await waitForExpect(() =>
       expect(lark.replyText).toHaveBeenCalledWith("g1", "群聊未授权，需要 owner 发送 /activate 激活。")
     );
     expect(repository.insertLarkMessage).not.toHaveBeenCalled();
+    expect(codex.startThread).not.toHaveBeenCalled();
 
     manager.submitIncoming(groupMessage("g2", "/activate all", { senderOpenId: "ou_owner", senderName: "Owner" }));
     await waitForExpect(() =>
@@ -10425,6 +10491,20 @@ function cardModeConfig(overrides: Partial<TwinnyConfig["lark"]> = {}): TwinnyCo
     lark: {
       ...config.lark,
       ...overrides
+    }
+  };
+}
+
+function groupDefaultConfig(input: {
+  profile: ProfileName;
+  mode: TwinnyConfig["permissions"]["groupDefaultMode"];
+}): TwinnyConfig {
+  return {
+    ...config,
+    permissions: {
+      ...config.permissions,
+      groupDefaultProfile: input.profile,
+      groupDefaultMode: input.mode
     }
   };
 }

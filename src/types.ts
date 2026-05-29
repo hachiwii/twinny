@@ -141,6 +141,8 @@ export interface ProfileConfig {
 
 export interface PermissionsConfig {
   p2pDefaultProfile: ProfileName;
+  groupDefaultProfile: ProfileName;
+  groupDefaultMode: ConversationResponseMode;
 }
 
 export interface TelemetryConfig {
