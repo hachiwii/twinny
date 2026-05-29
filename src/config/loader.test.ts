@@ -101,11 +101,37 @@ describe("Twinny config loading and bootstrap", () => {
     expect(serialized).toContain("[profiles.guest]");
     expect(serialized).toContain("[permissions]");
     expect(serialized).toContain('working = "JubilantRabbit"');
+    expect(serialized).not.toContain("masquerade_as_codex_cli");
     expect(serialized).not.toContain("[service]");
     expect(serialized).not.toContain("[telemetry]");
     expect(serialized).not.toContain("[owner]");
     expect(serialized).not.toContain("[roles");
     expect(serialized).not.toContain("secret_ref");
+  });
+
+  it("round-trips Codex CLI masquerade configuration", () => {
+    const config = createTwinnyConfig({
+      home: "/tmp/twinny",
+      homeRandom,
+      auth: { larkAppId: "cli_test", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner" },
+      codex: {
+        binary: "/opt/homebrew/bin/codex",
+        masqueradeAsCodexCli: true
+      },
+      profiles: {
+        host: {},
+        guest: {}
+      }
+    });
+
+    const serialized = serializeTwinnyConfig(config);
+    const parsed = parseTwinnyConfig(serialized, { home: "/tmp/twinny" });
+
+    expect(serialized).toContain('masquerade_as_codex_cli = true');
+    expect(parsed.codex).toEqual({
+      binary: "/opt/homebrew/bin/codex",
+      masqueradeAsCodexCli: true
+    });
   });
 
   it("round-trips LaunchDaemon service configuration", () => {

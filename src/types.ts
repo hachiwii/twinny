@@ -130,6 +130,7 @@ export interface LarkConfig {
 
 export interface CodexConfig {
   binary: string;
+  masqueradeAsCodexCli: boolean;
 }
 
 export interface ProfileConfig {

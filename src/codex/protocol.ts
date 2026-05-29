@@ -310,13 +310,19 @@ export class CodexProtocolClient extends EventEmitter {
   }
 }
 
-export function createInitializeParams(version = TWINNY_VERSION): InitializeParams {
+export function createInitializeParams(
+  versionOrClientInfo: string | InitializeParams["clientInfo"] = TWINNY_VERSION
+): InitializeParams {
+  const clientInfo =
+    typeof versionOrClientInfo === "string"
+      ? {
+          name: "twinny",
+          title: "Twinny",
+          version: versionOrClientInfo
+        }
+      : versionOrClientInfo;
   return {
-    clientInfo: {
-      name: "twinny",
-      title: "Twinny",
-      version
-    },
+    clientInfo,
     capabilities: {
       experimentalApi: true,
       optOutNotificationMethods: null

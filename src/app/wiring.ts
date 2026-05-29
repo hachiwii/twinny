@@ -142,6 +142,7 @@ export class TwinnyRuntime {
       this.codexPool = new ProfileCodexAppServerPool({
         binary: this.config.codex.binary,
         profiles: this.config.profiles,
+        masqueradeAsCodexCli: this.config.codex.masqueradeAsCodexCli,
         requestTimeoutMs: this.options.requestTimeoutMs ?? 10 * 60 * 1000
       });
       for (const profile of Object.keys(this.config.profiles) as ProfileName[]) {

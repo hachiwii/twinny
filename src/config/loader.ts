@@ -48,7 +48,8 @@ const rawConfigSchema = z
   .object({
     codex: z
       .object({
-        binary: z.string().optional()
+        binary: z.string().optional(),
+        masquerade_as_codex_cli: z.boolean().optional()
       })
       .strict()
       .optional(),
@@ -125,6 +126,7 @@ export interface CreateTwinnyConfigInput {
   homeRandom: string;
   codex?: {
     binary?: string;
+    masqueradeAsCodexCli?: boolean;
   };
   lark?: {
     workingReaction?: string;
@@ -163,7 +165,8 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
   const config: TwinnyConfig = {
     home,
     codex: {
-      binary: normalizeOptionalString(input.codex?.binary) ?? "codex"
+      binary: normalizeOptionalString(input.codex?.binary) ?? "codex",
+      masqueradeAsCodexCli: input.codex?.masqueradeAsCodexCli ?? false
     },
     lark: {
       workingReaction: normalizeOptionalString(input.lark?.workingReaction) ?? DEFAULT_LARK_WORKING_REACTION,
@@ -418,7 +421,8 @@ function createRuntimeConfig(
   return {
     home: runtime.home,
     codex: {
-      binary: normalizeOptionalString(parsed.codex?.binary) ?? "codex"
+      binary: normalizeOptionalString(parsed.codex?.binary) ?? "codex",
+      masqueradeAsCodexCli: parsed.codex?.masquerade_as_codex_cli ?? false
     },
     lark: {
       workingReaction: normalizeOptionalString(parsed.lark?.reaction?.working) ?? DEFAULT_LARK_WORKING_REACTION,
@@ -522,7 +526,8 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
 
   const document: TomlTable = {
     codex: {
-      binary: config.codex.binary
+      binary: config.codex.binary,
+      ...(config.codex.masqueradeAsCodexCli ? { masquerade_as_codex_cli: true } : {})
     },
     lark: {
       reaction: {

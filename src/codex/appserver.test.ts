@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { parse, type TomlTable } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
-import { CodexAppServer, ProfileCodexAppServerPool, buildCodexAppServerEnv } from "./appserver.js";
+import {
+  CodexAppServer,
+  ProfileCodexAppServerPool,
+  buildCodexAppServerEnv,
+  parseCodexCliVersionOutput
+} from "./appserver.js";
 
 const tempDirs: string[] = [];
 
@@ -46,6 +51,12 @@ describe("buildCodexAppServerEnv", () => {
 });
 
 describe("CodexAppServer", () => {
+  it("parses Codex CLI version output for initialize masquerading", () => {
+    expect(parseCodexCliVersionOutput("codex 0.130.0")).toBe("0.130.0");
+    expect(parseCodexCliVersionOutput("codex-cli 0.131.2+build.4")).toBe("0.131.2+build.4");
+    expect(parseCodexCliVersionOutput("unknown")).toBeUndefined();
+  });
+
   it("handshakes with a fake stdio app-server and emits Twinny's constrained requests", async () => {
     const tempDir = makeTempDir();
     const captureFile = path.join(tempDir, "requests.ndjson");
@@ -266,6 +277,41 @@ describe("CodexAppServer", () => {
         params: {
           threadId: "thread-existing",
           turnId: "turn-1"
+        }
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("can masquerade initialize client info as Codex TUI", async () => {
+    const tempDir = makeTempDir();
+    const captureFile = path.join(tempDir, "requests.ndjson");
+    const fakeBinary = createFakeCodexBinary(tempDir, captureFile);
+    const codexHome = path.join(tempDir, "codex-home");
+
+    const server = new CodexAppServer({
+      profile: "guest",
+      binary: fakeBinary,
+      codexHome,
+      requestTimeoutMs: 2_000,
+      clientVersion: "twinny-test",
+      masqueradeAsCodexCli: true,
+      env: {
+        PATH: process.env.PATH,
+        HOME: tempDir
+      }
+    });
+
+    try {
+      await expect(server.start()).resolves.toMatchObject({ userAgent: "fake-codex" });
+
+      const sent = readCapturedMessages(captureFile);
+      expect(sent[0]).toMatchObject({
+        method: "initialize",
+        params: {
+          clientInfo: { name: "codex-tui", title: null, version: "1.2.3" },
+          capabilities: { experimentalApi: true, optOutNotificationMethods: null }
         }
       });
     } finally {

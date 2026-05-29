@@ -5,7 +5,13 @@ import { execa } from "execa";
 import { ensureGuestWorkspaceTrust, ensureProjectTrust } from "../profiles/index.js";
 import { commandForPlatform } from "../platform/commands.js";
 import { GUEST_PROFILE_NAME, HOST_PROFILE_NAME, type CodexThreadNameUpdate, type ProfileName } from "../types.js";
-import { CodexProtocolClient, createInitializeParams, type CodexNotificationMessage, type InitializeResponse } from "./protocol.js";
+import {
+  CodexProtocolClient,
+  createInitializeParams,
+  type CodexNotificationMessage,
+  type InitializeParams,
+  type InitializeResponse
+} from "./protocol.js";
 import { parseCodexThreadNameUpdatedNotification } from "./thread-name.js";
 import {
   clearCodexThreadGoal,
@@ -52,6 +58,7 @@ export interface CodexAppServerOptions {
   env?: NodeJS.ProcessEnv;
   requestTimeoutMs?: number;
   clientVersion?: string;
+  masqueradeAsCodexCli?: boolean;
   stopTimeoutMs?: number;
 }
 
@@ -65,6 +72,7 @@ export interface ProfileCodexAppServerPoolOptions {
   profiles: Record<ProfileName, { codexHome: string }>;
   requestTimeoutMs?: number;
   clientVersion?: string;
+  masqueradeAsCodexCli?: boolean;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -137,7 +145,7 @@ export class CodexAppServer extends EventEmitter {
     const codexVersion = await this.readCodexBinaryVersionBestEffort();
 
     if (this.protocolClient) {
-      this.initializeResponse = await this.protocolClient.initialize(createInitializeParams(this.options.clientVersion));
+      this.initializeResponse = await this.protocolClient.initialize(this.createInitializeParams(codexVersion));
       this.codexVersion = codexVersion;
       return this.initializeResponse;
     }
@@ -172,9 +180,20 @@ export class CodexAppServer extends EventEmitter {
     });
     protocol.start();
 
-    this.initializeResponse = await protocol.initialize(createInitializeParams(this.options.clientVersion));
+    this.initializeResponse = await protocol.initialize(this.createInitializeParams(codexVersion));
     this.codexVersion = codexVersion;
     return this.initializeResponse;
+  }
+
+  private createInitializeParams(codexVersionOutput: string): InitializeParams {
+    if (!this.options.masqueradeAsCodexCli) {
+      return createInitializeParams(this.options.clientVersion);
+    }
+    return createInitializeParams({
+      name: "codex-tui",
+      title: null,
+      version: parseCodexCliVersionOutput(codexVersionOutput) ?? this.options.clientVersion ?? codexVersionOutput
+    });
   }
 
   private attachProtocolNotifications(protocol: CodexProtocolClient): void {
@@ -365,7 +384,8 @@ export class ProfileCodexAppServerPool {
           codexHome: profiles[profile].codexHome,
           env: options.env,
           requestTimeoutMs: options.requestTimeoutMs,
-          clientVersion: options.clientVersion
+          clientVersion: options.clientVersion,
+          masqueradeAsCodexCli: options.masqueradeAsCodexCli
         })
       );
     }
@@ -397,7 +417,8 @@ export class ProfileCodexAppServerPool {
       codexHome: config.codexHome,
       env: this.options.env,
       requestTimeoutMs: this.options.requestTimeoutMs,
-      clientVersion: this.options.clientVersion
+      clientVersion: this.options.clientVersion,
+      masqueradeAsCodexCli: this.options.masqueradeAsCodexCli
     });
     this.servers.set(profile, server);
     return server;
@@ -421,6 +442,10 @@ export class ProfileCodexAppServerPool {
   async stopAll(signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
     await Promise.all(Array.from(this.servers.values(), (server) => server.stop(signal)));
   }
+}
+
+export function parseCodexCliVersionOutput(output: string): string | undefined {
+  return /(\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?)/.exec(output)?.[1];
 }
 
 function hasExited(child: ChildProcessWithoutNullStreams): boolean {

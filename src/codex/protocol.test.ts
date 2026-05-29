@@ -42,4 +42,12 @@ describe("CodexProtocolClient", () => {
   it("uses the injected Twinny version in initialize params by default", () => {
     expect(createInitializeParams().clientInfo.version).toBe(TWINNY_VERSION);
   });
+
+  it("accepts explicit initialize client info", () => {
+    expect(createInitializeParams({ name: "codex-tui", title: null, version: "1.2.3" }).clientInfo).toEqual({
+      name: "codex-tui",
+      title: null,
+      version: "1.2.3"
+    });
+  });
 });

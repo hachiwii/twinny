@@ -37,7 +37,7 @@ import {
 
 const config: TwinnyConfig = {
   home: "/tmp/twinny",
-  codex: { binary: "codex" },
+  codex: { binary: "codex", masqueradeAsCodexCli: false },
   lark: {
     workingReaction: "JubilantRabbit",
     completedReaction: "DONE",

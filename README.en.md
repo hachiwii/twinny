@@ -204,6 +204,7 @@ Recognized fields:
 | Field                                   | Meaning and values                                                                                                                                                                                                                                                                                                                                                                       |
 | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `[codex].binary`                        | Codex CLI executable path or command name. Defaults to `codex`. Use an absolute path when the managed service cannot find Codex through `PATH`. On Windows this is usually `codex.cmd`.                                                                                                                                                                                                   |
+| `[codex].masquerade_as_codex_cli`       | Sends Codex TUI clientInfo during Codex app-server initialization: `name = "codex-tui"`, `title = null`, and `version` parsed from the startup `codex --version` output. Defaults to `false`.                                                                                                                                                                                             |
 | `[lark.reaction].working`               | Lark emoji type added while Twinny is working. Defaults to `JubilantRabbit`.                                                                                                                                                                                                                                                                                                             |
 | `[lark.reaction].queued`                | Lark emoji type added to queued messages. Defaults to `OneSecond`.                                                                                                                                                                                                                                                                                                                       |
 | `[lark.redaction].email`                | Redaction strategy for email addresses in outgoing Lark payloads. `mask` keeps the domain and masks the local part, for example `alice@example.com` becomes `a***e@example.com`; `whitespace` inserts spaces, for example `alice @ example.com`; `none` sends raw email addresses. Feishu may reject bot messages that contain raw email addresses or phone numbers. Defaults to `mask`. |
@@ -224,6 +225,7 @@ Example `config.toml`:
 ```toml
 [codex]
 binary = "/opt/homebrew/bin/codex"
+masquerade_as_codex_cli = false
 
 [lark.reaction]
 working = "JubilantRabbit"

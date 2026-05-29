@@ -5,7 +5,7 @@ import type { TelemetryReporter } from "./reporter.js";
 
 const config: TwinnyConfig = {
   home: "/tmp/twinny",
-  codex: { binary: "codex" },
+  codex: { binary: "codex", masqueradeAsCodexCli: false },
   lark: {
     workingReaction: "JubilantRabbit",
     completedReaction: "DONE",

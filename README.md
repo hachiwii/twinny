@@ -200,6 +200,7 @@ Twinny 从 `TWINNY_HOME` 读取 `config.toml`。
 | 字段 | 含义和取值 |
 | --- | --- |
 | `[codex].binary` | Codex CLI 可执行文件路径或命令名。默认是 `codex`。如果托管服务不能通过 `PATH` 找到 Codex，建议使用绝对路径。Windows 上通常是 `codex.cmd`。 |
+| `[codex].masquerade_as_codex_cli` | 初始化 Codex app-server 时把 Twinny 的 clientInfo 伪装为 Codex TUI：`name = "codex-tui"`、`title = null`，`version` 从启动时运行的 `codex --version` 输出中解析。默认是 `false`。 |
 | `[lark.reaction].working` | Twinny 工作中给 Lark 消息添加的 emoji type。默认是 `JubilantRabbit`。 |
 | `[lark.reaction].queued` | 消息进入队列时添加的 Lark emoji type。默认是 `OneSecond`。 |
 | `[lark.redaction].email` | 发往 Lark 的 payload 中邮箱地址的脱敏策略。`mask` 保留域名并遮蔽邮箱用户名，例如 `alice@example.com` 会变成 `a***e@example.com`；`whitespace` 插入空格，例如 `alice @ example.com`；`none` 发送明文邮箱。飞书可能会拦截包含明文邮箱或手机号的 bot message。默认是 `mask`。 |
@@ -219,6 +220,7 @@ Telemetry 的数据范围和关闭方式见文末的 [Telemetry](#telemetry)。
 ```toml
 [codex]
 binary = "/opt/homebrew/bin/codex"
+masquerade_as_codex_cli = false
 
 [lark.reaction]
 working = "JubilantRabbit"
