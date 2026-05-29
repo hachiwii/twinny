@@ -7,7 +7,8 @@ import {
   CodexAppServer,
   ProfileCodexAppServerPool,
   buildCodexAppServerEnv,
-  parseCodexCliVersionOutput
+  parseCodexCliVersionOutput,
+  resolveCodexTuiClientInfoVersion
 } from "./appserver.js";
 
 const tempDirs: string[] = [];
@@ -55,6 +56,8 @@ describe("CodexAppServer", () => {
     expect(parseCodexCliVersionOutput("codex 0.130.0")).toBe("0.130.0");
     expect(parseCodexCliVersionOutput("codex-cli 0.131.2+build.4")).toBe("0.131.2+build.4");
     expect(parseCodexCliVersionOutput("unknown")).toBeUndefined();
+    expect(resolveCodexTuiClientInfoVersion("codex-cli 0.135.0")).toBe("0.135.0");
+    expect(resolveCodexTuiClientInfoVersion("不可用")).toBe("");
   });
 
   it("handshakes with a fake stdio app-server and emits Twinny's constrained requests", async () => {
@@ -322,6 +325,53 @@ describe("CodexAppServer", () => {
     }
   });
 
+  it("leaves masqueraded Codex TUI client version empty when the Codex version probe fails", async () => {
+    const tempDir = makeTempDir();
+    const captureFile = path.join(tempDir, "requests.ndjson");
+    const fakeBinary = createFakeCodexBinary(tempDir, captureFile, {
+      versionExitCode: 1,
+      versionOutput: "不可用"
+    });
+    const codexHome = path.join(tempDir, "codex-home");
+    const probeFailures: unknown[] = [];
+
+    const server = new CodexAppServer({
+      profile: "guest",
+      binary: fakeBinary,
+      codexHome,
+      requestTimeoutMs: 2_000,
+      clientVersion: "twinny-test",
+      masqueradeAsCodexCli: true,
+      env: {
+        PATH: process.env.PATH,
+        HOME: tempDir
+      }
+    });
+    server.on("versionProbeFailed", (failure) => probeFailures.push(failure));
+
+    try {
+      await expect(server.start()).resolves.toMatchObject({ userAgent: "fake-codex" });
+
+      const sent = readCapturedMessages(captureFile);
+      expect(sent[0]).toMatchObject({
+        method: "initialize",
+        params: {
+          clientInfo: { name: "codex-tui", title: null, version: "" }
+        }
+      });
+      expect(server.readCodexVersion()).toBe("");
+      expect(probeFailures).toEqual([
+        expect.objectContaining({
+          binary: fakeBinary,
+          reason: "unparseable output",
+          exitCode: 1
+        })
+      ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("overrides host turn/start sandbox policy to danger full access", async () => {
     const tempDir = makeTempDir();
     const captureFile = path.join(tempDir, "requests.ndjson");
@@ -464,7 +514,11 @@ function makeTempDir(): string {
   return dir;
 }
 
-function createFakeCodexBinary(tempDir: string, captureFile: string): string {
+function createFakeCodexBinary(
+  tempDir: string,
+  captureFile: string,
+  options: { versionOutput?: string; versionExitCode?: number } = {}
+): string {
   const binary = path.join(tempDir, "fake-codex.mjs");
   fs.writeFileSync(
     binary,
@@ -474,8 +528,8 @@ import readline from "node:readline";
 
 const captureFile = ${JSON.stringify(captureFile)};
 if (process.argv.includes("--version")) {
-  process.stdout.write("fake-codex 1.2.3\\n");
-  process.exit(0);
+  process.stdout.write(${JSON.stringify(`${options.versionOutput ?? "fake-codex 1.2.3"}\n`)});
+  process.exit(${JSON.stringify(options.versionExitCode ?? 0)});
 }
 
 const rl = readline.createInterface({ input: process.stdin });

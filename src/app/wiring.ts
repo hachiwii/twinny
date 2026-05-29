@@ -405,6 +405,9 @@ export class TwinnyRuntime {
     server.on("stderr", (chunk) => {
       this.log.debug({ profile, stream: "stderr", chunk }, "codex app-server stderr");
     });
+    server.on("versionProbeFailed", (failure) => {
+      this.log.warn({ profile, ...failure }, "failed to read Codex binary version; using best-effort fallback");
+    });
     server.on("threadNameUpdated", (update) => {
       this.conversation?.submitCodexThreadNameUpdated(update);
     });

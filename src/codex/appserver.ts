@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import { ensureGuestWorkspaceTrust, ensureProjectTrust } from "../profiles/index.js";
@@ -78,9 +79,17 @@ export interface ProfileCodexAppServerPoolOptions {
 
 export interface CodexAppServerEvents {
   stderr: [chunk: string];
+  versionProbeFailed: [failure: CodexVersionProbeFailure];
   notification: [message: CodexNotificationMessage];
   threadNameUpdated: [update: CodexThreadNameUpdate];
   exit: [code: number | null, signal: NodeJS.Signals | null];
+}
+
+export interface CodexVersionProbeFailure {
+  binary: string;
+  reason: string;
+  exitCode?: number;
+  stderr?: string;
 }
 
 export declare interface CodexAppServer {
@@ -192,7 +201,7 @@ export class CodexAppServer extends EventEmitter {
     return createInitializeParams({
       name: "codex-tui",
       title: null,
-      version: parseCodexCliVersionOutput(codexVersionOutput) ?? this.options.clientVersion ?? codexVersionOutput
+      version: resolveCodexTuiClientInfoVersion(codexVersionOutput)
     });
   }
 
@@ -355,18 +364,46 @@ export class CodexAppServer extends EventEmitter {
   }
 
   private async readCodexBinaryVersionBestEffort(): Promise<string> {
+    const invocation = commandForPlatform(this.options.binary, ["--version"]);
     try {
-      const invocation = commandForPlatform(this.options.binary, ["--version"]);
       const result = await execa(invocation.command, invocation.args, {
         env: buildCodexAppServerEnv(this.options.codexHome, this.options.env ?? process.env),
         reject: false,
-        timeout: 1000
+        timeout: 5_000
       });
       const version = result.stdout.trim() || result.stderr.trim();
-      return result.exitCode === 0 && version ? version : "不可用";
-    } catch {
-      return "不可用";
+      if (result.exitCode === 0 && parseCodexCliVersionOutput(version)) {
+        return version;
+      }
+      this.emit("versionProbeFailed", {
+        binary: invocation.command,
+        reason: version ? "unparseable output" : "empty output",
+        exitCode: result.exitCode ?? undefined,
+        stderr: result.stderr.trim() || undefined
+      });
+    } catch (error) {
+      this.emit("versionProbeFailed", {
+        binary: invocation.command,
+        reason: error instanceof Error ? error.message : "failed to run codex --version"
+      });
     }
+    return this.readCodexBinaryVersionFromPathBestEffort();
+  }
+
+  private async readCodexBinaryVersionFromPathBestEffort(): Promise<string> {
+    const candidates = [this.options.binary];
+    try {
+      candidates.push(await fs.realpath(this.options.binary));
+    } catch {
+      // Path probing is best effort only; the command failure above is the useful diagnostic.
+    }
+    for (const candidate of candidates) {
+      const version = parseCodexCliVersionOutput(candidate);
+      if (version) {
+        return version;
+      }
+    }
+    return "";
   }
 }
 
@@ -446,6 +483,18 @@ export class ProfileCodexAppServerPool {
 
 export function parseCodexCliVersionOutput(output: string): string | undefined {
   return /(\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?)/.exec(output)?.[1];
+}
+
+export function resolveCodexTuiClientInfoVersion(codexVersionOutput: string): string {
+  return sanitizeUserAgentVersionToken(parseCodexCliVersionOutput(codexVersionOutput)) ?? "";
+}
+
+function sanitizeUserAgentVersionToken(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return /^[A-Za-z0-9][A-Za-z0-9._+~-]*$/.test(trimmed) ? trimmed : undefined;
 }
 
 function hasExited(child: ChildProcessWithoutNullStreams): boolean {
