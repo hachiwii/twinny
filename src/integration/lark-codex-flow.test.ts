@@ -1328,18 +1328,6 @@ describe("Lark to Codex integration flow", () => {
       },
       {
         profile: "guest",
-        after: { method: "thread/compact/start", nth: 1 },
-        delayMs: 260,
-        notify: {
-          method: "turn/completed",
-          params: {
-            threadId: "guest_thread_1",
-            turn: { id: "compact_1", status: "completed", durationMs: 260, items: [] }
-          }
-        }
-      },
-      {
-        profile: "guest",
         after: { method: "turn/interrupt", nth: 1 },
         notify: {
           method: "turn/completed",
