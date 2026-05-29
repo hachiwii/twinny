@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { CronExpressionParser } from "cron-parser";
 import type { Logger } from "pino";
 import { TwinnyError, toErrorMessage } from "../errors.js";
 import {
@@ -19,6 +20,7 @@ import {
   renderHiddenTwinnyStatusCard,
   renderTwinnyBannerCard,
   renderTwinnyAgentCard,
+  renderTwinnyCronListCard,
   renderTwinnyResumeHistoryCard,
   renderTwinnyResumeListCard,
   renderTwinnyStatusCard,
@@ -60,6 +62,7 @@ import type {
   ConversationResponseMode,
   ConversationRecord,
   ConversationType,
+  CronJobRecord,
   IncomingLarkDocCommentAdd,
   IncomingLarkBotMenuAction,
   IncomingLarkCardAction,
@@ -215,6 +218,8 @@ const MERGE_FORWARD_CHILD_MESSAGE_MAX_COUNT = 32;
 const MERGE_FORWARD_TOTAL_CONTENT_MAX_BYTES = 32 * 1024;
 const WORKSPACE_SELECTION_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 const WORKSPACE_SELECTION_LIMIT = 10;
+const CRON_TIMER_MAX_DELAY_MS = 2_147_483_647;
+const MISSING_BOT_OPEN_ID = "MISSING_BOT_OPENID";
 
 export interface ConversationRepository {
   findByConversationKey(conversationKey: string): Promise<ConversationRecord | null> | ConversationRecord | null;
@@ -373,6 +378,26 @@ export interface ConversationRepository {
     totalWorkDurationMs: number;
   };
   listRecentThreadWorkspaces(since: number, limit?: number): Promise<string[]> | string[];
+  createCronJob(input: {
+    conversationKey: string;
+    threadId: string;
+    cronExpression: string;
+    messageText: string;
+    timezone: string;
+    createdByOpenId: string;
+  }): Promise<CronJobRecord> | CronJobRecord;
+  listCronJobs(): Promise<CronJobRecord[]> | CronJobRecord[];
+  listCronJobsByConversation(conversationKey: string): Promise<CronJobRecord[]> | CronJobRecord[];
+  getCronJobByConversationAndId(
+    conversationKey: string,
+    id: number
+  ): Promise<CronJobRecord | undefined> | CronJobRecord | undefined;
+  deleteCronJobByConversationAndId(conversationKey: string, id: number): Promise<boolean> | boolean;
+  updateCronJobLastRun(
+    id: number,
+    lastRunAt: number,
+    lastLarkMessageId?: string
+  ): Promise<CronJobRecord | undefined> | CronJobRecord | undefined;
   insertLarkMessage(input: {
     larkMessageId?: string;
     eventId: string;
@@ -923,6 +948,12 @@ interface ConversationActor {
   chatName?: string;
 }
 
+type ThreadRelationship = "parent" | "sibling" | "child" | "other";
+
+type SyntheticMessageEnvelope =
+  | { kind: "message_from_other_thread"; sourceThreadId: string; threadRelationship: ThreadRelationship }
+  | { kind: "cron_message"; cronId: number };
+
 interface PendingMessage {
   messageId: string;
   text: string;
@@ -934,6 +965,7 @@ interface PendingMessage {
   skipQueuedRefresh?: boolean;
   queuedReaction?: LarkReactionHandle | null;
   docComment?: PendingDocCommentContext;
+  syntheticEnvelope?: SyntheticMessageEnvelope;
   docQueuedReaction?: LarkDocCommentReactionHandle | null;
   docWorkingReaction?: LarkDocCommentReactionHandle | null;
 }
@@ -1118,6 +1150,7 @@ type ParsedCommand =
   | { kind: "fork"; text: string }
   | { kind: "resume"; text: string }
   | { kind: "watch"; text: string }
+  | { kind: "cron"; text: string }
   | { kind: "activate"; text: string }
   | { kind: "pair"; text: string }
   | { kind: "reload"; text: string }
@@ -1205,12 +1238,16 @@ export class ConversationManager {
   private readonly pendingThreadNames = new Map<string, string>();
   private readonly workspaceSelectionsByThread = new Map<string, string[]>();
   private readonly resumeBrowsers = new Map<string, ResumeBrowserState>();
+  private readonly cronSelectionsByConversation = new Map<string, number[]>();
+  private readonly cronNextRuns = new Map<number, number>();
   private readonly threadIdleWatchers = new Map<string, Set<ThreadIdleWatcher>>();
   private readonly threadWaitEdges = new Map<string, Set<string>>();
   private readonly lastTurnSnapshots = new Map<string, ThreadWaitSnapshot>();
   private readonly threadRuntimeById = new Map<string, { hasUserMessage?: boolean }>();
   private readonly log: Logger;
   private shuttingDown = false;
+  private cronTimer?: NodeJS.Timeout;
+  private cronSchedulerStarted = false;
 
   constructor(private readonly options: ConversationManagerOptions) {
     this.log = options.logger ?? defaultLogger;
@@ -1490,11 +1527,24 @@ export class ConversationManager {
     });
   }
 
+  async startCronScheduler(): Promise<void> {
+    if (this.shuttingDown || this.cronSchedulerStarted) {
+      return;
+    }
+    this.cronSchedulerStarted = true;
+    await this.refreshCronSchedule(Date.now());
+    this.scheduleNextCronTimer();
+  }
+
   async shutdown(): Promise<void> {
     if (this.shuttingDown) {
       return;
     }
     this.shuttingDown = true;
+    if (this.cronTimer) {
+      clearTimeout(this.cronTimer);
+      this.cronTimer = undefined;
+    }
 
     const cancelPromises: Promise<boolean>[] = [];
     for (const state of this.states.values()) {
@@ -1507,6 +1557,122 @@ export class ConversationManager {
     }
 
     await Promise.all(cancelPromises);
+  }
+
+  private async refreshCronSchedule(now: number): Promise<void> {
+    const jobs = await this.options.repository.listCronJobs();
+    const activeIds = new Set<number>();
+    for (const job of jobs) {
+      activeIds.add(job.id);
+      try {
+        this.cronNextRuns.set(job.id, computeNextCronRun(job, now));
+      } catch (error) {
+        this.cronNextRuns.delete(job.id);
+        this.log.warn({ error, cronId: job.id, cronExpression: job.cronExpression }, "failed to schedule cron job");
+      }
+    }
+    for (const id of this.cronNextRuns.keys()) {
+      if (!activeIds.has(id)) {
+        this.cronNextRuns.delete(id);
+      }
+    }
+  }
+
+  private scheduleNextCronTimer(): void {
+    if (this.cronTimer) {
+      clearTimeout(this.cronTimer);
+      this.cronTimer = undefined;
+    }
+    if (this.shuttingDown || !this.cronSchedulerStarted || this.cronNextRuns.size === 0) {
+      return;
+    }
+    const nextRunAt = Math.min(...this.cronNextRuns.values());
+    if (!Number.isFinite(nextRunAt)) {
+      return;
+    }
+    const delayMs = Math.min(CRON_TIMER_MAX_DELAY_MS, Math.max(0, nextRunAt - Date.now()));
+    this.cronTimer = setTimeout(() => {
+      this.cronTimer = undefined;
+      void this.processDueCronJobs(Date.now())
+        .catch((error) => {
+          this.log.warn({ error }, "failed to process cron jobs");
+        })
+        .finally(() => {
+          if (!this.shuttingDown) {
+            this.scheduleNextCronTimer();
+          }
+        });
+    }, delayMs);
+    this.cronTimer.unref?.();
+  }
+
+  private async processDueCronJobs(now: number): Promise<void> {
+    const jobs = await this.options.repository.listCronJobs();
+    const activeIds = new Set(jobs.map((job) => job.id));
+    for (const id of this.cronNextRuns.keys()) {
+      if (!activeIds.has(id)) {
+        this.cronNextRuns.delete(id);
+      }
+    }
+
+    for (const job of jobs) {
+      const dueAt = this.cronNextRuns.get(job.id);
+      if (dueAt === undefined || dueAt > now) {
+        continue;
+      }
+      try {
+        await this.triggerCronJob(job, dueAt);
+      } catch (error) {
+        this.log.warn({ error, cronId: job.id }, "failed to trigger cron job");
+        try {
+          await this.options.repository.updateCronJobLastRun(job.id, dueAt);
+        } catch (updateError) {
+          this.log.warn({ error: updateError, cronId: job.id }, "failed to record failed cron run");
+        }
+      }
+      try {
+        this.cronNextRuns.set(job.id, computeNextCronRun(job, Math.max(now, dueAt)));
+      } catch (error) {
+        this.cronNextRuns.delete(job.id);
+        this.log.warn({ error, cronId: job.id, cronExpression: job.cronExpression }, "failed to reschedule cron job");
+      }
+    }
+  }
+
+  private async triggerCronJob(job: CronJobRecord, dueAt: number): Promise<void> {
+    const conversation = await this.options.repository.findByConversationKey(job.conversationKey);
+    const target = await this.options.repository.getCodexThreadById(job.threadId);
+    if (!conversation || !target || target.conversationKey !== job.conversationKey) {
+      this.log.warn({ cronId: job.id, threadId: job.threadId }, "ignored cron job for missing conversation or thread");
+      await this.options.repository.updateCronJobLastRun(job.id, dueAt);
+      return;
+    }
+    if (!threadIsDeliverable(conversation, target)) {
+      this.log.warn({ cronId: job.id, threadId: job.threadId }, "ignored cron job for undeliverable thread");
+      await this.options.repository.updateCronJobLastRun(job.id, dueAt);
+      return;
+    }
+
+    const result = await this.injectSyntheticMessage({
+      conversation,
+      target,
+      codexText: job.messageText,
+      larkText: formatCronMessageProxyText(job.messageText),
+      eventIdPrefix: `cron_message:${job.id}:${dueAt}`,
+      uuid: createLarkUuid("twinny-cron", String(job.id), String(dueAt)),
+      routeKind: "cron_message",
+      rawContext: ({ messageId, createTime, larkThreadId }) => cronMessageRawContext({
+        conversation,
+        target,
+        cronId: job.id,
+        messageId,
+        messageText: job.messageText,
+        createTime,
+        larkThreadId
+      }),
+      syntheticEnvelope: { kind: "cron_message", cronId: job.id }
+    });
+    await this.options.repository.updateCronJobLastRun(job.id, dueAt, result.larkMessageId);
   }
 
   async suspendActiveTurnsForCodexAppServerExit(profile: ProfileName, options: ConversationQueueOptions = {}): Promise<number> {
@@ -1729,16 +1895,19 @@ export class ConversationManager {
     }
     const parsed = parseQueuedAwareSlashCommand(normalized.text);
     const text = record.status === "queued" && (normalized.resources?.length ?? 0) > 0 ? normalized.text : record.text;
-    const isThreadMessage = record.routeKind === "thread_message";
+    const syntheticEnvelope = await this.syntheticEnvelopeForRecoveredRecord(record, raw);
+    const isSyntheticMessage = syntheticEnvelope !== undefined;
     return toPendingMessage(normalized, text, {
       queueBoundary:
-        isThreadMessage ||
+        isSyntheticMessage ||
         parsed.kind === "compact" ||
         parsed.kind === "goal" ||
         (record.status === "queued" &&
           (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit")),
       control:
-        parsed.kind === "goal"
+        isSyntheticMessage
+          ? undefined
+          : parsed.kind === "goal"
           ? "goal_set"
           : parsed.kind === "plan"
           ? "plan_on"
@@ -1747,9 +1916,10 @@ export class ConversationManager {
             : parsed.kind === "compact"
               ? "compact"
               : undefined,
-      forceQueueWhenActive: isThreadMessage,
-      excludeFromParticipants: isThreadMessage,
-      skipQueuedRefresh: isThreadMessage
+      forceQueueWhenActive: isSyntheticMessage,
+      excludeFromParticipants: isSyntheticMessage,
+      skipQueuedRefresh: isSyntheticMessage,
+      syntheticEnvelope
     });
   }
 
@@ -1804,16 +1974,19 @@ export class ConversationManager {
     }
     const parsed = parseQueuedAwareSlashCommand(normalized.text);
     const text = (record.status === "queued" && (normalized.resources?.length ?? 0) > 0) ? normalized.text : record.text;
-    const isThreadMessage = record.routeKind === "thread_message";
+    const syntheticEnvelope = await this.syntheticEnvelopeForRecoveredRecord(record, raw);
+    const isSyntheticMessage = syntheticEnvelope !== undefined;
     return toPendingMessage(normalized, text, {
       queueBoundary:
-        isThreadMessage ||
+        isSyntheticMessage ||
         parsed.kind === "compact" ||
         parsed.kind === "goal" ||
         (record.status === "queued" &&
           (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit")),
       control:
-        parsed.kind === "goal"
+        isSyntheticMessage
+          ? undefined
+          : parsed.kind === "goal"
           ? "goal_set"
           : parsed.kind === "plan"
           ? "plan_on"
@@ -1822,10 +1995,32 @@ export class ConversationManager {
             : parsed.kind === "compact"
               ? "compact"
               : undefined,
-      forceQueueWhenActive: isThreadMessage,
-      excludeFromParticipants: isThreadMessage,
-      skipQueuedRefresh: isThreadMessage
+      forceQueueWhenActive: isSyntheticMessage,
+      excludeFromParticipants: isSyntheticMessage,
+      skipQueuedRefresh: isSyntheticMessage,
+      syntheticEnvelope
     });
+  }
+
+  private async syntheticEnvelopeForRecoveredRecord(
+    record: LarkMessageRecord,
+    raw: unknown
+  ): Promise<SyntheticMessageEnvelope | undefined> {
+    if (record.routeKind === "cron_message") {
+      return { kind: "cron_message", cronId: recoveredCronId(raw) };
+    }
+    if (record.routeKind !== "thread_message") {
+      return undefined;
+    }
+    const sourceThreadId = recoveredSourceThreadId(raw);
+    if (!sourceThreadId || !record.codexThreadId) {
+      return { kind: "message_from_other_thread", sourceThreadId: sourceThreadId ?? "unknown", threadRelationship: "other" };
+    }
+    return {
+      kind: "message_from_other_thread",
+      sourceThreadId,
+      threadRelationship: await this.relationshipBetweenThreads(sourceThreadId, record.codexThreadId)
+    };
   }
 
   private async startRecoveredProcessingMessages(
@@ -2509,6 +2704,10 @@ export class ConversationManager {
     }
     if (parsed.kind === "watch") {
       await this.handleWatchCommand(state, context, message, parsed.text);
+      return;
+    }
+    if (parsed.kind === "cron") {
+      await this.handleCronCommand(context, message, parsed.text);
       return;
     }
     if (parsed.kind === "deactivate") {
@@ -4578,6 +4777,91 @@ export class ConversationManager {
       await this.replyStatusCardBestEffort(message.messageId, card);
     }
     await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async handleCronCommand(
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    const parsed = parseCronCommand(text, localTimezone());
+    if (parsed.kind === "invalid") {
+      await this.replyControlBestEffort(message.messageId, parsed.message);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (parsed.kind === "list") {
+      await this.replyCronList(message.messageId, context.conversationKey);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (parsed.kind === "remove") {
+      const ids = this.cronSelectionsByConversation.get(context.conversationKey) ?? [];
+      const cronId = ids[parsed.index - 1];
+      if (!cronId) {
+        await this.replyControlBestEffort(message.messageId, "没有可用的 cron 序号，请先使用 /cron 获取列表。");
+        await this.markMessagesCompletedBestEffort([message.messageId]);
+        return;
+      }
+      const deleted = await this.options.repository.deleteCronJobByConversationAndId(context.conversationKey, cronId);
+      this.cronNextRuns.delete(cronId);
+      this.scheduleNextCronTimer();
+      await this.replyControlBestEffort(
+        message.messageId,
+        deleted ? `已删除 cron #${parsed.index}。` : `cron #${parsed.index} 已不存在。`
+      );
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const resolved = await this.resolveThreadForMessage(context, message);
+    if (resolved.replacedMissingThread) {
+      await this.notifyThreadReplacementBestEffort(message.messageId, resolved.previousThreadId, resolved.threadId);
+    }
+    const timezone = localTimezone();
+    const job = await this.options.repository.createCronJob({
+      conversationKey: context.conversationKey,
+      threadId: resolved.threadId,
+      cronExpression: parsed.cronExpression,
+      messageText: parsed.messageText,
+      timezone,
+      createdByOpenId: message.senderOpenId
+    });
+    const nextRunAt = computeNextCronRun(job, Date.now());
+    this.cronNextRuns.set(job.id, nextRunAt);
+    this.scheduleNextCronTimer();
+    await this.replyControlBestEffort(
+      message.messageId,
+      [
+        `已创建 cron #${job.id}`,
+        `cron：${job.cronExpression}`,
+        `thread_id：${job.threadId}`,
+        `下次触发：${formatCronTimestamp(nextRunAt, job.timezone)}`
+      ].join("\n")
+    );
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async replyCronList(messageId: string, conversationKey: string): Promise<void> {
+    const jobs = await this.options.repository.listCronJobsByConversation(conversationKey);
+    const now = Date.now();
+    this.cronSelectionsByConversation.set(conversationKey, jobs.map((job) => job.id));
+    await this.replyControlCardBestEffort(
+      messageId,
+      renderTwinnyCronListCard({
+        timezone: localTimezone(),
+        items: jobs.map((job, index) => {
+          const nextRunAt = this.cronNextRuns.get(job.id) ?? cronNextRunBestEffort(job, now, this.log);
+          return {
+            index: index + 1,
+            cronExpression: job.cronExpression,
+            messageText: job.messageText,
+            threadId: job.threadId,
+            nextRunAt: nextRunAt === undefined ? "无效 cron" : formatCronTimestamp(nextRunAt, job.timezone)
+          };
+        })
+      })
+    );
   }
 
   private async handleWorkspaceCommand(
@@ -6954,6 +7238,12 @@ export class ConversationManager {
           return await this.handleSendThreadRefToolCall(active, request);
         case "tell_thread":
           return await this.handleTellThreadToolCall(active, request);
+        case "add_cron":
+          return await this.handleAddCronToolCall(active, request);
+        case "list_cron":
+          return await this.handleListCronToolCall(active);
+        case "del_cron":
+          return await this.handleDelCronToolCall(active, request);
         case "create_conversation":
           return await this.handleCreateConversationToolCall(active, request);
       }
@@ -7320,6 +7610,136 @@ export class ConversationManager {
     });
   }
 
+  private async injectSyntheticMessage(input: {
+    conversation: ConversationRecord;
+    target: CodexThreadRecord;
+    codexText: string;
+    larkText: string;
+    eventIdPrefix: string;
+    uuid: string;
+    routeKind: "thread_message" | "cron_message";
+    rawContext: (input: { messageId: string; createTime: number; larkThreadId?: string }) => Record<string, unknown>;
+    syntheticEnvelope: SyntheticMessageEnvelope;
+  }): Promise<{ larkMessageId: string; status: LarkMessageStatus }> {
+    const targetContext = createMessageContextForThread(input.conversation, input.target);
+    const targetState = this.getState(targetContext.stateKey);
+    const sent = input.target.larkThreadId
+      ? await this.options.lark.replyText(input.target.cardMessageId ?? input.target.larkThreadId, input.larkText, {
+          replyInThread: true,
+          uuid: input.uuid
+        })
+      : input.conversation.type === "p2p"
+        ? await this.options.lark.sendTextToOpenId(input.conversation.chatId, input.larkText, { uuid: input.uuid })
+        : await this.options.lark.sendTextToChatId(input.conversation.chatId, input.larkText, { uuid: input.uuid });
+    const larkMessageId = nonEmptyString(sent?.messageId);
+    if (!larkMessageId) {
+      throw new TwinnyError("Lark synthetic message response did not include message_id", "LARK_MESSAGE_SEND_FAILED");
+    }
+
+    const createTime = Date.now();
+    const deliveredLarkThreadId = input.target.larkThreadId
+      ? extractLarkMessageThreadId(sent?.raw) ?? input.target.larkThreadId
+      : undefined;
+    const botOpenId = nonEmptyString(this.options.botOpenId) ?? MISSING_BOT_OPEN_ID;
+    const proxyMessage: IncomingLarkMessage = {
+      eventId: `${input.eventIdPrefix}:${larkMessageId}`,
+      messageId: larkMessageId,
+      chatId: input.conversation.chatId,
+      chatType: targetContext.type,
+      messageType: "text",
+      senderOpenId: botOpenId,
+      senderName: "Twinny",
+      larkGroupId: isGroupConversationType(targetContext.type) ? input.conversation.chatId : undefined,
+      larkThreadId: input.target.larkThreadId,
+      text: input.larkText,
+      createTime,
+      raw: input.rawContext({ messageId: larkMessageId, createTime, larkThreadId: deliveredLarkThreadId })
+    };
+    const pending = toPendingMessage(proxyMessage, input.codexText, {
+      queueBoundary: true,
+      forceQueueWhenActive: true,
+      excludeFromParticipants: true,
+      skipQueuedRefresh: true,
+      syntheticEnvelope: input.syntheticEnvelope
+    });
+
+    const status = await targetState.controlQueue.enqueue(async () => {
+      await this.exitPlanModeForSyntheticMessage(targetState, input.target);
+      const initialStatus = this.willProcessPendingMessageImmediately(targetState, pending) ? "processing" : "queued";
+      await this.options.repository.insertLarkMessage({
+        larkMessageId: proxyMessage.messageId,
+        eventId: proxyMessage.eventId,
+        larkUserId: proxyMessage.senderOpenId,
+        larkGroupId: proxyMessage.larkGroupId,
+        larkThreadId: proxyMessage.larkThreadId,
+        conversationKey: input.target.conversationKey,
+        codexThreadId: input.target.codexThreadId,
+        routeKind: input.routeKind,
+        status: initialStatus,
+        text: input.codexText,
+        larkCreateTime: proxyMessage.createTime,
+        rawEventJson: safeJsonStringify(proxyMessage.raw)
+      });
+      await this.schedulePendingMessage(targetState, targetContext, pending);
+      return initialStatus;
+    });
+
+    return { larkMessageId, status };
+  }
+
+  private async exitPlanModeForSyntheticMessage(state: ConversationState, target: CodexThreadRecord): Promise<void> {
+    if (target.mode === "plan") {
+      await this.setThreadModeBestEffort(target.conversationKey, target.codexThreadId, "default");
+    }
+    const active = state.active;
+    if (
+      active &&
+      active.threadId === target.codexThreadId &&
+      active.waiting?.kind === "plan" &&
+      !active.cancelRequested
+    ) {
+      await this.setThreadModeBestEffort(active.conversationKey, active.threadId, "default");
+      await this.cancelActiveTurn(state, { waitForCompletion: true });
+    }
+  }
+
+  private async relationshipBetweenThreads(
+    sourceThreadId: string,
+    targetThreadId: string
+  ): Promise<ThreadRelationship> {
+    if (sourceThreadId === targetThreadId) {
+      return "other";
+    }
+    const source = await this.options.repository.getCodexThreadById(sourceThreadId);
+    const target = await this.options.repository.getCodexThreadById(targetThreadId);
+    if (!source || !target || source.conversationKey !== target.conversationKey) {
+      return "other";
+    }
+    const targetAncestors = await this.threadAncestorIds(target);
+    if (targetAncestors.has(sourceThreadId)) {
+      return "parent";
+    }
+    const sourceAncestors = await this.threadAncestorIds(source);
+    if (sourceAncestors.has(targetThreadId)) {
+      return "child";
+    }
+    if (source.parentCodexThreadId && source.parentCodexThreadId === target.parentCodexThreadId) {
+      return "sibling";
+    }
+    return "other";
+  }
+
+  private async threadAncestorIds(thread: CodexThreadRecord): Promise<Set<string>> {
+    const ancestors = new Set<string>();
+    let parentId = thread.parentCodexThreadId;
+    while (parentId && !ancestors.has(parentId)) {
+      ancestors.add(parentId);
+      const parent = await this.options.repository.getCodexThreadById(parentId);
+      parentId = parent?.parentCodexThreadId;
+    }
+    return ancestors;
+  }
+
   private async handleTellThreadToolCall(
     active: ActiveTurn,
     request: Extract<CodexTwinnyDynamicToolRequest, { tool: "tell_thread" }>
@@ -7330,89 +7750,117 @@ export class ConversationManager {
       return dynamicToolErrorResponse("THREAD_NOT_MANAGED", `Thread ${request.targetThreadId} is not in the current conversation.`);
     }
 
-    const targetCategory = threadCategoryForList(target, conversation);
-    if (targetCategory === "previous_main" || (targetCategory !== "main" && !target.larkThreadId)) {
+    if (!threadIsDeliverable(conversation, target)) {
       return dynamicToolErrorResponse(
         "THREAD_NOT_DELIVERABLE",
         "Target thread must be the current conversation main thread or a normal thread with a lark_thread_id."
       );
     }
 
-    const targetContext = createMessageContextForThread(conversation, target);
-    const targetState = this.getState(targetContext.stateKey);
     const sourceLabel = active.threadId === conversation.codexThreadId ? MAIN_THREAD_NAME : active.threadId;
     const larkText = formatThreadMessageProxyText(sourceLabel, request.message);
-    const uuid = createLarkUuid("twinny-tell-thread", request.callId, request.targetThreadId);
-    const sent = target.larkThreadId
-      ? await this.options.lark.replyText(target.cardMessageId ?? target.larkThreadId, larkText, {
-          replyInThread: true,
-          uuid
-        })
-      : conversation.type === "p2p"
-        ? await this.options.lark.sendTextToOpenId(conversation.chatId, larkText, { uuid })
-        : await this.options.lark.sendTextToChatId(conversation.chatId, larkText, { uuid });
-    const proxyMessageId = nonEmptyString(sent?.messageId);
-    if (!proxyMessageId) {
-      return dynamicToolErrorResponse("LARK_MESSAGE_SEND_FAILED", "Lark proxy message response did not include message_id.");
-    }
-
-    const createTime = Date.now();
-    const proxyMessage: IncomingLarkMessage = {
-      eventId: `thread_message:${request.callId}:${proxyMessageId}`,
-      messageId: proxyMessageId,
-      chatId: conversation.chatId,
-      chatType: targetContext.type,
-      messageType: "text",
-      senderOpenId: active.triggerOpenId,
-      senderName: sourceLabel,
-      larkGroupId: isGroupConversationType(targetContext.type) ? conversation.chatId : undefined,
-      larkThreadId: target.larkThreadId,
-      text: larkText,
-      createTime,
-      raw: threadMessageRawContext({
+    const threadRelationship = await this.relationshipBetweenThreads(active.threadId, target.codexThreadId);
+    const result = await this.injectSyntheticMessage({
+      conversation,
+      target,
+      codexText: request.message,
+      larkText,
+      eventIdPrefix: `thread_message:${request.callId}`,
+      uuid: createLarkUuid("twinny-tell-thread", request.callId, request.targetThreadId),
+      routeKind: "thread_message",
+      rawContext: ({ messageId, createTime, larkThreadId }) => threadMessageRawContext({
         conversation,
         sourceThreadId: active.threadId,
         sourceLabel,
         target,
-        messageId: proxyMessageId,
+        messageId,
         text: larkText,
         createTime,
-        larkThreadId: target.larkThreadId ? extractLarkMessageThreadId(sent?.raw) ?? target.larkThreadId : undefined
-      })
-    };
-    const pending = toPendingMessage(proxyMessage, larkText, {
-      queueBoundary: true,
-      forceQueueWhenActive: true,
-      excludeFromParticipants: true,
-      skipQueuedRefresh: true
-    });
-
-    const status = await targetState.controlQueue.enqueue(async () => {
-      const initialStatus = this.willProcessPendingMessageImmediately(targetState, pending) ? "processing" : "queued";
-      await this.options.repository.insertLarkMessage({
-        larkMessageId: proxyMessage.messageId,
-        eventId: proxyMessage.eventId,
-        larkUserId: proxyMessage.senderOpenId,
-        larkGroupId: proxyMessage.larkGroupId,
-        larkThreadId: proxyMessage.larkThreadId,
-        conversationKey: target.conversationKey,
-        codexThreadId: target.codexThreadId,
-        routeKind: "thread_message",
-        status: initialStatus,
-        text: proxyMessage.text,
-        larkCreateTime: proxyMessage.createTime,
-        rawEventJson: safeJsonStringify(proxyMessage.raw)
-      });
-      await this.schedulePendingMessage(targetState, targetContext, pending);
-      return initialStatus;
+        larkThreadId
+      }),
+      syntheticEnvelope: {
+        kind: "message_from_other_thread",
+        sourceThreadId: active.threadId,
+        threadRelationship
+      }
     });
 
     return dynamicToolJsonResponse(true, {
       ok: true,
       thread_id: target.codexThreadId,
       lark_thread_id: target.larkThreadId ?? null,
-      lark_message_id: proxyMessageId,
-      status
+      lark_message_id: result.larkMessageId,
+      status: result.status
+    });
+  }
+
+  private async handleAddCronToolCall(
+    active: ActiveTurn,
+    request: Extract<CodexTwinnyDynamicToolRequest, { tool: "add_cron" }>
+  ): Promise<CodexDynamicToolCallResponse> {
+    const conversation = await this.options.repository.findByConversationKey(active.conversationKey);
+    const targetThreadId = request.targetThreadId ?? active.threadId;
+    const target = await this.options.repository.getCodexThreadById(targetThreadId);
+    if (!conversation || !target || target.conversationKey !== active.conversationKey) {
+      return dynamicToolErrorResponse("THREAD_NOT_MANAGED", `Thread ${targetThreadId} is not in the current conversation.`);
+    }
+    if (!threadIsDeliverable(conversation, target)) {
+      return dynamicToolErrorResponse(
+        "THREAD_NOT_DELIVERABLE",
+        "Target thread must be the current conversation main thread or a normal thread with a lark_thread_id."
+      );
+    }
+    const timezone = localTimezone();
+    const cronExpression = request.cronExpression.trim();
+    const messageText = simplifyCronMessageText(request.message);
+    if (!messageText) {
+      return dynamicToolErrorResponse("CRON_MESSAGE_EMPTY", "Cron message is empty after simplification.");
+    }
+    const validation = validateCronExpression(cronExpression, timezone);
+    if (validation.kind === "invalid") {
+      return dynamicToolErrorResponse("CRON_EXPRESSION_INVALID", validation.message);
+    }
+    const job = await this.options.repository.createCronJob({
+      conversationKey: active.conversationKey,
+      threadId: target.codexThreadId,
+      cronExpression,
+      messageText,
+      timezone,
+      createdByOpenId: active.triggerOpenId
+    });
+    this.cronNextRuns.set(job.id, computeNextCronRun(job, Date.now()));
+    this.scheduleNextCronTimer();
+    return dynamicToolJsonResponse(true, {
+      ok: true,
+      cron: cronJobToolJson(job, this.cronNextRuns.get(job.id))
+    });
+  }
+
+  private async handleListCronToolCall(active: ActiveTurn): Promise<CodexDynamicToolCallResponse> {
+    const jobs = await this.options.repository.listCronJobsByConversation(active.conversationKey);
+    const now = Date.now();
+    const cron = jobs.map((job) => {
+      const nextRunAt = this.cronNextRuns.get(job.id) ?? cronNextRunBestEffort(job, now, this.log);
+      return cronJobToolJson(job, nextRunAt);
+    });
+    return dynamicToolJsonResponse(true, {
+      ok: true,
+      conversation_key: active.conversationKey,
+      cron
+    });
+  }
+
+  private async handleDelCronToolCall(
+    active: ActiveTurn,
+    request: Extract<CodexTwinnyDynamicToolRequest, { tool: "del_cron" }>
+  ): Promise<CodexDynamicToolCallResponse> {
+    const deleted = await this.options.repository.deleteCronJobByConversationAndId(active.conversationKey, request.cronId);
+    this.cronNextRuns.delete(request.cronId);
+    this.scheduleNextCronTimer();
+    return dynamicToolJsonResponse(deleted, {
+      ok: deleted,
+      cron_id: request.cronId,
+      ...(deleted ? {} : { error: { code: "CRON_NOT_FOUND", message: `Cron job ${request.cronId} was not found.` } })
     });
   }
 
@@ -10694,6 +11142,9 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "watch") {
     return { kind: "watch", text: rest };
   }
+  if (command === "cron") {
+    return { kind: "cron", text: rest };
+  }
   if (command === "help") {
     return { kind: "help" };
   }
@@ -11286,7 +11737,8 @@ function parsedCommandTitleText(command: ParsedCommand): string | undefined {
     command.kind === "thread" ||
     command.kind === "fork" ||
     command.kind === "resume" ||
-    command.kind === "watch"
+    command.kind === "watch" ||
+    command.kind === "cron"
   ) {
     return command.text;
   }
@@ -11403,6 +11855,135 @@ function parseWatchCommand(text: string):
   return { kind: "valid", url: tokens[0]!, watchMode };
 }
 
+function parseCronCommand(text: string, timezone: string):
+  | { kind: "list" }
+  | { kind: "remove"; index: number }
+  | { kind: "create"; cronExpression: string; messageText: string }
+  | { kind: "invalid"; message: string } {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return { kind: "list" };
+  }
+  const removeMatch = /^rm\s+(\d+)$/i.exec(trimmed);
+  if (removeMatch) {
+    const index = Number.parseInt(removeMatch[1]!, 10);
+    if (index < 1) {
+      return { kind: "invalid", message: "cron 序号必须大于 0。" };
+    }
+    return { kind: "remove", index };
+  }
+  if (/^rm\b/i.test(trimmed)) {
+    return { kind: "invalid", message: "用法：/cron rm <序号>" };
+  }
+  const split = splitCronExpressionAndMessage(trimmed, timezone);
+  if (split.kind === "invalid") {
+    return { kind: "invalid", message: split.message };
+  }
+  const messageText = simplifyCronMessageText(split.messageText);
+  if (!messageText) {
+    return { kind: "invalid", message: "cron 消息不能为空。" };
+  }
+  return { kind: "create", cronExpression: split.cronExpression, messageText };
+}
+
+function splitCronExpressionAndMessage(
+  text: string,
+  timezone: string
+): { kind: "valid"; cronExpression: string; messageText: string } | { kind: "invalid"; message: string } {
+  const tokens = text.split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) {
+    return { kind: "invalid", message: "用法：/cron <cron exp> <message>" };
+  }
+  if (tokens[0]?.startsWith("@")) {
+    const cronExpression = tokens[0]!;
+    const messageText = text.slice(cronExpression.length).trim();
+    const validation = validateCronExpression(cronExpression, timezone);
+    return validation.kind === "valid"
+      ? { kind: "valid", cronExpression, messageText }
+      : { kind: "invalid", message: validation.message };
+  }
+
+  for (const fieldCount of [6, 5]) {
+    if (tokens.length <= fieldCount) {
+      continue;
+    }
+    const cronExpression = tokens.slice(0, fieldCount).join(" ");
+    const validation = validateCronExpression(cronExpression, timezone);
+    if (validation.kind === "valid") {
+      return { kind: "valid", cronExpression, messageText: tokens.slice(fieldCount).join(" ") };
+    }
+  }
+  return { kind: "invalid", message: "cron 表达式无效；支持 5/6 段 cron 或 @daily 这类别名。" };
+}
+
+function validateCronExpression(
+  cronExpression: string,
+  timezone: string
+): { kind: "valid" } | { kind: "invalid"; message: string } {
+  try {
+    CronExpressionParser.parse(cronExpression, { currentDate: new Date(), tz: timezone }).next();
+    return { kind: "valid" };
+  } catch (error) {
+    return { kind: "invalid", message: `cron 表达式无效：${toErrorMessage(error)}` };
+  }
+}
+
+function simplifyCronMessageText(text: string): string {
+  return compactInlineText(text
+    .replace(/<img\b[^>]*>[\s\S]*?<\/img>/gi, " [图片] ")
+    .replace(/<image\b[^>]*>[\s\S]*?<\/image>/gi, " [图片] ")
+    .replace(/<video\b[^>]*>[\s\S]*?<\/video>/gi, " [视频] ")
+    .replace(/<file\b[^>]*>[\s\S]*?<\/file>/gi, " [文件] "));
+}
+
+function computeNextCronRun(job: CronJobRecord, currentDateMs: number): number {
+  return CronExpressionParser.parse(job.cronExpression, {
+    currentDate: new Date(currentDateMs),
+    tz: job.timezone
+  }).next().getTime();
+}
+
+function cronNextRunBestEffort(job: CronJobRecord, now: number, log: Logger): number | undefined {
+  try {
+    return computeNextCronRun(job, now);
+  } catch (error) {
+    log.warn({ error, cronId: job.id, cronExpression: job.cronExpression }, "failed to compute cron next run");
+    return undefined;
+  }
+}
+
+function localTimezone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function formatCronTimestamp(timestamp: number, timezone: string): string {
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(new Date(timestamp));
+}
+
+function cronJobToolJson(job: CronJobRecord, nextRunAt: number | undefined): Record<string, unknown> {
+  return {
+    cron_id: job.id,
+    cron_expression: job.cronExpression,
+    message: job.messageText,
+    thread_id: job.threadId,
+    timezone: job.timezone,
+    next_run_at: nextRunAt === undefined ? null : new Date(nextRunAt).toISOString(),
+    last_run_at: job.lastRunAt === undefined ? null : new Date(job.lastRunAt).toISOString(),
+    last_lark_message_id: job.lastLarkMessageId ?? null,
+    created_at: new Date(job.createdAt).toISOString(),
+    updated_at: new Date(job.updatedAt).toISOString()
+  };
+}
+
 function watchListPostContent(watchers: LarkDocWatcherRecord[]): LarkPostContent {
   return [[{ tag: "md", text: watchListMarkdown(watchers) }]];
 }
@@ -11492,8 +12073,17 @@ function threadCategoryForList(thread: CodexThreadRecord, conversation: Conversa
   return "previous_main";
 }
 
+function threadIsDeliverable(conversation: ConversationRecord, thread: CodexThreadRecord): boolean {
+  const category = threadCategoryForList(thread, conversation);
+  return category === "main" || (category === "thread" && !!thread.larkThreadId);
+}
+
 function formatThreadMessageProxyText(sourceLabel: string, message: string): string {
   return `收到来自 ${sourceLabel} 的消息：\n\n${message}`;
+}
+
+function formatCronMessageProxyText(message: string): string {
+  return `定时任务触发：\n\n${message}`;
 }
 
 function createDynamicThreadToolMessage(
@@ -11571,6 +12161,38 @@ function threadMessageRawContext(input: {
       message_type: "text",
       ...(input.larkThreadId ? { thread_id: input.larkThreadId } : {}),
       content: JSON.stringify({ text: input.text })
+    }
+  };
+}
+
+function cronMessageRawContext(input: {
+  conversation: ConversationRecord;
+  target: CodexThreadRecord;
+  cronId: number;
+  messageId: string;
+  messageText: string;
+  createTime: number;
+  larkThreadId?: string;
+}): Record<string, unknown> {
+  return {
+    kind: "cron_message",
+    conversation_key: input.conversation.conversationKey,
+    cron_id: input.cronId,
+    cron: {
+      id: input.cronId
+    },
+    target: {
+      thread_id: input.target.codexThreadId,
+      lark_thread_id: input.target.larkThreadId ?? null
+    },
+    message: {
+      message_id: input.messageId,
+      create_time: String(input.createTime),
+      chat_id: input.conversation.chatId,
+      chat_type: input.larkThreadId && input.conversation.type !== "p2p" ? "topic_group" : input.conversation.type,
+      message_type: "text",
+      ...(input.larkThreadId ? { thread_id: input.larkThreadId } : {}),
+      content: JSON.stringify({ text: input.messageText })
     }
   };
 }
@@ -12674,7 +13296,8 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/twinny 或 /banner - 发送 Twinny banner 卡片",
     "/thread [message] - 创建新话题",
     "/fork [message] - 从当前 Codex thread fork 出新话题",
-    "/watch <lark_doc_url> [owner|all|none] - 监听文档 @bot 评论；不带参数查看当前 thread 监听"
+    "/watch <lark_doc_url> [owner|all|none] - 监听文档 @bot 评论；不带参数查看当前 thread 监听",
+    "/cron [cron exp message|rm 序号] - 管理当前 conversation 的定时任务"
   ];
   if (isOwner) {
     lines.push(
@@ -12830,6 +13453,7 @@ function classifyInitialRoute(
     parsed.kind === "fork" ||
     parsed.kind === "resume" ||
     parsed.kind === "watch" ||
+    parsed.kind === "cron" ||
     parsed.kind === "activate" ||
     parsed.kind === "pair" ||
     parsed.kind === "reload" ||
@@ -12888,6 +13512,7 @@ function toPendingMessage(
     forceQueueWhenActive?: boolean;
     excludeFromParticipants?: boolean;
     skipQueuedRefresh?: boolean;
+    syntheticEnvelope?: SyntheticMessageEnvelope;
   } = {}
 ): PendingMessage {
   return {
@@ -12899,7 +13524,8 @@ function toPendingMessage(
     forceQueueWhenActive: options.forceQueueWhenActive,
     excludeFromParticipants: options.excludeFromParticipants,
     skipQueuedRefresh: options.skipQueuedRefresh,
-    docComment: options.docComment
+    docComment: options.docComment,
+    syntheticEnvelope: options.syntheticEnvelope
   };
 }
 
@@ -13157,6 +13783,23 @@ function formatCreatedThreadContextForCodex(threads: CodexThreadRecord[]): strin
 function formatPendingMessageForCodex(message: PendingMessage): string {
   if (message.docComment) {
     return message.text;
+  }
+  if (message.syntheticEnvelope?.kind === "message_from_other_thread") {
+    return [
+      formatXmlOpenTag("message_from_other_thread", [
+        ["thread_id", message.syntheticEnvelope.sourceThreadId],
+        ["thread_relationship", message.syntheticEnvelope.threadRelationship]
+      ]),
+      message.text,
+      "</message_from_other_thread>"
+    ].join("\n");
+  }
+  if (message.syntheticEnvelope?.kind === "cron_message") {
+    return [
+      formatXmlOpenTag("cron_message", [["cron_id", String(message.syntheticEnvelope.cronId)]]),
+      message.text,
+      "</cron_message>"
+    ].join("\n");
   }
   const timestamp = message.original.createTime === undefined ? "" : String(message.original.createTime);
   const attributes: Array<[string, string]> = [
@@ -13852,6 +14495,22 @@ function parseStoredRawEvent(value: string | undefined): unknown {
   } catch {
     return undefined;
   }
+}
+
+function recoveredSourceThreadId(raw: unknown): string | undefined {
+  const value = nestedValue(raw, ["source", "thread_id"]);
+  return typeof value === "string" ? nonEmptyString(value) : undefined;
+}
+
+function recoveredCronId(raw: unknown): number {
+  const value = nestedValue(raw, ["cron_id"]) ?? nestedValue(raw, ["cron", "id"]);
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value)) {
+    return Number.parseInt(value, 10);
+  }
+  return 0;
 }
 
 function queuedLarkMessageRecord(value: unknown): LarkMessageRecord | undefined {

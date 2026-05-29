@@ -31,13 +31,16 @@ describe("codex thread payloads", () => {
         expect.objectContaining({ namespace: "twinny", name: "wait_for_threads", deferLoading: false }),
         expect.objectContaining({ namespace: "twinny", name: "send_thread_ref", deferLoading: false }),
         expect.objectContaining({ namespace: "twinny", name: "tell_thread", deferLoading: false }),
+        expect.objectContaining({ namespace: "twinny", name: "add_cron", deferLoading: false }),
+        expect.objectContaining({ namespace: "twinny", name: "list_cron", deferLoading: false }),
+        expect.objectContaining({ namespace: "twinny", name: "del_cron", deferLoading: false }),
         expect.objectContaining({ namespace: "twinny", name: "create_conversation", deferLoading: false })
       ])
     });
     const tool = buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools[0]!;
     expect(JSON.stringify(tool.inputSchema)).not.toContain("maxLength");
     expect(tool.description).not.toContain("Twinny");
-    expect(buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools).toHaveLength(7);
+    expect(buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools).toHaveLength(10);
   });
 
   it("builds thread/resume with the persisted thread id and the same thread overrides", () => {

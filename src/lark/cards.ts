@@ -206,6 +206,19 @@ export interface RenderTwinnyResumeHistoryCardOptions {
   messages: TwinnyResumeHistoryMessage[];
 }
 
+export interface TwinnyCronListItem {
+  index: number;
+  cronExpression: string;
+  messageText: string;
+  threadId: string;
+  nextRunAt: string;
+}
+
+export interface RenderTwinnyCronListCardOptions {
+  items: TwinnyCronListItem[];
+  timezone: string;
+}
+
 export interface RenderTwinnyWorkspaceSelectionMarkdownOptions {
   command: "/workspace" | "/cd";
   target: "conversation" | "thread";
@@ -435,6 +448,16 @@ export function renderTwinnyResumeHistoryCard(options: RenderTwinnyResumeHistory
       elements
     }
   };
+}
+
+export function renderTwinnyCronListCard(options: RenderTwinnyCronListCardOptions): LarkCardJson {
+  const content = selectionMarkdown([
+    `Usage: ${inlineCode("/cron")}`,
+    `Usage: ${inlineCode("/cron <cron exp> <message>")}`,
+    `Usage: ${inlineCode("/cron rm <序号>")}`,
+    `说明：定时向当前 conversation 的指定 thread 发送消息。时区：${inlineCode(options.timezone)}。`
+  ], cronListTable(options.items));
+  return renderMarkdownOnlyCard(content);
 }
 
 export function renderHiddenTwinnyStatusCard(): LarkCardJson {
@@ -1592,6 +1615,22 @@ function resumeListTable(items: TwinnyResumeListItem[]): string {
       item.threadId,
       item.name || "未命名",
       item.cwd || "未知"
+    ])
+  );
+}
+
+function cronListTable(items: TwinnyCronListItem[]): string {
+  if (items.length === 0) {
+    return markdownTable(["序号", "cron", "message", "thread_id", "next_run_at"], [["-", "-", "-", "-", "暂无 cron 配置"]]);
+  }
+  return markdownTable(
+    ["序号", "cron", "message", "thread_id", "next_run_at"],
+    items.map((item) => [
+      String(item.index),
+      item.cronExpression,
+      item.messageText,
+      item.threadId,
+      item.nextRunAt
     ])
   );
 }

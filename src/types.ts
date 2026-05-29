@@ -71,6 +71,7 @@ export type LarkMessageRouteKind =
   | "steered_message"
   | "queued_message"
   | "thread_message"
+  | "cron_message"
   | "doc_comment"
   | "doc_comment_reply_steer"
   | "control_message"
@@ -285,6 +286,20 @@ export interface LarkMessageRecord {
   cachedInputTokens: number;
   reasoningOutputTokens: number;
   tokenUsageJson: string;
+}
+
+export interface CronJobRecord {
+  id: number;
+  conversationKey: string;
+  threadId: string;
+  cronExpression: string;
+  messageText: string;
+  timezone: string;
+  lastRunAt?: number;
+  lastLarkMessageId?: string;
+  createdByOpenId: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export type LarkDocWatchMode = "owner" | "all" | "none";

@@ -12,6 +12,7 @@ import type {
   CodexThreadRecord,
   CodexTurnResult,
   ConversationRecord,
+  CronJobRecord,
   IncomingLarkBotMenuAction,
   IncomingLarkDocCommentAdd,
   IncomingLarkMessage,
@@ -1461,7 +1462,8 @@ describe("ConversationManager", () => {
           category: "thread",
           larkThreadId: "topic_1",
           cardMessageId: "card_topic",
-          name: "Target"
+          name: "Target",
+          parentCodexThreadId: "thread_main"
         })
       ]
     });
@@ -1501,20 +1503,20 @@ describe("ConversationManager", () => {
     expect(repository.getLarkMessageById("proxy_msg")).toMatchObject({
       larkMessageId: "proxy_msg",
       eventId: "thread_message:call_tell:proxy_msg",
-      larkUserId: "ou_guest",
+      larkUserId: "MISSING_BOT_OPENID",
       larkGroupId: "oc_group",
       larkThreadId: "topic_1",
       conversationKey: "group_oc_group",
       codexThreadId: "thread_topic",
       routeKind: "thread_message",
-      text: "收到来自 主会话 的消息：\n\nplease check this"
+      text: "please check this"
     });
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
         threadId: "thread_topic",
-        input: expect.stringContaining("please check this")
+        input: expect.stringMatching(/<message_from_other_thread thread_id="thread_main" thread_relationship="parent">[\s\S]*please check this/)
       })
     );
 
@@ -1537,7 +1539,8 @@ describe("ConversationManager", () => {
           category: "thread",
           larkThreadId: "topic_1",
           cardMessageId: "card_topic",
-          name: "Target"
+          name: "Target",
+          parentCodexThreadId: "thread_main"
         })
       ]
     });
@@ -1573,7 +1576,7 @@ describe("ConversationManager", () => {
     expect(repository.getLarkMessageById("proxy_queued")).toMatchObject({
       routeKind: "thread_message",
       status: "queued",
-      text: "收到来自 主会话 的消息：\n\nqueued follow up"
+      text: "queued follow up"
     });
     expect(lark.addQueuedReaction).toHaveBeenCalledWith("proxy_queued");
     expect(codex.startTurn).toHaveBeenCalledTimes(2);
@@ -1590,6 +1593,52 @@ describe("ConversationManager", () => {
 
     turns[2]!.resolve(completed("thread_topic", "turn_3"));
     turns[1]!.resolve(completed("thread_main", "turn_2"));
+    await waitForDelay();
+  });
+
+  it("exits stored plan mode before delivering tell_thread messages", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_1",
+          cardMessageId: "card_topic",
+          name: "Target",
+          parentCodexThreadId: "thread_main",
+          mode: "plan"
+        })
+      ]
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "proxy_plan_exit",
+      raw: { data: { thread_id: "topic_1" } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    const payload = dynamicToolPayload(await turns[0]!.params.onDynamicToolCall!({
+      requestId: "req_tell",
+      threadId: "thread_main",
+      turnId: "turn_1",
+      callId: "call_tell_plan_exit",
+      tool: "tell_thread",
+      targetThreadId: "thread_topic",
+      message: "leave plan",
+      rawArguments: { thread_id: "thread_topic", msg: "leave plan" }
+    }));
+
+    expect(payload).toMatchObject({ ok: true, status: "processing" });
+    expect(repository.getCodexThreadById("thread_topic")).toMatchObject({ mode: "default" });
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    turns[1]!.resolve(completed("thread_topic", "turn_2"));
+    turns[0]!.resolve(completed("thread_main", "turn_1"));
     await waitForDelay();
   });
 
@@ -1664,23 +1713,30 @@ describe("ConversationManager", () => {
   });
 
   it("recovers queued tell_thread proxy messages without refreshing or adding completion participants", async () => {
-    const proxyText = "收到来自 主会话 的消息：\n\nrecover this";
     const proxyRecord = larkMessageRecord({
       larkMessageId: "proxy_recovered",
       eventId: "thread_message:call_recovered:proxy_recovered",
-      larkUserId: "ou_guest",
+      larkUserId: "MISSING_BOT_OPENID",
       larkGroupId: "oc_group",
       larkThreadId: "topic_1",
       conversationKey: "group_oc_group",
       codexThreadId: "thread_topic",
       routeKind: "thread_message",
       status: "queued",
-      text: proxyText,
-      rawEventJson: JSON.stringify(rawReceiveEvent("proxy_recovered", proxyText, {
-        chat_id: "oc_group",
-        chat_type: "topic_group",
-        thread_id: "topic_1"
-      }))
+      text: "recover this",
+      rawEventJson: JSON.stringify({
+        kind: "thread_message",
+        source: { thread_id: "thread_main", label: "主会话" },
+        message: {
+          message_id: "proxy_recovered",
+          create_time: "100",
+          chat_id: "oc_group",
+          chat_type: "topic_group",
+          message_type: "text",
+          thread_id: "topic_1",
+          content: JSON.stringify({ text: "收到来自 主会话 的消息：\n\nrecover this" })
+        }
+      })
     });
     const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
       larkMessages: [proxyRecord],
@@ -1691,7 +1747,8 @@ describe("ConversationManager", () => {
           category: "thread",
           larkThreadId: "topic_1",
           cardMessageId: "card_topic",
-          name: "Target"
+          name: "Target",
+          parentCodexThreadId: "thread_main"
         })
       ]
     });
@@ -1707,7 +1764,7 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         threadId: "thread_topic",
-        input: expect.stringContaining("recover this")
+        input: expect.stringMatching(/<message_from_other_thread thread_id="thread_main" thread_relationship="parent">[\s\S]*recover this/)
       })
     );
 
@@ -1715,6 +1772,207 @@ describe("ConversationManager", () => {
     turns[0]!.resolve(completed("thread_topic", "turn_1"));
     await waitForExpect(() => expect(repository.getLarkMessageById("proxy_recovered")).toMatchObject({ status: "completed" }));
     expect(lark.getMessageReadOpenIds).not.toHaveBeenCalled();
+  });
+
+  it("recovers queued synthetic messages without parsing slash commands", async () => {
+    const proxyRecord = larkMessageRecord({
+      larkMessageId: "cron_recovered",
+      eventId: "cron_message:7:100:cron_recovered",
+      larkUserId: "MISSING_BOT_OPENID",
+      larkGroupId: "oc_group",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread_main",
+      routeKind: "cron_message",
+      status: "queued",
+      text: "/plan keep this literal",
+      rawEventJson: JSON.stringify({
+        kind: "cron_message",
+        cron_id: 7,
+        message: {
+          message_id: "cron_recovered",
+          create_time: "100",
+          chat_id: "oc_group",
+          chat_type: "group",
+          message_type: "text",
+          content: JSON.stringify({ text: "/plan keep this literal" })
+        }
+      })
+    });
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      larkMessages: [proxyRecord]
+    });
+    const { codex, turns } = createDeferredCodex();
+    const larkMessages = createLarkMessageReader(new Error("cron_message should not be refreshed"));
+    const manager = createManager({ repository, codex, larkMessages });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    expect(larkMessages.getMessage).not.toHaveBeenCalled();
+    expect(repository.updateCodexThreadMode).not.toHaveBeenCalledWith("group_oc_group", "thread_main", "plan");
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_main",
+        mode: "default",
+        input: `<cron_message cron_id="7">\n/plan keep this literal\n</cron_message>`
+      })
+    );
+
+    turns[0]!.resolve(completed("thread_main", "turn_1"));
+    await waitForExpect(() => expect(repository.getLarkMessageById("cron_recovered")).toMatchObject({ status: "completed" }));
+  });
+
+  it("manages cron jobs from the /cron command without exposing tool-only last run fields", async () => {
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }));
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, lark });
+
+    manager.submitIncoming(groupMessage("cron_create", "/cron */5 * * * * hello <img>x</img>"));
+    await waitForExpect(() => expect(repository.createCronJob).toHaveBeenCalledTimes(1));
+    expect((await repository.listCronJobsByConversation("group_oc_group"))[0]).toMatchObject({
+      conversationKey: "group_oc_group",
+      threadId: "thread_main",
+      cronExpression: "*/5 * * * *",
+      messageText: "hello [图片]",
+      createdByOpenId: "ou_guest"
+    });
+    expect(lark.replyText).toHaveBeenCalledWith("cron_create", expect.stringContaining("已创建 cron #1"));
+
+    manager.submitIncoming(groupMessage("cron_list", "/cron"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("cron_list", expect.any(Object)));
+    const cardJson = JSON.stringify(vi.mocked(lark.replyCard).mock.calls.at(-1)?.[1]);
+    expect(cardJson).toContain("next_run_at");
+    expect(cardJson).not.toContain("last_run_at");
+    expect(cardJson).not.toContain("last_lark_message_id");
+
+    manager.submitIncoming(groupMessage("cron_rm", "/cron rm 1"));
+    await waitForExpect(() => expect(repository.deleteCronJobByConversationAndId).toHaveBeenCalledWith("group_oc_group", 1));
+    expect(await repository.listCronJobsByConversation("group_oc_group")).toEqual([]);
+  });
+
+  it("lets dynamic tools manage cron jobs and includes last run fields in list_cron", async () => {
+    const turn = deferred<CodexTurnResult>();
+    let turnParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
+    const codex = createCodex({
+      startTurn: vi.fn((params) => {
+        turnParams = params;
+        void params.onTurnStarted?.("turn_1");
+        return turn.promise;
+      })
+    });
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }));
+    const manager = createManager({ repository, codex });
+
+    try {
+      manager.submitIncoming(groupMessage("g1", "hello"));
+      await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+      const addPayload = dynamicToolPayload(await turnParams?.onDynamicToolCall?.({
+        requestId: "req_add_cron",
+        threadId: "thread_main",
+        turnId: "turn_1",
+        callId: "call_add_cron",
+        tool: "add_cron",
+        cronExpression: "*/10 * * * *",
+        message: "dynamic ping",
+        rawArguments: { cron_exp: "*/10 * * * *", msg: "dynamic ping" }
+      }));
+      expect(addPayload).toMatchObject({
+        ok: true,
+        cron: {
+          cron_id: 1,
+          cron_expression: "*/10 * * * *",
+          message: "dynamic ping",
+          thread_id: "thread_main",
+          last_run_at: null,
+          last_lark_message_id: null
+        }
+      });
+
+      await repository.updateCronJobLastRun(1, Date.parse("2026-05-29T01:02:03.000Z"), "om_cron_last");
+      const listPayload = dynamicToolPayload(await turnParams?.onDynamicToolCall?.({
+        requestId: "req_list_cron",
+        threadId: "thread_main",
+        turnId: "turn_1",
+        callId: "call_list_cron",
+        tool: "list_cron",
+        rawArguments: {}
+      }));
+      expect(listPayload).toMatchObject({
+        ok: true,
+        cron: [
+          expect.objectContaining({
+            cron_id: 1,
+            last_run_at: "2026-05-29T01:02:03.000Z",
+            last_lark_message_id: "om_cron_last"
+          })
+        ]
+      });
+      expect(JSON.stringify(listPayload)).not.toContain('"index"');
+
+      const delPayload = dynamicToolPayload(await turnParams?.onDynamicToolCall?.({
+        requestId: "req_del_cron",
+        threadId: "thread_main",
+        turnId: "turn_1",
+        callId: "call_del_cron",
+        tool: "del_cron",
+        cronId: 1,
+        rawArguments: { cron_id: 1 }
+      }));
+      expect(delPayload).toMatchObject({ ok: true, cron_id: 1 });
+    } finally {
+      turn.resolve(completed("thread_main", "turn_1"));
+      await turn.promise;
+      await manager.shutdown();
+    }
+  });
+
+  it("triggers cron jobs as bot-authored cron_message turns and records missing bot open id", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-29T00:00:00+08:00"));
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }));
+    const lark = createLarkResponder();
+    const job = await repository.createCronJob({
+      conversationKey: "group_oc_group",
+      threadId: "thread_main",
+      cronExpression: "* * * * *",
+      messageText: "cron ping",
+      timezone: "Asia/Shanghai",
+      createdByOpenId: "ou_owner"
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    try {
+      await manager.startCronScheduler();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(lark.sendTextToChatId).toHaveBeenCalledWith(
+        "oc_group",
+        "定时任务触发：\n\ncron ping",
+        { uuid: expect.stringMatching(UUID_PATTERN) }
+      );
+      expect(codex.startTurn).toHaveBeenCalledTimes(1);
+      expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+        threadId: "thread_main",
+        input: `<cron_message cron_id="${job.id}">\ncron ping\n</cron_message>`
+      }));
+      expect(repository.getLarkMessageById("text_oc_group_1")).toMatchObject({
+        larkUserId: "MISSING_BOT_OPENID",
+        routeKind: "cron_message",
+        text: "cron ping"
+      });
+      expect((await repository.listCronJobsByConversation("group_oc_group"))[0]).toMatchObject({
+        lastLarkMessageId: "text_oc_group_1"
+      });
+      turns[0]!.resolve(completed("thread_main", "turn_1"));
+      await turns[0]!.promise;
+    } finally {
+      await manager.shutdown();
+      vi.useRealTimers();
+    }
   });
 
   it("creates a new Twinny conversation group from an owner-profile dynamic tool call", async () => {
@@ -10796,8 +11054,10 @@ function createRepository(initial?: ConversationRecord, options: {
   const larkMessagesByEventId = new Map<string, LarkMessageRecord>();
   const codexThreads = new Map<string, CodexThreadRecord>();
   const larkDocWatchers = new Map<string, LarkDocWatcherRecord>();
+  const cronJobs = new Map<number, CronJobRecord>();
   let nextCodexThreadId = 1;
   let nextLarkDocWatcherId = 1;
+  let nextCronJobId = 1;
   for (const record of options.larkMessages ?? []) {
     if (record.larkMessageId) {
       larkMessageIds.add(record.larkMessageId);
@@ -11048,6 +11308,7 @@ function createRepository(initial?: ConversationRecord, options: {
             message.routeKind === "steered_message" ||
             message.routeKind === "queued_message" ||
             message.routeKind === "thread_message" ||
+            message.routeKind === "cron_message" ||
             message.routeKind === "doc_comment" ||
             message.routeKind === "doc_comment_reply_steer"
           )
@@ -11059,7 +11320,7 @@ function createRepository(initial?: ConversationRecord, options: {
           .filter((message) =>
             message.codexThreadId === parentCodexThreadId &&
             !excluded.has(message.larkMessageId ?? "") &&
-            (message.routeKind === "message" || message.routeKind === "thread_message" || message.routeKind === "doc_comment")
+            (message.routeKind === "message" || message.routeKind === "thread_message" || message.routeKind === "cron_message" || message.routeKind === "doc_comment")
           )
           .sort((left, right) => right.receivedAt - left.receivedAt || right.id - left.id)[0];
         if (!latestUserMessage) {
@@ -11279,6 +11540,49 @@ function createRepository(initial?: ConversationRecord, options: {
           }
         }
         return result;
+      }),
+      createCronJob: vi.fn((input) => {
+        const now = Date.now();
+        const record: CronJobRecord = {
+          id: nextCronJobId++,
+          conversationKey: input.conversationKey,
+          threadId: input.threadId,
+          cronExpression: input.cronExpression,
+          messageText: input.messageText,
+          timezone: input.timezone,
+          createdByOpenId: input.createdByOpenId,
+          createdAt: now,
+          updatedAt: now
+        };
+        cronJobs.set(record.id, record);
+        return record;
+      }),
+      listCronJobs: vi.fn(() => [...cronJobs.values()].sort((left, right) => left.createdAt - right.createdAt || left.id - right.id)),
+      listCronJobsByConversation: vi.fn((conversationKey) =>
+        [...cronJobs.values()]
+          .filter((job) => job.conversationKey === conversationKey)
+          .sort((left, right) => left.createdAt - right.createdAt || left.id - right.id)
+      ),
+      getCronJobByConversationAndId: vi.fn((conversationKey, id) => {
+        const job = cronJobs.get(id);
+        return job?.conversationKey === conversationKey ? job : undefined;
+      }),
+      deleteCronJobByConversationAndId: vi.fn((conversationKey, id) => {
+        const job = cronJobs.get(id);
+        if (!job || job.conversationKey !== conversationKey) {
+          return false;
+        }
+        return cronJobs.delete(id);
+      }),
+      updateCronJobLastRun: vi.fn((id, lastRunAt, lastLarkMessageId) => {
+        const job = cronJobs.get(id);
+        if (!job) {
+          return undefined;
+        }
+        job.lastRunAt = lastRunAt;
+        job.lastLarkMessageId = lastLarkMessageId ?? job.lastLarkMessageId;
+        job.updatedAt = Date.now();
+        return job;
       }),
       insertLarkMessage: vi.fn((input) => {
         const existing = larkMessagesByEventId.get(input.eventId);
@@ -11529,6 +11833,7 @@ function isUserMessageRouteKind(routeKind: LarkMessageRecord["routeKind"]): bool
     routeKind === "steered_message" ||
     routeKind === "queued_message" ||
     routeKind === "thread_message" ||
+    routeKind === "cron_message" ||
     routeKind === "side_message" ||
     routeKind === "doc_comment" ||
     routeKind === "doc_comment_reply_steer"

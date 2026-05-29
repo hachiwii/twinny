@@ -10,6 +10,7 @@ import type {
   ConversationResponseMode,
   ConversationRecord,
   ConversationType,
+  CronJobRecord,
   LarkDocWatcherRecord,
   LarkDocWatchMode,
   LarkMessageRecord,
@@ -150,6 +151,20 @@ interface LarkDocWatcherRow {
   updated_at: number;
 }
 
+interface CronJobRow {
+  id: number;
+  conversation_key: string;
+  thread_id: string;
+  cron_expression: string;
+  message_text: string;
+  timezone: string;
+  last_run_at: number | null;
+  last_lark_message_id: string | null;
+  created_by_open_id: string;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface UpsertCodexThreadInput {
   codexThreadId: string;
   conversationKey: string;
@@ -285,6 +300,15 @@ export interface UpsertLarkDocWatcherInput {
   watchUrl: string;
 }
 
+export interface CreateCronJobInput {
+  conversationKey: string;
+  threadId: string;
+  cronExpression: string;
+  messageText: string;
+  timezone: string;
+  createdByOpenId: string;
+}
+
 export interface ConversationRepositoryOptions {
   now?: () => number;
 }
@@ -366,6 +390,12 @@ export class ConversationRepository {
   private readonly selectLarkDocWatchersByThreadStatement: TwinnyStatement<[string], LarkDocWatcherRow>;
   private readonly migrateLarkDocWatchersToThreadStatement: TwinnyStatement<[string, number, string, string]>;
   private readonly updateLarkDocWatcherLastCommentStatement: TwinnyStatement<[number, number, string, string]>;
+  private readonly insertCronJobStatement: TwinnyStatement<[Record<string, unknown>]>;
+  private readonly selectCronJobsStatement: TwinnyStatement<[], CronJobRow>;
+  private readonly selectCronJobsByConversationStatement: TwinnyStatement<[string], CronJobRow>;
+  private readonly selectCronJobByConversationAndIdStatement: TwinnyStatement<[string, number], CronJobRow>;
+  private readonly deleteCronJobByConversationAndIdStatement: TwinnyStatement<[string, number], unknown>;
+  private readonly updateCronJobLastRunStatement: TwinnyStatement<[number, string | null, number, number], unknown>;
 
   constructor(
     private readonly db: TwinnyDatabase,
@@ -570,6 +600,7 @@ export class ConversationRepository {
             'steered_message',
             'queued_message',
             'thread_message',
+            'cron_message',
             'doc_comment',
             'doc_comment_reply_steer'
           )
@@ -766,7 +797,7 @@ export class ConversationRepository {
           SELECT COUNT(*)
           FROM lark_messages
           WHERE thread_id = @codexThreadId
-            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'thread_message', 'side_message', 'doc_comment', 'doc_comment_reply_steer')
+            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'thread_message', 'cron_message', 'side_message', 'doc_comment', 'doc_comment_reply_steer')
         ) AS user_message_count,
         COUNT(*) AS turn_count,
         COALESCE(SUM(CASE
@@ -798,7 +829,7 @@ export class ConversationRepository {
           SELECT COUNT(*)
           FROM lark_messages
           WHERE conversation_key = @conversationKey
-            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'thread_message', 'side_message', 'doc_comment', 'doc_comment_reply_steer')
+            AND route_kind IN ('message', 'goal_message', 'steered_message', 'queued_message', 'thread_message', 'cron_message', 'side_message', 'doc_comment', 'doc_comment_reply_steer')
         ) AS user_message_count,
         (
           SELECT COALESCE(SUM(input_tokens), 0)
@@ -1130,6 +1161,57 @@ export class ConversationRepository {
       WHERE file_type = ?
         AND file_token = ?
     `);
+    this.insertCronJobStatement = this.db.prepare(`
+      INSERT INTO cron_jobs (
+        conversation_key,
+        thread_id,
+        cron_expression,
+        message_text,
+        timezone,
+        last_run_at,
+        last_lark_message_id,
+        created_by_open_id,
+        created_at,
+        updated_at
+      ) VALUES (
+        @conversationKey,
+        @threadId,
+        @cronExpression,
+        @messageText,
+        @timezone,
+        NULL,
+        NULL,
+        @createdByOpenId,
+        @createdAt,
+        @updatedAt
+      )
+    `);
+    this.selectCronJobsStatement = this.db.prepare(`
+      SELECT * FROM cron_jobs
+      ORDER BY created_at ASC, id ASC
+    `);
+    this.selectCronJobsByConversationStatement = this.db.prepare(`
+      SELECT * FROM cron_jobs
+      WHERE conversation_key = ?
+      ORDER BY created_at ASC, id ASC
+    `);
+    this.selectCronJobByConversationAndIdStatement = this.db.prepare(`
+      SELECT * FROM cron_jobs
+      WHERE conversation_key = ?
+        AND id = ?
+    `);
+    this.deleteCronJobByConversationAndIdStatement = this.db.prepare(`
+      DELETE FROM cron_jobs
+      WHERE conversation_key = ?
+        AND id = ?
+    `);
+    this.updateCronJobLastRunStatement = this.db.prepare(`
+      UPDATE cron_jobs
+      SET last_run_at = ?,
+          last_lark_message_id = COALESCE(?, last_lark_message_id),
+          updated_at = ?
+      WHERE id = ?
+    `);
   }
 
   create(input: NewConversationRecord): ConversationRecord {
@@ -1325,7 +1407,7 @@ export class ConversationRepository {
       SELECT MAX(received_at) AS received_at
       FROM lark_messages
       WHERE thread_id = ?
-        AND route_kind IN ('message', 'thread_message', 'doc_comment')
+        AND route_kind IN ('message', 'thread_message', 'cron_message', 'doc_comment')
         ${excludeClause}
     `).get(parentCodexThreadId, ...excludedIds);
     if (latestUserMessage?.received_at === undefined || latestUserMessage.received_at === null) {
@@ -1365,6 +1447,7 @@ export class ConversationRepository {
               'steered_message',
               'queued_message',
               'thread_message',
+              'cron_message',
               'doc_comment',
               'doc_comment_reply_steer'
             )
@@ -1824,6 +1907,71 @@ export class ConversationRepository {
     this.markLarkMessagesTerminal(larkMessageIds, this.updateLarkMessageClearedStatement);
   }
 
+  createCronJob(input: CreateCronJobInput): CronJobRecord {
+    validateCreateCronJobInput(input);
+    const now = this.now();
+    const result = this.insertCronJobStatement.run({
+      conversationKey: input.conversationKey,
+      threadId: input.threadId,
+      cronExpression: input.cronExpression,
+      messageText: input.messageText,
+      timezone: input.timezone,
+      createdByOpenId: input.createdByOpenId,
+      createdAt: now,
+      updatedAt: now
+    });
+    const id = Number(result.lastInsertRowid);
+    const row = this.db.prepare<[number], CronJobRow>(`
+      SELECT * FROM cron_jobs WHERE id = ?
+    `).get(id);
+    const record = mapCronJobRow(row);
+    if (!record) {
+      throw new TwinnyError(`Cron job ${id} was not found after insert`, "CRON_JOB_NOT_FOUND");
+    }
+    return record;
+  }
+
+  listCronJobs(): CronJobRecord[] {
+    return this.selectCronJobsStatement.all().map((row) => mapRequiredCronJobRow(row));
+  }
+
+  listCronJobsByConversation(conversationKey: string): CronJobRecord[] {
+    assertValidConversationKey(conversationKey);
+    return this.selectCronJobsByConversationStatement.all(conversationKey).map((row) => mapRequiredCronJobRow(row));
+  }
+
+  getCronJobByConversationAndId(conversationKey: string, id: number): CronJobRecord | undefined {
+    assertValidConversationKey(conversationKey);
+    assertPositiveInteger(id, "cronJobId");
+    return mapCronJobRow(this.selectCronJobByConversationAndIdStatement.get(conversationKey, Math.trunc(id)));
+  }
+
+  deleteCronJobByConversationAndId(conversationKey: string, id: number): boolean {
+    assertValidConversationKey(conversationKey);
+    assertPositiveInteger(id, "cronJobId");
+    return this.deleteCronJobByConversationAndIdStatement.run(conversationKey, Math.trunc(id)).changes > 0;
+  }
+
+  updateCronJobLastRun(id: number, lastRunAt: number, lastLarkMessageId?: string): CronJobRecord | undefined {
+    assertPositiveInteger(id, "cronJobId");
+    assertNonNegativeFinite(lastRunAt, "lastRunAt");
+    if (lastLarkMessageId !== undefined) {
+      assertNonEmpty(lastLarkMessageId, "lastLarkMessageId");
+    }
+    const result = this.updateCronJobLastRunStatement.run(
+      Math.trunc(lastRunAt),
+      lastLarkMessageId ?? null,
+      this.now(),
+      Math.trunc(id)
+    );
+    if (result.changes === 0) {
+      return undefined;
+    }
+    return mapCronJobRow(this.db.prepare<[number], CronJobRow>(`
+      SELECT * FROM cron_jobs WHERE id = ?
+    `).get(Math.trunc(id)));
+  }
+
   upsertLarkDocWatcher(input: UpsertLarkDocWatcherInput): LarkDocWatcherRecord {
     validateLarkDocWatcherInput(input);
     const now = this.now();
@@ -2086,6 +2234,29 @@ function mapRequiredLarkDocWatcherRow(row: LarkDocWatcherRow): LarkDocWatcherRec
   };
 }
 
+function mapCronJobRow(row: CronJobRow | undefined): CronJobRecord | undefined {
+  if (!row) {
+    return undefined;
+  }
+  return mapRequiredCronJobRow(row);
+}
+
+function mapRequiredCronJobRow(row: CronJobRow): CronJobRecord {
+  return {
+    id: row.id,
+    conversationKey: row.conversation_key,
+    threadId: row.thread_id,
+    cronExpression: row.cron_expression,
+    messageText: row.message_text,
+    timezone: row.timezone,
+    lastRunAt: row.last_run_at ?? undefined,
+    lastLarkMessageId: row.last_lark_message_id ?? undefined,
+    createdByOpenId: row.created_by_open_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
 function validateNewConversation(input: NewConversationRecord): void {
   assertExpectedConversationKey(input.conversationKey, input.type, input.chatId);
   assertNonEmpty(input.name, "name");
@@ -2181,6 +2352,15 @@ function validateLarkDocWatcherInput(input: UpsertLarkDocWatcherInput): void {
   assertNonEmpty(input.watchUrl, "watchUrl");
 }
 
+function validateCreateCronJobInput(input: CreateCronJobInput): void {
+  assertValidConversationKey(input.conversationKey);
+  assertNonEmpty(input.threadId, "threadId");
+  assertNonEmpty(input.cronExpression, "cronExpression");
+  assertNonEmpty(input.messageText, "messageText");
+  assertNonEmpty(input.timezone, "timezone");
+  assertNonEmpty(input.createdByOpenId, "createdByOpenId");
+}
+
 function assertExpectedConversationKey(conversationKey: string, type: ConversationType, chatId: string): void {
   assertValidConversationType(type);
   const expectedKey = conversationKeyForTypeAndChatId(type, chatId);
@@ -2241,6 +2421,7 @@ function assertValidRouteKind(routeKind: LarkMessageRouteKind): void {
     routeKind !== "steered_message" &&
     routeKind !== "queued_message" &&
     routeKind !== "thread_message" &&
+    routeKind !== "cron_message" &&
     routeKind !== "doc_comment" &&
     routeKind !== "doc_comment_reply_steer" &&
     routeKind !== "side_message" &&

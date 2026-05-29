@@ -220,6 +220,7 @@ export class TwinnyRuntime {
       this.conversation = conversation;
       recoveryAttempted = true;
       await conversation.recoverUnfinishedMessages();
+      await conversation.startCronScheduler();
 
       this.larkConsumer = new LarkEventConsumer({
         appId: this.config.auth.larkAppId,
@@ -699,6 +700,12 @@ export function adaptConversationRepository(repository: ConversationRepository) 
     getCodexThreadStatusStats: repository.getCodexThreadStatusStats.bind(repository),
     getConversationStatusStats: repository.getConversationStatusStats.bind(repository),
     listRecentThreadWorkspaces: repository.listRecentThreadWorkspaces.bind(repository),
+    createCronJob: repository.createCronJob.bind(repository),
+    listCronJobs: repository.listCronJobs.bind(repository),
+    listCronJobsByConversation: repository.listCronJobsByConversation.bind(repository),
+    getCronJobByConversationAndId: repository.getCronJobByConversationAndId.bind(repository),
+    deleteCronJobByConversationAndId: repository.deleteCronJobByConversationAndId.bind(repository),
+    updateCronJobLastRun: repository.updateCronJobLastRun.bind(repository),
     insertLarkMessage: repository.insertLarkMessage.bind(repository),
     hasProcessedDocComment: repository.hasProcessedDocComment.bind(repository),
     markLarkMessageQueued: repository.markLarkMessageQueued.bind(repository),

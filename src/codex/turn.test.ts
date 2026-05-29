@@ -340,6 +340,113 @@ describe("handleTurnServerRequest", () => {
       success: true,
       contentItems: [{ type: "inputText", text: "tell_thread:call_tell" }]
     });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-add-cron",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_add_cron",
+          namespace: "twinny",
+          tool: "add_cron",
+          arguments: { cron_exp: "*/5 * * * *", msg: "ping", thread_id: "thread_target" }
+        }
+      }
+    );
+
+    await Promise.resolve();
+
+    expect(onDynamicToolCall).toHaveBeenLastCalledWith({
+      requestId: "req-add-cron",
+      threadId: "thread_123",
+      turnId: "turn_1",
+      callId: "call_add_cron",
+      tool: "add_cron",
+      cronExpression: "*/5 * * * *",
+      message: "ping",
+      targetThreadId: "thread_target",
+      rawArguments: { cron_exp: "*/5 * * * *", msg: "ping", thread_id: "thread_target" }
+    });
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-add-cron", {
+      success: true,
+      contentItems: [{ type: "inputText", text: "add_cron:call_add_cron" }]
+    });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-list-cron",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_list_cron",
+          namespace: "twinny",
+          tool: "list_cron",
+          arguments: {}
+        }
+      }
+    );
+
+    await Promise.resolve();
+
+    expect(onDynamicToolCall).toHaveBeenLastCalledWith({
+      requestId: "req-list-cron",
+      threadId: "thread_123",
+      turnId: "turn_1",
+      callId: "call_list_cron",
+      tool: "list_cron",
+      rawArguments: {}
+    });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-del-cron",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_del_cron",
+          namespace: "twinny",
+          tool: "del_cron",
+          arguments: { cron_id: 12 }
+        }
+      }
+    );
+
+    await Promise.resolve();
+
+    expect(onDynamicToolCall).toHaveBeenLastCalledWith({
+      requestId: "req-del-cron",
+      threadId: "thread_123",
+      turnId: "turn_1",
+      callId: "call_del_cron",
+      tool: "del_cron",
+      cronId: 12,
+      rawArguments: { cron_id: 12 }
+    });
   });
 
   it("validates Twinny dynamic tool arguments before dispatch", () => {
@@ -405,6 +512,68 @@ describe("handleTurnServerRequest", () => {
       contentItems: [{
         type: "inputText",
         text: "Invalid tell_thread arguments: thread_id and msg are required."
+      }]
+    });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-add-cron",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_add_cron",
+          namespace: "twinny",
+          tool: "add_cron",
+          arguments: { cron_exp: "*/5 * * * *", msg: "   " }
+        }
+      }
+    );
+
+    expect(onDynamicToolCall).not.toHaveBeenCalled();
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-add-cron", {
+      success: false,
+      contentItems: [{
+        type: "inputText",
+        text: "Invalid add_cron arguments: cron_exp and msg are required."
+      }]
+    });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-del-cron",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_del_cron",
+          namespace: "twinny",
+          tool: "del_cron",
+          arguments: { cron_id: 0 }
+        }
+      }
+    );
+
+    expect(onDynamicToolCall).not.toHaveBeenCalled();
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-del-cron", {
+      success: false,
+      contentItems: [{
+        type: "inputText",
+        text: "Invalid del_cron arguments: cron_id must be an integer >= 1."
       }]
     });
   });

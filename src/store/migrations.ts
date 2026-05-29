@@ -14,13 +14,14 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 5;
+export const currentStoreSchemaVersion = 6;
 
 const baselineMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const larkDocWatcherMigrationFile = fileURLToPath(new URL("../../migrations/0002_lark_doc_watcher.sql", import.meta.url));
 const larkMessageDocCommentIdMigrationFile = fileURLToPath(new URL("../../migrations/0003_lark_message_doc_comment_id.sql", import.meta.url));
 const threadWorkspaceMigrationFile = fileURLToPath(new URL("../../migrations/0004_thread_workspace.sql", import.meta.url));
 const threadCreateMethodMigrationFile = fileURLToPath(new URL("../../migrations/0005_thread_create_method.sql", import.meta.url));
+const cronJobsMigrationFile = fileURLToPath(new URL("../../migrations/0006_cron_jobs.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -48,6 +49,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 5,
       name: "0005_thread_create_method",
       sql: fs.readFileSync(threadCreateMethodMigrationFile, "utf8")
+    },
+    {
+      version: 6,
+      name: "0006_cron_jobs",
+      sql: fs.readFileSync(cronJobsMigrationFile, "utf8")
     }
   ];
 }
@@ -224,6 +230,19 @@ function validateBaselineSchema(db: TwinnyDatabase): void {
     [
       "lark_doc_watcher",
       ["file_type", "file_token", "thread_id", "watch_mode", "watch_url", "last_comment_received_at"]
+    ],
+    [
+      "cron_jobs",
+      [
+        "conversation_key",
+        "thread_id",
+        "cron_expression",
+        "message_text",
+        "timezone",
+        "last_run_at",
+        "last_lark_message_id",
+        "created_by_open_id"
+      ]
     ]
   ]);
 

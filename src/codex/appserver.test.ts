@@ -193,6 +193,9 @@ describe("CodexAppServer", () => {
             expect.objectContaining({ namespace: "twinny", name: "wait_for_threads" }),
             expect.objectContaining({ namespace: "twinny", name: "send_thread_ref" }),
             expect.objectContaining({ namespace: "twinny", name: "tell_thread" }),
+            expect.objectContaining({ namespace: "twinny", name: "add_cron" }),
+            expect.objectContaining({ namespace: "twinny", name: "list_cron" }),
+            expect.objectContaining({ namespace: "twinny", name: "del_cron" }),
             expect.objectContaining({ namespace: "twinny", name: "create_conversation" })
           ])
         }

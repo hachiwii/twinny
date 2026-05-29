@@ -18,8 +18,8 @@ describe("store migrations", () => {
   it("loads the bundled store migrations", () => {
     const migrations = loadStoreMigrations();
 
-    expect(currentStoreSchemaVersion).toBe(5);
-    expect(migrations).toHaveLength(5);
+    expect(currentStoreSchemaVersion).toBe(6);
+    expect(migrations).toHaveLength(6);
     expect(migrations[0]).toMatchObject({
       version: 1,
       name: "0001_initial"
@@ -40,6 +40,10 @@ describe("store migrations", () => {
       version: 5,
       name: "0005_thread_create_method"
     });
+    expect(migrations[5]).toMatchObject({
+      version: 6,
+      name: "0006_cron_jobs"
+    });
   });
 
   it("creates the current baseline schema", () => {
@@ -54,7 +58,7 @@ describe("store migrations", () => {
         )
         .all()
         .map((row) => row.name);
-      expect(tables).toEqual(["conversations", "lark_doc_watcher", "lark_messages", "threads"]);
+      expect(tables).toEqual(["conversations", "cron_jobs", "lark_doc_watcher", "lark_messages", "threads"]);
 
       const conversationColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(conversations)").all().map((row) => ({
         name: row.name,
@@ -222,6 +226,37 @@ describe("store migrations", () => {
         "idx_lark_doc_watcher_thread_id",
         "sqlite_autoindex_lark_doc_watcher_1"
       ]);
+
+      const cronColumns = db.prepare<[], TableColumnRow>("PRAGMA table_info(cron_jobs)").all().map((row) => ({
+        name: row.name,
+        type: row.type,
+        notnull: row.notnull,
+        pk: row.pk
+      }));
+      expect(cronColumns).toEqual([
+        { name: "id", type: "INTEGER", notnull: 0, pk: 1 },
+        { name: "conversation_key", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "thread_id", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "cron_expression", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "message_text", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "timezone", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "last_run_at", type: "INTEGER", notnull: 0, pk: 0 },
+        { name: "last_lark_message_id", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "created_by_open_id", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "created_at", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 }
+      ]);
+
+      const cronIndexes = db
+        .prepare<[], SqliteNameRow>(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'cron_jobs' ORDER BY name"
+        )
+        .all()
+        .map((row) => row.name);
+      expect(cronIndexes).toEqual([
+        "idx_cron_jobs_conversation",
+        "idx_cron_jobs_thread"
+      ]);
     } finally {
       db.close();
     }
@@ -239,7 +274,7 @@ describe("store migrations", () => {
         )
         .all()
         .map((row) => row.name);
-      expect(tables).toEqual(["conversations", "lark_doc_watcher", "lark_messages", "threads"]);
+      expect(tables).toEqual(["conversations", "cron_jobs", "lark_doc_watcher", "lark_messages", "threads"]);
     } finally {
       db.close();
     }

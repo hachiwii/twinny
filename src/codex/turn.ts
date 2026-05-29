@@ -167,6 +167,22 @@ export interface CodexTellThreadToolRequest extends CodexDynamicToolRequestBase 
   message: string;
 }
 
+export interface CodexAddCronToolRequest extends CodexDynamicToolRequestBase {
+  tool: "add_cron";
+  cronExpression: string;
+  message: string;
+  targetThreadId?: string;
+}
+
+export interface CodexListCronToolRequest extends CodexDynamicToolRequestBase {
+  tool: "list_cron";
+}
+
+export interface CodexDelCronToolRequest extends CodexDynamicToolRequestBase {
+  tool: "del_cron";
+  cronId: number;
+}
+
 export interface CodexCreateConversationToolRequest extends CodexDynamicToolRequestBase {
   tool: "create_conversation";
   name: string;
@@ -181,6 +197,9 @@ export type CodexTwinnyDynamicToolRequest =
   | CodexWaitForThreadsToolRequest
   | CodexSendThreadRefToolRequest
   | CodexTellThreadToolRequest
+  | CodexAddCronToolRequest
+  | CodexListCronToolRequest
+  | CodexDelCronToolRequest
   | CodexCreateConversationToolRequest;
 
 export interface CodexDynamicToolCallResponse {
@@ -1117,6 +1136,59 @@ function parseTwinnyDynamicToolRequest(
         rawArguments: params.arguments
       };
     }
+    case "add_cron": {
+      if (!isRecord(params.arguments)) {
+        return "Invalid add_cron arguments: expected an object.";
+      }
+      const cronExpression = trimmedString(params.arguments.cron_exp);
+      const message = trimmedString(params.arguments.msg);
+      const targetThreadId = trimmedString(params.arguments.thread_id);
+      if (!cronExpression || !message) {
+        return "Invalid add_cron arguments: cron_exp and msg are required.";
+      }
+      return {
+        requestId,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        callId: params.callId,
+        tool: "add_cron",
+        cronExpression,
+        message,
+        ...(targetThreadId ? { targetThreadId } : {}),
+        rawArguments: params.arguments
+      };
+    }
+    case "list_cron": {
+      if (params.arguments !== undefined && params.arguments !== null && !isRecord(params.arguments)) {
+        return "Invalid list_cron arguments: expected an object.";
+      }
+      return {
+        requestId,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        callId: params.callId,
+        tool: "list_cron",
+        rawArguments: params.arguments
+      };
+    }
+    case "del_cron": {
+      if (!isRecord(params.arguments)) {
+        return "Invalid del_cron arguments: expected an object.";
+      }
+      const cronId = requiredInteger(params.arguments.cron_id, 1, Number.MAX_SAFE_INTEGER);
+      if (cronId === undefined) {
+        return "Invalid del_cron arguments: cron_id must be an integer >= 1.";
+      }
+      return {
+        requestId,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        callId: params.callId,
+        tool: "del_cron",
+        cronId,
+        rawArguments: params.arguments
+      };
+    }
     case "create_conversation": {
       if (!isRecord(params.arguments)) {
         return "Invalid create_conversation arguments: expected an object.";
@@ -1153,6 +1225,13 @@ function parseTwinnyDynamicToolRequest(
     default:
       return `Twinny does not implement dynamic tool twinny.${params.tool}`;
   }
+}
+
+function requiredInteger(value: unknown, min: number, max: number): number | undefined {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    return undefined;
+  }
+  return value;
 }
 
 function optionalInteger(value: unknown, defaultValue: number, min: number, max: number): number | undefined {

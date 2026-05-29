@@ -152,7 +152,7 @@ describe("ConversationRepository", () => {
       )
       .all()
       .map((row) => row.name);
-    expect(tables).toEqual(["conversations", "lark_doc_watcher", "lark_messages", "threads"]);
+    expect(tables).toEqual(["conversations", "cron_jobs", "lark_doc_watcher", "lark_messages", "threads"]);
   });
 
   it("defaults, updates, and lists codex thread workspaces", () => {
@@ -223,6 +223,55 @@ describe("ConversationRepository", () => {
     ]);
     expect(repo.listRecentThreadWorkspaces(0, 10)).toEqual([topicWorkspaceNew, conversationWorkspace]);
     expect(repo.listRecentThreadWorkspaces(1350, 10)).toEqual([topicWorkspaceNew]);
+  });
+
+  it("creates, lists, updates, and deletes cron jobs", () => {
+    const repo = createConversationRepository(db, { now: () => now });
+
+    const first = repo.createCronJob({
+      conversationKey: "group_oc_group",
+      threadId: "thread-1",
+      cronExpression: "*/5 * * * *",
+      messageText: "standup",
+      timezone: "Asia/Shanghai",
+      createdByOpenId: "ou_owner"
+    });
+    now = 2000;
+    const second = repo.createCronJob({
+      conversationKey: "group_oc_group",
+      threadId: "thread-2",
+      cronExpression: "0 9 * * 1",
+      messageText: "weekly",
+      timezone: "Asia/Shanghai",
+      createdByOpenId: "ou_owner"
+    });
+
+    expect(first).toMatchObject({
+      id: 1,
+      conversationKey: "group_oc_group",
+      threadId: "thread-1",
+      cronExpression: "*/5 * * * *",
+      messageText: "standup",
+      timezone: "Asia/Shanghai",
+      createdByOpenId: "ou_owner",
+      createdAt: 1000,
+      updatedAt: 1000
+    });
+    expect(repo.listCronJobsByConversation("group_oc_group").map((job) => job.id)).toEqual([1, 2]);
+    expect(repo.listCronJobs().map((job) => job.id)).toEqual([1, 2]);
+    expect(repo.getCronJobByConversationAndId("group_oc_group", second.id)).toEqual(second);
+
+    now = 3000;
+    expect(repo.updateCronJobLastRun(first.id, 2500, "om_cron")).toMatchObject({
+      id: first.id,
+      lastRunAt: 2500,
+      lastLarkMessageId: "om_cron",
+      updatedAt: 3000
+    });
+
+    expect(repo.deleteCronJobByConversationAndId("group_oc_group", first.id)).toBe(true);
+    expect(repo.deleteCronJobByConversationAndId("group_oc_group", first.id)).toBe(false);
+    expect(repo.listCronJobsByConversation("group_oc_group").map((job) => job.id)).toEqual([2]);
   });
 
   it("upserts Lark doc watchers by file and records latest comment time", () => {

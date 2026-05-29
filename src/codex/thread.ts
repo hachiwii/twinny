@@ -159,6 +159,52 @@ export const TELL_THREAD_TOOL_SPEC: DynamicToolSpec = {
   deferLoading: false
 };
 
+export const ADD_CRON_TOOL_SPEC: DynamicToolSpec = {
+  namespace: "twinny",
+  name: "add_cron",
+  description:
+    "Create a cron job in the current conversation. The job sends msg to the current thread by default, or to thread_id when provided. Cron expressions use the local timezone.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["cron_exp", "msg"],
+    properties: {
+      cron_exp: { type: "string", minLength: 1 },
+      msg: { type: "string", minLength: 1 },
+      thread_id: { type: "string", minLength: 1 }
+    }
+  },
+  deferLoading: false
+};
+
+export const LIST_CRON_TOOL_SPEC: DynamicToolSpec = {
+  namespace: "twinny",
+  name: "list_cron",
+  description:
+    "List cron jobs in the current conversation. Results include cron_id, cron expression, message, target thread, next run time, last run time, and last Lark message id.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {}
+  },
+  deferLoading: false
+};
+
+export const DEL_CRON_TOOL_SPEC: DynamicToolSpec = {
+  namespace: "twinny",
+  name: "del_cron",
+  description: "Delete a cron job from the current conversation by cron_id.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["cron_id"],
+    properties: {
+      cron_id: { type: "integer", minimum: 1 }
+    }
+  },
+  deferLoading: false
+};
+
 export const CREATE_CONVERSATION_TOOL_SPEC: DynamicToolSpec = {
   namespace: "twinny",
   name: "create_conversation",
@@ -193,6 +239,9 @@ export const TWINNY_DYNAMIC_TOOL_SPECS: DynamicToolSpec[] = [
   WAIT_FOR_THREADS_TOOL_SPEC,
   SEND_THREAD_REF_TOOL_SPEC,
   TELL_THREAD_TOOL_SPEC,
+  ADD_CRON_TOOL_SPEC,
+  LIST_CRON_TOOL_SPEC,
+  DEL_CRON_TOOL_SPEC,
   CREATE_CONVERSATION_TOOL_SPEC
 ];
 
