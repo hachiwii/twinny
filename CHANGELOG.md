@@ -1,3 +1,12 @@
+# 1.3.1
+
+发布时间：2026/05/29
+
+## Bug 修复
+
+- 修复 Codex 动态工具转发 thread 到主群聊时，飞书可能返回 `230001 invalid request parameter` 的问题；主群聊改为发送可打开话题的链接，话题内仍优先使用飞书转发接口并在失败时回退到链接。
+- 修复 Codex CLI masquerade 模式下，版本探测失败时把 `不可用` 写入 `clientInfo.version`，导致新版 Codex 在构造 `user-agent` header 时出现 UTF-8 header 错误并断流的问题；现在会尽量读取可解析的 Codex 版本，读取失败时留空，并记录版本探测失败日志。
+
 # 1.3.0
 
 发布时间：2026/05/29
