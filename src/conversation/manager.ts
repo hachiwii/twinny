@@ -7536,8 +7536,41 @@ export class ConversationManager {
         threads: request.targetThreadIds.map((threadId) => waitSnapshotResponse(snapshots.get(threadId)!, waitedMs))
       });
     } catch (error) {
+      if (error instanceof TwinnyError && error.code === "THREAD_WAIT_TIMEOUT") {
+        for (const targetThreadId of pendingThreadIds) {
+          const ready = await this.threadWaitSnapshotIfReady(targetThreadId);
+          if (ready) {
+            snapshots.set(targetThreadId, ready);
+          }
+        }
+        const waitedMs = Date.now() - startedAt;
+        return dynamicToolJsonResponse(true, {
+          ok: false,
+          waited_ms: waitedMs,
+          threads: request.targetThreadIds.map((threadId) => {
+            const snapshot = snapshots.get(threadId);
+            return snapshot ? waitSnapshotResponse(snapshot, waitedMs) : this.waitTimeoutThreadResponse(threadId, waitedMs);
+          })
+        });
+      }
       return dynamicToolErrorResponse(errorCodeForDynamicTool(error), toErrorMessage(error));
     }
+  }
+
+  private waitTimeoutThreadResponse(threadId: string, waitedMs: number): Record<string, unknown> {
+    const active = this.findActiveTurn(threadId);
+    const process = processTail(active?.processMessages ?? []);
+    return {
+      ok: false,
+      thread_id: threadId,
+      outcome: "timeout",
+      status: "working",
+      waited_ms: waitedMs,
+      turn_id: active?.turnId ?? null,
+      process_tail: process.text,
+      omitted_process_lines: process.omitted,
+      updated_at: new Date(Date.now()).toISOString()
+    };
   }
 
   private async waitForThreadIdleSnapshots(

@@ -1242,6 +1242,71 @@ describe("ConversationManager", () => {
     await waitForDelay();
   });
 
+  it("returns structured wait_for_threads output with working thread status when the wait times out", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic_a",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_a"
+        }),
+        codexThreadRecord({
+          codexThreadId: "thread_topic_b",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_b"
+        })
+      ]
+    });
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(groupMessage("topic_a_msg", "target a", { chatType: "topic_group", larkThreadId: "topic_a" }));
+    manager.submitIncoming(groupMessage("topic_b_msg", "target b", { chatType: "topic_group", larkThreadId: "topic_b" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    await turns[1]!.params.onAgentMessage?.({ id: "agent_process", text: "still working", phase: "commentary" });
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+
+    const waitPromise = Promise.resolve(turns[2]!.params.onDynamicToolCall!({
+      requestId: "req_wait",
+      threadId: "thread_main",
+      turnId: "turn_3",
+      callId: "call_wait",
+      tool: "wait_for_threads",
+      targetThreadIds: ["thread_topic_a", "thread_topic_b"],
+      timeoutMs: 20,
+      rawArguments: { thread_ids: ["thread_topic_a", "thread_topic_b"] }
+    }));
+
+    turns[0]!.resolve(completed("thread_topic_a", "turn_1"));
+    const response = await waitPromise;
+    expect(response).toMatchObject({ success: true });
+    const payload = dynamicToolPayload(response);
+    expect(payload).toMatchObject({
+      ok: false,
+      threads: [
+        { ok: true, thread_id: "thread_topic_a", outcome: "completed", status: "idle", turn_id: "turn_1" },
+        {
+          ok: false,
+          thread_id: "thread_topic_b",
+          outcome: "timeout",
+          status: "working",
+          turn_id: "turn_2",
+          process_tail: "still working",
+          omitted_process_lines: 0
+        }
+      ]
+    });
+    expect(payload).not.toHaveProperty("error");
+    expect(payload.threads[1]).not.toHaveProperty("final_message");
+
+    turns[1]!.resolve(completed("thread_topic_b", "turn_2"));
+    turns[2]!.resolve(completed("thread_main", "turn_3"));
+    await waitForDelay();
+  });
+
   it("creates a fresh topic through new_thread and starts an initial plan-mode message", async () => {
     const turns: Array<Deferred<CodexTurnResult> & { params: Parameters<CodexBridge["startTurn"]>[0] }> = [];
     const codex = createCodex({
