@@ -187,7 +187,7 @@ describe("LarkEventConsumer", () => {
       start: vi.fn(),
       close: vi.fn()
     };
-    const onCardAction = vi.fn();
+    const onCardAction = vi.fn(async () => ({ toast: { type: "success" as const, content: "ok" } }));
     const consumer = new LarkEventConsumer({
       appId: "cli_1234567890abcdef",
       appSecret: "secret",
@@ -207,6 +207,7 @@ describe("LarkEventConsumer", () => {
         open_chat_id: "oc_group",
         action: {
           tag: "button",
+          input_value: "typed value",
           form_value: {
             answer_choice_select: "直接实现",
             answer_choice_other: ""
@@ -220,7 +221,7 @@ describe("LarkEventConsumer", () => {
         }
       }
     };
-    await registered["card.action.trigger"](raw);
+    await expect(registered["card.action.trigger"](raw)).resolves.toEqual({ toast: { type: "success", content: "ok" } });
 
     expect(onCardAction).toHaveBeenCalledWith({
       eventId: "event-card",
@@ -228,6 +229,7 @@ describe("LarkEventConsumer", () => {
       openMessageId: "om_card",
       openChatId: "oc_group",
       actionTag: "button",
+      inputValue: "typed value",
       actionValue: {
         twinny: true,
         action: "stop",

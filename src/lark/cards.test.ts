@@ -9,6 +9,7 @@ import {
   renderTwinnyStatusCard,
   renderTwinnyThreadSummaryCard,
   renderTwinnyWorkspaceSelectionMarkdown,
+  SIDE_FOLLOWUP_INPUT_FORM_NAME,
   type RenderTwinnyAgentCardOptions
 } from "./cards.js";
 
@@ -306,6 +307,75 @@ describe("renderTwinnyAgentCard", () => {
         })
       ]
     });
+  });
+
+  it("renders side follow-up input without an extra submit button", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "working",
+      hideQueueControls: true,
+      sideFollowupInput: {
+        sideSessionId: "side_1",
+        placeholder: "追加补充说明"
+      }
+    }));
+
+    expect(findElementByTag(card, "input")).toMatchObject({
+      name: SIDE_FOLLOWUP_INPUT_FORM_NAME,
+      placeholder: {
+        tag: "plain_text",
+        content: "追加补充说明"
+      },
+      behaviors: [
+        expect.objectContaining({
+          type: "callback",
+          value: {
+            twinny: true,
+            action: "side_input_submit",
+            stateKey: "p2p_ou_guest",
+            sideSessionId: "side_1"
+          }
+        })
+      ]
+    });
+    expect(findButton(card, "提交")).toBeUndefined();
+  });
+
+  it("renders finished side follow-up input before elapsed statusline", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "finished",
+      messages: [{ id: "process_1", text: "done" }],
+      sideFollowupInput: {
+        sideSessionId: "side_1",
+        placeholder: "继续追问"
+      },
+      finalElements: [markdownElement("final")]
+    }));
+    const bodyElements = (card.body as { elements: Array<Record<string, unknown>> }).elements;
+    const inputIndex = bodyElements.findIndex((element) => element.tag === "input");
+    const statusIndex = bodyElements.findIndex((element) =>
+      JSON.stringify(element).includes("已工作")
+    );
+
+    expect(inputIndex).toBeGreaterThanOrEqual(0);
+    expect(statusIndex).toBeGreaterThan(inputIndex);
+    expect(bodyElements[inputIndex]).toMatchObject({
+      placeholder: {
+        tag: "plain_text",
+        content: "继续追问"
+      }
+    });
+  });
+
+  it("does not render side follow-up input on failed cards", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "failed",
+      sideFollowupInput: {
+        sideSessionId: "side_1",
+        placeholder: "继续追问"
+      }
+    }));
+
+    expect(findElementByTag(card, "input")).toBeUndefined();
   });
 
   it("renders untitled waiting plans with the fixed header and raw markdown body", () => {

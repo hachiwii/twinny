@@ -243,9 +243,7 @@ export class TwinnyRuntime {
         onBotMenu: (action) => {
           conversation.submitBotMenuAction(action);
         },
-        onCardAction: (action) => {
-          conversation.submitCardAction(action);
-        },
+        onCardAction: (action) => conversation.submitCardAction(action),
         onConnectionError: (error) => {
           this.telemetry.captureError(error, {
             errorType: "lark_event",

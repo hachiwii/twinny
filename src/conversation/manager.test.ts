@@ -6549,6 +6549,159 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("steers processing side sessions from the side card input without recording a new Lark message", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    vi.mocked(codex.forkThread).mockResolvedValue({ threadId: "thread_1_side" });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m_side", "/side inspect"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    const workingCard = vi.mocked(lark.replyCard).mock.calls[0]![1];
+    const actionValue = findTwinnyCardActionValue(workingCard, "side_input_submit");
+
+    await manager.submitCardAction({
+      eventId: "event_side_input",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m_side_1",
+      openChatId: "oc_ignored",
+      actionTag: "input",
+      actionValue,
+      inputValue: "include the edge case",
+      raw: { event_id: "event_side_input" }
+    });
+
+    await waitForExpect(() =>
+      expect(codex.steerTurn).toHaveBeenCalledWith(expect.objectContaining({
+        profile: "guest",
+        threadId: "thread_1_side",
+        turnId: "turn_1",
+        input: expect.stringContaining("include the edge case")
+      }))
+    );
+    const patched = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(JSON.stringify(patched)).toContain("[收到补充说明] include the edge case");
+    expect(
+      vi.mocked(repository.insertLarkMessage).mock.calls.some(([input]) =>
+        input.eventId === "event_side_input" || input.routeKind === "card_action"
+      )
+    ).toBe(false);
+
+    turns[0]!.resolve(completed("thread_1_side", "turn_1"));
+  });
+
+  it("continues finished side sessions in place and accumulates usage on the original side message", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    vi.mocked(codex.forkThread).mockResolvedValue({ threadId: "thread_1_side" });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m_side", "/side inspect"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await turns[0]!.params.onTokenUsage?.({
+      threadId: "thread_1_side",
+      turnId: "turn_1",
+      totalTokens: 12,
+      raw: {
+        tokenUsage: {
+          total: { totalTokens: 12, inputTokens: 10, cachedInputTokens: 2, outputTokens: 2, reasoningOutputTokens: 1 }
+        }
+      }
+    });
+    turns[0]!.resolve({
+      threadId: "thread_1_side",
+      turnId: "turn_1",
+      text: "first final",
+      status: "completed"
+    });
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith("card_m_side_1", expect.objectContaining({
+        header: expect.objectContaining({ template: "green" })
+      }))
+    );
+    const finishedCard = vi.mocked(lark.patchCard).mock.calls.at(-1)![1];
+    const actionValue = findTwinnyCardActionValue(finishedCard, "side_input_submit");
+
+    await manager.submitCardAction({
+      eventId: "event_side_question",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m_side_1",
+      openChatId: "oc_ignored",
+      actionTag: "input",
+      actionValue,
+      inputValue: "why this result?",
+      raw: { event_id: "event_side_question" }
+    });
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(codex.forkThread).toHaveBeenCalledTimes(1);
+    expect(codex.startTurn).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      threadId: "thread_1_side",
+      input: expect.stringContaining("why this result?")
+    }));
+    const processingCard = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const serializedProcessing = JSON.stringify(processingCard);
+    expect(serializedProcessing).toContain("工作中...");
+    expect(serializedProcessing).toContain("[上次回复] first final");
+    expect(serializedProcessing).toContain("[收到追问] why this result?");
+    expect(serializedProcessing).toContain("追加补充说明");
+    expect(
+      vi.mocked(repository.insertLarkMessage).mock.calls.some(([input]) =>
+        input.eventId === "event_side_question" || input.routeKind === "card_action"
+      )
+    ).toBe(false);
+
+    await turns[1]!.params.onTokenUsage?.({
+      threadId: "thread_1_side",
+      turnId: "turn_2",
+      totalTokens: 20,
+      raw: {
+        tokenUsage: {
+          total: { totalTokens: 20, inputTokens: 16, cachedInputTokens: 4, outputTokens: 4, reasoningOutputTokens: 2 },
+          last: { totalTokens: 8, inputTokens: 6, cachedInputTokens: 1, outputTokens: 2, reasoningOutputTokens: 1 }
+        }
+      }
+    });
+    expect(repository.updateLarkMessageTokenUsage).toHaveBeenLastCalledWith(expect.objectContaining({
+      larkMessageId: "m_side",
+      inputTokens: 16,
+      outputTokens: 4,
+      cachedInputTokens: 3,
+      reasoningOutputTokens: 2
+    }));
+
+    turns[1]!.resolve(completed("thread_1_side", "turn_2"));
+  });
+
+  it("returns an error toast when a side session has been cleaned from memory", async () => {
+    const manager = createManager();
+
+    const response = await manager.submitCardAction({
+      eventId: "event_side_missing",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_missing",
+      openChatId: "oc_ignored",
+      actionTag: "input",
+      actionValue: {
+        twinny: true,
+        action: "side_input_submit",
+        stateKey: "p2p_ou_guest",
+        sideSessionId: "missing"
+      },
+      inputValue: "hello",
+      raw: { event_id: "event_side_missing" }
+    });
+
+    expect(response).toEqual({
+      toast: {
+        type: "error",
+        content: "会话已被清理，不可继续发送消息"
+      }
+    });
+  });
+
   it("switches a side turn to a goal card only after a passive Codex goal notification", async () => {
     const sideTurn = deferred<CodexTurnResult>();
     const { repository } = createRepository(conversationRecord());
@@ -11239,7 +11392,7 @@ describe("ConversationManager", () => {
     expect(JSON.stringify(failedCard)).toContain("Twinny 服务退出");
   });
 
-  it("fails running side turns during shutdown with the service-exit error", async () => {
+  it("interrupts running side turns during shutdown and removes the side input", async () => {
     const { repository } = createRepository(conversationRecord());
     const { codex, turns } = createDeferredCodex();
     vi.mocked(codex.forkThread).mockResolvedValue({ threadId: "thread_1_side" });
@@ -11251,7 +11404,7 @@ describe("ConversationManager", () => {
 
     await manager.shutdown();
 
-    expect(repository.markLarkMessagesFailed).toHaveBeenCalledWith(["m_side_shutdown"]);
+    expect(repository.markLarkMessagesInterrupted).toHaveBeenCalledWith(["m_side_shutdown"]);
     expect(codex.interruptTurn).toHaveBeenCalledWith(expect.objectContaining({
       profile: "guest",
       threadId: "thread_1_side",
@@ -11261,16 +11414,44 @@ describe("ConversationManager", () => {
       "card_m_side_shutdown_1",
       expect.objectContaining({
         header: expect.objectContaining({
-          template: "red",
-          title: { tag: "plain_text", content: "发生错误" },
+          template: "grey",
+          title: { tag: "plain_text", content: "已中断" },
           subtitle: { tag: "plain_text", content: "临时会话" }
         })
       })
     );
-    const failedCard = vi.mocked(lark.patchCard).mock.calls[0]![1] as Record<string, unknown>;
-    expect(JSON.stringify(failedCard)).toContain("Twinny 服务退出");
+    const interruptedCard = vi.mocked(lark.patchCard).mock.calls[0]![1] as Record<string, unknown>;
+    expect(JSON.stringify(interruptedCard)).not.toContain("追加补充说明");
 
     turns[0]!.resolve(completed("thread_1_side", "turn_1", "interrupted"));
+  });
+
+  it("removes input from latest finished side cards during shutdown", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    vi.mocked(codex.forkThread).mockResolvedValue({ threadId: "thread_1_side" });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m_side_finished_shutdown", "/side inspect"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    turns[0]!.resolve({
+      threadId: "thread_1_side",
+      turnId: "turn_1",
+      text: "done",
+      status: "completed"
+    });
+    await waitForExpect(() => {
+      const card = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
+      expect(JSON.stringify(card)).toContain("继续追问");
+    });
+
+    vi.mocked(lark.patchCard).mockClear();
+    await manager.shutdown();
+
+    expect(vi.mocked(lark.patchCard).mock.calls.at(-1)?.[0]).toBe("card_m_side_finished_shutdown_1");
+    const shutdownCard = vi.mocked(lark.patchCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(JSON.stringify(shutdownCard)).not.toContain("继续追问");
   });
 
   it("rejects new submissions during shutdown without clearing unfinished message state", async () => {

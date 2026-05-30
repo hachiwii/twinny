@@ -29,11 +29,22 @@ export interface TwinnyAgentCardMessage {
   processOnly?: boolean;
 }
 
-export interface TwinnyAgentCardActionValue {
+export type TwinnyAgentCardActionValue =
+  | TwinnyActiveAgentCardActionValue
+  | TwinnySideFollowupCardActionValue;
+
+export interface TwinnyActiveAgentCardActionValue {
   twinny: true;
   action: "stop" | "next" | "queue" | "request_input_submit" | "request_input_interrupt" | "plan_implement" | "plan_interrupt";
   stateKey: string;
   runId: number;
+}
+
+export interface TwinnySideFollowupCardActionValue {
+  twinny: true;
+  action: "side_input_submit";
+  stateKey: string;
+  sideSessionId: string;
 }
 
 export interface TwinnyStatusCardActionValue {
@@ -89,6 +100,10 @@ export interface RenderTwinnyAgentCardOptions {
   mentionOpenIds?: string[];
   summaryText?: string;
   error?: string;
+  sideFollowupInput?: {
+    sideSessionId: string;
+    placeholder: string;
+  };
 }
 
 export interface TwinnyAgentCardRuntimeStats {
@@ -102,6 +117,7 @@ export interface TwinnyAgentCardRuntimeStats {
 }
 
 export const PLAN_IMPLEMENT_INSTRUCTION_FORM_NAME = "plan_implement_instruction";
+export const SIDE_FOLLOWUP_INPUT_FORM_NAME = "side_followup_text";
 const MAX_VISIBLE_WORKING_PROCESS_ITEMS = 10;
 
 interface ParsedPlanMarkdown {
@@ -878,6 +894,7 @@ function bodyElements(options: RenderTwinnyAgentCardOptions, parsedPlan?: Parsed
       ...finishedMentionElements(options.mentionOpenIds),
       ...finishedProcessPanelElements(options.messages),
       ...(options.finalElements?.length ? options.finalElements : [markdownElement("")]),
+      ...sideFollowupInputElements(options),
       elapsedElement(options.elapsedMs, options.runtimeStats, options.mode)
     ];
   }
@@ -912,6 +929,9 @@ function bodyElements(options: RenderTwinnyAgentCardOptions, parsedPlan?: Parsed
   }
 
   const elements = workingProcessElements(workingMessagesWithError(options));
+  if (options.status !== "failed") {
+    elements.push(...sideFollowupInputElements(options));
+  }
   elements.push(elapsedElement(options.elapsedMs, options.runtimeStats, options.mode));
   if (options.status === "working") {
     elements.push(buttonsElement(options));
@@ -1111,10 +1131,10 @@ function waitingButtonsElement(
   options: RenderTwinnyAgentCardOptions,
   primaryLabel: string,
   primaryType: string,
-  primaryAction: TwinnyAgentCardActionValue["action"],
+  primaryAction: TwinnyActiveAgentCardActionValue["action"],
   dangerLabel: string,
   dangerType: string,
-  dangerAction: TwinnyAgentCardActionValue["action"],
+  dangerAction: TwinnyActiveAgentCardActionValue["action"],
   buttonOptions: { primaryFormSubmit?: boolean; namePrefix?: string } = {}
 ): LarkCardElement {
   const buttons = [
@@ -1521,6 +1541,36 @@ function planImplementInstructionInputElement(): LarkCardElement {
     width: "fill",
     margin: "0px 0px 0px 0px"
   };
+}
+
+function sideFollowupInputElements(options: RenderTwinnyAgentCardOptions): LarkCardElement[] {
+  if (!options.sideFollowupInput) {
+    return [];
+  }
+  return [
+    {
+      tag: "input",
+      name: SIDE_FOLLOWUP_INPUT_FORM_NAME,
+      placeholder: {
+        tag: "plain_text",
+        content: options.sideFollowupInput.placeholder
+      },
+      default_value: "",
+      width: "fill",
+      behaviors: [
+        {
+          type: "callback",
+          value: {
+            twinny: true,
+            action: "side_input_submit",
+            stateKey: options.stateKey,
+            sideSessionId: options.sideFollowupInput.sideSessionId
+          }
+        }
+      ],
+      margin: "4px 0px 4px 0px"
+    }
+  ];
 }
 
 function cardHeaderTitle(

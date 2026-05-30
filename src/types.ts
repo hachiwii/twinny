@@ -378,6 +378,7 @@ export interface IncomingLarkCardAction {
   openChatId?: string;
   actionTag?: string;
   actionValue: Record<string, unknown>;
+  inputValue?: string;
   formValue?: Record<string, unknown>;
   raw: unknown;
 }

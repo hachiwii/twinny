@@ -26,6 +26,7 @@ import {
   renderTwinnyStatusCard,
   renderTwinnyThreadSummaryCard,
   renderTwinnyWorkspaceSelectionCard,
+  SIDE_FOLLOWUP_INPUT_FORM_NAME,
   type LarkCardElement,
   type LarkCardJson,
   type TwinnyAgentCardStatus,
@@ -100,7 +101,7 @@ import type {
   ThreadSourceKind,
   ThreadTurn
 } from "../codex/thread.js";
-import type { LarkSendMessageResult } from "../lark/types.js";
+import type { LarkCardActionCallbackResponse, LarkSendMessageResult } from "../lark/types.js";
 import type { TelemetryClient } from "../telemetry/index.js";
 import { TWINNY_VERSION } from "../version.js";
 import { SerialQueue } from "./queue.js";
@@ -1021,6 +1022,7 @@ interface ActiveTurn {
   kind: "normal" | "compact" | "side" | "goal";
   runId: number;
   sideId?: number;
+  sideSessionId?: string;
   profile: ProfileName;
   triggerOpenId: string;
   threadId: string;
@@ -1062,6 +1064,7 @@ interface ActiveTurn {
   waiting?: ActiveTurnWaiting;
   planUpdatePending?: boolean;
   pendingSteers: PendingMessage[];
+  pendingSideFollowups?: SideFollowupInput[];
   messagesById: Map<string, PendingMessage>;
   messageIds: Set<string>;
   processingMessageIds: Set<string>;
@@ -1083,6 +1086,45 @@ interface ActiveTurnCardState {
   consecutiveRateLimitedPatches?: number;
   fallbackPlain: boolean;
   lastRenderedJson?: string;
+}
+
+type SideSessionStatus = "processing" | "finished" | "interrupted" | "failed";
+
+interface SideFollowupInput {
+  eventId: string;
+  operatorOpenId: string;
+  openMessageId?: string;
+  openChatId?: string;
+  text: string;
+}
+
+interface SideSessionRuntime {
+  id: string;
+  status: SideSessionStatus;
+  active?: ActiveTurn;
+  sourceMessage: PendingMessage;
+  sourceThreadId: string;
+  runtimeThreadId: string;
+  profile: ProfileName;
+  workspace: string;
+  context: MessageContext;
+  triggerOpenId: string;
+  model?: string;
+  effort?: string;
+  mode: CodexThreadMode;
+  runId: number;
+  startedAt: number;
+  card: ActiveTurnCardState;
+  allowInput: boolean;
+  completedAt?: number;
+  historyMessages: TwinnyAgentCardMessage[];
+  finalElements?: LarkCardElement[];
+  mentionOpenIds: string[];
+  summaryText?: string;
+  threadTokenUsage: ThreadTokenUsageSnapshot;
+  turnTokenUsage: ThreadTokenUsageSnapshot;
+  messageTokenUsage: LarkMessageTokenUsageSnapshot;
+  generatedImagePaths: string[];
 }
 
 type ActiveTurnCardDelivery =
@@ -1122,6 +1164,8 @@ interface ConversationState {
   active?: ActiveTurn;
   suspendedActiveTurns: ActiveTurn[];
   sideTurns: Map<number, ActiveTurn>;
+  sideSessions: Map<string, SideSessionRuntime>;
+  processedSideCardActionEventIds: Set<string>;
   waitingInterruptBatch?: {
     context: MessageContext;
     messages: PendingMessage[];
@@ -1130,6 +1174,7 @@ interface ConversationState {
   pendingBatch: PendingMessage[];
   queueNextMessage: boolean;
   nextRunId: number;
+  nextSideSessionId: number;
 }
 
 type ParsedCommand =
@@ -1187,6 +1232,13 @@ type ParsedActiveCardAction =
   | "plan_implement"
   | "plan_interrupt";
 
+interface ParsedSideFollowupCardActionCommand {
+  action: "side_input_submit";
+  stateKey: string;
+  sideSessionId: string;
+  text: string;
+}
+
 interface ParsedActiveCardActionCommand {
   action: ParsedActiveCardAction;
   stateKey: string;
@@ -1210,6 +1262,7 @@ interface ParsedResumeListCardActionCommand {
 
 type ParsedCardActionCommand =
   | ParsedActiveCardActionCommand
+  | ParsedSideFollowupCardActionCommand
   | ParsedStatusCardActionCommand
   | ParsedResumeListCardActionCommand;
 
@@ -1347,7 +1400,7 @@ export class ConversationManager {
       });
   }
 
-  submitCardAction(action: IncomingLarkCardAction): void {
+  submitCardAction(action: IncomingLarkCardAction): Promise<LarkCardActionCallbackResponse | void> | LarkCardActionCallbackResponse | void {
     if (this.shuttingDown) {
       throw new TwinnyError("Conversation manager is shutting down", "CONVERSATION_MANAGER_SHUTTING_DOWN");
     }
@@ -1366,10 +1419,30 @@ export class ConversationManager {
 
     const state = this.states.get(command.stateKey);
     if (!state) {
+      if (isSideFollowupCardAction(command)) {
+        return cardActionErrorToast("会话已被清理，不可继续发送消息");
+      }
       void this.recordCardActionBestEffort(action, command, "completed").catch((error) => {
         this.log.warn({ error, eventId: action.eventId }, "failed to record stale card action");
       });
       return;
+    }
+
+    if (isSideFollowupCardAction(command)) {
+      return state.controlQueue.enqueue(() => this.processSideFollowupCardAction(state, action, command)).catch((error) => {
+        this.options.telemetry?.captureError(error, {
+          errorType: "conversation",
+          errorSite: "conversation.submitCardAction",
+          operation: "side_followup_card_action",
+          fatal: false,
+          conversationKey: conversationKeyFromStateKey(command.stateKey),
+          larkSenderOpenId: action.operatorOpenId,
+          larkEventId: action.eventId,
+          larkMessageId: action.openMessageId
+        });
+        this.log.error({ error, eventId: action.eventId }, "conversation side follow-up card action failed");
+        return cardActionErrorToast(toErrorMessage(error));
+      });
     }
 
     if (isResumeListCardAction(command)) {
@@ -1555,7 +1628,8 @@ export class ConversationManager {
       state.processingMessage = undefined;
       state.queueNextMessage = false;
       await this.clearPendingMessagesBestEffort(state);
-      await this.failSideTurnsForShutdown(state);
+      await this.interruptSideTurnsForShutdown(state);
+      await this.removeFinishedSideInputsForShutdown(state);
       cancelPromises.push(this.suspendActiveTurnForShutdown(state));
     }
 
@@ -4570,9 +4644,17 @@ export class ConversationManager {
       conversationKey: context.conversationKey,
       codexThreadId: params.sourceThreadId
     });
+    const card: ActiveTurnCardState = {
+      anchorMessageId: message.messageId,
+      startedAt,
+      messages: [],
+      fallbackPlain: false
+    };
+    const sideSessionId = allocateSideSessionId(state);
     const active: ActiveTurn = {
       kind: "side",
       sideId: params.sideId,
+      sideSessionId,
       runId: ++state.nextRunId,
       profile: params.profile,
       triggerOpenId: message.original.senderOpenId,
@@ -4600,13 +4682,9 @@ export class ConversationManager {
       generatedImagePaths: [],
       processMessages: [],
       reaction: await this.addReactionBestEffort(message.messageId),
-      card: {
-        anchorMessageId: message.messageId,
-        startedAt,
-        messages: [],
-        fallbackPlain: false
-      },
+      card,
       pendingSteers: [],
+      pendingSideFollowups: [],
       messagesById: new Map([[message.messageId, message]]),
       messageIds: new Set([message.messageId]),
       processingMessageIds: new Set([message.messageId]),
@@ -4614,19 +4692,54 @@ export class ConversationManager {
       cancelRequested: false
     };
     state.sideTurns.set(params.sideId, active);
+    state.sideSessions.set(sideSessionId, {
+      id: sideSessionId,
+      status: "processing",
+      active,
+      sourceMessage: message,
+      sourceThreadId: params.sourceThreadId,
+      runtimeThreadId: forkedThreadId,
+      profile: params.profile,
+      workspace: params.workspace,
+      context,
+      triggerOpenId: message.original.senderOpenId,
+      model: modelSettings.model,
+      effort: modelSettings.effort,
+      mode: "default",
+      runId: active.runId,
+      startedAt,
+      card,
+      allowInput: true,
+      historyMessages: [],
+      mentionOpenIds: activeTurnMentionOpenIds(active),
+      threadTokenUsage: active.threadTokenUsage,
+      turnTokenUsage: active.turnTokenUsage,
+      messageTokenUsage: active.messageTokenUsage,
+      generatedImagePaths: []
+    });
 
+    this.runSideActiveTurn(state, active, () => this.formatPendingMessageForThreadCodexInput(active.threadId, message));
+    await this.createAgentCardBestEffort(state, active);
+  }
+
+  private runSideActiveTurn(
+    state: ConversationState,
+    active: ActiveTurn,
+    inputFactory: () => Promise<CodexTurnInput> | CodexTurnInput
+  ): void {
+    const startedAt = active.startedAt;
     const runTurn = async (): Promise<void> => {
       try {
         this.markThreadRuntimeHasUserMessage(activeRuntimeThreadId(active));
         const result = await this.options.codex.startTurn({
-          profile: params.profile,
+          profile: active.profile,
           threadId: activeRuntimeThreadId(active),
-          input: await this.formatPendingMessageForThreadCodexInput(active.threadId, message),
-          cwd: params.workspace,
+          input: await inputFactory(),
+          cwd: active.workspace,
           approvalPolicy: "never",
           mode: "default",
-          model: modelSettings.model,
-          effort: modelSettings.effort,
+          model: active.model,
+          effort: active.modelReasoningEffort,
           onTurnStarted: (turnId) => this.handleSideTurnStarted(state, active, turnId),
           onAgentMessage: (agentMessage) => this.replyAgentMessageForActiveBestEffort(state, active, agentMessage),
           onImageGeneration: (image) => this.recordImageGenerationForActiveBestEffort(state, active, image),
@@ -4642,12 +4755,13 @@ export class ConversationManager {
         active.generatedImagePaths = mergeGeneratedImagePaths(active.generatedImagePaths, result.generatedImages);
         this.log.info(
           {
-            messageId: message.messageId,
-            conversationKey: context.conversationKey,
-            profile: params.profile,
+            messageId: active.replyMessageId,
+            conversationKey: active.conversationKey,
+            profile: active.profile,
             codexThreadId: activeRuntimeThreadId(active),
             turnId: result.turnId,
-            sideId: params.sideId,
+            sideId: active.sideId,
+            sideSessionId: active.sideSessionId,
             status: result.status,
             durationMs: Date.now() - startedAt
           },
@@ -4659,10 +4773,10 @@ export class ConversationManager {
           active.resultErrorCode = errorCodeForTelemetry(error);
           this.options.telemetry?.captureError(error, {
             errorType: "turn",
-            errorSite: "conversation.beginSideTurn",
+            errorSite: "conversation.runSideActiveTurn",
             operation: "side_turn",
             fatal: false,
-            conversationKey: context.conversationKey,
+            conversationKey: active.conversationKey,
             codexThreadId: active.threadId,
             codexTurnId: active.turnId,
             larkSenderOpenId: active.triggerOpenId,
@@ -4672,22 +4786,20 @@ export class ConversationManager {
             }
           });
           await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
-          this.log.error({ error, messageId: active.replyMessageId, conversationKey: context.conversationKey }, "conversation side turn failed");
+          this.log.error({ error, messageId: active.replyMessageId, conversationKey: active.conversationKey }, "conversation side turn failed");
           await this.failAgentCardBestEffort(state, active, active.resultError ?? toErrorMessage(error));
           if (needsPlainFailureFallback(active)) {
             await this.replyErrorBestEffort(active.replyMessageId, error);
           }
         } else {
-          this.log.debug({ error, conversationKey: context.conversationKey, threadId: active.threadId }, "ignored stale codex side turn failure");
+          this.log.debug({ error, conversationKey: active.conversationKey, threadId: active.threadId }, "ignored stale codex side turn failure");
         }
       }
     };
 
-    void runTurn()
-      .finally(() => {
-        void state.controlQueue.enqueue(() => this.finishSideTurn(state, active));
-      });
-    await this.createAgentCardBestEffort(state, active);
+    void runTurn().finally(() => {
+      void state.controlQueue.enqueue(() => this.finishSideTurn(state, active));
+    });
   }
 
   private async handlePlanCommand(
@@ -5319,6 +5431,147 @@ export class ConversationManager {
       await this.recordCardActionBestEffort(action, command, status);
       this.captureCardActionReceived(undefined, action, command, status, undefined, 0);
     }
+  }
+
+  private async processSideFollowupCardAction(
+    state: ConversationState,
+    action: IncomingLarkCardAction,
+    command: ParsedSideFollowupCardActionCommand
+  ): Promise<LarkCardActionCallbackResponse | void> {
+    if (state.processedSideCardActionEventIds.has(action.eventId)) {
+      return;
+    }
+    const session = state.sideSessions.get(command.sideSessionId);
+    if (!session?.allowInput) {
+      return cardActionErrorToast("会话已被清理，不可继续发送消息");
+    }
+    if (action.openMessageId && session.card.messageId && action.openMessageId !== session.card.messageId) {
+      return cardActionErrorToast("会话已被清理，不可继续发送消息");
+    }
+
+    const text = extractSideFollowupText(action);
+    if (!text) {
+      return cardActionErrorToast("请输入内容");
+    }
+
+    state.processedSideCardActionEventIds.add(action.eventId);
+    const input: SideFollowupInput = {
+      eventId: action.eventId,
+      operatorOpenId: action.operatorOpenId,
+      ...(action.openMessageId ? { openMessageId: action.openMessageId } : {}),
+      ...(action.openChatId ? { openChatId: action.openChatId } : {}),
+      text
+    };
+
+    if (session.status === "processing" && session.active && isSideTurnCurrent(state, session.active)) {
+      await this.steerProcessingSideSession(state, session, input);
+      return;
+    }
+    if (session.status === "finished" || session.status === "interrupted") {
+      await this.continueSideSession(state, session, input);
+      return;
+    }
+    return cardActionErrorToast("会话已被清理，不可继续发送消息");
+  }
+
+  private async steerProcessingSideSession(
+    state: ConversationState,
+    session: SideSessionRuntime,
+    input: SideFollowupInput
+  ): Promise<void> {
+    const active = session.active;
+    if (!active || !isSideTurnCurrent(state, active)) {
+      return;
+    }
+    const message = sideFollowupCardMessage(input, "supplement");
+    active.card?.messages.push(message);
+    active.processMessages.push(message.text);
+    if (!active.turnId) {
+      active.pendingSideFollowups ??= [];
+      active.pendingSideFollowups.push(input);
+      await this.patchAgentCardBestEffort(state, active, "working");
+      return;
+    }
+    await this.options.codex.steerTurn({
+      profile: active.profile,
+      threadId: activeRuntimeThreadId(active),
+      turnId: active.turnId,
+      input: formatSideFollowupInputForCodex(input, "supplement"),
+      cwd: active.workspace,
+      approvalPolicy: "never"
+    });
+    active.steerMessageCount += 1;
+    await this.patchAgentCardBestEffort(state, active, "working");
+  }
+
+  private async continueSideSession(
+    state: ConversationState,
+    session: SideSessionRuntime,
+    input: SideFollowupInput
+  ): Promise<void> {
+    const startedAt = Date.now();
+    const sideId = allocateSideId(state);
+    const receivedMessage = sideFollowupCardMessage(input, "question");
+    const messages = [...session.historyMessages, receivedMessage];
+    session.card.startedAt = startedAt;
+    session.card.messages = messages;
+    if (session.card.completedPatchRetryTimer) {
+      clearTimeout(session.card.completedPatchRetryTimer);
+    }
+    session.card.completedPatchRetryTimer = undefined;
+
+    const active: ActiveTurn = {
+      kind: "side",
+      sideId,
+      sideSessionId: session.id,
+      runId: ++state.nextRunId,
+      profile: session.profile,
+      triggerOpenId: input.operatorOpenId || session.triggerOpenId,
+      threadId: session.sourceThreadId,
+      runtimeThreadId: session.runtimeThreadId,
+      workspace: session.workspace,
+      conversationKey: session.context.conversationKey,
+      context: session.context,
+      replyMessageId: session.sourceMessage.messageId,
+      startedAt,
+      model: session.model,
+      modelReasoningEffort: session.effort,
+      mode: "default",
+      initialMessageCount: 0,
+      steerMessageCount: 0,
+      threadTokenUsage: session.threadTokenUsage,
+      threadTokenUsageBase: emptyThreadTokenUsageSnapshot(),
+      shouldPersistThreadTokenUsageBase: false,
+      turnStartThreadTokenUsage: session.threadTokenUsage,
+      turnTokenUsage: emptyThreadTokenUsageSnapshot(),
+      turnTokenUsageBaseInitialized: false,
+      usageTargetMessageId: session.sourceMessage.messageId,
+      usageCarryover: session.messageTokenUsage,
+      messageTokenUsage: session.messageTokenUsage,
+      generatedImagePaths: [],
+      processMessages: messages.map((message) => message.text),
+      reaction: await this.addReactionBestEffort(session.sourceMessage.messageId),
+      card: session.card,
+      pendingSteers: [],
+      pendingSideFollowups: [],
+      messagesById: new Map([[session.sourceMessage.messageId, session.sourceMessage]]),
+      messageIds: new Set([session.sourceMessage.messageId]),
+      processingMessageIds: new Set(),
+      steeredMessageIds: new Set(),
+      cancelRequested: false
+    };
+
+    session.status = "processing";
+    session.active = active;
+    session.runId = active.runId;
+    session.startedAt = startedAt;
+    session.finalElements = undefined;
+    session.summaryText = undefined;
+    session.turnTokenUsage = emptyThreadTokenUsageSnapshot();
+    state.sideTurns.set(sideId, active);
+    await this.patchAgentCardBestEffort(state, active, "working");
+    this.startAgentCardTimer(state, active);
+    this.runSideActiveTurn(state, active, () => formatSideFollowupInputForCodex(input, "question"));
   }
 
   private async processCardAction(
@@ -7101,6 +7354,7 @@ export class ConversationManager {
         codexThreadId: active.threadId,
         codexTurnId: turnId
       });
+      await this.flushPendingSideFollowups(state, active);
     });
   }
 
@@ -7180,6 +7434,34 @@ export class ConversationManager {
         state.pendingBatch.unshift(...remaining);
         await this.markPendingMessagesQueuedBestEffort(remaining);
         return;
+      }
+    }
+  }
+
+  private async flushPendingSideFollowups(state: ConversationState, active: ActiveTurn): Promise<void> {
+    if (!active.turnId || !active.pendingSideFollowups?.length) {
+      return;
+    }
+    const pending = active.pendingSideFollowups.splice(0);
+    for (const input of pending) {
+      if (!isSideTurnCurrent(state, active) || active.cancelRequested || !active.turnId) {
+        return;
+      }
+      try {
+        await this.options.codex.steerTurn({
+          profile: active.profile,
+          threadId: activeRuntimeThreadId(active),
+          turnId: active.turnId,
+          input: formatSideFollowupInputForCodex(input, "supplement"),
+          cwd: active.workspace,
+          approvalPolicy: "never"
+        });
+        active.steerMessageCount += 1;
+      } catch (error) {
+        this.log.warn(
+          { error, threadId: activeRuntimeThreadId(active), turnId: active.turnId, eventId: input.eventId },
+          "failed to flush pending side follow-up"
+        );
       }
     }
   }
@@ -8405,6 +8687,10 @@ export class ConversationManager {
     }
     active.cancelRequested = true;
     active.pendingSteers = [];
+    active.pendingSideFollowups = [];
+    if (active.sideId !== undefined) {
+      state.sideTurns.delete(active.sideId);
+    }
     await this.clearReactionBestEffort(active);
     await this.markMessagesInterruptedBestEffort([...active.processingMessageIds]);
     await this.updateThreadSummaryCardBestEffort(active.threadId);
@@ -8458,6 +8744,71 @@ export class ConversationManager {
       }
     }
     return stopped;
+  }
+
+  private async interruptSideTurnForShutdown(
+    state: ConversationState,
+    active: ActiveTurn
+  ): Promise<boolean> {
+    if (!isSideTurnCurrent(state, active)) {
+      return false;
+    }
+    const session = active.sideSessionId ? state.sideSessions.get(active.sideSessionId) : undefined;
+    if (session) {
+      session.allowInput = false;
+    }
+    if (active.sideId !== undefined) {
+      state.sideTurns.delete(active.sideId);
+    }
+    active.cancelRequested = true;
+    active.pendingSteers = [];
+    active.pendingSideFollowups = [];
+    await this.clearReactionBestEffort(active);
+    await this.markMessagesInterruptedBestEffort([...active.processingMessageIds]);
+    await this.interruptAgentCardBestEffort(state, active);
+    if (activeHasGoal(active)) {
+      await this.clearActiveGoalBestEffort(active);
+    }
+    if (active.turnId) {
+      await this.interruptActiveTurnBestEffort(active);
+    }
+    this.rememberThreadWaitSnapshot(active);
+    this.stopAgentCardTimer(active);
+    await this.unsubscribeSideThreadBestEffort(active);
+    return true;
+  }
+
+  private async interruptSideTurnsForShutdown(state: ConversationState): Promise<number> {
+    let interrupted = 0;
+    for (const active of [...state.sideTurns.values()]) {
+      if (await this.interruptSideTurnForShutdown(state, active)) {
+        interrupted += 1;
+      }
+    }
+    return interrupted;
+  }
+
+  private async removeFinishedSideInputsForShutdown(state: ConversationState): Promise<number> {
+    const sessions = [...state.sideSessions.values()]
+      .filter((session) => session.status === "finished" && session.allowInput)
+      .sort((left, right) => (right.completedAt ?? 0) - (left.completedAt ?? 0))
+      .slice(0, 10);
+    let removed = 0;
+    for (const session of sessions) {
+      session.allowInput = false;
+      if (!session.card.messageId || session.card.fallbackPlain) {
+        continue;
+      }
+      try {
+        const rendered = this.renderSideSessionTerminalCard(session, "finished");
+        await this.options.lark.patchCard(session.card.messageId, rendered);
+        session.card.lastRenderedJson = JSON.stringify(rendered);
+        removed += 1;
+      } catch (error) {
+        this.log.warn({ error, messageId: session.card.messageId }, "failed to remove finished side input on shutdown");
+      }
+    }
+    return removed;
   }
 
   private async failSideTurnForShutdown(
@@ -9604,9 +9955,12 @@ export class ConversationManager {
       submittedMessages: new Map(),
       suspendedActiveTurns: [],
       sideTurns: new Map(),
+      sideSessions: new Map(),
+      processedSideCardActionEventIds: new Set(),
       pendingBatch: [],
       queueNextMessage: false,
-      nextRunId: 0
+      nextRunId: 0,
+      nextSideSessionId: 0
     };
     this.states.set(conversationKey, state);
     return state;
@@ -10425,6 +10779,13 @@ export class ConversationManager {
             active.sawAgentMessagePhase === true
           );
       const output = await this.prepareAgentFinalCardOutputForLark(final.text, active.workspace, active.generatedImagePaths);
+      if (active.kind === "side") {
+        this.rememberSideSessionTerminalOutput(state, active, "finished", final.processMessages, {
+          finalText: final.text,
+          finalElements: output.elements,
+          summaryText: output.summaryText
+        });
+      }
       const rendered = this.renderAgentCard(state, active, "finished", output.elements, undefined, final.processMessages, output.summaryText);
       const previousMessageId = card.messageId;
       const shouldUpdateInPlace =
@@ -10582,8 +10943,59 @@ export class ConversationManager {
     return active.card?.delivery && active.card.messageId ? active.card.messageId : active.replyMessageId;
   }
 
+  private rememberSideSessionTerminalOutput(
+    state: ConversationState,
+    active: ActiveTurn,
+    status: SideSessionStatus,
+    processMessages: TwinnyAgentCardMessage[],
+    output: {
+      finalText?: string;
+      finalElements?: LarkCardElement[];
+      summaryText?: string;
+      allowInput?: boolean;
+    } = {}
+  ): void {
+    const session = active.sideSessionId ? state.sideSessions.get(active.sideSessionId) : undefined;
+    if (!session) {
+      return;
+    }
+    const finalText = nonEmptyString(output.finalText ?? undefined);
+    session.status = status;
+    session.active = undefined;
+    session.runId = active.runId;
+    session.startedAt = active.startedAt;
+    session.completedAt = Date.now();
+    session.historyMessages = finalText
+      ? [
+          ...processMessages,
+          {
+            id: `side-final:${active.turnId ?? active.runId}`,
+            text: `[上次回复] ${finalText}`,
+            processOnly: true
+          }
+        ]
+      : [...processMessages];
+    session.finalElements = output.finalElements;
+    session.summaryText = output.summaryText;
+    session.threadTokenUsage = active.threadTokenUsage;
+    session.turnTokenUsage = active.turnTokenUsage;
+    session.messageTokenUsage = active.messageTokenUsage;
+    session.generatedImagePaths = active.generatedImagePaths;
+    session.mentionOpenIds = activeTurnMentionOpenIds(active);
+    if (output.allowInput !== undefined) {
+      session.allowInput = output.allowInput;
+    } else if (status === "failed") {
+      session.allowInput = false;
+    }
+  }
+
   private async failAgentCardBestEffort(state: ConversationState, active: ActiveTurn, error: string): Promise<void> {
     this.stopAgentCardTimer(active);
+    if (active.kind === "side") {
+      this.rememberSideSessionTerminalOutput(state, active, "failed", activeCardMessagesForRender(active, "failed"), {
+        allowInput: false
+      });
+    }
     try {
       await this.patchAgentCardBestEffort(state, active, "failed", error);
     } catch (patchError) {
@@ -10660,6 +11072,9 @@ export class ConversationManager {
           : active.waiting?.kind === "plan"
             ? "interrupted_plan"
             : "interrupted";
+      if (active.kind === "side" && status === "interrupted") {
+        this.rememberSideSessionTerminalOutput(state, active, "interrupted", activeCardMessagesForRender(active, "interrupted"));
+      }
       await this.patchAgentCardBestEffort(state, active, status);
     } catch (error) {
       this.log.warn({ error, messageId: active.replyMessageId }, "failed to update interrupted agent card");
@@ -10789,8 +11204,67 @@ export class ConversationManager {
           ? activeTurnMentionOpenIds(active)
           : undefined,
       summaryText,
-      error
+      error,
+      sideFollowupInput: this.sideFollowupInputForActive(state, active, status)
     });
+  }
+
+  private renderSideSessionTerminalCard(
+    session: SideSessionRuntime,
+    status: Extract<TwinnyAgentCardStatus, "finished" | "interrupted">
+  ): LarkCardJson {
+    return renderTwinnyAgentCard({
+      status,
+      messages: session.historyMessages,
+      elapsedMs: Math.max(Date.now() - session.startedAt, 0),
+      runtimeStats: {
+        model: session.model,
+        effort: session.effort,
+        inputTokens: session.turnTokenUsage.inputTokens,
+        cachedInputTokens: session.turnTokenUsage.cachedInputTokens,
+        outputTokens: session.turnTokenUsage.outputTokens,
+        contextTokens: session.threadTokenUsage.contextTokens,
+        contextWindow: session.threadTokenUsage.contextWindow
+      },
+      queueDepth: 0,
+      queueNextMessage: false,
+      stateKey: session.context.stateKey,
+      runId: session.runId,
+      iconImageKey: this.logoImageKey(),
+      mode: session.mode,
+      subtitle: sideCardSubtitle(status, undefined),
+      hideQueueControls: true,
+      finalElements: status === "finished" ? session.finalElements : undefined,
+      mentionOpenIds: status === "finished" ? session.mentionOpenIds : undefined,
+      summaryText: status === "finished" ? session.summaryText : undefined,
+      sideFollowupInput: session.allowInput
+        ? {
+            sideSessionId: session.id,
+            placeholder: "继续追问"
+          }
+        : undefined
+    });
+  }
+
+  private sideFollowupInputForActive(
+    state: ConversationState,
+    active: ActiveTurn,
+    status: TwinnyAgentCardStatus
+  ): { sideSessionId: string; placeholder: string } | undefined {
+    if (active.kind !== "side" || !active.sideSessionId || status === "failed") {
+      return undefined;
+    }
+    if (status !== "working" && status !== "finished" && status !== "interrupted") {
+      return undefined;
+    }
+    const session = state.sideSessions.get(active.sideSessionId);
+    if (!session?.allowInput) {
+      return undefined;
+    }
+    return {
+      sideSessionId: session.id,
+      placeholder: status === "working" ? "追加补充说明" : "继续追问"
+    };
   }
 
   private async replyAgentMessageBestEffort(
@@ -11449,6 +11923,20 @@ function parseTwinnyCardAction(value: Record<string, unknown>): ParsedCardAction
       text: twinnyCardActionText(action)
     };
   }
+  if (action === "side_input_submit") {
+    const sideSessionId = typeof value.sideSessionId === "string" && value.sideSessionId.trim()
+      ? value.sideSessionId.trim()
+      : undefined;
+    if (!sideSessionId) {
+      return undefined;
+    }
+    return {
+      action,
+      stateKey,
+      sideSessionId,
+      text: twinnyCardActionText(action)
+    };
+  }
   if (runId === undefined) {
     return undefined;
   }
@@ -11472,7 +11960,8 @@ function isTwinnyCardAction(value: unknown): value is ParsedCardActionCommand["a
     value === "status_hide" ||
     value === "status_refresh" ||
     value === "resume_prev" ||
-    value === "resume_next"
+    value === "resume_next" ||
+    value === "side_input_submit"
   );
 }
 
@@ -11500,6 +11989,8 @@ function twinnyCardActionText(action: ParsedCardActionCommand["action"]): string
       return "/resume 上一页";
     case "resume_next":
       return "/resume 下一页";
+    case "side_input_submit":
+      return "/side input";
   }
 }
 
@@ -11594,6 +12085,15 @@ function allocateSideId(state: ConversationState): number {
     sideId += 1;
   }
   return sideId;
+}
+
+function allocateSideSessionId(state: ConversationState): string {
+  let nextId = state.nextSideSessionId + 1;
+  while (state.sideSessions.has(String(nextId))) {
+    nextId += 1;
+  }
+  state.nextSideSessionId = nextId;
+  return String(nextId);
 }
 
 function sideCardSubtitle(status: TwinnyAgentCardStatus, sideId: number | undefined): string {
@@ -11810,6 +12310,49 @@ function extractPlanImplementInstruction(formValue: Record<string, unknown> | un
     .map((item) => item.trim())
     .find(Boolean);
   return value || undefined;
+}
+
+function extractSideFollowupText(action: IncomingLarkCardAction): string | undefined {
+  const inputValue = nonEmptyString(action.inputValue);
+  if (inputValue) {
+    return inputValue;
+  }
+  return stringArrayValue(action.formValue?.[SIDE_FOLLOWUP_INPUT_FORM_NAME])
+    .map((item) => item.trim())
+    .find(Boolean);
+}
+
+function sideFollowupCardMessage(
+  input: SideFollowupInput,
+  kind: "supplement" | "question"
+): TwinnyAgentCardMessage {
+  return {
+    id: `side-followup:${input.eventId}`,
+    text: kind === "question" ? `[收到追问] ${input.text}` : `[收到补充说明] ${input.text}`,
+    processOnly: true
+  };
+}
+
+function formatSideFollowupInputForCodex(
+  input: SideFollowupInput,
+  kind: "supplement" | "question"
+): CodexTurnInput {
+  const label = kind === "question" ? "用户追问" : "用户补充说明";
+  return [
+    `<side_card_followup kind="${kind}" event_id="${escapeXmlAttribute(input.eventId)}" operator_ouid="${escapeXmlAttribute(input.operatorOpenId)}">`,
+    `${label}:`,
+    escapeXmlText(input.text),
+    "</side_card_followup>"
+  ].join("\n");
+}
+
+function cardActionErrorToast(content: string): LarkCardActionCallbackResponse {
+  return {
+    toast: {
+      type: "error",
+      content
+    }
+  };
 }
 
 function formatConfirmedPlanProgress(supplementalInstruction: string | undefined): string {
@@ -12552,6 +13095,10 @@ function isStatusCardAction(command: ParsedCardActionCommand): command is Parsed
 
 function isResumeListCardAction(command: ParsedCardActionCommand): command is ParsedResumeListCardActionCommand {
   return command.action === "resume_prev" || command.action === "resume_next";
+}
+
+function isSideFollowupCardAction(command: ParsedCardActionCommand): command is ParsedSideFollowupCardActionCommand {
+  return command.action === "side_input_submit";
 }
 
 function statusCardActionLarkThreadId(command: ParsedStatusCardActionCommand): string | undefined {

@@ -18,6 +18,7 @@ import {
   type IncomingLarkDocCommentAdd,
   type IncomingLarkMessage,
   type IncomingLarkMessageRecall,
+  type LarkCardActionCallbackResponse,
   type LarkLogger,
   type LarkSdkLogger
 } from "./types.js";
@@ -48,7 +49,7 @@ export interface LarkEventConsumerOptions {
   onMessageRecall?: (recall: IncomingLarkMessageRecall) => Promise<void> | void;
   onDocCommentAdd?: (comment: IncomingLarkDocCommentAdd) => Promise<void> | void;
   onBotMenu?: (action: IncomingLarkBotMenuAction) => Promise<void> | void;
-  onCardAction?: (action: IncomingLarkCardAction) => Promise<void> | void;
+  onCardAction?: (action: IncomingLarkCardAction) => Promise<LarkCardActionCallbackResponse | void> | LarkCardActionCallbackResponse | void;
   onConnectionError?: (error: Error) => void;
   onIgnored?: (reason: string, raw: unknown) => void;
   wsClientFactory?: (options: LarkEventConsumerWsFactoryOptions) => WsClientLike;
@@ -167,7 +168,7 @@ export class LarkEventConsumer {
           this.options.logger?.debug?.({ reason: result.reason }, "ignored Lark card action event");
           return;
         }
-        await this.options.onCardAction(result.action);
+        return await this.options.onCardAction(result.action);
       }
     });
 
@@ -251,6 +252,7 @@ function normalizeLarkCardActionWithReason(data: unknown): NormalizeCardActionRe
     stringValue(asRecord(operator?.user_id)?.open_id);
   const action = asRecord(event.action);
   const actionValue = asRecord(action?.value);
+  const inputValue = stringValue(action?.input_value) ?? stringValue(action?.inputValue);
   const formValue = asRecord(action?.form_value) ?? asRecord(action?.formValue);
   const openMessageId =
     stringValue(event.open_message_id) ??
@@ -282,6 +284,7 @@ function normalizeLarkCardActionWithReason(data: unknown): NormalizeCardActionRe
       openChatId,
       actionTag: stringValue(action?.tag),
       actionValue,
+      inputValue,
       formValue,
       raw: data
     }

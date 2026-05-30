@@ -73,6 +73,14 @@ export interface FetchRequestInitLike {
 
 export type FetchLike = (input: string, init?: FetchRequestInitLike) => Promise<FetchResponseLike>;
 
+export interface LarkCardActionCallbackResponse {
+  toast?: {
+    type: "info" | "success" | "error" | "warning";
+    content: string;
+    i18n?: Record<string, string>;
+  };
+}
+
 export interface LarkCredentialOptions {
   appId: string;
   appSecret: string;
