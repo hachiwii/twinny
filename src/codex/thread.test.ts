@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest";
-import { buildThreadForkParams, buildThreadResumeParams, buildThreadStartParams } from "./thread.js";
+import { describe, expect, it, vi } from "vitest";
+import type { CodexNotificationMessage, CodexProtocolClient } from "./protocol.js";
+import {
+  buildThreadForkParams,
+  buildThreadResumeParams,
+  buildThreadStartParams,
+  rollbackCodexThread
+} from "./thread.js";
 
 describe("codex thread payloads", () => {
   it("builds thread/start with Twinny's thread runtime overrides", () => {
@@ -136,5 +142,53 @@ describe("codex thread payloads", () => {
       model: "gpt-5.5",
       config: { model_reasoning_effort: "medium" }
     });
+  });
+
+  it("rolls back a thread and captures the matching token usage notification", async () => {
+    const notificationListeners = new Set<(message: CodexNotificationMessage) => void>();
+    const request = vi.fn(async (method: string, params: unknown) => {
+      queueMicrotask(() => {
+        for (const listener of notificationListeners) {
+          listener({
+            method: "thread/tokenUsage/updated",
+            params: {
+              threadId: "thread_123",
+              turnId: "turn_1",
+              tokenUsage: {
+                total: { totalTokens: 42 },
+                last: { totalTokens: 21 }
+              }
+            }
+          });
+        }
+      });
+      return { thread: { id: "thread_123", turns: [] } };
+    });
+    const protocol = {
+      request,
+      on: vi.fn((event: string, listener: (message: CodexNotificationMessage) => void) => {
+        if (event === "notification") {
+          notificationListeners.add(listener);
+        }
+        return protocol;
+      }),
+      off: vi.fn((event: string, listener: (message: CodexNotificationMessage) => void) => {
+        if (event === "notification") {
+          notificationListeners.delete(listener);
+        }
+        return protocol;
+      })
+    } as unknown as CodexProtocolClient;
+
+    await expect(rollbackCodexThread(protocol, { threadId: "thread_123", numTurns: 2 })).resolves.toMatchObject({
+      thread: { id: "thread_123" },
+      tokenUsage: {
+        threadId: "thread_123",
+        turnId: "turn_1",
+        totalTokens: 42
+      }
+    });
+    expect(request).toHaveBeenCalledWith("thread/rollback", { threadId: "thread_123", numTurns: 2 });
+    expect(protocol.off).toHaveBeenCalledWith("notification", expect.any(Function));
   });
 });

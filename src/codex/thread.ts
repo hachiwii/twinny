@@ -1,4 +1,5 @@
-import type { CodexProtocolClient } from "./protocol.js";
+import type { CodexThreadTokenUsageUpdate } from "../types.js";
+import type { CodexNotificationMessage, CodexProtocolClient } from "./protocol.js";
 
 export type CodexApprovalPolicy = "never";
 
@@ -355,6 +356,16 @@ export interface ThreadSearchResponse {
   backwardsCursor: string | null;
 }
 
+export interface ThreadRollbackParams {
+  threadId: string;
+  numTurns: number;
+}
+
+export interface ThreadRollbackResponse {
+  thread: CodexThread;
+  tokenUsage?: CodexThreadTokenUsageUpdate;
+}
+
 export type ThreadItem =
   | { type: "userMessage"; id: string; content: unknown[] }
   | { type: "agentMessage"; id: string; text: string; phase?: string | null }
@@ -508,9 +519,133 @@ export async function searchCodexThreads(
   return protocol.request<ThreadSearchResponse, ThreadSearchParams>("thread/search", params);
 }
 
+export async function rollbackCodexThread(
+  protocol: CodexProtocolClient,
+  params: ThreadRollbackParams,
+  options: { tokenUsageWaitMs?: number } = {}
+): Promise<ThreadRollbackResponse> {
+  let tokenUsage: CodexThreadTokenUsageUpdate | undefined;
+  let resolveTokenUsage: ((usage: CodexThreadTokenUsageUpdate | undefined) => void) | undefined;
+  const tokenUsagePromise = new Promise<CodexThreadTokenUsageUpdate | undefined>((resolve) => {
+    resolveTokenUsage = resolve;
+  });
+  const onNotification = (message: CodexNotificationMessage) => {
+    const parsed = parseThreadTokenUsageNotification(message, params.threadId);
+    if (!parsed) {
+      return;
+    }
+    tokenUsage = parsed;
+    resolveTokenUsage?.(parsed);
+  };
+
+  protocol.on("notification", onNotification);
+  try {
+    const response = await protocol.request<ThreadRollbackResponse, ThreadRollbackParams>("thread/rollback", params);
+    if (!tokenUsage) {
+      tokenUsage = await waitForTokenUsage(tokenUsagePromise, options.tokenUsageWaitMs ?? 500);
+    }
+    return tokenUsage ? { ...response, tokenUsage } : response;
+  } finally {
+    protocol.off("notification", onNotification);
+  }
+}
+
 export async function setCodexThreadName(
   protocol: CodexProtocolClient,
   params: ThreadSetNameParams
 ): Promise<void> {
   await protocol.request<Record<string, never>, ThreadSetNameParams>("thread/name/set", params);
+}
+
+function parseThreadTokenUsageNotification(
+  message: CodexNotificationMessage,
+  threadId: string
+): CodexThreadTokenUsageUpdate | undefined {
+  if (message.method !== "thread/tokenUsage/updated" || !isRecord(message.params) || message.params.threadId !== threadId) {
+    return undefined;
+  }
+  const totalTokens = extractTotalTokens(message.params);
+  if (totalTokens === undefined) {
+    return undefined;
+  }
+  return {
+    threadId,
+    turnId: stringValue(message.params.turnId),
+    totalTokens,
+    raw: message.params
+  };
+}
+
+async function waitForTokenUsage(
+  promise: Promise<CodexThreadTokenUsageUpdate | undefined>,
+  waitMs: number
+): Promise<CodexThreadTokenUsageUpdate | undefined> {
+  if (waitMs <= 0) {
+    return undefined;
+  }
+  return Promise.race([
+    promise,
+    new Promise<undefined>((resolve) => {
+      setTimeout(() => resolve(undefined), waitMs);
+    })
+  ]);
+}
+
+function extractTotalTokens(params: Record<string, unknown>): number | undefined {
+  return firstFiniteNumber(
+    params.totalTokens,
+    params.total_tokens,
+    nestedValue(params, ["usage", "totalTokens"]),
+    nestedValue(params, ["usage", "total_tokens"]),
+    nestedValue(params, ["usage", "total", "totalTokens"]),
+    nestedValue(params, ["usage", "total", "total_tokens"]),
+    nestedValue(params, ["total", "totalTokens"]),
+    nestedValue(params, ["total", "total_tokens"]),
+    nestedValue(params, ["tokenUsage", "totalTokens"]),
+    nestedValue(params, ["tokenUsage", "total_tokens"]),
+    nestedValue(params, ["tokenUsage", "total", "totalTokens"]),
+    nestedValue(params, ["tokenUsage", "total", "total_tokens"])
+  );
+}
+
+function nestedValue(record: Record<string, unknown>, path: string[]): unknown {
+  let current: unknown = record;
+  for (const key of path) {
+    if (!isRecord(current)) {
+      return undefined;
+    }
+    current = current[key];
+  }
+  return current;
+}
+
+function firstFiniteNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    const parsed = finiteNumber(value);
+    if (parsed !== undefined) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

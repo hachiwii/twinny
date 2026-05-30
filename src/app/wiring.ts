@@ -790,6 +790,9 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool) {
     searchThreads: async ({ profile, ...params }: { profile: ProfileName } & ThreadSearchParams) => {
       return pool.get(profile).searchThreads(params);
     },
+    rollbackThread: async ({ profile, threadId, numTurns }: { profile: ProfileName; threadId: string; numTurns: number }) => {
+      return pool.get(profile).rollbackThread(threadId, numTurns);
+    },
     injectThreadItems: async ({ profile, threadId, items }: { profile: ProfileName; threadId: string; items: unknown[] }) => {
       await pool.get(profile).injectThreadItems(threadId, items);
     },

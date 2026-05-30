@@ -30,6 +30,7 @@ import {
   listCodexThreads,
   readCodexThread,
   resumeCodexThread,
+  rollbackCodexThread,
   searchCodexThreads,
   setCodexThreadName,
   startCodexThread,
@@ -39,6 +40,7 @@ import {
   type ThreadListResponse,
   type ThreadReadResponse,
   type ThreadResumeResponse,
+  type ThreadRollbackResponse,
   type ThreadSearchParams,
   type ThreadSearchResponse,
   type ThreadStartResponse
@@ -264,6 +266,10 @@ export class CodexAppServer extends EventEmitter {
 
   async searchThreads(params: ThreadSearchParams): Promise<ThreadSearchResponse> {
     return searchCodexThreads(this.protocol, params);
+  }
+
+  async rollbackThread(threadId: string, numTurns: number): Promise<ThreadRollbackResponse> {
+    return rollbackCodexThread(this.protocol, { threadId, numTurns });
   }
 
   async startTurn(options: TurnStartOptions): Promise<import("../types.js").CodexTurnResult> {

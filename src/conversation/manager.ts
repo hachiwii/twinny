@@ -98,6 +98,7 @@ import type {
   CodexThread,
   ThreadListParams,
   ThreadListResponse,
+  ThreadRollbackResponse,
   ThreadSearchParams,
   ThreadSearchResponse,
   ThreadSourceKind,
@@ -118,6 +119,7 @@ import {
 
 const COMPACT_PROGRESS_TEXT = "正在压缩上下文";
 const COMPACT_COMPLETED_TEXT = "完成上下文压缩";
+const REWIND_USAGE_TEXT = "用法：/rewind <n> 或 /rollback <n>，n 为正整数。";
 const SIDE_SHUTDOWN_ERROR = "Twinny 服务退出";
 const UNRECOVERABLE_CONTROL_MESSAGE_RECOVERY_TEXT = "上一条控制命令在 Twinny daemon 重启前中断，已终止；请重新执行。";
 const MAIN_THREAD_NAME = "主会话";
@@ -643,6 +645,11 @@ export interface CodexBridge {
   searchThreads?(params: {
     profile: ProfileName;
   } & ThreadSearchParams): Promise<ThreadSearchResponse>;
+  rollbackThread?(params: {
+    profile: ProfileName;
+    threadId: string;
+    numTurns: number;
+  }): Promise<ThreadRollbackResponse>;
   injectThreadItems?(params: {
     profile: ProfileName;
     threadId: string;
@@ -969,7 +976,8 @@ interface PendingMessage {
   text: string;
   original: IncomingLarkMessage;
   queueBoundary: boolean;
-  control?: "plan_on" | "plan_off" | "compact" | "goal_set";
+  control?: "plan_on" | "plan_off" | "compact" | "rewind" | "goal_set";
+  rewindTurns?: number;
   forceQueueWhenActive?: boolean;
   excludeFromParticipants?: boolean;
   skipQueuedRefresh?: boolean;
@@ -1193,6 +1201,7 @@ type ParsedCommand =
   | { kind: "plan"; text: string }
   | { kind: "exit" }
   | { kind: "compact" }
+  | { kind: "rewind"; text: string }
   | { kind: "logo" }
   | { kind: "banner" }
   | { kind: "stop"; text: string }
@@ -1224,6 +1233,7 @@ type MessageQueueReason =
   | "plan_command"
   | "exit_command"
   | "compact_command"
+  | "rewind_command"
   | "queue_next_message"
   | "pending_batch"
   | "suspended_active_turn"
@@ -1990,6 +2000,7 @@ export class ConversationManager {
       return undefined;
     }
     const parsed = parseQueuedAwareSlashCommand(normalized.text);
+    const rewind = parsed.kind === "rewind" ? parseRewindCommand(parsed.text) : undefined;
     const text = record.status === "queued" && (normalized.resources?.length ?? 0) > 0 ? normalized.text : record.text;
     const syntheticEnvelope = await this.syntheticEnvelopeForRecoveredRecord(record, raw);
     const isSyntheticMessage = syntheticEnvelope !== undefined;
@@ -1997,6 +2008,7 @@ export class ConversationManager {
       queueBoundary:
         isSyntheticMessage ||
         parsed.kind === "compact" ||
+        (rewind?.kind === "valid") ||
         parsed.kind === "goal" ||
         (record.status === "queued" &&
           (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit")),
@@ -2011,7 +2023,10 @@ export class ConversationManager {
             ? "plan_off"
             : parsed.kind === "compact"
               ? "compact"
+              : rewind?.kind === "valid"
+                ? "rewind"
               : undefined,
+      rewindTurns: rewind?.kind === "valid" ? rewind.numTurns : undefined,
       forceQueueWhenActive: isSyntheticMessage,
       excludeFromParticipants: isSyntheticMessage,
       skipQueuedRefresh: isSyntheticMessage,
@@ -2069,6 +2084,7 @@ export class ConversationManager {
       await this.prepareIncomingMessageForCodex(context, normalized);
     }
     const parsed = parseQueuedAwareSlashCommand(normalized.text);
+    const rewind = parsed.kind === "rewind" ? parseRewindCommand(parsed.text) : undefined;
     const text = (record.status === "queued" && (normalized.resources?.length ?? 0) > 0) ? normalized.text : record.text;
     const syntheticEnvelope = await this.syntheticEnvelopeForRecoveredRecord(record, raw);
     const isSyntheticMessage = syntheticEnvelope !== undefined;
@@ -2076,6 +2092,7 @@ export class ConversationManager {
       queueBoundary:
         isSyntheticMessage ||
         parsed.kind === "compact" ||
+        (rewind?.kind === "valid") ||
         parsed.kind === "goal" ||
         (record.status === "queued" &&
           (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit")),
@@ -2090,7 +2107,10 @@ export class ConversationManager {
             ? "plan_off"
             : parsed.kind === "compact"
               ? "compact"
+              : rewind?.kind === "valid"
+                ? "rewind"
               : undefined,
+      rewindTurns: rewind?.kind === "valid" ? rewind.numTurns : undefined,
       forceQueueWhenActive: isSyntheticMessage,
       excludeFromParticipants: isSyntheticMessage,
       skipQueuedRefresh: isSyntheticMessage,
@@ -2832,6 +2852,10 @@ export class ConversationManager {
     }
     if (parsed.kind === "compact") {
       await this.handleCompactCommand(state, context, message);
+      return;
+    }
+    if (parsed.kind === "rewind") {
+      await this.handleRewindCommand(state, context, message, parsed.text);
       return;
     }
     if (parsed.kind === "logo") {
@@ -4453,9 +4477,17 @@ export class ConversationManager {
 
     state.queueNextMessage = false;
     const nested = parseSlashCommand(text);
+    const rewind = nested.kind === "rewind" ? parseRewindCommand(nested.text) : undefined;
+    if (rewind?.kind === "invalid") {
+      await this.replyControlBestEffort(message.messageId, rewind.message);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
     const pending = nested.kind === "goal"
       ? toPendingMessage(message, nested.text, { queueBoundary: true, control: "goal_set" })
-      : toPendingMessage(message, text, { queueBoundary: true });
+      : rewind?.kind === "valid"
+        ? toPendingMessage(message, "", { queueBoundary: true, control: "rewind", rewindTurns: rewind.numTurns })
+        : toPendingMessage(message, text, { queueBoundary: true });
     if (pending.control === "goal_set" && !goalContentForPendingMessage(pending)) {
       await this.replyControlBestEffort(message.messageId, "用法：/goal <objective>");
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -4857,6 +4889,28 @@ export class ConversationManager {
     const pending = toPendingMessage(message, "", {
       queueBoundary: true,
       control: "compact"
+    });
+    await this.schedulePendingMessage(state, context, pending);
+  }
+
+  private async handleRewindCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    const parsed = parseRewindCommand(text);
+    if (parsed.kind === "invalid") {
+      await this.replyControlBestEffort(message.messageId, parsed.message);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    state.queueNextMessage = false;
+    const pending = toPendingMessage(message, "", {
+      queueBoundary: true,
+      control: "rewind",
+      rewindTurns: parsed.numTurns
     });
     await this.schedulePendingMessage(state, context, pending);
   }
@@ -6431,6 +6485,17 @@ export class ConversationManager {
       });
       return;
     }
+    if (pending.control === "rewind") {
+      if (resolved.replacedMissingThread) {
+        await this.notifyThreadReplacementBestEffort(pending.messageId, resolved.previousThreadId, resolved.threadId);
+      }
+      await this.processRewindControlMessage(context, pending, {
+        profile: resolved.profile,
+        threadId: resolved.threadId,
+        workspace: resolved.workspace
+      });
+      return;
+    }
     if (pending.control === "goal_set") {
       if (resolved.replacedMissingThread) {
         await this.notifyThreadReplacementBestEffort(pending.messageId, resolved.previousThreadId, resolved.threadId);
@@ -6459,6 +6524,46 @@ export class ConversationManager {
     await this.setThreadModeBestEffort(resolved.conversationKey, resolved.threadId, "default");
     await this.markMessagesCompletedBestEffort([pending.messageId]);
     await this.replyControlBestEffort(pending.messageId, "已退出 plan mode。");
+  }
+
+  private async processRewindControlMessage(
+    context: MessageContext,
+    pending: PendingMessage,
+    resolved: { profile: ProfileName; threadId: string; workspace: string }
+  ): Promise<void> {
+    const numTurns = pending.rewindTurns;
+    if (typeof numTurns !== "number" || !Number.isInteger(numTurns) || numTurns < 1) {
+      await this.replyControlBestEffort(pending.messageId, REWIND_USAGE_TEXT);
+      await this.markMessagesCompletedBestEffort([pending.messageId]);
+      return;
+    }
+    if (!this.options.codex.rollbackThread) {
+      await this.replyControlBestEffort(pending.messageId, "当前 Codex app-server 不支持 /rewind。");
+      await this.markMessagesFailedBestEffort([pending.messageId]);
+      return;
+    }
+
+    await this.markPendingMessagesProcessingBestEffort([pending], {
+      conversationKey: context.conversationKey,
+      codexThreadId: resolved.threadId
+    });
+    try {
+      const response = await this.options.codex.rollbackThread({
+        profile: resolved.profile,
+        threadId: resolved.threadId,
+        numTurns
+      });
+      if (response.tokenUsage) {
+        await this.recordThreadRollbackTokenUsageBestEffort(context, resolved, response.tokenUsage);
+      } else {
+        this.log.warn({ threadId: resolved.threadId, numTurns }, "codex rollback completed without token usage update");
+      }
+      await this.markMessagesCompletedBestEffort([pending.messageId]);
+      await this.replyControlBestEffort(pending.messageId, `已回滚当前 thread ${numTurns} 个 turn。`);
+    } catch (error) {
+      await this.replyErrorBestEffort(pending.messageId, error);
+      await this.markMessagesFailedBestEffort([pending.messageId]);
+    }
   }
 
   private async beginCompactTurn(
@@ -6655,6 +6760,11 @@ export class ConversationManager {
       const parsed = parseSlashCommand(normalized.text);
       const nested = parsed.kind === "queue" ? parseSlashCommand(parsed.text) : undefined;
       const text = nested?.kind === "goal" ? nested.text : parsed.kind === "queue" ? parsed.text : normalized.text;
+      const queuedParsed = parseQueuedAwareSlashCommand(normalized.text);
+      if (pending.control === "rewind") {
+        const rewind = queuedParsed.kind === "rewind" ? parseRewindCommand(queuedParsed.text) : undefined;
+        pending.rewindTurns = rewind?.kind === "valid" ? rewind.numTurns : undefined;
+      }
       await this.prepareIncomingMessageForCodex(context, normalized);
       pending.original = normalized;
       pending.text = (normalized.downloadedFiles?.length ?? 0) > 0 ? normalized.text : text;
@@ -9582,6 +9692,37 @@ export class ConversationManager {
     }
   }
 
+  private async recordThreadRollbackTokenUsageBestEffort(
+    context: MessageContext,
+    resolved: { profile: ProfileName; threadId: string; workspace: string },
+    usage: CodexThreadTokenUsageUpdate
+  ): Promise<void> {
+    try {
+      const thread = await this.options.repository.getCodexThreadById(resolved.threadId);
+      const tokenUsage = subtractThreadTokenUsage(
+        extractThreadTokenUsage(usage),
+        extractThreadForkBaseTokenUsage(thread)
+      );
+      await this.options.repository.updateCodexThreadTokenUsage({
+        codexThreadId: resolved.threadId,
+        conversationKey: thread?.conversationKey ?? context.conversationKey,
+        workspace: thread?.workspace ?? resolved.workspace,
+        profile: thread?.profile ?? resolved.profile,
+        inputTokens: tokenUsage.inputTokens,
+        outputTokens: tokenUsage.outputTokens,
+        cachedInputTokens: tokenUsage.cachedInputTokens,
+        reasoningOutputTokens: tokenUsage.reasoningOutputTokens,
+        totalTokens: tokenUsage.totalTokens,
+        contextTokens: tokenUsage.contextTokens,
+        contextWindow: tokenUsage.contextWindow,
+        tokenUsageJson: safeJsonStringify(usage.raw) ?? "{}"
+      });
+      await this.updateThreadSummaryCardBestEffort(resolved.threadId);
+    } catch (error) {
+      this.log.warn({ error, threadId: usage.threadId, totalTokens: usage.totalTokens }, "failed to record rollback token usage");
+    }
+  }
+
   private initializeThreadTokenUsageBaseFromFirstUpdate(
     active: ActiveTurn,
     rawTokenUsage: ThreadTokenUsageSnapshot,
@@ -11967,6 +12108,9 @@ function parseSlashCommand(text: string): ParsedCommand {
   if (command === "compact") {
     return { kind: "compact" };
   }
+  if (command === "rewind" || command === "rollback") {
+    return { kind: "rewind", text: rest };
+  }
   if (command === "logo") {
     return { kind: "logo" };
   }
@@ -11982,7 +12126,24 @@ function parseQueuedAwareSlashCommand(text: string): ParsedCommand {
     return parsed;
   }
   const nested = parseSlashCommand(parsed.text);
-  return nested.kind === "goal" ? nested : parsed;
+  return nested.kind === "goal" || (nested.kind === "rewind" && parseRewindCommand(nested.text).kind === "valid")
+    ? nested
+    : parsed;
+}
+
+function parseRewindCommand(text: string): { kind: "valid"; numTurns: number } | { kind: "invalid"; message: string } {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return { kind: "invalid", message: REWIND_USAGE_TEXT };
+  }
+  if (!/^\d+$/.test(trimmed)) {
+    return { kind: "invalid", message: REWIND_USAGE_TEXT };
+  }
+  const numTurns = Number(trimmed);
+  if (!Number.isSafeInteger(numTurns) || numTurns < 1 || numTurns > 0xffffffff) {
+    return { kind: "invalid", message: REWIND_USAGE_TEXT };
+  }
+  return { kind: "valid", numTurns };
 }
 
 function parseModelCommand(text: string): { kind: "valid"; model: string; effort: string } | { kind: "invalid"; message: string } {
@@ -14192,6 +14353,7 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/exit - 退出 plan mode；默认加入下一轮队列",
     "/side <message> 或 /btw <message> - 基于当前 Codex thread 发起临时会话",
     "/compact - 压缩当前 Codex thread 上下文；默认加入下一轮队列",
+    "/rewind <n> 或 /rollback <n> - 将当前 Codex thread 回滚 n 个 turn；默认加入下一轮队列",
     "/logo - 发送 Twinny logo.png",
     "/twinny 或 /banner - 发送 Twinny banner 卡片",
     "/thread [message] - 创建新话题",
@@ -14346,6 +14508,18 @@ function classifyInitialRoute(
       queueReason: "compact_command"
     });
   }
+  if (parsed.kind === "rewind") {
+    const rewind = parseRewindCommand(parsed.text);
+    if (rewind.kind === "invalid") {
+      return routeForParsedCommand(parsed, { routeKind: "control_message", status: "processing", text: originalText });
+    }
+    return routeForParsedCommand(parsed, {
+      routeKind: "queued_message",
+      status: "queued",
+      text: originalText,
+      queueReason: "rewind_command"
+    });
+  }
   if (
     parsed.kind === "help" ||
     parsed.kind === "status" ||
@@ -14411,6 +14585,7 @@ function toPendingMessage(
   options: {
     queueBoundary?: boolean;
     control?: PendingMessage["control"];
+    rewindTurns?: number;
     docComment?: PendingDocCommentContext;
     forceQueueWhenActive?: boolean;
     excludeFromParticipants?: boolean;
@@ -14424,6 +14599,7 @@ function toPendingMessage(
     original: message,
     queueBoundary: options.queueBoundary ?? false,
     control: options.control,
+    rewindTurns: options.rewindTurns,
     forceQueueWhenActive: options.forceQueueWhenActive,
     excludeFromParticipants: options.excludeFromParticipants,
     skipQueuedRefresh: options.skipQueuedRefresh,
@@ -14439,7 +14615,10 @@ function isUnrecoverableControlMessage(record: LarkMessageRecord, message: Pendi
 function shouldRecoverPendingControlMessage(record: LarkMessageRecord, message: PendingMessage): boolean {
   return (
     !!message.control &&
-    (record.status === "queued" || record.routeKind === "control_message" || message.control === "compact")
+    (record.status === "queued" ||
+      record.routeKind === "control_message" ||
+      message.control === "compact" ||
+      message.control === "rewind")
   );
 }
 
@@ -14482,7 +14661,7 @@ function directRouteForParsedCommand(
       ? routeForParsedCommand(parsed, { routeKind: "message", status: "processing", text: parsed.text })
       : routeForParsedCommand(parsed, { routeKind: "control_message", status: "processing", text: message.text });
   }
-  if (parsed.kind === "exit" || parsed.kind === "compact") {
+  if (parsed.kind === "exit" || parsed.kind === "compact" || parsed.kind === "rewind") {
     return routeForParsedCommand(parsed, { routeKind: "control_message", status: "processing", text: message.text });
   }
   if (parsed.kind === "side") {
@@ -14503,7 +14682,8 @@ function isSchedulableParsedCommand(parsed: ParsedCommand): boolean {
     parsed.kind === "goal" ||
     parsed.kind === "plan" ||
     parsed.kind === "exit" ||
-    parsed.kind === "compact"
+    parsed.kind === "compact" ||
+    parsed.kind === "rewind"
   );
 }
 

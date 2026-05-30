@@ -4198,6 +4198,121 @@ describe("ConversationManager", () => {
     expect(codex.steerTurn).not.toHaveBeenCalled();
   });
 
+  it("runs /rewind as a queued control command and updates thread token usage", async () => {
+    const rawUsage = {
+      threadId: "thread_1",
+      turnId: "turn_1",
+      tokenUsage: {
+        total: {
+          totalTokens: 80,
+          inputTokens: 50,
+          cachedInputTokens: 20,
+          outputTokens: 30,
+          reasoningOutputTokens: 10
+        },
+        last: { totalTokens: 40 },
+        modelContextWindow: 200
+      }
+    };
+    const { repository } = createRepository(conversationRecord());
+    const lark = createLarkResponder();
+    const codex = createCodex({
+      rollbackThread: vi.fn(async ({ threadId }) => ({
+        thread: { id: threadId, turns: [{ id: "turn_1", items: [], itemsView: "full" as const, status: "completed" }] },
+        tokenUsage: {
+          threadId,
+          turnId: "turn_1",
+          totalTokens: 80,
+          raw: rawUsage
+        }
+      }))
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m1", "/rewind 2"));
+
+    await waitForExpect(() => expect(codex.rollbackThread).toHaveBeenCalledTimes(1));
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(codex.rollbackThread).toHaveBeenCalledWith({
+      profile: "guest",
+      threadId: "thread_1",
+      numTurns: 2
+    });
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "m1",
+        routeKind: "queued_message",
+        status: "queued",
+        text: "/rewind 2"
+      })
+    );
+    await waitForExpect(() => expect(repository.updateCodexThreadTokenUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        codexThreadId: "thread_1",
+        conversationKey: "p2p_ou_guest",
+        inputTokens: 50,
+        outputTokens: 30,
+        cachedInputTokens: 20,
+        reasoningOutputTokens: 10,
+        totalTokens: 80,
+        contextTokens: 40,
+        contextWindow: 200,
+        tokenUsageJson: JSON.stringify(rawUsage)
+      })
+    ));
+    expect(repository.updateLarkMessageTokenUsage).not.toHaveBeenCalled();
+    expect(lark.replyText).toHaveBeenCalledWith("m1", "已回滚当前 thread 2 个 turn。");
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m1"]);
+  });
+
+  it("supports /rollback as a /rewind alias and requires n", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const lark = createLarkResponder();
+    const codex = createCodex();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m1", "/rollback 4"));
+    await waitForExpect(() => expect(codex.rollbackThread).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "thread_1", numTurns: 4 })
+    ));
+
+    manager.submitIncoming(message("m2", "/rewind"));
+    manager.submitIncoming(message("m3", "/rollback nope"));
+
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith(
+      "m2",
+      "用法：/rewind <n> 或 /rollback <n>，n 为正整数。"
+    ));
+    expect(lark.replyText).toHaveBeenCalledWith("m3", "用法：/rewind <n> 或 /rollback <n>，n 为正整数。");
+    expect(codex.rollbackThread).toHaveBeenCalledTimes(1);
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "m2",
+        routeKind: "control_message",
+        status: "processing",
+        text: "/rewind"
+      })
+    );
+  });
+
+  it("queues /rollback behind an active turn and runs it after the turn completes", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ codex });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/rollback 3"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+
+    expect(codex.rollbackThread).not.toHaveBeenCalled();
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+
+    await waitForExpect(() => expect(codex.rollbackThread).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "thread_1", numTurns: 3 })
+    ));
+    expect(codex.steerTurn).not.toHaveBeenCalled();
+  });
+
   it("runs /compact directly while plan waiting without queued reactions", async () => {
     const turns: Array<Deferred<CodexTurnResult> & { params: Parameters<CodexBridge["startTurn"]>[0] }> = [];
     const compacts: Array<Deferred<CodexTurnResult> & { params: Parameters<CodexBridge["compactThread"]>[0] }> = [];
@@ -4641,6 +4756,7 @@ describe("ConversationManager", () => {
       "/exit - 退出 plan mode；默认加入下一轮队列",
       "/side <message> 或 /btw <message> - 基于当前 Codex thread 发起临时会话",
       "/compact - 压缩当前 Codex thread 上下文；默认加入下一轮队列",
+      "/rewind <n> 或 /rollback <n> - 将当前 Codex thread 回滚 n 个 turn；默认加入下一轮队列",
       "/logo - 发送 Twinny logo.png",
       "/twinny 或 /banner - 发送 Twinny banner 卡片",
       "/thread [message] - 创建新话题",
@@ -11626,6 +11742,30 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("recovers queued /rollback by rerunning the rewind control path", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_recovered" });
+    const record = larkMessageRecord({
+      larkMessageId: "m2",
+      routeKind: "queued_message",
+      status: "queued",
+      text: "/rollback 2",
+      rawEventJson: JSON.stringify(rawReceiveEvent("m2", "/rollback 2"))
+    });
+    const { repository } = createRepository(row, { larkMessages: [record] });
+    const codex = createCodex();
+    const manager = createManager({ repository, codex });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(codex.rollbackThread).toHaveBeenCalledTimes(1));
+
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(codex.rollbackThread).toHaveBeenCalledWith({
+      profile: "guest",
+      threadId: "thread_recovered",
+      numTurns: 2
+    });
+  });
+
   it("recovers processing /compact by rerunning compact instead of the recovery prompt", async () => {
     const row = conversationRecord({ codexThreadId: "thread_recovered" });
     const record = larkMessageRecord({
@@ -12234,6 +12374,9 @@ function createCodex(overrides: Partial<CodexBridge> = {}): CodexBridge {
       await onTurnStarted?.("compact_1");
       return completed(threadId, "compact_1");
     }),
+    rollbackThread: vi.fn(async ({ threadId }) => ({
+      thread: { id: threadId, turns: [] }
+    })),
     steerTurn: vi.fn(async () => undefined),
     interruptTurn: vi.fn(async () => undefined),
     readCodexVersion: vi.fn(() => "fake-codex 1.2.3"),
