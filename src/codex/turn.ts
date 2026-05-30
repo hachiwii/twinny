@@ -347,7 +347,13 @@ export async function startCodexTurn(
     onGoalCleared: options.onGoalCleared,
     onPlanUpdated: options.onPlanUpdated
   });
+  const bufferedNotifications: CodexNotificationMessage[] = [];
+  let responseReceived = false;
   const onNotification = (notification: CodexNotificationMessage): void => {
+    if (!responseReceived) {
+      bufferedNotifications.push(notification);
+      return;
+    }
     accumulator.record(notification);
   };
   const onServerRequest = (request: CodexRequestMessage): void => {
@@ -362,9 +368,14 @@ export async function startCodexTurn(
       buildTurnStartParams(options),
       { timeoutMs: requestOptions.requestTimeoutMs }
     );
+    responseReceived = true;
     if (response.turn?.id) {
       accumulator.setTurnId(response.turn.id, "response");
     }
+    for (const notification of bufferedNotifications) {
+      accumulator.record(notification);
+    }
+    bufferedNotifications.length = 0;
     return await accumulator.wait(requestOptions.completionTimeoutMs);
   } catch (error) {
     throw error instanceof Error
@@ -462,12 +473,18 @@ export class TurnOutputAccumulator {
   }
 
   setTurnId(turnId: string, source: TurnIdSource = "notification"): void {
-    const canReplaceResponseTurnId =
+    if (
       source === "notification" &&
       this.turnIdSource === "response" &&
       this.turnId !== undefined &&
-      this.turnId !== turnId;
-    if (!this.turnId || canReplaceResponseTurnId) {
+      this.turnId !== turnId
+    ) {
+      return;
+    }
+    if (source === "response") {
+      this.turnId = turnId;
+      this.turnIdSource = source;
+    } else if (!this.turnId) {
       this.turnId = turnId;
       this.turnIdSource = source;
     } else if (!this.turnIdSource) {
@@ -578,7 +595,7 @@ export class TurnOutputAccumulator {
     if (params.turnId) {
       this.setTurnId(params.turnId, "notification");
     }
-    if (this.turnId && params.turnId && params.turnId !== this.turnId) {
+    if (!this.matchesCurrentTurn(params.turnId)) {
       return;
     }
 
@@ -616,7 +633,7 @@ export class TurnOutputAccumulator {
     if (completedTurnId) {
       this.setTurnId(completedTurnId, "notification");
     }
-    if (this.turnId && completedTurnId && completedTurnId !== this.turnId) {
+    if (!this.matchesCurrentTurn(completedTurnId)) {
       return;
     }
 
@@ -656,13 +673,17 @@ export class TurnOutputAccumulator {
     if (!isRecord(params) || params.threadId !== this.threadId) {
       return;
     }
+    const turnId = stringValue(params.turnId);
+    if (!this.matchesCurrentTurn(turnId)) {
+      return;
+    }
     const totalTokens = extractTotalTokens(params);
     if (totalTokens === undefined) {
       return;
     }
     const usage: CodexThreadTokenUsageUpdate = {
       threadId: this.threadId,
-      turnId: stringValue(params.turnId),
+      turnId,
       totalTokens,
       raw: params
     };
@@ -678,7 +699,11 @@ export class TurnOutputAccumulator {
     if (!isRecord(params) || params.threadId !== this.threadId || !isThreadGoal(params.goal)) {
       return;
     }
-    void Promise.resolve(this.callbacks.onGoalUpdated?.(params.goal, stringValue(params.turnId) ?? null)).catch((error: unknown) => {
+    const turnId = stringValue(params.turnId);
+    if (!this.matchesCurrentTurn(turnId)) {
+      return;
+    }
+    void Promise.resolve(this.callbacks.onGoalUpdated?.(params.goal, turnId ?? null)).catch((error: unknown) => {
       const parsedError =
         error instanceof Error ? error : new TwinnyError(toErrorMessage(error), "CODEX_THREAD_GOAL_CALLBACK_FAILED");
       this.completionError = parsedError;
@@ -688,6 +713,9 @@ export class TurnOutputAccumulator {
 
   private recordGoalCleared(params: unknown): void {
     if (!isRecord(params) || params.threadId !== this.threadId) {
+      return;
+    }
+    if (!this.matchesCurrentTurn(stringValue(params.turnId))) {
       return;
     }
     void Promise.resolve(this.callbacks.onGoalCleared?.()).catch((error: unknown) => {
@@ -774,6 +802,10 @@ export class TurnOutputAccumulator {
 
   private async waitForPendingAgentMessageCallbacks(): Promise<void> {
     await Promise.all(this.pendingAgentMessageCallbacks);
+  }
+
+  private matchesCurrentTurn(turnId: string | undefined): boolean {
+    return !this.turnId || !turnId || turnId === this.turnId;
   }
 }
 

@@ -623,6 +623,11 @@ describe("Lark to Codex integration flow", () => {
     const harness = await IntegrationHarness.create(jsonl(
       {
         profile: "guest",
+        on: { method: "turn/start", nth: 1 },
+        reply: { turn: { id: "turn_passive_goal" } }
+      },
+      {
+        profile: "guest",
         after: { method: "turn/start", nth: 1 },
         notify: { method: "turn/started", params: { threadId: "guest_thread_1", turn: { id: "turn_passive_goal" } } }
       },
@@ -748,6 +753,11 @@ describe("Lark to Codex integration flow", () => {
             }
           }
         }
+      },
+      {
+        profile: "guest",
+        on: { method: "turn/start", nth: 1 },
+        reply: { turn: { id: "queued_turn_after_goal" } }
       },
       {
         profile: "guest",

@@ -1049,7 +1049,7 @@ describe("TurnOutputAccumulator", () => {
     expect(turnStarted).toHaveBeenCalledWith("turn_1");
   });
 
-  it("uses the notification turn id when it differs from the turn/start response id", async () => {
+  it("keeps the turn/start response id when notifications report another turn", async () => {
     const turnStarted = vi.fn();
     const messages: Array<{ id: string; text: string }> = [];
     const accumulator = new TurnOutputAccumulator("thread_123", undefined, {
@@ -1072,7 +1072,7 @@ describe("TurnOutputAccumulator", () => {
       params: {
         threadId: "thread_123",
         turnId: "notification_turn",
-        item: { type: "agentMessage", id: "msg_1", text: "progress" }
+        item: { type: "agentMessage", id: "msg_1", text: "stale progress" }
       }
     });
     accumulator.record({
@@ -1081,22 +1081,40 @@ describe("TurnOutputAccumulator", () => {
         threadId: "thread_123",
         turn: {
           id: "notification_turn",
+          status: "interrupted",
+          items: [{ type: "agentMessage", id: "msg_1", text: "stale progress" }]
+        }
+      }
+    });
+    accumulator.record({
+      method: "item/completed",
+      params: {
+        threadId: "thread_123",
+        turnId: "response_turn",
+        item: { type: "agentMessage", id: "msg_2", text: "current progress" }
+      }
+    });
+    accumulator.record({
+      method: "turn/completed",
+      params: {
+        threadId: "thread_123",
+        turn: {
+          id: "response_turn",
           status: "completed",
-          items: [{ type: "agentMessage", id: "msg_1", text: "progress" }]
+          items: [{ type: "agentMessage", id: "msg_2", text: "current progress" }]
         }
       }
     });
 
     await expect(accumulator.wait()).resolves.toMatchObject({
       threadId: "thread_123",
-      turnId: "notification_turn",
-      text: "progress",
+      turnId: "response_turn",
+      text: "current progress",
       status: "completed"
     });
-    expect(messages).toEqual([{ id: "msg_1", text: "progress" }]);
-    expect(turnStarted).toHaveBeenCalledTimes(2);
-    expect(turnStarted).toHaveBeenNthCalledWith(1, "response_turn");
-    expect(turnStarted).toHaveBeenNthCalledWith(2, "notification_turn");
+    expect(messages).toEqual([{ id: "msg_2", text: "current progress" }]);
+    expect(turnStarted).toHaveBeenCalledTimes(1);
+    expect(turnStarted).toHaveBeenCalledWith("response_turn");
   });
 
   it("keeps waiting when Codex reports a retryable turn error", async () => {
@@ -1359,6 +1377,115 @@ describe("startCodexTurn", () => {
       "turn/start",
       expect.any(Object),
       { timeoutMs: 5 }
+    );
+  });
+
+  it("ignores stale notifications received before turn/start returns the active turn id", async () => {
+    const protocol = new FakeProtocol();
+    const turnStarted = vi.fn();
+    const agentMessages = vi.fn();
+    const tokenUsage = vi.fn();
+
+    protocol.requestMock.mockImplementationOnce(async () => {
+      protocol.emit("notification", {
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: "thread_123",
+          turnId: "stale_turn",
+          usage: {
+            total: {
+              totalTokens: 11
+            }
+          }
+        }
+      });
+      protocol.emit("notification", {
+        method: "item/completed",
+        params: {
+          threadId: "thread_123",
+          turnId: "stale_turn",
+          item: { type: "agentMessage", id: "msg_stale", text: "stale output" }
+        }
+      });
+      protocol.emit("notification", {
+        method: "turn/completed",
+        params: {
+          threadId: "thread_123",
+          turn: {
+            id: "stale_turn",
+            status: "interrupted",
+            items: [{ type: "agentMessage", id: "msg_stale", text: "stale output" }]
+          }
+        }
+      });
+      return { turn: { id: "active_turn" } };
+    });
+
+    const result = startCodexTurn(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "continue",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onTurnStarted: turnStarted,
+        onAgentMessage: agentMessages,
+        onTokenUsage: tokenUsage
+      }
+    );
+
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+    protocol.emit("notification", {
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread_123",
+        turnId: "active_turn",
+        usage: {
+          total: {
+            totalTokens: 99
+          }
+        }
+      }
+    });
+    protocol.emit("notification", {
+      method: "item/completed",
+      params: {
+        threadId: "thread_123",
+        turnId: "active_turn",
+        item: { type: "agentMessage", id: "msg_active", text: "current output" }
+      }
+    });
+    protocol.emit("notification", {
+      method: "turn/completed",
+      params: {
+        threadId: "thread_123",
+        turn: {
+          id: "active_turn",
+          status: "completed",
+          items: [{ type: "agentMessage", id: "msg_active", text: "current output" }]
+        }
+      }
+    });
+
+    await expect(result).resolves.toMatchObject({
+      threadId: "thread_123",
+      turnId: "active_turn",
+      text: "current output",
+      status: "completed"
+    });
+    expect(turnStarted).toHaveBeenCalledTimes(1);
+    expect(turnStarted).toHaveBeenCalledWith("active_turn");
+    expect(agentMessages).toHaveBeenCalledTimes(1);
+    expect(agentMessages).toHaveBeenCalledWith({ id: "msg_active", text: "current output" });
+    expect(tokenUsage).toHaveBeenCalledTimes(1);
+    expect(tokenUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_123",
+        turnId: "active_turn",
+        totalTokens: 99
+      })
     );
   });
 });
