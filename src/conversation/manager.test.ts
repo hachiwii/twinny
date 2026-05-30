@@ -2528,6 +2528,51 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(repository.getLarkMessageById("cron_recovered")).toMatchObject({ status: "completed" }));
   });
 
+  it("recovers queued cron messages that start with /goal as goal commands", async () => {
+    const proxyRecord = larkMessageRecord({
+      larkMessageId: "cron_goal_recovered",
+      eventId: "cron_message:8:100:cron_goal_recovered",
+      larkUserId: "MISSING_BOT_OPENID",
+      larkGroupId: "oc_group",
+      conversationKey: "group_oc_group",
+      codexThreadId: "thread_main",
+      routeKind: "cron_message",
+      status: "queued",
+      text: "/goal recovered target",
+      rawEventJson: JSON.stringify({
+        kind: "cron_message",
+        cron_id: 8,
+        message: {
+          message_id: "cron_goal_recovered",
+          create_time: "100",
+          chat_id: "oc_group",
+          chat_type: "group",
+          message_type: "text",
+          content: JSON.stringify({ text: "定时任务 #8 触发：\n\n/goal recovered target" })
+        }
+      })
+    });
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      larkMessages: [proxyRecord]
+    });
+    const { codex, goals } = createDeferredGoalCodex();
+    const larkMessages = createLarkMessageReader(new Error("cron_message should not be refreshed"));
+    const manager = createManager({ repository, codex, larkMessages });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(codex.runGoal).toHaveBeenCalledTimes(1));
+
+    expect(larkMessages.getMessage).not.toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(codex.runGoal).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread_main",
+      objective: "recovered target"
+    }));
+
+    goals[0]!.resolve(completed("thread_main", "goal_1"));
+    await waitForExpect(() => expect(repository.getLarkMessageById("cron_goal_recovered")).toMatchObject({ status: "completed" }));
+  });
+
   it("manages cron jobs from the /cron command without exposing tool-only last run fields", async () => {
     const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }));
     const lark = createLarkResponder();
@@ -2585,14 +2630,15 @@ describe("ConversationManager", () => {
         tool: "add_cron",
         cronExpression: "*/10 * * * *",
         message: "dynamic ping",
-        rawArguments: { cron_exp: "*/10 * * * *", msg: "dynamic ping" }
+        asGoal: true,
+        rawArguments: { cron_exp: "*/10 * * * *", msg: "dynamic ping", as_goal: true }
       }));
       expect(addPayload).toMatchObject({
         ok: true,
         cron: {
           cron_id: 1,
           cron_expression: "*/10 * * * *",
-          message: "dynamic ping",
+          message: "/goal dynamic ping",
           thread_id: "thread_main",
           last_run_at: null,
           last_lark_message_id: null
@@ -2799,6 +2845,63 @@ describe("ConversationManager", () => {
       });
       turns[0]!.resolve(completed("thread_main", "turn_1"));
       await turns[0]!.promise;
+    } finally {
+      await manager.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
+  it("triggers cron messages that start with /goal as goal turns", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-29T00:00:00+08:00"));
+    const { codex, goals } = createDeferredGoalCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }));
+    const lark = createLarkResponder();
+    const job = await repository.createCronJob({
+      conversationKey: "group_oc_group",
+      threadId: "thread_main",
+      cronExpression: "* * * * *",
+      messageText: "/goal scheduled target",
+      timezone: "Asia/Shanghai",
+      createdByOpenId: "ou_owner"
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    try {
+      await manager.startCronScheduler();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(lark.sendTextToChatId).toHaveBeenCalledWith(
+        "oc_group",
+        `定时任务 #${job.id} 触发：\n\n/goal scheduled target`,
+        { uuid: expect.stringMatching(UUID_PATTERN) }
+      );
+      expect(codex.runGoal).toHaveBeenCalledTimes(1);
+      expect(codex.startTurn).not.toHaveBeenCalled();
+      expect(codex.runGoal).toHaveBeenCalledWith(expect.objectContaining({
+        threadId: "thread_main",
+        objective: "scheduled target"
+      }));
+      expect(repository.getLarkMessageById("text_oc_group_1")).toMatchObject({
+        larkUserId: "MISSING_BOT_OPENID",
+        routeKind: "cron_message",
+        text: "/goal scheduled target"
+      });
+      expect(lark.replyCard).toHaveBeenCalledWith(
+        "text_oc_group_1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            subtitle: { tag: "plain_text", content: `定时任务 #${job.id} 触发` }
+          })
+        })
+      );
+      const cardJson = JSON.stringify(vi.mocked(lark.replyCard).mock.calls.at(-1)?.[1]);
+      expect(cardJson).toContain("实现目标中：scheduled target");
+
+      goals[0]!.resolve(completed("thread_main", "goal_1"));
+      await goals[0]!.promise;
     } finally {
       await manager.shutdown();
       vi.useRealTimers();
