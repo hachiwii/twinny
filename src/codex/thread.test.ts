@@ -41,6 +41,9 @@ describe("codex thread payloads", () => {
         expect.objectContaining({ namespace: "twinny", name: "add_cron", deferLoading: false }),
         expect.objectContaining({ namespace: "twinny", name: "list_cron", deferLoading: false }),
         expect.objectContaining({ namespace: "twinny", name: "del_cron", deferLoading: false }),
+        expect.objectContaining({ namespace: "twinny", name: "watch_lark_url", deferLoading: false }),
+        expect.objectContaining({ namespace: "twinny", name: "list_lark_url_watchers", deferLoading: false }),
+        expect.objectContaining({ namespace: "twinny", name: "rm_lark_url_watchers", deferLoading: false }),
         expect.objectContaining({ namespace: "twinny", name: "create_conversation", deferLoading: false })
       ])
     });
@@ -89,7 +92,19 @@ describe("codex thread payloads", () => {
         })
       })
     });
-    expect(buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools).toHaveLength(11);
+    const watchTool = buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools.find((candidate) =>
+      candidate.namespace === "twinny" && candidate.name === "watch_lark_url"
+    );
+    expect(watchTool).toMatchObject({
+      inputSchema: expect.objectContaining({
+        properties: expect.objectContaining({
+          mode: expect.objectContaining({ enum: ["owner", "all"], default: "owner" }),
+          file_type: expect.objectContaining({ type: "string" }),
+          file_token: expect.objectContaining({ type: "string" })
+        })
+      })
+    });
+    expect(buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools).toHaveLength(14);
   });
 
   it("builds thread/resume with the persisted thread id and the same thread overrides", () => {

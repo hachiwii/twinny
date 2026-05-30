@@ -18,8 +18,8 @@ describe("store migrations", () => {
   it("loads the bundled store migrations", () => {
     const migrations = loadStoreMigrations();
 
-    expect(currentStoreSchemaVersion).toBe(7);
-    expect(migrations).toHaveLength(7);
+    expect(currentStoreSchemaVersion).toBe(8);
+    expect(migrations).toHaveLength(8);
     expect(migrations[0]).toMatchObject({
       version: 1,
       name: "0001_initial"
@@ -47,6 +47,10 @@ describe("store migrations", () => {
     expect(migrations[6]).toMatchObject({
       version: 7,
       name: "0007_thread_fork_base_token_usage"
+    });
+    expect(migrations[7]).toMatchObject({
+      version: 8,
+      name: "0008_lark_doc_watcher_remove_none"
     });
   });
 
@@ -280,6 +284,61 @@ describe("store migrations", () => {
         .all()
         .map((row) => row.name);
       expect(tables).toEqual(["conversations", "cron_jobs", "lark_doc_watcher", "lark_messages", "threads"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("removes disabled Lark doc watchers and rejects none mode when upgrading to version 8", () => {
+    const db = new TwinnyDatabase(":memory:");
+    const migrations = loadStoreMigrations();
+    try {
+      expect(runStoreMigrations(db, { migrations: migrations.slice(0, 7) })).toBe(7);
+      db.exec(`
+        INSERT INTO lark_doc_watcher (
+          file_type,
+          file_token,
+          thread_id,
+          watch_mode,
+          watch_url,
+          created_at,
+          updated_at
+        ) VALUES
+          ('docx', 'doc_owner', 'thread_1', 'owner', 'https://example.feishu.cn/docx/doc_owner', 100, 100),
+          ('docx', 'doc_none', 'thread_1', 'none', 'https://example.feishu.cn/docx/doc_none', 110, 110),
+          ('docx', 'doc_all', 'thread_2', 'all', 'https://example.feishu.cn/docx/doc_all', 120, 120);
+      `);
+
+      expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
+
+      const watchers = db
+        .prepare<[], { file_token: string; watch_mode: string }>(
+          "SELECT file_token, watch_mode FROM lark_doc_watcher ORDER BY id ASC"
+        )
+        .all();
+      expect(watchers).toEqual([
+        { file_token: "doc_owner", watch_mode: "owner" },
+        { file_token: "doc_all", watch_mode: "all" }
+      ]);
+      expect(() => db.exec(`
+        INSERT INTO lark_doc_watcher (
+          file_type,
+          file_token,
+          thread_id,
+          watch_mode,
+          watch_url,
+          created_at,
+          updated_at
+        ) VALUES (
+          'docx',
+          'doc_none_again',
+          'thread_1',
+          'none',
+          'https://example.feishu.cn/docx/doc_none_again',
+          130,
+          130
+        );
+      `)).toThrow();
     } finally {
       db.close();
     }

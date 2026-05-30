@@ -307,13 +307,13 @@ describe("ConversationRepository", () => {
       fileType: "docx",
       fileToken: "doc_token",
       threadId: "thread_2",
-      watchMode: "none",
+      watchMode: "all",
       watchUrl: "https://example.feishu.cn/docx/doc_token?from=updated"
     });
     expect(replaced).toMatchObject({
       id: 1,
       threadId: "thread_2",
-      watchMode: "none",
+      watchMode: "all",
       watchUrl: "https://example.feishu.cn/docx/doc_token?from=updated",
       lastCommentReceivedAt: 1234567890,
       createdAt: 1000,
@@ -322,6 +322,10 @@ describe("ConversationRepository", () => {
     expect(repo.listLarkDocWatchersByThread("thread_1")).toEqual([]);
     expect(repo.listLarkDocWatchersByThread("thread_2")).toEqual([replaced]);
     expect(repo.touchLarkDocWatcherCommentReceived("docx", "missing", 1)).toBe(false);
+    expect(repo.deleteLarkDocWatcherByThreadAndFile("thread_1", "docx", "doc_token")).toBe(false);
+    expect(repo.deleteLarkDocWatcherByThreadAndId("thread_1", replaced.id)).toBe(false);
+    expect(repo.deleteLarkDocWatcherByThreadAndFile("thread_2", "docx", "doc_token")).toBe(true);
+    expect(repo.getLarkDocWatcherByFile("docx", "doc_token")).toBeUndefined();
   });
 
   it("migrates Lark doc watchers between replacement threads", () => {
@@ -345,7 +349,7 @@ describe("ConversationRepository", () => {
       fileType: "docx",
       fileToken: "doc_c",
       threadId: "thread_other",
-      watchMode: "none",
+      watchMode: "owner",
       watchUrl: "https://example.feishu.cn/docx/doc_c"
     });
 

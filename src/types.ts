@@ -306,7 +306,7 @@ export interface CronJobRecord {
   updatedAt: number;
 }
 
-export type LarkDocWatchMode = "owner" | "all" | "none";
+export type LarkDocWatchMode = "owner" | "all";
 
 export interface LarkDocWatcherRecord {
   id: number;

@@ -10,7 +10,8 @@ import type {
   CodexRequestUserInputResponse,
   CodexThreadMode,
   CodexThreadTokenUsageUpdate,
-  CodexTurnResult
+  CodexTurnResult,
+  LarkDocWatchMode
 } from "../types.js";
 import type { CodexNotificationMessage, CodexProtocolClient, CodexRequestMessage } from "./protocol.js";
 import { isThreadGoal, type ThreadGoal } from "./goal.js";
@@ -195,6 +196,25 @@ export interface CodexDelCronToolRequest extends CodexDynamicToolRequestBase {
   cronId: number;
 }
 
+export interface CodexWatchLarkUrlToolRequest extends CodexDynamicToolRequestBase {
+  tool: "watch_lark_url";
+  watchMode: LarkDocWatchMode;
+  url?: string;
+  fileType?: string;
+  fileToken?: string;
+  watchUrl?: string;
+}
+
+export interface CodexListLarkUrlWatchersToolRequest extends CodexDynamicToolRequestBase {
+  tool: "list_lark_url_watchers";
+}
+
+export interface CodexRmLarkUrlWatchersToolRequest extends CodexDynamicToolRequestBase {
+  tool: "rm_lark_url_watchers";
+  watcherId?: number;
+  url?: string;
+}
+
 export interface CodexCreateConversationToolRequest extends CodexDynamicToolRequestBase {
   tool: "create_conversation";
   name: string;
@@ -213,6 +233,9 @@ export type CodexTwinnyDynamicToolRequest =
   | CodexAddCronToolRequest
   | CodexListCronToolRequest
   | CodexDelCronToolRequest
+  | CodexWatchLarkUrlToolRequest
+  | CodexListLarkUrlWatchersToolRequest
+  | CodexRmLarkUrlWatchersToolRequest
   | CodexCreateConversationToolRequest;
 
 export interface CodexDynamicToolCallResponse {
@@ -1265,6 +1288,80 @@ function parseTwinnyDynamicToolRequest(
         rawArguments: params.arguments
       };
     }
+    case "watch_lark_url": {
+      if (!isRecord(params.arguments)) {
+        return "Invalid watch_lark_url arguments: expected an object.";
+      }
+      const watchMode = parseLarkDocWatchMode(params.arguments.mode);
+      if (!watchMode) {
+        return "Invalid watch_lark_url arguments: mode must be owner or all.";
+      }
+      const url = trimmedString(params.arguments.url);
+      const fileType = trimmedString(params.arguments.file_type);
+      const fileToken = trimmedString(params.arguments.file_token);
+      if (fileType || fileToken) {
+        if (!fileType || !fileToken) {
+          return "Invalid watch_lark_url arguments: provide both file_type and file_token, or provide url.";
+        }
+        return {
+          requestId,
+          threadId: params.threadId,
+          turnId: params.turnId,
+          callId: params.callId,
+          tool: "watch_lark_url",
+          watchMode,
+          fileType,
+          fileToken,
+          ...(url ? { watchUrl: url } : {}),
+          rawArguments: params.arguments
+        };
+      }
+      if (!url) {
+        return "Invalid watch_lark_url arguments: url or file_type/file_token is required.";
+      }
+      return {
+        requestId,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        callId: params.callId,
+        tool: "watch_lark_url",
+        watchMode,
+        url,
+        rawArguments: params.arguments
+      };
+    }
+    case "list_lark_url_watchers": {
+      if (params.arguments !== undefined && params.arguments !== null && !isRecord(params.arguments)) {
+        return "Invalid list_lark_url_watchers arguments: expected an object.";
+      }
+      return {
+        requestId,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        callId: params.callId,
+        tool: "list_lark_url_watchers",
+        rawArguments: params.arguments
+      };
+    }
+    case "rm_lark_url_watchers": {
+      if (!isRecord(params.arguments)) {
+        return "Invalid rm_lark_url_watchers arguments: expected an object.";
+      }
+      const watcherId = requiredInteger(params.arguments.watcher_id, 1, Number.MAX_SAFE_INTEGER);
+      const url = trimmedString(params.arguments.url);
+      if ((watcherId === undefined && !url) || (watcherId !== undefined && url)) {
+        return "Invalid rm_lark_url_watchers arguments: provide exactly one of watcher_id or url.";
+      }
+      return {
+        requestId,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        callId: params.callId,
+        tool: "rm_lark_url_watchers",
+        ...(watcherId !== undefined ? { watcherId } : { url }),
+        rawArguments: params.arguments
+      };
+    }
     case "create_conversation": {
       if (!isRecord(params.arguments)) {
         return "Invalid create_conversation arguments: expected an object.";
@@ -1377,6 +1474,13 @@ function parseTellThreadMode(value: unknown): CodexTellThreadMode | undefined {
     return "queue";
   }
   return value === "queue" || value === "steer" || value === "interrupt" ? value : undefined;
+}
+
+function parseLarkDocWatchMode(value: unknown): LarkDocWatchMode | undefined {
+  if (value === undefined || value === null) {
+    return "owner";
+  }
+  return value === "owner" || value === "all" ? value : undefined;
 }
 
 function parseThreadIds(value: unknown): string[] | undefined {

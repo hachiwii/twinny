@@ -242,6 +242,55 @@ export const DEL_CRON_TOOL_SPEC: DynamicToolSpec = {
   deferLoading: false
 };
 
+export const WATCH_LARK_URL_TOOL_SPEC: DynamicToolSpec = {
+  namespace: "twinny",
+  name: "watch_lark_url",
+  description:
+    "Watch @bot comments on a Feishu/Lark document and route them to the current thread. Provide either url, or file_type and file_token directly; mode defaults to owner.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      url: {
+        type: "string",
+        minLength: 1,
+        description: "Feishu/Lark document URL. Optional when file_type and file_token are provided; then used as the displayed watch URL."
+      },
+      file_type: { type: "string", minLength: 1 },
+      file_token: { type: "string", minLength: 1 },
+      mode: { type: "string", enum: ["owner", "all"], default: "owner" }
+    }
+  },
+  deferLoading: false
+};
+
+export const LIST_LARK_URL_WATCHERS_TOOL_SPEC: DynamicToolSpec = {
+  namespace: "twinny",
+  name: "list_lark_url_watchers",
+  description: "List Feishu/Lark document URL watchers bound to the current thread.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {}
+  },
+  deferLoading: false
+};
+
+export const RM_LARK_URL_WATCHERS_TOOL_SPEC: DynamicToolSpec = {
+  namespace: "twinny",
+  name: "rm_lark_url_watchers",
+  description: "Delete a Feishu/Lark document URL watcher from the current thread by watcher_id or url.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      watcher_id: { type: "integer", minimum: 1 },
+      url: { type: "string", minLength: 1 }
+    }
+  },
+  deferLoading: false
+};
+
 export const CREATE_CONVERSATION_TOOL_SPEC: DynamicToolSpec = {
   namespace: "twinny",
   name: "create_conversation",
@@ -280,6 +329,9 @@ export const TWINNY_DYNAMIC_TOOL_SPECS: DynamicToolSpec[] = [
   ADD_CRON_TOOL_SPEC,
   LIST_CRON_TOOL_SPEC,
   DEL_CRON_TOOL_SPEC,
+  WATCH_LARK_URL_TOOL_SPEC,
+  LIST_LARK_URL_WATCHERS_TOOL_SPEC,
+  RM_LARK_URL_WATCHERS_TOOL_SPEC,
   CREATE_CONVERSATION_TOOL_SPEC
 ];
 

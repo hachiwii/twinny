@@ -465,6 +465,12 @@ export interface ConversationRepository {
     fileToken: string
   ): Promise<LarkDocWatcherRecord | undefined> | LarkDocWatcherRecord | undefined;
   listLarkDocWatchersByThread(threadId: string): Promise<LarkDocWatcherRecord[]> | LarkDocWatcherRecord[];
+  deleteLarkDocWatcherByThreadAndId(threadId: string, watcherId: number): Promise<boolean> | boolean;
+  deleteLarkDocWatcherByThreadAndFile(
+    threadId: string,
+    fileType: string,
+    fileToken: string
+  ): Promise<boolean> | boolean;
   migrateLarkDocWatchersToThread(
     previousThreadId: string,
     nextThreadId: string
@@ -1506,7 +1512,7 @@ export class ConversationManager {
       return;
     }
     const watcher = await this.options.repository.getLarkDocWatcherByFile(comment.fileType, comment.fileToken);
-    if (!watcher || watcher.watchMode === "none") {
+    if (!watcher) {
       return;
     }
     if (watcher.watchMode === "owner" && comment.senderOpenId !== this.options.config.owner.openId) {
@@ -4095,6 +4101,49 @@ export class ConversationManager {
       return;
     }
 
+    if (parsed.kind === "remove") {
+      if (parsed.target.kind === "id") {
+        const deleted = await this.options.repository.deleteLarkDocWatcherByThreadAndId(resolved.threadId, parsed.target.watcherId);
+        await this.replyControlBestEffort(
+          message.messageId,
+          deleted
+            ? `已删除文档评论监听 #${parsed.target.watcherId}。`
+            : `未找到当前 thread 的文档评论监听：#${parsed.target.watcherId}。`
+        );
+        await this.markMessagesCompletedBestEffort([message.messageId]);
+        return;
+      }
+
+      if (!this.options.larkDocs) {
+        await this.replyControlBestEffort(message.messageId, "当前运行环境未配置 Lark 文档解析能力。");
+        await this.markMessagesCompletedBestEffort([message.messageId]);
+        return;
+      }
+
+      let target: ResolvedLarkDocTarget;
+      try {
+        target = await this.options.larkDocs.resolveDocTarget(parsed.target.url);
+      } catch (error) {
+        await this.replyControlBestEffort(message.messageId, toErrorMessage(error));
+        await this.markMessagesCompletedBestEffort([message.messageId]);
+        return;
+      }
+
+      const deleted = await this.options.repository.deleteLarkDocWatcherByThreadAndFile(
+        resolved.threadId,
+        target.fileType,
+        target.fileToken
+      );
+      await this.replyControlBestEffort(
+        message.messageId,
+        deleted
+          ? `已删除 ${target.fileType}/${target.fileToken} 的文档评论监听。`
+          : `未找到当前 thread 的文档评论监听：${target.fileType}/${target.fileToken}。`
+      );
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
     if (!this.options.larkDocs) {
       await this.replyControlBestEffort(message.messageId, "当前运行环境未配置 Lark 文档解析能力。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -4117,12 +4166,8 @@ export class ConversationManager {
       watchMode: parsed.watchMode,
       watchUrl: target.watchUrl
     });
-    const featureWarning = parsed.watchMode === "none"
-      ? undefined
-      : await this.resolveLarkFeatureConfigurationWarning("doc_watch", "doc_watch");
-    const replyText = parsed.watchMode === "none"
-      ? `已关闭 ${target.fileType}/${target.fileToken} 的文档评论监听。`
-      : `已监听 ${target.fileType}/${target.fileToken}，mode=${parsed.watchMode}。`;
+    const featureWarning = await this.resolveLarkFeatureConfigurationWarning("doc_watch", "doc_watch");
+    const replyText = `已监听 ${target.fileType}/${target.fileToken}，mode=${parsed.watchMode}。`;
     await this.replyControlBestEffort(
       message.messageId,
       featureWarning ? `${replyText}\n\n${featureWarning}` : replyText
@@ -7678,6 +7723,12 @@ export class ConversationManager {
           return await this.handleListCronToolCall(active);
         case "del_cron":
           return await this.handleDelCronToolCall(active, request);
+        case "watch_lark_url":
+          return await this.handleWatchLarkUrlToolCall(active, request);
+        case "list_lark_url_watchers":
+          return await this.handleListLarkUrlWatchersToolCall(active);
+        case "rm_lark_url_watchers":
+          return await this.handleRmLarkUrlWatchersToolCall(active, request);
         case "create_conversation":
           return await this.handleCreateConversationToolCall(active, request);
       }
@@ -8489,6 +8540,98 @@ export class ConversationManager {
       ok: deleted,
       cron_id: request.cronId,
       ...(deleted ? {} : { error: { code: "CRON_NOT_FOUND", message: `Cron job ${request.cronId} was not found.` } })
+    });
+  }
+
+  private async handleWatchLarkUrlToolCall(
+    active: ActiveTurn,
+    request: Extract<CodexTwinnyDynamicToolRequest, { tool: "watch_lark_url" }>
+  ): Promise<CodexDynamicToolCallResponse> {
+    const target = await this.resolveWatchLarkUrlToolTarget(request);
+    if (target.kind === "error") {
+      return dynamicToolErrorResponse(target.code, target.message);
+    }
+    const watcher = await this.options.repository.upsertLarkDocWatcher({
+      fileType: target.fileType,
+      fileToken: target.fileToken,
+      threadId: active.threadId,
+      watchMode: request.watchMode,
+      watchUrl: target.watchUrl
+    });
+    return dynamicToolJsonResponse(true, {
+      ok: true,
+      watcher: larkDocWatcherToolJson(watcher)
+    });
+  }
+
+  private async resolveWatchLarkUrlToolTarget(
+    request: Extract<CodexTwinnyDynamicToolRequest, { tool: "watch_lark_url" }>
+  ): Promise<
+    | { kind: "target"; fileType: string; fileToken: string; watchUrl: string }
+    | { kind: "error"; code: string; message: string }
+  > {
+    if (request.fileType && request.fileToken) {
+      return {
+        kind: "target",
+        fileType: request.fileType,
+        fileToken: request.fileToken,
+        watchUrl: request.watchUrl ?? `${request.fileType}/${request.fileToken}`
+      };
+    }
+    if (!request.url) {
+      return { kind: "error", code: "LARK_DOC_TARGET_MISSING", message: "watch_lark_url requires url or file_type/file_token." };
+    }
+    if (!this.options.larkDocs) {
+      return { kind: "error", code: "LARK_DOC_RESOLVER_MISSING", message: "Twinny is not configured to resolve Lark document URLs." };
+    }
+    const target = await this.options.larkDocs.resolveDocTarget(request.url);
+    return {
+      kind: "target",
+      fileType: target.fileType,
+      fileToken: target.fileToken,
+      watchUrl: target.watchUrl
+    };
+  }
+
+  private async handleListLarkUrlWatchersToolCall(active: ActiveTurn): Promise<CodexDynamicToolCallResponse> {
+    const watchers = await this.options.repository.listLarkDocWatchersByThread(active.threadId);
+    return dynamicToolJsonResponse(true, {
+      ok: true,
+      thread_id: active.threadId,
+      watchers: watchers.map((watcher) => larkDocWatcherToolJson(watcher))
+    });
+  }
+
+  private async handleRmLarkUrlWatchersToolCall(
+    active: ActiveTurn,
+    request: Extract<CodexTwinnyDynamicToolRequest, { tool: "rm_lark_url_watchers" }>
+  ): Promise<CodexDynamicToolCallResponse> {
+    if (request.watcherId !== undefined) {
+      const deleted = await this.options.repository.deleteLarkDocWatcherByThreadAndId(active.threadId, request.watcherId);
+      return dynamicToolJsonResponse(deleted, {
+        ok: deleted,
+        watcher_id: request.watcherId,
+        ...(deleted ? {} : { error: { code: "LARK_URL_WATCHER_NOT_FOUND", message: `Watcher ${request.watcherId} was not found in the current thread.` } })
+      });
+    }
+    if (!request.url) {
+      return dynamicToolErrorResponse("LARK_DOC_TARGET_MISSING", "rm_lark_url_watchers requires watcher_id or url.");
+    }
+    if (!this.options.larkDocs) {
+      return dynamicToolErrorResponse("LARK_DOC_RESOLVER_MISSING", "Twinny is not configured to resolve Lark document URLs.");
+    }
+    const target = await this.options.larkDocs.resolveDocTarget(request.url);
+    const deleted = await this.options.repository.deleteLarkDocWatcherByThreadAndFile(
+      active.threadId,
+      target.fileType,
+      target.fileToken
+    );
+    return dynamicToolJsonResponse(deleted, {
+      ok: deleted,
+      file_type: target.fileType,
+      file_token: target.fileToken,
+      watch_url: target.watchUrl,
+      ...(deleted ? {} : { error: { code: "LARK_URL_WATCHER_NOT_FOUND", message: `Watcher ${target.fileType}/${target.fileToken} was not found in the current thread.` } })
     });
   }
 
@@ -12869,20 +13012,36 @@ function parsePairCommand(text: string): { kind: "valid"; guestOpenId: string; p
   return { kind: "valid", guestOpenId, profile };
 }
 
+const WATCH_USAGE_TEXT = "用法：/watch <lark_doc_url> [owner|all] 或 /watch rm <id|url>";
+
 function parseWatchCommand(text: string):
   | { kind: "list" }
+  | { kind: "remove"; target: { kind: "id"; watcherId: number } | { kind: "url"; url: string } }
   | { kind: "valid"; url: string; watchMode: LarkDocWatchMode }
   | { kind: "invalid"; message: string } {
   const tokens = text.split(/\s+/).map((token) => token.trim()).filter(Boolean);
   if (tokens.length === 0) {
     return { kind: "list" };
   }
+  if (tokens[0]?.toLowerCase() === "rm") {
+    if (tokens.length !== 2) {
+      return { kind: "invalid", message: WATCH_USAGE_TEXT };
+    }
+    const target = tokens[1]!;
+    if (/^\d+$/.test(target)) {
+      const watcherId = Number.parseInt(target, 10);
+      if (Number.isSafeInteger(watcherId) && watcherId >= 1) {
+        return { kind: "remove", target: { kind: "id", watcherId } };
+      }
+    }
+    return { kind: "remove", target: { kind: "url", url: target } };
+  }
   if (tokens.length > 2) {
-    return { kind: "invalid", message: "用法：/watch <lark_doc_url> [owner|all|none]" };
+    return { kind: "invalid", message: WATCH_USAGE_TEXT };
   }
   const watchMode = (tokens[1] ?? "owner").toLowerCase();
-  if (watchMode !== "owner" && watchMode !== "all" && watchMode !== "none") {
-    return { kind: "invalid", message: "用法：/watch <lark_doc_url> [owner|all|none]" };
+  if (watchMode !== "owner" && watchMode !== "all") {
+    return { kind: "invalid", message: WATCH_USAGE_TEXT };
   }
   return { kind: "valid", url: tokens[0]!, watchMode };
 }
@@ -13016,21 +13175,35 @@ function cronJobToolJson(job: CronJobRecord, nextRunAt: number | undefined): Rec
   };
 }
 
+function larkDocWatcherToolJson(watcher: LarkDocWatcherRecord): Record<string, unknown> {
+  return {
+    watcher_id: watcher.id,
+    file_type: watcher.fileType,
+    file_token: watcher.fileToken,
+    thread_id: watcher.threadId,
+    mode: watcher.watchMode,
+    watch_url: watcher.watchUrl,
+    last_comment_received_at: watcher.lastCommentReceivedAt === undefined ? null : new Date(watcher.lastCommentReceivedAt).toISOString(),
+    created_at: new Date(watcher.createdAt).toISOString(),
+    updated_at: new Date(watcher.updatedAt).toISOString()
+  };
+}
+
 function watchListPostContent(watchers: LarkDocWatcherRecord[]): LarkPostContent {
   return [[{ tag: "md", text: watchListMarkdown(watchers) }]];
 }
 
 function watchListMarkdown(watchers: LarkDocWatcherRecord[]): string {
   const rows = watchers.length === 0
-    ? ["| 暂无 | - | - |"]
+    ? ["| 暂无 | - | - | - |"]
     : watchers.map((watcher) =>
-        `| ${markdownTableCell(watcher.watchUrl)} | ${watcher.watchMode} | ${formatBeijingTime(watcher.lastCommentReceivedAt)} |`
+        `| ${watcher.id} | ${markdownTableCell(watcher.watchUrl)} | ${watcher.watchMode} | ${formatBeijingTime(watcher.lastCommentReceivedAt)} |`
       );
   return [
     "### 文档监听",
     "",
-    "| URL | 状态 | 最新评论时间（北京时间） |",
-    "| --- | --- | --- |",
+    "| id | URL | 状态 | 最新评论时间 |",
+    "| --- | --- | --- | --- |",
     ...rows
   ].join("\n");
 }
@@ -14358,7 +14531,7 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/twinny 或 /banner - 发送 Twinny banner 卡片",
     "/thread [message] - 创建新话题",
     "/fork [message] - 从当前 Codex thread fork 出新话题",
-    "/watch <lark_doc_url> [owner|all|none] - 监听文档 @bot 评论；不带参数查看当前 thread 监听",
+    "/watch <lark_doc_url> [owner|all] 或 /watch rm <id|url> - 监听或删除文档 @bot 评论；不带参数查看当前 thread 监听",
     "/cron [cron exp message|rm id] - 管理当前 conversation 的定时任务"
   ];
   if (isOwner) {

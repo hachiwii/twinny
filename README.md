@@ -127,7 +127,7 @@ card.action.trigger
 | `/compact` | 在下一轮队列控制步骤中压缩当前 Codex thread 上下文。 |
 | `/thread [message]` | 创建一个新的 Lark 话题，并绑定新的 Codex thread。带 `message` 时会把消息代理到新话题内。 |
 | `/fork [message]` | 从当前 Codex thread fork 出一个新的 Lark 话题。带 `message` 时会把消息代理到新话题内。 |
-| `/watch <lark_doc_url> [owner\|all\|none]` | 监听飞书/Lark 文档中的 @bot 评论，并把评论路由到当前 thread。不带参数时列出当前 thread 的监听；`owner` 只响应 owner，`all` 响应所有人，`none` 关闭监听。 |
+| `/watch <lark_doc_url> [owner\|all]` 或 `/watch rm <id\|url>` | 监听飞书/Lark 文档中的 @bot 评论，并把评论路由到当前 thread。不带参数时列出当前 thread 的监听和 id；`owner` 只响应 owner，`all` 响应所有人；`rm` 删除当前 thread 的监听。 |
 | `/workspace [dir\|num]` | 仅 owner 可用。查看或设置当前 conversation workspace，并同步主会话 thread。可传绝对路径、`~/...`，或最近 workspace 列表中的序号。 |
 | `/cd [dir\|num]` | 仅 owner 可用。查看或设置当前非主 thread workspace。可传绝对路径、`~/...`，或最近 workspace 列表中的序号。 |
 | `/resume [thread_id\|num] [session\|local]` | 仅 owner 可用。列出本机可恢复 Codex thread，或把指定 thread 恢复为 Twinny 话题；默认使用原会话 cwd，`local` 使用当前会话 cwd。 |

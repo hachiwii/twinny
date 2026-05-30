@@ -390,6 +390,8 @@ export class ConversationRepository {
   private readonly upsertLarkDocWatcherStatement: TwinnyStatement<[Record<string, unknown>]>;
   private readonly selectLarkDocWatcherByFileStatement: TwinnyStatement<[string, string], LarkDocWatcherRow>;
   private readonly selectLarkDocWatchersByThreadStatement: TwinnyStatement<[string], LarkDocWatcherRow>;
+  private readonly deleteLarkDocWatcherByThreadAndIdStatement: TwinnyStatement<[string, number], unknown>;
+  private readonly deleteLarkDocWatcherByThreadAndFileStatement: TwinnyStatement<[string, string, string], unknown>;
   private readonly migrateLarkDocWatchersToThreadStatement: TwinnyStatement<[string, number, string, string]>;
   private readonly updateLarkDocWatcherLastCommentStatement: TwinnyStatement<[number, number, string, string]>;
   private readonly insertCronJobStatement: TwinnyStatement<[Record<string, unknown>]>;
@@ -1152,6 +1154,17 @@ export class ConversationRepository {
       SELECT * FROM lark_doc_watcher
       WHERE thread_id = ?
       ORDER BY updated_at DESC, id DESC
+    `);
+    this.deleteLarkDocWatcherByThreadAndIdStatement = this.db.prepare(`
+      DELETE FROM lark_doc_watcher
+      WHERE thread_id = ?
+        AND id = ?
+    `);
+    this.deleteLarkDocWatcherByThreadAndFileStatement = this.db.prepare(`
+      DELETE FROM lark_doc_watcher
+      WHERE thread_id = ?
+        AND file_type = ?
+        AND file_token = ?
     `);
     this.migrateLarkDocWatchersToThreadStatement = this.db.prepare(`
       UPDATE lark_doc_watcher
@@ -2008,6 +2021,19 @@ export class ConversationRepository {
     return this.selectLarkDocWatchersByThreadStatement.all(threadId).map((row) => mapRequiredLarkDocWatcherRow(row));
   }
 
+  deleteLarkDocWatcherByThreadAndId(threadId: string, watcherId: number): boolean {
+    assertNonEmpty(threadId, "threadId");
+    assertPositiveInteger(watcherId, "watcherId");
+    return this.deleteLarkDocWatcherByThreadAndIdStatement.run(threadId, Math.trunc(watcherId)).changes > 0;
+  }
+
+  deleteLarkDocWatcherByThreadAndFile(threadId: string, fileType: string, fileToken: string): boolean {
+    assertNonEmpty(threadId, "threadId");
+    assertNonEmpty(fileType, "fileType");
+    assertNonEmpty(fileToken, "fileToken");
+    return this.deleteLarkDocWatcherByThreadAndFileStatement.run(threadId, fileType, fileToken).changes > 0;
+  }
+
   migrateLarkDocWatchersToThread(previousThreadId: string, nextThreadId: string): number {
     assertNonEmpty(previousThreadId, "previousThreadId");
     assertNonEmpty(nextThreadId, "nextThreadId");
@@ -2452,7 +2478,7 @@ function assertValidLarkDocWatchMode(mode: LarkDocWatchMode): void {
 }
 
 function validLarkDocWatchMode(mode: unknown): mode is LarkDocWatchMode {
-  return mode === "owner" || mode === "all" || mode === "none";
+  return mode === "owner" || mode === "all";
 }
 
 function assertValidMessageStatus(status: LarkMessageStatus): void {

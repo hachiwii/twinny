@@ -526,6 +526,110 @@ describe("handleTurnServerRequest", () => {
       cronId: 12,
       rawArguments: { cron_id: 12 }
     });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-watch-lark-url",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_watch",
+          namespace: "twinny",
+          tool: "watch_lark_url",
+          arguments: { file_type: "docx", file_token: "doc_token", mode: "all", url: "https://example.feishu.cn/docx/doc_token" }
+        }
+      }
+    );
+
+    await Promise.resolve();
+
+    expect(onDynamicToolCall).toHaveBeenLastCalledWith({
+      requestId: "req-watch-lark-url",
+      threadId: "thread_123",
+      turnId: "turn_1",
+      callId: "call_watch",
+      tool: "watch_lark_url",
+      watchMode: "all",
+      fileType: "docx",
+      fileToken: "doc_token",
+      watchUrl: "https://example.feishu.cn/docx/doc_token",
+      rawArguments: { file_type: "docx", file_token: "doc_token", mode: "all", url: "https://example.feishu.cn/docx/doc_token" }
+    });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-list-lark-watchers",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_list_watchers",
+          namespace: "twinny",
+          tool: "list_lark_url_watchers",
+          arguments: {}
+        }
+      }
+    );
+
+    await Promise.resolve();
+
+    expect(onDynamicToolCall).toHaveBeenLastCalledWith({
+      requestId: "req-list-lark-watchers",
+      threadId: "thread_123",
+      turnId: "turn_1",
+      callId: "call_list_watchers",
+      tool: "list_lark_url_watchers",
+      rawArguments: {}
+    });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-rm-lark-watchers",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_rm_watchers",
+          namespace: "twinny",
+          tool: "rm_lark_url_watchers",
+          arguments: { watcher_id: 3 }
+        }
+      }
+    );
+
+    await Promise.resolve();
+
+    expect(onDynamicToolCall).toHaveBeenLastCalledWith({
+      requestId: "req-rm-lark-watchers",
+      threadId: "thread_123",
+      turnId: "turn_1",
+      callId: "call_rm_watchers",
+      tool: "rm_lark_url_watchers",
+      watcherId: 3,
+      rawArguments: { watcher_id: 3 }
+    });
   });
 
   it("validates Twinny dynamic tool arguments before dispatch", () => {
@@ -749,6 +853,68 @@ describe("handleTurnServerRequest", () => {
       contentItems: [{
         type: "inputText",
         text: "Invalid del_cron arguments: cron_id must be an integer >= 1."
+      }]
+    });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-watch-lark-url",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_watch",
+          namespace: "twinny",
+          tool: "watch_lark_url",
+          arguments: { url: "https://example.feishu.cn/docx/doc_token", mode: "none" }
+        }
+      }
+    );
+
+    expect(onDynamicToolCall).not.toHaveBeenCalled();
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-watch-lark-url", {
+      success: false,
+      contentItems: [{
+        type: "inputText",
+        text: "Invalid watch_lark_url arguments: mode must be owner or all."
+      }]
+    });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-rm-lark-watchers",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_rm_watchers",
+          namespace: "twinny",
+          tool: "rm_lark_url_watchers",
+          arguments: { watcher_id: 1, url: "https://example.feishu.cn/docx/doc_token" }
+        }
+      }
+    );
+
+    expect(onDynamicToolCall).not.toHaveBeenCalled();
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-rm-lark-watchers", {
+      success: false,
+      contentItems: [{
+        type: "inputText",
+        text: "Invalid rm_lark_url_watchers arguments: provide exactly one of watcher_id or url."
       }]
     });
   });
