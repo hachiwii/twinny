@@ -10,7 +10,7 @@
 
 - macOS、Linux、WSL2 或 Windows。installer 在 macOS 上管理 LaunchAgent（或 `--system-daemon` LaunchDaemon），在 Linux/启用 systemd 的 WSL2 上管理 systemd user service，在 Windows 上管理用户级计划任务。
 - Node.js 22.18.0 或更新版本。Twinny 使用 Node.js 内置 `node:sqlite` 模块，不需要额外安装 SQLite native addon。
-- `PATH` 中有 Codex CLI 0.130.0 或更新版本，或者设置 `CODEX_BINARY`；如果缺少 Codex，installer 可以自动安装。
+- `PATH` 中有 Codex CLI 0.134.0 或更新版本，或者设置 `CODEX_BINARY`；如果缺少 Codex，installer 可以自动安装。
 - 一个已配置下方权限和事件订阅的 Feishu/Lark 机器人应用。
 
 ## 安装

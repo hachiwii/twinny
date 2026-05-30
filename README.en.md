@@ -10,7 +10,7 @@
 
 - macOS, Linux, WSL2, or Windows. The installer manages a macOS LaunchAgent, or a `--system-daemon` LaunchDaemon, on macOS, a systemd user service on Linux/WSL2 with systemd enabled, and a user-level scheduled task on Windows.
 - Node.js 22.18.0 or newer. Twinny uses Node.js' built-in `node:sqlite` module and does not require an extra SQLite native addon.
-- Codex CLI 0.130.0 or newer in `PATH`, or set `CODEX_BINARY`; the installer can install Codex automatically if it is missing.
+- Codex CLI 0.134.0 or newer in `PATH`, or set `CODEX_BINARY`; the installer can install Codex automatically if it is missing.
 - A Feishu/Lark bot app with the permissions and event subscriptions listed below.
 
 ## Installation
