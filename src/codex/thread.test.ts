@@ -27,6 +27,7 @@ describe("codex thread payloads", () => {
           deferLoading: false
         }),
         expect.objectContaining({ namespace: "twinny", name: "list_threads", deferLoading: false }),
+        expect.objectContaining({ namespace: "twinny", name: "search_threads", deferLoading: false }),
         expect.objectContaining({ namespace: "twinny", name: "new_thread", deferLoading: false }),
         expect.objectContaining({ namespace: "twinny", name: "wait_for_threads", deferLoading: false }),
         expect.objectContaining({ namespace: "twinny", name: "send_thread_ref", deferLoading: false }),
@@ -51,7 +52,24 @@ describe("codex thread payloads", () => {
         })
       })
     });
-    expect(buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools).toHaveLength(10);
+    const searchTool = buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools.find((candidate) =>
+      candidate.namespace === "twinny" && candidate.name === "search_threads"
+    );
+    expect(searchTool).toMatchObject({
+      inputSchema: expect.objectContaining({
+        required: ["searchTerm"],
+        properties: expect.objectContaining({
+          searchTerm: expect.objectContaining({ type: "string", minLength: 1 }),
+          cursor: expect.objectContaining({ type: ["string", "null"] }),
+          limit: expect.objectContaining({ type: ["integer", "null"], minimum: 1, maximum: 100 }),
+          sortKey: expect.objectContaining({ enum: ["created_at", "updated_at", null] }),
+          sortDirection: expect.objectContaining({ enum: ["asc", "desc", null] })
+        })
+      })
+    });
+    expect(JSON.stringify(searchTool?.inputSchema)).not.toContain("sourceKinds");
+    expect(JSON.stringify(searchTool?.inputSchema)).not.toContain("archived");
+    expect(buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools).toHaveLength(11);
   });
 
   it("builds thread/resume with the persisted thread id and the same thread overrides", () => {

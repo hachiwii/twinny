@@ -98,6 +98,8 @@ import type {
   CodexThread,
   ThreadListParams,
   ThreadListResponse,
+  ThreadSearchParams,
+  ThreadSearchResponse,
   ThreadSourceKind,
   ThreadTurn
 } from "../codex/thread.js";
@@ -123,6 +125,7 @@ const TWINNY_CODEX_THREAD_NAME_PREFIX = "[twinny]";
 const DOC_COMMENT_AGENT_CARD_SUBTITLE = "文档评论触发";
 const RESUME_LIST_PAGE_SIZE = 10;
 const RESUME_CODEX_PAGE_SIZE = 100;
+const SEARCH_THREADS_CODEX_PAGE_SIZE = 100;
 const RESUME_THREAD_PREVIEW_NAME_LIMIT = 20;
 const LARK_SINGLE_MESSAGE_UPDATE_FREQUENCY_LIMIT_CODE = 230020;
 const AGENT_CARD_TIMER_INTERVAL_MS = 10_000;
@@ -637,6 +640,9 @@ export interface CodexBridge {
   listThreads?(params: {
     profile: ProfileName;
   } & ThreadListParams): Promise<ThreadListResponse>;
+  searchThreads?(params: {
+    profile: ProfileName;
+  } & ThreadSearchParams): Promise<ThreadSearchResponse>;
   injectThreadItems?(params: {
     profile: ProfileName;
     threadId: string;
@@ -7532,6 +7538,8 @@ export class ConversationManager {
       switch (request.tool) {
         case "list_threads":
           return await this.handleListThreadsToolCall(active, request);
+        case "search_threads":
+          return await this.handleSearchThreadsToolCall(active, request);
         case "new_thread":
           return await this.handleNewThreadToolCall(active, request);
         case "wait_for_threads":
@@ -7582,23 +7590,7 @@ export class ConversationManager {
     ];
     const start = (request.page - 1) * request.pageSize;
     const pageItems = ordered.slice(start, start + request.pageSize);
-    const threads = await Promise.all(pageItems.map(async (thread) => {
-      const metadata = await this.readThreadMetadataBestEffort(thread);
-      return {
-        thread_id: thread.codexThreadId,
-        title: thread.name,
-        category: threadCategoryForList(thread, conversation),
-        status: this.threadStatusForTool(thread),
-        workspace: thread.workspace,
-        rollout_path: metadata.path ?? null,
-        model: thread.model ?? null,
-        effort: thread.effort ?? null,
-        mode: thread.mode,
-        lark_thread_id: thread.larkThreadId ?? null,
-        created_at: new Date(thread.createdAt).toISOString(),
-        updated_at: new Date(thread.updatedAt).toISOString()
-      };
-    }));
+    const threads = await Promise.all(pageItems.map((thread) => this.buildThreadToolItem(thread, conversation)));
     return dynamicToolJsonResponse(true, {
       ok: true,
       conversation_key: active.conversationKey,
@@ -7607,6 +7599,101 @@ export class ConversationManager {
       has_more: start + request.pageSize < ordered.length,
       threads
     });
+  }
+
+  private async handleSearchThreadsToolCall(
+    active: ActiveTurn,
+    request: Extract<CodexTwinnyDynamicToolRequest, { tool: "search_threads" }>
+  ): Promise<CodexDynamicToolCallResponse> {
+    const searchThreads = this.options.codex.searchThreads;
+    if (!searchThreads) {
+      return dynamicToolErrorResponse("CODEX_THREAD_SEARCH_UNAVAILABLE", "Codex bridge does not support thread/search.");
+    }
+    const conversation = await this.options.repository.findByConversationKey(active.conversationKey);
+    if (!conversation) {
+      return dynamicToolErrorResponse("CONVERSATION_NOT_FOUND", `Conversation ${active.conversationKey} was not found.`);
+    }
+
+    const records = await this.options.repository.listCodexThreadsByConversation(active.conversationKey);
+    const recordsByThreadId = new Map(records.map((thread) => [thread.codexThreadId, thread]));
+    const collected: Array<{ thread: CodexThreadRecord; codexThread: CodexThread; snippet: string }> = [];
+    const seenCursors = new Set<string | null>();
+    let codexCursor = request.cursor;
+
+    while (collected.length <= request.limit) {
+      seenCursors.add(codexCursor);
+      const response = await searchThreads({
+        profile: active.profile,
+        searchTerm: request.searchTerm,
+        cursor: codexCursor,
+        limit: SEARCH_THREADS_CODEX_PAGE_SIZE,
+        sortKey: request.sortKey,
+        sortDirection: request.sortDirection,
+        sourceKinds: RESUME_CODEX_SOURCE_KINDS,
+        archived: false
+      });
+
+      for (const result of response.data) {
+        const record = recordsByThreadId.get(result.thread.id);
+        if (!record) {
+          continue;
+        }
+        collected.push({
+          thread: record,
+          codexThread: result.thread,
+          snippet: result.snippet
+        });
+        if (collected.length > request.limit) {
+          break;
+        }
+      }
+
+      if (collected.length > request.limit || !response.nextCursor || seenCursors.has(response.nextCursor)) {
+        break;
+      }
+      codexCursor = response.nextCursor;
+    }
+
+    const pageItems = collected.slice(0, request.limit);
+    const hasMore = collected.length > request.limit;
+    const first = pageItems[0];
+    const last = pageItems.at(-1);
+    const threads = await Promise.all(pageItems.map(async (item) => ({
+      ...(await this.buildThreadToolItem(item.thread, conversation)),
+      snippet: item.snippet
+    })));
+
+    return dynamicToolJsonResponse(true, {
+      ok: true,
+      conversation_key: active.conversationKey,
+      search_term: request.searchTerm,
+      cursor: request.cursor,
+      limit: request.limit,
+      sort_key: request.sortKey,
+      sort_direction: request.sortDirection,
+      has_more: hasMore,
+      next_cursor: hasMore && last ? cursorFromCodexThread(last.codexThread, request.sortKey) : null,
+      backwards_cursor: first ? backwardsCursorFromCodexThread(first.codexThread, request.sortKey, request.sortDirection) : null,
+      threads
+    });
+  }
+
+  private async buildThreadToolItem(thread: CodexThreadRecord, conversation: ConversationRecord) {
+    const metadata = await this.readThreadMetadataBestEffort(thread);
+    return {
+      thread_id: thread.codexThreadId,
+      title: thread.name,
+      category: threadCategoryForList(thread, conversation),
+      status: this.threadStatusForTool(thread),
+      workspace: thread.workspace,
+      rollout_path: metadata.path ?? null,
+      model: thread.model ?? null,
+      effort: thread.effort ?? null,
+      mode: thread.mode,
+      lark_thread_id: thread.larkThreadId ?? null,
+      created_at: new Date(thread.createdAt).toISOString(),
+      updated_at: new Date(thread.updatedAt).toISOString()
+    };
   }
 
   private async readThreadMetadataBestEffort(thread: CodexThreadRecord): Promise<{ path?: string | null }> {
@@ -12788,6 +12875,31 @@ function threadCategoryForList(thread: CodexThreadRecord, conversation: Conversa
     return "thread";
   }
   return "previous_main";
+}
+
+function cursorFromCodexThread(thread: CodexThread, sortKey: "created_at" | "updated_at"): string | null {
+  const timestampMs = codexThreadTimestampMs(thread, sortKey);
+  return timestampMs === undefined ? null : new Date(timestampMs).toISOString();
+}
+
+function backwardsCursorFromCodexThread(
+  thread: CodexThread,
+  sortKey: "created_at" | "updated_at",
+  sortDirection: "asc" | "desc"
+): string | null {
+  const timestampMs = codexThreadTimestampMs(thread, sortKey);
+  if (timestampMs === undefined) {
+    return null;
+  }
+  return new Date(timestampMs + (sortDirection === "asc" ? 1 : -1)).toISOString();
+}
+
+function codexThreadTimestampMs(thread: CodexThread, sortKey: "created_at" | "updated_at"): number | undefined {
+  const timestampSeconds = sortKey === "updated_at" ? thread.updatedAt ?? thread.createdAt : thread.createdAt;
+  if (typeof timestampSeconds !== "number" || !Number.isFinite(timestampSeconds)) {
+    return undefined;
+  }
+  return Math.trunc(timestampSeconds * 1000);
 }
 
 function threadIsDeliverable(conversation: ConversationRecord, thread: CodexThreadRecord): boolean {

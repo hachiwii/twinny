@@ -56,7 +56,7 @@ import type {
   CodexTwinnyDynamicToolRequest,
   CodexTurnInput
 } from "../codex/turn.js";
-import type { ThreadListParams } from "../codex/thread.js";
+import type { ThreadListParams, ThreadSearchParams } from "../codex/thread.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { MacIdleSleepPreventer, type IdleSleepPreventer } from "./caffeinate.js";
 import {
@@ -786,6 +786,9 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool) {
     },
     listThreads: async ({ profile, ...params }: { profile: ProfileName } & ThreadListParams) => {
       return pool.get(profile).listThreads(params);
+    },
+    searchThreads: async ({ profile, ...params }: { profile: ProfileName } & ThreadSearchParams) => {
+      return pool.get(profile).searchThreads(params);
     },
     injectThreadItems: async ({ profile, threadId, items }: { profile: ProfileName; threadId: string; items: unknown[] }) => {
       await pool.get(profile).injectThreadItems(threadId, items);

@@ -1072,6 +1072,136 @@ describe("ConversationManager", () => {
     }
   });
 
+  it("searches Codex threads and filters results to the current Twinny conversation", async () => {
+    const turn = deferred<CodexTurnResult>();
+    let turnParams: Parameters<CodexBridge["startTurn"]>[0] | undefined;
+    const searchThreads = vi.fn(async (params: Parameters<NonNullable<CodexBridge["searchThreads"]>>[0]) => {
+      if (params.cursor === null) {
+        return {
+          data: [
+            { thread: { id: "outside_thread", createdAt: 8, updatedAt: 80 }, snippet: "outside" },
+            { thread: { id: "thread_topic", createdAt: 7, updatedAt: 70 }, snippet: "topic match" },
+            { thread: { id: "thread_previous", createdAt: 6, updatedAt: 60 }, snippet: "previous match" }
+          ],
+          nextCursor: "2026-05-01T00:00:00.000Z",
+          backwardsCursor: null
+        };
+      }
+      return {
+        data: [
+          { thread: { id: "thread_main", createdAt: 5, updatedAt: 50 }, snippet: "main match" }
+        ],
+        nextCursor: null,
+        backwardsCursor: null
+      };
+    });
+    const codex = createCodex({
+      readThreadMetadata: vi.fn(async ({ threadId }) => ({ path: `/rollouts/${threadId}.jsonl` })),
+      searchThreads,
+      startTurn: vi.fn((params) => {
+        turnParams = params;
+        void params.onTurnStarted?.("turn_1");
+        return turn.promise;
+      })
+    });
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          id: 10,
+          codexThreadId: "thread_main",
+          conversationKey: "group_oc_group",
+          name: "主会话",
+          category: "main",
+          updatedAt: 100
+        }),
+        codexThreadRecord({
+          id: 11,
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          name: "Topic",
+          category: "thread",
+          larkThreadId: "topic_1",
+          updatedAt: 300
+        }),
+        codexThreadRecord({
+          id: 13,
+          codexThreadId: "thread_previous",
+          conversationKey: "group_oc_group",
+          name: "Past Main",
+          category: "previous_main",
+          updatedAt: 200
+        })
+      ]
+    });
+    const manager = createManager({ repository, codex });
+
+    try {
+      manager.submitIncoming(groupMessage("g1", "hello"));
+      await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+      const response = await turnParams?.onDynamicToolCall?.({
+        requestId: "req_search",
+        threadId: "thread_main",
+        turnId: "turn_1",
+        callId: "call_search",
+        tool: "search_threads",
+        searchTerm: "match",
+        cursor: null,
+        limit: 2,
+        sortKey: "created_at",
+        sortDirection: "desc",
+        rawArguments: {}
+      });
+      const payload = dynamicToolPayload(response);
+
+      expect(searchThreads).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        profile: "guest",
+        searchTerm: "match",
+        cursor: null,
+        limit: 100,
+        sortKey: "created_at",
+        sortDirection: "desc",
+        archived: false,
+        sourceKinds: expect.arrayContaining(["appServer"])
+      }));
+      expect(searchThreads).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        cursor: "2026-05-01T00:00:00.000Z"
+      }));
+      expect(payload).toMatchObject({
+        ok: true,
+        conversation_key: "group_oc_group",
+        search_term: "match",
+        cursor: null,
+        limit: 2,
+        sort_key: "created_at",
+        sort_direction: "desc",
+        has_more: true,
+        next_cursor: "1970-01-01T00:00:06.000Z",
+        backwards_cursor: "1970-01-01T00:00:06.999Z"
+      });
+      expect(payload.threads).toEqual([
+        expect.objectContaining({
+          thread_id: "thread_topic",
+          category: "thread",
+          lark_thread_id: "topic_1",
+          snippet: "topic match",
+          rollout_path: "/rollouts/thread_topic.jsonl"
+        }),
+        expect.objectContaining({
+          thread_id: "thread_previous",
+          category: "previous_main",
+          lark_thread_id: null,
+          snippet: "previous match",
+          rollout_path: "/rollouts/thread_previous.jsonl"
+        })
+      ]);
+    } finally {
+      turn.resolve(completed("thread_main", "turn_1"));
+      await turn.promise;
+      await waitForDelay();
+    }
+  });
+
   it("waits for a managed thread to become idle and returns final message plus latest process lines", async () => {
     const { codex, turns } = createDeferredCodex();
     const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {

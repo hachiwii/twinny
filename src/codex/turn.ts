@@ -139,6 +139,15 @@ export interface CodexListThreadsToolRequest extends CodexDynamicToolRequestBase
   pageSize: number;
 }
 
+export interface CodexSearchThreadsToolRequest extends CodexDynamicToolRequestBase {
+  tool: "search_threads";
+  searchTerm: string;
+  cursor: string | null;
+  limit: number;
+  sortKey: "created_at" | "updated_at";
+  sortDirection: "asc" | "desc";
+}
+
 export interface CodexNewThreadToolRequest extends CodexDynamicToolRequestBase {
   tool: "new_thread";
   workspace?: string;
@@ -193,6 +202,7 @@ export interface CodexCreateConversationToolRequest extends CodexDynamicToolRequ
 
 export type CodexTwinnyDynamicToolRequest =
   | CodexListThreadsToolRequest
+  | CodexSearchThreadsToolRequest
   | CodexNewThreadToolRequest
   | CodexWaitForThreadsToolRequest
   | CodexSendThreadRefToolRequest
@@ -1045,6 +1055,32 @@ function parseTwinnyDynamicToolRequest(
         rawArguments: params.arguments
       };
     }
+    case "search_threads": {
+      if (!isRecord(params.arguments)) {
+        return "Invalid search_threads arguments: expected an object.";
+      }
+      const searchTerm = trimmedString(params.arguments.searchTerm);
+      const cursor = optionalNullableNonEmptyString(params.arguments.cursor);
+      const limit = optionalClampedInteger(params.arguments.limit, 25, 1, 100);
+      const sortKey = parseThreadSearchSortKey(params.arguments.sortKey, "created_at");
+      const sortDirection = parseThreadSearchSortDirection(params.arguments.sortDirection, "desc");
+      if (!searchTerm || cursor === undefined || limit === undefined || sortKey === undefined || sortDirection === undefined) {
+        return "Invalid search_threads arguments: searchTerm must be a non-empty string, cursor must be a string or null, limit must be an integer, sortKey must be created_at or updated_at, and sortDirection must be asc or desc.";
+      }
+      return {
+        requestId,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        callId: params.callId,
+        tool: "search_threads",
+        searchTerm,
+        cursor,
+        limit,
+        sortKey,
+        sortDirection,
+        rawArguments: params.arguments
+      };
+    }
     case "new_thread": {
       const args = isRecord(params.arguments) ? params.arguments : {};
       const workspace = trimmedString(args.workspace);
@@ -1244,6 +1280,16 @@ function optionalInteger(value: unknown, defaultValue: number, min: number, max:
   return value;
 }
 
+function optionalClampedInteger(value: unknown, defaultValue: number, min: number, max: number): number | undefined {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return undefined;
+  }
+  return Math.min(max, Math.max(min, value));
+}
+
 function optionalBoolean(value: unknown, defaultValue: boolean): boolean | undefined {
   if (value === undefined || value === null) {
     return defaultValue;
@@ -1258,11 +1304,32 @@ function optionalString(value: unknown, defaultValue: string): string | undefine
   return typeof value === "string" ? value : undefined;
 }
 
+function optionalNullableNonEmptyString(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  return trimmedString(value);
+}
+
 function parseThreadMode(value: unknown, defaultValue: CodexThreadMode): CodexThreadMode | undefined {
   if (value === undefined || value === null) {
     return defaultValue;
   }
   return value === "default" || value === "plan" ? value : undefined;
+}
+
+function parseThreadSearchSortKey(value: unknown, defaultValue: "created_at" | "updated_at"): "created_at" | "updated_at" | undefined {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+  return value === "created_at" || value === "updated_at" ? value : undefined;
+}
+
+function parseThreadSearchSortDirection(value: unknown, defaultValue: "asc" | "desc"): "asc" | "desc" | undefined {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+  return value === "asc" || value === "desc" ? value : undefined;
 }
 
 function parseThreadIds(value: unknown): string[] | undefined {

@@ -84,6 +84,41 @@ export const LIST_THREADS_TOOL_SPEC: DynamicToolSpec = {
   deferLoading: false
 };
 
+export const SEARCH_THREADS_TOOL_SPEC: DynamicToolSpec = {
+  namespace: "twinny",
+  name: "search_threads",
+  description:
+    "Search Twinny-managed threads in the current conversation. Returns list_threads thread objects plus Codex search snippets. Supports timestamp cursor pagination with limit up to 100.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["searchTerm"],
+    properties: {
+      searchTerm: {
+        type: "string",
+        minLength: 1,
+        description: "Search text. Twinny trims whitespace and rejects an empty search term."
+      },
+      cursor: {
+        type: ["string", "null"],
+        description: "Pagination cursor returned by a previous search_threads call."
+      },
+      limit: { type: ["integer", "null"], minimum: 1, maximum: 100, default: 25 },
+      sortKey: {
+        type: ["string", "null"],
+        enum: ["created_at", "updated_at", null],
+        default: "created_at"
+      },
+      sortDirection: {
+        type: ["string", "null"],
+        enum: ["asc", "desc", null],
+        default: "desc"
+      }
+    }
+  },
+  deferLoading: false
+};
+
 export const NEW_THREAD_TOOL_SPEC: DynamicToolSpec = {
   namespace: "twinny",
   name: "new_thread",
@@ -235,6 +270,7 @@ export const CREATE_CONVERSATION_TOOL_SPEC: DynamicToolSpec = {
 export const TWINNY_DYNAMIC_TOOL_SPECS: DynamicToolSpec[] = [
   SET_THREAD_NAME_TOOL_SPEC,
   LIST_THREADS_TOOL_SPEC,
+  SEARCH_THREADS_TOOL_SPEC,
   NEW_THREAD_TOOL_SPEC,
   WAIT_FOR_THREADS_TOOL_SPEC,
   SEND_THREAD_REF_TOOL_SPEC,
@@ -293,6 +329,27 @@ export interface ThreadListParams {
 
 export interface ThreadListResponse {
   data: CodexThread[];
+  nextCursor: string | null;
+  backwardsCursor: string | null;
+}
+
+export interface ThreadSearchParams {
+  searchTerm: string;
+  cursor?: string | null;
+  limit?: number | null;
+  sortKey?: "created_at" | "updated_at" | null;
+  sortDirection?: "asc" | "desc" | null;
+  sourceKinds?: ThreadSourceKind[] | null;
+  archived?: boolean | null;
+}
+
+export interface ThreadSearchResult {
+  thread: CodexThread;
+  snippet: string;
+}
+
+export interface ThreadSearchResponse {
+  data: ThreadSearchResult[];
   nextCursor: string | null;
   backwardsCursor: string | null;
 }
@@ -441,6 +498,13 @@ export async function listCodexThreads(
   params: ThreadListParams = {}
 ): Promise<ThreadListResponse> {
   return protocol.request<ThreadListResponse, ThreadListParams>("thread/list", params);
+}
+
+export async function searchCodexThreads(
+  protocol: CodexProtocolClient,
+  params: ThreadSearchParams
+): Promise<ThreadSearchResponse> {
+  return protocol.request<ThreadSearchResponse, ThreadSearchParams>("thread/search", params);
 }
 
 export async function setCodexThreadName(

@@ -251,6 +251,48 @@ describe("handleTurnServerRequest", () => {
         onDynamicToolCall
       },
       {
+        id: "req-search",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_search",
+          namespace: "twinny",
+          tool: "search_threads",
+          arguments: { searchTerm: "  rollout plan  ", cursor: null, limit: 250, sortKey: null, sortDirection: "asc" }
+        }
+      }
+    );
+
+    await Promise.resolve();
+
+    expect(onDynamicToolCall).toHaveBeenLastCalledWith({
+      requestId: "req-search",
+      threadId: "thread_123",
+      turnId: "turn_1",
+      callId: "call_search",
+      tool: "search_threads",
+      searchTerm: "rollout plan",
+      cursor: null,
+      limit: 100,
+      sortKey: "created_at",
+      sortDirection: "asc",
+      rawArguments: { searchTerm: "  rollout plan  ", cursor: null, limit: 250, sortKey: null, sortDirection: "asc" }
+    });
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-search", {
+      success: true,
+      contentItems: [{ type: "inputText", text: "search_threads:call_search" }]
+    });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
         id: "req-new-thread",
         method: "item/tool/call",
         params: {
@@ -452,6 +494,37 @@ describe("handleTurnServerRequest", () => {
   it("validates Twinny dynamic tool arguments before dispatch", () => {
     const protocol = new FakeProtocol();
     const onDynamicToolCall = vi.fn();
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-search",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_search",
+          namespace: "twinny",
+          tool: "search_threads",
+          arguments: { searchTerm: "   ", sortKey: "name" }
+        }
+      }
+    );
+
+    expect(onDynamicToolCall).not.toHaveBeenCalled();
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-search", {
+      success: false,
+      contentItems: [{
+        type: "inputText",
+        text: "Invalid search_threads arguments: searchTerm must be a non-empty string, cursor must be a string or null, limit must be an integer, sortKey must be created_at or updated_at, and sortDirection must be asc or desc."
+      }]
+    });
 
     handleTurnServerRequest(
       protocol as unknown as CodexProtocolClient,
