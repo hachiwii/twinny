@@ -53,6 +53,7 @@ describe("codex thread payloads", () => {
     const waitTool = buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools.find((candidate) =>
       candidate.namespace === "twinny" && candidate.name === "wait_for_threads"
     );
+    expect(waitTool?.description).toContain("returns once any requested thread is idle");
     expect(waitTool).toMatchObject({
       description: expect.stringContaining("timeout_ms: 0"),
       inputSchema: expect.objectContaining({

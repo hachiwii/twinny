@@ -145,7 +145,7 @@ export const WAIT_FOR_THREADS_TOOL_SPEC: DynamicToolSpec = {
   namespace: "twinny",
   name: "wait_for_threads",
   description:
-    "Wait for Twinny-managed threads to become idle and for their queued work to clear. Accepts a list of thread IDs and returns only after every thread is idle. A thread counts as waited once it has sent an idle signal. Use timeout_ms: 0 when you only want to inspect the current status and latest output without waiting. Returns each thread's last turn final message and latest 100 lines of process output; interrupted or failed turns return the process tail instead of a final message.",
+    "Wait for Twinny-managed threads to become idle and for their queued work to clear. Accepts a list of thread IDs and returns once any requested thread is idle. A thread counts as waited once it has sent an idle signal. Use timeout_ms: 0 when you only want to inspect the current status and latest output without waiting. Returns each requested thread's current wait status; idle threads include their last turn final message and latest 100 lines of process output, while interrupted or failed turns return the process tail instead of a final message.",
   inputSchema: {
     type: "object",
     additionalProperties: false,

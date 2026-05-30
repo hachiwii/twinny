@@ -1417,7 +1417,7 @@ describe("ConversationManager", () => {
     await waitForDelay();
   });
 
-  it("waits for every requested thread before returning wait_for_threads output", async () => {
+  it("returns wait_for_threads output when any requested thread becomes idle", async () => {
     const { codex, turns } = createDeferredCodex();
     const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
       codexThreads: [
@@ -1459,19 +1459,17 @@ describe("ConversationManager", () => {
     });
 
     turns[0]!.resolve(completed("thread_topic_a", "turn_1"));
-    await waitForDelay();
-    expect(settled).toBe(false);
-
-    turns[1]!.resolve(completed("thread_topic_b", "turn_2"));
     const payload = dynamicToolPayload(await waitPromise);
+    expect(settled).toBe(true);
     expect(payload).toMatchObject({
       ok: true,
       threads: [
         { thread_id: "thread_topic_a", outcome: "completed", status: "idle" },
-        { thread_id: "thread_topic_b", outcome: "completed", status: "idle" }
+        { ok: false, thread_id: "thread_topic_b", outcome: "pending", status: "working", turn_id: "turn_2" }
       ]
     });
 
+    turns[1]!.resolve(completed("thread_topic_b", "turn_2"));
     turns[2]!.resolve(completed("thread_main", "turn_3"));
     await waitForDelay();
   });
@@ -1514,14 +1512,19 @@ describe("ConversationManager", () => {
       rawArguments: { thread_ids: ["thread_topic_a", "thread_topic_b"] }
     }));
 
-    turns[0]!.resolve(completed("thread_topic_a", "turn_1"));
     const response = await waitPromise;
     expect(response).toMatchObject({ success: true });
     const payload = dynamicToolPayload(response);
     expect(payload).toMatchObject({
       ok: false,
       threads: [
-        { ok: true, thread_id: "thread_topic_a", outcome: "completed", status: "idle", turn_id: "turn_1" },
+        {
+          ok: false,
+          thread_id: "thread_topic_a",
+          outcome: "timeout",
+          status: "working",
+          turn_id: "turn_1"
+        },
         {
           ok: false,
           thread_id: "thread_topic_b",
@@ -1536,6 +1539,7 @@ describe("ConversationManager", () => {
     expect(payload).not.toHaveProperty("error");
     expect(payload.threads[1]).not.toHaveProperty("final_message");
 
+    turns[0]!.resolve(completed("thread_topic_a", "turn_1"));
     turns[1]!.resolve(completed("thread_topic_b", "turn_2"));
     turns[2]!.resolve(completed("thread_main", "turn_3"));
     await waitForDelay();

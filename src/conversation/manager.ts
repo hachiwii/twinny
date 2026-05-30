@@ -8090,22 +8090,44 @@ export class ConversationManager {
         pendingThreadIds.push(targetThreadId);
       }
 
+      if (snapshots.size > 0) {
+        const waitedMs = Date.now() - startedAt;
+        return dynamicToolJsonResponse(true, {
+          ok: true,
+          waited_ms: waitedMs,
+          threads: request.targetThreadIds.map((threadId) => {
+            const snapshot = snapshots.get(threadId);
+            return snapshot ? waitSnapshotResponse(snapshot, waitedMs) : this.waitPendingThreadResponse(threadId, waitedMs);
+          })
+        });
+      }
+
       if (pendingThreadIds.length > 0) {
-        const pendingSnapshots = await this.waitForThreadIdleSnapshots(
+        const snapshot = await this.waitForAnyThreadIdleSnapshot(
           active.threadId,
           pendingThreadIds,
           request.timeoutMs,
           startedAt
         );
-        for (const snapshot of pendingSnapshots) {
-          snapshots.set(snapshot.threadId, snapshot);
+        snapshots.set(snapshot.threadId, snapshot);
+        for (const targetThreadId of pendingThreadIds) {
+          if (snapshots.has(targetThreadId)) {
+            continue;
+          }
+          const ready = await this.threadWaitSnapshotIfReady(targetThreadId);
+          if (ready) {
+            snapshots.set(targetThreadId, ready);
+          }
         }
       }
       const waitedMs = Date.now() - startedAt;
       return dynamicToolJsonResponse(true, {
         ok: true,
         waited_ms: waitedMs,
-        threads: request.targetThreadIds.map((threadId) => waitSnapshotResponse(snapshots.get(threadId)!, waitedMs))
+        threads: request.targetThreadIds.map((threadId) => {
+          const snapshot = snapshots.get(threadId);
+          return snapshot ? waitSnapshotResponse(snapshot, waitedMs) : this.waitPendingThreadResponse(threadId, waitedMs);
+        })
       });
     } catch (error) {
       if (
@@ -8131,6 +8153,22 @@ export class ConversationManager {
       }
       return dynamicToolErrorResponse(errorCodeForDynamicTool(error), toErrorMessage(error));
     }
+  }
+
+  private waitPendingThreadResponse(threadId: string, waitedMs: number): Record<string, unknown> {
+    const active = this.findActiveTurn(threadId);
+    const process = processTail(active?.processMessages ?? []);
+    return {
+      ok: false,
+      thread_id: threadId,
+      outcome: "pending",
+      status: "working",
+      waited_ms: waitedMs,
+      turn_id: active?.turnId ?? null,
+      process_tail: process.text,
+      omitted_process_lines: process.omitted,
+      updated_at: new Date(Date.now()).toISOString()
+    };
   }
 
   private waitTimeoutThreadResponse(threadId: string, waitedMs: number): Record<string, unknown> {
@@ -8160,19 +8198,20 @@ export class ConversationManager {
     };
   }
 
-  private async waitForThreadIdleSnapshots(
+  private async waitForAnyThreadIdleSnapshot(
     callerThreadId: string,
     targetThreadIds: string[],
     timeoutMs: number,
     startedAt: number
-  ): Promise<ThreadWaitSnapshot[]> {
+  ): Promise<ThreadWaitSnapshot> {
     const watchers: ThreadIdleWatcher[] = [];
     let steerWatcher: ThreadSteerWatcher | undefined;
+    let timeout: NodeJS.Timeout | undefined;
     try {
       for (const targetThreadId of targetThreadIds) {
         this.addWaitEdge(callerThreadId, targetThreadId);
       }
-      const idlePromise = Promise.all(targetThreadIds.map((targetThreadId) =>
+      const idlePromise = Promise.race(targetThreadIds.map((targetThreadId) =>
         new Promise<ThreadWaitSnapshot>((resolve, reject) => {
           const watcher: ThreadIdleWatcher = {
             callerThreadId,
@@ -8181,22 +8220,26 @@ export class ConversationManager {
             resolve,
             reject
           };
-          watcher.timeout = setTimeout(() => {
-            this.removeThreadIdleWatcher(watcher);
-            reject(new TwinnyError(`Timed out waiting for thread ${targetThreadId} to become idle`, "THREAD_WAIT_TIMEOUT"));
-          }, timeoutMs);
-          watcher.timeout.unref?.();
           watchers.push(watcher);
           this.addThreadIdleWatcher(watcher);
           void this.resolveThreadIdleWatchersIfReady(targetThreadId);
         })
       ));
+      const timeoutPromise = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(new TwinnyError("Timed out waiting for any thread to become idle", "THREAD_WAIT_TIMEOUT"));
+        }, timeoutMs);
+        timeout.unref?.();
+      });
       const steerPromise = new Promise<never>((_resolve, reject) => {
         steerWatcher = { threadId: callerThreadId, reject };
         this.addThreadSteerWatcher(steerWatcher);
       });
-      return await Promise.race([idlePromise, steerPromise]);
+      return await Promise.race([idlePromise, timeoutPromise, steerPromise]);
     } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
       for (const watcher of watchers) {
         this.removeThreadIdleWatcher(watcher);
       }
