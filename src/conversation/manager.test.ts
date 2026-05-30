@@ -1320,6 +1320,55 @@ describe("ConversationManager", () => {
     await waitForDelay();
   });
 
+  it("returns a lost work-content note for an idle thread without a wait snapshot", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_1"
+        })
+      ]
+    });
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    const response = await turns[0]!.params.onDynamicToolCall!({
+      requestId: "req_wait_zero_missing",
+      threadId: "thread_main",
+      turnId: "turn_1",
+      callId: "call_wait_zero_missing",
+      tool: "wait_for_threads",
+      targetThreadIds: ["thread_topic"],
+      timeoutMs: 0,
+      rawArguments: { thread_ids: ["thread_topic"], timeout_ms: 0 }
+    });
+    expect(response).toMatchObject({ success: true });
+    const payload = dynamicToolPayload(response);
+
+    expect(payload).toMatchObject({
+      ok: true,
+      threads: [{
+        ok: true,
+        thread_id: "thread_topic",
+        outcome: "unknown",
+        status: "idle",
+        turn_id: null,
+        process_tail: "工作内容缓存已丢失，无法显示该 thread 的工作过程。",
+        omitted_process_lines: 0
+      }]
+    });
+    expect(payload).not.toHaveProperty("error");
+    expect(payload.threads[0]).not.toHaveProperty("final_message");
+
+    turns[0]!.resolve(completed("thread_main", "turn_1"));
+    await waitForDelay();
+  });
+
   it("returns interrupted wait output when the target thread fails", async () => {
     const { codex, turns } = createDeferredCodex();
     const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {

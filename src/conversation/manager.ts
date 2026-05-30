@@ -226,6 +226,7 @@ const WORKSPACE_SELECTION_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 const WORKSPACE_SELECTION_LIMIT = 10;
 const CRON_TIMER_MAX_DELAY_MS = 2_147_483_647;
 const MISSING_BOT_OPEN_ID = "MISSING_BOT_OPENID";
+const MISSING_THREAD_WORK_CONTENT = "工作内容缓存已丢失，无法显示该 thread 的工作过程。";
 
 export interface ConversationRepository {
   findByConversationKey(conversationKey: string): Promise<ConversationRecord | null> | ConversationRecord | null;
@@ -1293,7 +1294,7 @@ type ParsedCardActionCommand =
 interface ThreadWaitSnapshot {
   threadId: string;
   turnId?: string;
-  outcome: "completed" | "interrupted";
+  outcome: "completed" | "interrupted" | "unknown";
   status: "idle";
   finalMessage?: string;
   processTail: string;
@@ -8078,10 +8079,8 @@ export class ConversationManager {
           continue;
         }
         if (await this.threadIsIdleWithoutWaitSnapshot(targetThreadId)) {
-          return dynamicToolErrorResponse(
-            "THREAD_LAST_TURN_UNAVAILABLE",
-            `Thread ${targetThreadId} is idle, but its last turn result is not available in memory.`
-          );
+          snapshots.set(targetThreadId, this.missingWorkContentWaitSnapshot(targetThreadId));
+          continue;
         }
         pendingThreadIds.push(targetThreadId);
       }
@@ -8142,6 +8141,17 @@ export class ConversationManager {
       process_tail: process.text,
       omitted_process_lines: process.omitted,
       updated_at: new Date(Date.now()).toISOString()
+    };
+  }
+
+  private missingWorkContentWaitSnapshot(threadId: string): ThreadWaitSnapshot {
+    return {
+      threadId,
+      outcome: "unknown",
+      status: "idle",
+      processTail: MISSING_THREAD_WORK_CONTENT,
+      omittedProcessLines: 0,
+      updatedAt: Date.now()
     };
   }
 
