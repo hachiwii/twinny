@@ -1083,9 +1083,9 @@ function parseTwinnyDynamicToolRequest(
         return "Invalid wait_for_threads arguments: expected an object.";
       }
       const targetThreadIds = parseThreadIds(params.arguments.thread_ids);
-      const timeoutMs = optionalInteger(params.arguments.timeout_ms, 300_000, 1_000, 3_600_000);
+      const timeoutMs = optionalInteger(params.arguments.timeout_ms, 300_000, 0, 3_600_000);
       if (!targetThreadIds || timeoutMs === undefined) {
-        return "Invalid wait_for_threads arguments: thread_ids must be a non-empty string array and timeout_ms must be 1000..3600000.";
+        return "Invalid wait_for_threads arguments: thread_ids must be a non-empty string array and timeout_ms must be 0..3600000.";
       }
       return {
         requestId,

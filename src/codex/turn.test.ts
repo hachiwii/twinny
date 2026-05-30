@@ -470,7 +470,7 @@ describe("handleTurnServerRequest", () => {
           callId: "call_wait",
           namespace: "twinny",
           tool: "wait_for_threads",
-          arguments: { timeout_ms: 999 }
+          arguments: { timeout_ms: -1 }
         }
       }
     );
@@ -480,9 +480,43 @@ describe("handleTurnServerRequest", () => {
       success: false,
       contentItems: [{
         type: "inputText",
-        text: "Invalid wait_for_threads arguments: thread_ids must be a non-empty string array and timeout_ms must be 1000..3600000."
+        text: "Invalid wait_for_threads arguments: thread_ids must be a non-empty string array and timeout_ms must be 0..3600000."
       }]
     });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-wait-zero",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_wait_zero",
+          namespace: "twinny",
+          tool: "wait_for_threads",
+          arguments: { thread_ids: ["thread_target"], timeout_ms: 0 }
+        }
+      }
+    );
+
+    expect(onDynamicToolCall).toHaveBeenCalledWith({
+      requestId: "req-wait-zero",
+      threadId: "thread_123",
+      turnId: "turn_1",
+      callId: "call_wait_zero",
+      tool: "wait_for_threads",
+      targetThreadIds: ["thread_target"],
+      timeoutMs: 0,
+      rawArguments: { thread_ids: ["thread_target"], timeout_ms: 0 }
+    });
+    onDynamicToolCall.mockClear();
 
     handleTurnServerRequest(
       protocol as unknown as CodexProtocolClient,

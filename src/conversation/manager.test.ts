@@ -1135,6 +1135,59 @@ describe("ConversationManager", () => {
     await waitForDelay();
   });
 
+  it("returns latest wait_for_threads output for an already-idle thread with timeout 0", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_1"
+        })
+      ]
+    });
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(groupMessage("topic_msg", "target work", { chatType: "topic_group", larkThreadId: "topic_1" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_process", text: "idle process line", phase: "commentary" });
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_final", text: "idle final answer", phase: "final_answer" });
+    turns[0]!.resolve(completed("thread_topic", "turn_1"));
+    await waitForDelay();
+
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    const payload = dynamicToolPayload(await turns[1]!.params.onDynamicToolCall!({
+      requestId: "req_wait_zero",
+      threadId: "thread_main",
+      turnId: "turn_2",
+      callId: "call_wait_zero",
+      tool: "wait_for_threads",
+      targetThreadIds: ["thread_topic"],
+      timeoutMs: 0,
+      rawArguments: { thread_ids: ["thread_topic"], timeout_ms: 0 }
+    }));
+
+    expect(payload).toMatchObject({
+      ok: true,
+      threads: [{
+        ok: true,
+        thread_id: "thread_topic",
+        outcome: "completed",
+        status: "idle",
+        turn_id: "turn_1",
+        final_message: "idle final answer",
+        process_tail: "idle process line",
+        omitted_process_lines: 0
+      }]
+    });
+
+    turns[1]!.resolve(completed("thread_main", "turn_2"));
+    await waitForDelay();
+  });
+
   it("returns interrupted wait output when the target thread fails", async () => {
     const { codex, turns } = createDeferredCodex();
     const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
@@ -1304,6 +1357,55 @@ describe("ConversationManager", () => {
 
     turns[1]!.resolve(completed("thread_topic_b", "turn_2"));
     turns[2]!.resolve(completed("thread_main", "turn_3"));
+    await waitForDelay();
+  });
+
+  it("returns working thread status and latest output for wait_for_threads with timeout 0", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_1"
+        })
+      ]
+    });
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(groupMessage("topic_msg", "target work", { chatType: "topic_group", larkThreadId: "topic_1" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await turns[0]!.params.onAgentMessage?.({ id: "agent_process", text: "still working now", phase: "commentary" });
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    const payload = dynamicToolPayload(await turns[1]!.params.onDynamicToolCall!({
+      requestId: "req_wait_zero",
+      threadId: "thread_main",
+      turnId: "turn_2",
+      callId: "call_wait_zero",
+      tool: "wait_for_threads",
+      targetThreadIds: ["thread_topic"],
+      timeoutMs: 0,
+      rawArguments: { thread_ids: ["thread_topic"], timeout_ms: 0 }
+    }));
+
+    expect(payload).toMatchObject({
+      ok: false,
+      threads: [{
+        ok: false,
+        thread_id: "thread_topic",
+        outcome: "timeout",
+        status: "working",
+        turn_id: "turn_1",
+        process_tail: "still working now",
+        omitted_process_lines: 0
+      }]
+    });
+
+    turns[0]!.resolve(completed("thread_topic", "turn_1"));
+    turns[1]!.resolve(completed("thread_main", "turn_2"));
     await waitForDelay();
   });
 

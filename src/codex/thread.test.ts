@@ -40,6 +40,17 @@ describe("codex thread payloads", () => {
     const tool = buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools[0]!;
     expect(JSON.stringify(tool.inputSchema)).not.toContain("maxLength");
     expect(tool.description).not.toContain("Twinny");
+    const waitTool = buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools.find((candidate) =>
+      candidate.namespace === "twinny" && candidate.name === "wait_for_threads"
+    );
+    expect(waitTool).toMatchObject({
+      description: expect.stringContaining("timeout_ms: 0"),
+      inputSchema: expect.objectContaining({
+        properties: expect.objectContaining({
+          timeout_ms: expect.objectContaining({ minimum: 0 })
+        })
+      })
+    });
     expect(buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools).toHaveLength(10);
   });
 
