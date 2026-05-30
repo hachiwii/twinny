@@ -4482,7 +4482,7 @@ export class ConversationManager {
       return;
     }
     const active = state.active;
-    if (canUpdateActiveGoalWithMessage(active, message)) {
+    if (canUpdateActiveGoal(active)) {
       await this.updateActiveGoalCommand(state, message, active, content);
       return;
     }
@@ -6266,10 +6266,8 @@ export class ConversationManager {
     }
 
     if (state.waitingInterruptBatch) {
-      const batchOwnerOpenId = state.waitingInterruptBatch.messages[0]?.original.senderOpenId;
       const canAppend =
-        batchOwnerOpenId === message.original.senderOpenId &&
-        (state.waitingInterruptBatch.allowAnySameUserMessage || (!message.control && !message.queueBoundary));
+        state.waitingInterruptBatch.allowAnySameUserMessage || (!message.control && !message.queueBoundary);
       if (!canAppend) {
         return false;
       }
@@ -6285,8 +6283,7 @@ export class ConversationManager {
     }
 
     if (active?.waiting) {
-      const canInterruptWaitingTurn =
-        state.pendingBatch.length === 0 && message.original.senderOpenId === active.triggerOpenId;
+      const canInterruptWaitingTurn = state.pendingBatch.length === 0;
       const isPlainWaitingFollowUp = !message.control && !message.queueBoundary;
       if (canInterruptWaitingTurn && (active.waiting.kind === "plan" || isPlainWaitingFollowUp)) {
         await this.interruptWaitingTurnWithMessage(state, context, active, message);
@@ -6353,9 +6350,6 @@ export class ConversationManager {
     }
     const first = state.pendingBatch[0]!;
     if (first.forceQueueWhenActive) {
-      return false;
-    }
-    if (!first.docComment && first.original.senderOpenId !== active.triggerOpenId) {
       return false;
     }
     const interrupted = await this.cancelActiveTurn(state, { waitForCompletion: true });
@@ -14280,22 +14274,17 @@ function classifyInitialRoute(
     return queuedRouteForParsedCommand(parsed, message, active?.kind === "compact" ? "active_compact" : "active_turn");
   }
   if (state.waitingInterruptBatch && isSchedulableParsedCommand(parsed)) {
-    const batchOwnerOpenId = state.waitingInterruptBatch.messages[0]?.original.senderOpenId;
-    if (batchOwnerOpenId && message.senderOpenId === batchOwnerOpenId) {
-      return directRouteForParsedCommand(parsed, message);
-    }
-    return queuedRouteForParsedCommand(parsed, message, "waiting_interrupt_batch");
+    return directRouteForParsedCommand(parsed, message);
   }
   const canRunDirectlyFromPlanWaiting =
     active?.waiting?.kind === "plan" &&
     state.pendingBatch.length === 0 &&
-    message.senderOpenId === active.triggerOpenId &&
     isSchedulableParsedCommand(parsed);
   if (canRunDirectlyFromPlanWaiting) {
     return directRouteForParsedCommand(parsed, message);
   }
   if (active?.waiting && (parsed.kind === "message" || (parsed.kind === "queue" && parsed.text.length > 0))) {
-    const canRunDirectly = state.pendingBatch.length === 0 && message.senderOpenId === active.triggerOpenId;
+    const canRunDirectly = state.pendingBatch.length === 0;
     if (parsed.kind === "queue") {
       const nested = parseSlashCommand(parsed.text);
       if (nested.kind === "goal") {
@@ -14329,7 +14318,7 @@ function classifyInitialRoute(
     return routeForParsedCommand(parsed, { routeKind: "side_message", status: "processing", text: parsed.text });
   }
   if (parsed.kind === "goal") {
-    return canUpdateActiveGoalWithMessage(active, message)
+    return canUpdateActiveGoal(active)
       ? routeForParsedCommand(parsed, { routeKind: "goal_message", status: "processing", text: parsed.text })
       : routeForParsedCommand(parsed, {
         routeKind: "goal_message",
@@ -14406,17 +14395,13 @@ function classifyInitialRoute(
   return routeForParsedCommand(parsed, { routeKind: "message", status: "processing", text: parsed.text });
 }
 
-function canUpdateActiveGoalWithMessage(
-  active: ActiveTurn | undefined,
-  message: IncomingLarkMessage
-): active is ActiveTurn & { kind: "goal"; goal: ActiveGoalState } {
+function canUpdateActiveGoal(active: ActiveTurn | undefined): active is ActiveTurn & { kind: "goal"; goal: ActiveGoalState } {
   return (
     active?.kind === "goal" &&
     !!active.goal &&
     !active.cancelRequested &&
     active.completedStatus === undefined &&
-    active.goal.completed !== true &&
-    message.senderOpenId === active.triggerOpenId
+    active.goal.completed !== true
   );
 }
 
