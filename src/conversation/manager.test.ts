@@ -173,6 +173,8 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_1", "turn_2"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
     turns[2]!.resolve(completed("thread_1", "turn_3"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    turns[2]!.resolve(completed("thread_1", "turn_3"));
     await waitForDelay();
   });
 
@@ -1539,6 +1541,151 @@ describe("ConversationManager", () => {
     await waitForDelay();
   });
 
+  it("returns early from wait_for_threads when the waiting thread receives a user steer", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_1"
+        })
+      ]
+    });
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(groupMessage("topic_msg", "target work", { chatType: "topic_group", larkThreadId: "topic_1" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await turns[0]!.params.onAgentMessage?.({ id: "target_process", text: "target still working", phase: "commentary" });
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    const waitPromise = Promise.resolve(turns[1]!.params.onDynamicToolCall!({
+      requestId: "req_wait",
+      threadId: "thread_main",
+      turnId: "turn_2",
+      callId: "call_wait",
+      tool: "wait_for_threads",
+      targetThreadIds: ["thread_topic"],
+      timeoutMs: 5_000,
+      rawArguments: { thread_ids: ["thread_topic"] }
+    }));
+
+    manager.submitIncoming(groupMessage("main_steer", "new user context"));
+    await waitForExpect(() =>
+      expect(codex.steerTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: "thread_main",
+          turnId: "turn_2",
+          input: expect.stringContaining("new user context")
+        })
+      )
+    );
+
+    const payload = dynamicToolPayload(await waitPromise);
+    expect(payload).toMatchObject({
+      ok: false,
+      reason: "received steer message",
+      threads: [{
+        ok: false,
+        thread_id: "thread_topic",
+        outcome: "timeout",
+        status: "working",
+        turn_id: "turn_1",
+        process_tail: "target still working"
+      }]
+    });
+
+    turns[0]!.resolve(completed("thread_topic", "turn_1"));
+    turns[1]!.resolve(completed("thread_main", "turn_2"));
+    await waitForDelay();
+  });
+
+  it("returns early from wait_for_threads when another thread steers the waiting thread", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_target",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_target"
+        }),
+        codexThreadRecord({
+          codexThreadId: "thread_source",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_source"
+        })
+      ]
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("target_msg", "target work", { chatType: "topic_group", larkThreadId: "topic_target" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    manager.submitIncoming(groupMessage("source_msg", "source work", { chatType: "topic_group", larkThreadId: "topic_source" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    const targetTurn = turns.find((turn) => turn.params.threadId === "thread_target")!;
+    const mainTurn = turns.find((turn) => turn.params.threadId === "thread_main")!;
+    const sourceTurn = turns.find((turn) => turn.params.threadId === "thread_source")!;
+    const mainTurnId = `turn_${turns.indexOf(mainTurn) + 1}`;
+    const sourceTurnId = `turn_${turns.indexOf(sourceTurn) + 1}`;
+    await targetTurn.params.onAgentMessage?.({ id: "target_process", text: "target process", phase: "commentary" });
+
+    const waitPromise = Promise.resolve(mainTurn.params.onDynamicToolCall!({
+      requestId: "req_wait",
+      threadId: "thread_main",
+      turnId: mainTurnId,
+      callId: "call_wait",
+      tool: "wait_for_threads",
+      targetThreadIds: ["thread_target"],
+      timeoutMs: 5_000,
+      rawArguments: { thread_ids: ["thread_target"] }
+    }));
+
+    const tellPayload = dynamicToolPayload(await sourceTurn.params.onDynamicToolCall!({
+      requestId: "req_tell",
+      threadId: "thread_source",
+      turnId: sourceTurnId,
+      callId: "call_tell_steer_main",
+      tool: "tell_thread",
+      targetThreadId: "thread_main",
+      message: "priority from source",
+      mode: "steer",
+      rawArguments: { thread_id: "thread_main", msg: "priority from source", mode: "steer" }
+    }));
+
+    expect(tellPayload).toMatchObject({ ok: true, mode: "steer", status: "processing" });
+    await waitForExpect(() =>
+      expect(codex.steerTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: "thread_main",
+          input: expect.stringContaining("priority from source")
+        })
+      )
+    );
+    const waitPayload = dynamicToolPayload(await waitPromise);
+    expect(waitPayload).toMatchObject({
+      ok: false,
+      reason: "received steer message",
+      threads: [{ thread_id: "thread_target", outcome: "timeout", process_tail: "target process" }]
+    });
+    expect(lark.sendTextToChatId).toHaveBeenCalledWith(
+      "oc_group",
+      "收到来自 thread_source 的消息：\n\npriority from source",
+      { uuid: expect.stringMatching(UUID_PATTERN) }
+    );
+
+    targetTurn.resolve(completed("thread_target", `turn_${turns.indexOf(targetTurn) + 1}`));
+    mainTurn.resolve(completed("thread_main", mainTurnId));
+    sourceTurn.resolve(completed("thread_source", sourceTurnId));
+    await waitForDelay();
+  });
+
   it("creates a fresh topic through new_thread and starts an initial plan-mode message", async () => {
     const turns: Array<Deferred<CodexTurnResult> & { params: Parameters<CodexBridge["startTurn"]>[0] }> = [];
     const codex = createCodex({
@@ -1865,6 +2012,7 @@ describe("ConversationManager", () => {
       tool: "tell_thread",
       targetThreadId: "thread_topic",
       message: "please check this",
+      mode: "queue",
       rawArguments: { thread_id: "thread_topic", msg: "please check this" }
     }));
 
@@ -1944,6 +2092,7 @@ describe("ConversationManager", () => {
       tool: "tell_thread",
       targetThreadId: "thread_topic",
       message: "queued follow up",
+      mode: "queue",
       rawArguments: { thread_id: "thread_topic", msg: "queued follow up" }
     }));
 
@@ -1969,6 +2118,131 @@ describe("ConversationManager", () => {
         threadId: "thread_topic",
         input: expect.stringContaining("queued follow up")
       })
+    );
+
+    turns[2]!.resolve(completed("thread_topic", "turn_3"));
+    turns[1]!.resolve(completed("thread_main", "turn_2"));
+    await waitForDelay();
+  });
+
+  it("steers tell_thread proxy messages into an active target even when the target has queued work", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_1",
+          cardMessageId: "card_topic",
+          name: "Target",
+          parentCodexThreadId: "thread_main"
+        })
+      ]
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "proxy_steer",
+      raw: { data: { thread_id: "topic_1" } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("topic_msg", "target work", { chatType: "topic_group", larkThreadId: "topic_1" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("topic_queue", "/queue queued target", { chatType: "topic_group", larkThreadId: "topic_1" }));
+    await waitForExpect(() => expect(manager.queueDepth("group_oc_group_thread_topic_1")).toBe(1));
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    const payload = dynamicToolPayload(await turns[1]!.params.onDynamicToolCall!({
+      requestId: "req_tell",
+      threadId: "thread_main",
+      turnId: "turn_2",
+      callId: "call_tell_steer",
+      tool: "tell_thread",
+      targetThreadId: "thread_topic",
+      message: "priority follow up",
+      mode: "steer",
+      rawArguments: { thread_id: "thread_topic", msg: "priority follow up", mode: "steer" }
+    }));
+
+    expect(payload).toMatchObject({
+      ok: true,
+      mode: "steer",
+      lark_message_id: "proxy_steer",
+      status: "processing"
+    });
+    expect(codex.steerTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_topic",
+        turnId: "turn_1",
+        input: expect.stringContaining("priority follow up")
+      })
+    );
+    expect(manager.queueDepth("group_oc_group_thread_topic_1")).toBe(1);
+
+    turns[0]!.resolve(completed("thread_topic", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ threadId: "thread_topic", input: expect.stringContaining("queued target") })
+    );
+
+    turns[2]!.resolve(completed("thread_topic", "turn_3"));
+    turns[1]!.resolve(completed("thread_main", "turn_2"));
+    await waitForDelay();
+  });
+
+  it("interrupts the target before delivering tell_thread mode interrupt", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_topic",
+          conversationKey: "group_oc_group",
+          category: "thread",
+          larkThreadId: "topic_1",
+          cardMessageId: "card_topic",
+          name: "Target",
+          parentCodexThreadId: "thread_main"
+        })
+      ]
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "proxy_interrupt",
+      raw: { data: { thread_id: "topic_1" } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("topic_msg", "target work", { chatType: "topic_group", larkThreadId: "topic_1" }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("main_msg", "main work"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    const payload = dynamicToolPayload(await turns[1]!.params.onDynamicToolCall!({
+      requestId: "req_tell",
+      threadId: "thread_main",
+      turnId: "turn_2",
+      callId: "call_tell_interrupt",
+      tool: "tell_thread",
+      targetThreadId: "thread_topic",
+      message: "replace current work",
+      mode: "interrupt",
+      rawArguments: { thread_id: "thread_topic", msg: "replace current work", mode: "interrupt" }
+    }));
+
+    expect(payload).toMatchObject({ ok: true, mode: "interrupt", status: "queued" });
+    expect(codex.interruptTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "thread_topic", turnId: "turn_1" })
+    );
+    expect(codex.steerTurn).not.toHaveBeenCalled();
+
+    turns[0]!.resolve(completed("thread_topic", "turn_1", "interrupted"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ threadId: "thread_topic", input: expect.stringContaining("replace current work") })
     );
 
     turns[2]!.resolve(completed("thread_topic", "turn_3"));
@@ -2010,6 +2284,7 @@ describe("ConversationManager", () => {
       tool: "tell_thread",
       targetThreadId: "thread_topic",
       message: "leave plan",
+      mode: "queue",
       rawArguments: { thread_id: "thread_topic", msg: "leave plan" }
     }));
 
@@ -2062,6 +2337,7 @@ describe("ConversationManager", () => {
         tool: "tell_thread",
         targetThreadId: "thread_other",
         message: "no",
+        mode: "queue",
         rawArguments: { thread_id: "thread_other", msg: "no" }
       }));
       expect(otherPayload).toMatchObject({
@@ -2077,6 +2353,7 @@ describe("ConversationManager", () => {
         tool: "tell_thread",
         targetThreadId: "thread_previous",
         message: "no",
+        mode: "queue",
         rawArguments: { thread_id: "thread_previous", msg: "no" }
       }));
       expect(previousPayload).toMatchObject({
@@ -2853,7 +3130,7 @@ describe("ConversationManager", () => {
     turns[0]!.resolve(completed("thread_1", "turn_1"));
   });
 
-  it("keeps explicitly queued different-user messages ordered before a later trigger-user message", async () => {
+  it("merges default messages into the current queued item even from a different sender", async () => {
     const { codex, turns } = createDeferredCodex();
     const manager = createManager({ repository: createRepository(groupConversationRecord()).repository, codex });
 
@@ -2869,18 +3146,13 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ input: wrappedMessage("other queued", "g2", "ou_other") })
+      expect.objectContaining({
+        input: `${wrappedMessage("other queued", "g2", "ou_other")}\n${wrappedMessage("same later", "g3", "ou_guest")}`
+      })
     );
-    expect(manager.queueDepth("group_oc_group")).toBe(1);
+    expect(manager.queueDepth("group_oc_group")).toBe(0);
 
     turns[1]!.resolve(completed("thread_group", "turn_2"));
-    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
-    expect(codex.startTurn).toHaveBeenNthCalledWith(
-      3,
-      expect.objectContaining({ input: wrappedMessage("same later", "g3", "ou_guest") })
-    );
-
-    turns[2]!.resolve(completed("thread_group", "turn_3"));
   });
 
   it("queues /queue and following ordinary messages for the next turn joined by newlines", async () => {
@@ -2904,6 +3176,51 @@ describe("ConversationManager", () => {
     );
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("steers /steer body into the active turn while preserving the queued tail", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ codex });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "/queue queued"));
+    manager.submitIncoming(message("m3", "/steer urgent context"));
+
+    await waitForExpect(() =>
+      expect(codex.steerTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: "thread_1",
+          turnId: "turn_1",
+          input: wrappedMessage("urgent context", "m3")
+        })
+      )
+    );
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(1);
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ input: wrappedMessage("queued", "m2") })
+    );
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("starts /steer body as a new turn when no turn is active", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ codex });
+
+    manager.submitIncoming(message("m1", "/steer start now"));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ input: wrappedMessage("start now", "m1") })
+    );
+    expect(codex.steerTurn).not.toHaveBeenCalled();
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
   });
 
   it("enables queue mode from empty /queue and queues the next ordinary message", async () => {
@@ -3967,7 +4284,7 @@ describe("ConversationManager", () => {
     );
   });
 
-  it("does not steer queued messages into an active compact", async () => {
+  it("requires a message body for /steer and leaves compact queues unchanged", async () => {
     const { codex } = createDeferredCompactCodex();
     const lark = createLarkResponder();
     const manager = createManager({ codex, lark });
@@ -3979,7 +4296,7 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m3", "/steer"));
 
     await waitForExpect(() =>
-      expect(lark.replyText).toHaveBeenCalledWith("m3", "当前 compact 不支持注入，队列保持不变。")
+      expect(lark.replyText).toHaveBeenCalledWith("m3", "用法：/steer <msg>")
     );
     expect(codex.steerTurn).not.toHaveBeenCalled();
     expect(manager.queueDepth("p2p_ou_guest")).toBe(1);
@@ -4892,7 +5209,7 @@ describe("ConversationManager", () => {
     turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
   });
 
-  it("steers the next queued batch into the active turn on /steer", async () => {
+  it("requires /steer to include a message body and leaves queued work untouched", async () => {
     const { repository } = createRepository();
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();
@@ -4906,51 +5223,35 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(3));
 
     manager.submitIncoming(message("m5", "/steer"));
-    await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
-
-    expect(codex.steerTurn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        profile: "guest",
-        threadId: "thread_1",
-        turnId: "turn_1",
-        input: `${wrappedMessage("1", "m2")}\n${wrappedMessage("2", "m3")}`
-      })
-    );
-    expect(manager.queueDepth("p2p_ou_guest")).toBe(1);
-    expect(repository.markLarkMessagesSteered).toHaveBeenCalledWith(["m1"], {
-      conversationKey: "p2p_ou_guest",
-      codexThreadId: "thread_1",
-      codexTurnId: "turn_1"
-    });
-    expect(repository.markLarkMessagesProcessing).toHaveBeenCalledWith(["m2", "m3"], {
-      conversationKey: "p2p_ou_guest",
-      codexThreadId: "thread_1",
-      codexTurnId: "turn_1"
-    });
-    expect(lark.replyText).toHaveBeenCalledWith("m5", "已将队列中的 2 条消息注入当前任务。队列剩余 1 条。");
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith("m5", "用法：/steer <msg>"));
+    expect(codex.steerTurn).not.toHaveBeenCalled();
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(3);
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m5"]);
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ input: wrappedMessage("3", "m4") })
+      expect.objectContaining({ input: `${wrappedMessage("1", "m2")}\n${wrappedMessage("2", "m3")}` })
     );
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(1);
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    turns[2]!.resolve(completed("thread_1", "turn_3"));
   });
 
-  it("steers queued ordinary messages into an active goal on /steer", async () => {
+  it("steers /steer body into an active goal without consuming queued work", async () => {
     const { repository } = createRepository();
     const { codex, goals } = createDeferredGoalCodex();
-    const lark = createLarkResponder();
-    const manager = createManager({ repository, codex, lark });
+    const manager = createManager({ repository, codex });
 
     manager.submitIncoming(message("m1", "/goal finish the target"));
     await waitForExpect(() => expect(codex.runGoal).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/queue extra context"));
     await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
 
-    manager.submitIncoming(message("m3", "/steer"));
+    manager.submitIncoming(message("m3", "/steer urgent goal context"));
 
     await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
     expect(codex.steerTurn).toHaveBeenCalledWith(
@@ -4958,7 +5259,7 @@ describe("ConversationManager", () => {
         profile: "guest",
         threadId: "thread_1",
         turnId: "goal_1",
-        input: wrappedMessage("extra context", "m2")
+        input: wrappedMessage("urgent goal context", "m3")
       })
     );
     expect(repository.markLarkMessagesSteered).toHaveBeenCalledWith(["m1"], {
@@ -4966,35 +5267,28 @@ describe("ConversationManager", () => {
       codexThreadId: "thread_1",
       codexTurnId: "goal_1"
     });
-    expect(lark.replyText).toHaveBeenCalledWith("m3", "已将队列中的 1 条消息注入当前任务。队列剩余 0 条。");
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(1);
 
     goals[0]!.resolve(completed("thread_1", "goal_1"));
   });
 
-  it("treats /steer on a queued control message during a goal like /next", async () => {
+  it("does not treat /steer as /next for a queued control message during a goal", async () => {
     const { codex, goals } = createDeferredGoalCodex();
-    const lark = createLarkResponder();
-    const manager = createManager({ codex, lark });
+    const manager = createManager({ codex });
 
     manager.submitIncoming(message("m1", "/goal finish the target"));
     await waitForExpect(() => expect(codex.runGoal).toHaveBeenCalledTimes(1));
     manager.submitIncoming(message("m2", "/plan queued plan"));
     await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
 
-    manager.submitIncoming(message("m3", "/steer"));
+    manager.submitIncoming(message("m3", "/steer urgent"));
 
-    await waitForExpect(() => expect(codex.clearThreadGoal).toHaveBeenCalledWith({ profile: "guest", threadId: "thread_1" }));
-    expect(codex.interruptTurn).toHaveBeenCalledWith(
-      expect.objectContaining({ profile: "guest", threadId: "thread_1", turnId: "goal_1" })
-    );
-    const clearOrder = vi.mocked(codex.clearThreadGoal!).mock.invocationCallOrder[0];
-    const interruptOrder = vi.mocked(codex.interruptTurn).mock.invocationCallOrder[0];
-    expect(clearOrder).toBeDefined();
-    expect(interruptOrder).toBeDefined();
-    expect(clearOrder!).toBeLessThan(interruptOrder!);
-    expect(lark.replyText).toHaveBeenCalledWith("m3", "队首是控制消息，已打断当前目标并开始执行队列。");
+    await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
+    expect(codex.clearThreadGoal).not.toHaveBeenCalled();
+    expect(codex.interruptTurn).not.toHaveBeenCalled();
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(1);
 
-    goals[0]!.resolve(completed("thread_1", "goal_1", "interrupted"));
+    goals[0]!.resolve(completed("thread_1", "goal_1"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -5004,7 +5298,7 @@ describe("ConversationManager", () => {
     );
   });
 
-  it("keeps queued messages when /steer fails", async () => {
+  it("queues the /steer body behind existing queued messages when direct steer fails", async () => {
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();
     vi.mocked(codex.steerTurn).mockRejectedValueOnce(new Error("steer failed"));
@@ -5016,11 +5310,11 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m3", "/queue queued two"));
     await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(2));
 
-    manager.submitIncoming(message("m4", "/steer"));
+    manager.submitIncoming(message("m4", "/steer urgent"));
     await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
 
-    expect(manager.queueDepth("p2p_ou_guest")).toBe(2);
-    expect(lark.replyText).toHaveBeenCalledWith("m4", "注入当前任务失败，队列保持不变。");
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(3);
+    expect(lark.replyText).toHaveBeenCalledWith("m4", "当前任务已不可打断注入，已加入下一轮队列。");
 
     turns[0]!.resolve(completed("thread_1", "turn_1"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
@@ -5030,6 +5324,8 @@ describe("ConversationManager", () => {
     );
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    turns[2]!.resolve(completed("thread_1", "turn_3"));
   });
 
   it("toggles bot menu queue mode and queues the next ordinary message", async () => {
@@ -10369,7 +10665,7 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_1", "turn_2"));
   });
 
-  it("consumes only the same-user queue head from plan waiting, then transfers ownership after normal completion", async () => {
+  it("consumes the queued item from plan waiting, then transfers ownership after normal completion", async () => {
     const { codex, turns } = createDeferredCodex();
     const manager = createManager({ repository: createRepository(groupConversationRecord()).repository, codex });
 
@@ -10393,14 +10689,14 @@ describe("ConversationManager", () => {
 
     turns[0]!.resolve(completed("thread_group", "turn_1", "interrupted"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
-    expect(turns[1]!.params.input).toBe(wrappedMessage("same-user follow-up", "g2", "ou_guest"));
-    expect(manager.queueDepth("group_oc_group")).toBe(1);
+    expect(turns[1]!.params.input).toBe(
+      `${wrappedMessage("same-user follow-up", "g2", "ou_guest")}\n${wrappedMessage("different-user follow-up", "g3", "ou_other")}`
+    );
+    expect(manager.queueDepth("group_oc_group")).toBe(0);
 
     turns[1]!.resolve(completed("thread_group", "turn_2"));
-    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
-    expect(turns[2]!.params.input).toBe(wrappedMessage("different-user follow-up", "g3", "ou_other"));
-
-    turns[2]!.resolve(completed("thread_group", "turn_3"));
+    await waitForDelay();
+    expect(codex.startTurn).toHaveBeenCalledTimes(2);
   });
 
   it("runs a same-user /exit directly while plan waiting without queued reactions", async () => {
@@ -10445,7 +10741,7 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps a different-user queued message when the same-user waiting follow-up also ends waiting", async () => {
+  it("keeps a merged queued item consumed when the same-user waiting follow-up also ends waiting", async () => {
     const { codex, turns } = createDeferredCodex();
     const manager = createManager({ repository: createRepository(groupConversationRecord()).repository, codex });
 
@@ -10474,7 +10770,7 @@ describe("ConversationManager", () => {
 
     await waitForDelay();
     expect(codex.startTurn).toHaveBeenCalledTimes(2);
-    expect(manager.queueDepth("group_oc_group")).toBe(1);
+    expect(manager.queueDepth("group_oc_group")).toBe(0);
   });
 
   it("reruns the waiting queue-head check after recall exposes a same-user message", async () => {

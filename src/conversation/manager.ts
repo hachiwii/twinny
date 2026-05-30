@@ -958,6 +958,8 @@ interface ConversationActor {
 
 type ThreadRelationship = "parent" | "sibling" | "child" | "other";
 
+type SyntheticMessageDeliveryMode = "queue" | "steer" | "interrupt";
+
 type SyntheticMessageEnvelope =
   | { kind: "message_from_other_thread"; sourceThreadId: string; threadRelationship: ThreadRelationship }
   | { kind: "cron_message"; cronId: number };
@@ -1195,7 +1197,7 @@ type ParsedCommand =
   | { kind: "banner" }
   | { kind: "stop"; text: string }
   | { kind: "next" }
-  | { kind: "steer" }
+  | { kind: "steer"; text: string }
   | { kind: "status" }
   | { kind: "workspace"; text: string }
   | { kind: "cd"; text: string }
@@ -1293,6 +1295,11 @@ interface ThreadIdleWatcher {
   timeout?: NodeJS.Timeout;
 }
 
+interface ThreadSteerWatcher {
+  threadId: string;
+  reject(error: Error): void;
+}
+
 export class ConversationManager {
   private static readonly recoveryPrompt = "Twinny daemon has beed reloaded, continue with the unfinished work.";
 
@@ -1303,6 +1310,7 @@ export class ConversationManager {
   private readonly resumeBrowsers = new Map<string, ResumeBrowserState>();
   private readonly cronNextRuns = new Map<number, number>();
   private readonly threadIdleWatchers = new Map<string, Set<ThreadIdleWatcher>>();
+  private readonly threadSteerWatchers = new Map<string, Set<ThreadSteerWatcher>>();
   private readonly threadWaitEdges = new Map<string, Set<string>>();
   private readonly lastTurnSnapshots = new Map<string, ThreadWaitSnapshot>();
   private readonly threadRuntimeById = new Map<string, { hasUserMessage?: boolean }>();
@@ -2771,7 +2779,7 @@ export class ConversationManager {
       return;
     }
     if (parsed.kind === "steer") {
-      await this.handleSteerCommand(state, message);
+      await this.handleSteerCommand(state, context, message, parsed.text);
       return;
     }
     if (parsed.kind === "new") {
@@ -5970,87 +5978,20 @@ export class ConversationManager {
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
-  private async handleSteerCommand(state: ConversationState, message: IncomingLarkMessage): Promise<void> {
-    const nextBatchSize = countNextPendingBatch(state);
-    if (nextBatchSize === 0) {
-      await this.replyControlBestEffort(message.messageId, "队列为空。");
+  private async handleSteerCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    if (text.trim().length === 0) {
+      await this.replyControlBestEffort(message.messageId, "用法：/steer <msg>");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
 
-    const active = state.active;
-    if (active?.kind === "compact") {
-      await this.replyControlBestEffort(message.messageId, "当前 compact 不支持注入，队列保持不变。");
-      await this.markMessagesCompletedBestEffort([message.messageId]);
-      return;
-    }
-    if (!active || active.cancelRequested || !active.turnId || active.completedStatus) {
-      await this.replyControlBestEffort(message.messageId, "当前没有可注入的运行任务，队列保持不变。");
-      await this.markMessagesCompletedBestEffort([message.messageId]);
-      return;
-    }
-    if (active.kind === "goal" && state.pendingBatch[0]?.control) {
-      await this.executeNextAction(state, active.context);
-      await this.replyControlBestEffort(message.messageId, "队首是控制消息，已打断当前目标并开始执行队列。");
-      await this.markMessagesCompletedBestEffort([message.messageId]);
-      return;
-    }
-
-    const batch = state.pendingBatch.slice(0, nextBatchSize);
-    const input = await this.formatPendingMessagesForThreadCodexInput(active.threadId, batch);
-    try {
-      await this.options.codex.steerTurn({
-        profile: active.profile,
-        threadId: active.threadId,
-        turnId: active.turnId,
-        input,
-        cwd: active.workspace,
-        approvalPolicy: "never"
-      });
-    } catch (error) {
-      this.log.warn(
-        { error, threadId: active.threadId, turnId: active.turnId, messageId: message.messageId },
-        "failed to steer queued messages into active codex turn"
-      );
-      await this.replyControlBestEffort(message.messageId, "注入当前任务失败，队列保持不变。");
-      await this.markMessagesCompletedBestEffort([message.messageId]);
-      return;
-    }
-
-    if (state.active !== active || active.cancelRequested || active.completedStatus) {
-      await this.replyControlBestEffort(message.messageId, "当前任务已结束，队列保持不变。");
-      await this.markMessagesCompletedBestEffort([message.messageId]);
-      return;
-    }
-
-    state.pendingBatch.splice(0, nextBatchSize);
-    await this.clearQueuedReactionsBestEffort(batch);
-    await this.markActiveProcessingMessagesSteered(active);
-    active.steerMessageCount += batch.length;
-    const messageIds = batch.map((queued) => queued.messageId);
-    for (const queued of batch) {
-      active.messagesById.set(queued.messageId, queued);
-      active.messageIds.add(queued.messageId);
-      active.processingMessageIds.add(queued.messageId);
-    }
-    addDocCommentCardMessagesToActive(active, batch);
-    addSupplementalCardMessagesToActive(active, batch);
-    await this.markMessagesProcessingBestEffort(messageIds, {
-      conversationKey: active.conversationKey,
-      codexThreadId: active.threadId,
-      codexTurnId: active.turnId
-    });
-    const anchor = batch[batch.length - 1]!;
-    active.replyMessageId = anchor.messageId;
-    if (!anchor.docComment) {
-      await this.moveReactionBestEffort(active, anchor.messageId);
-    }
-    await this.moveAgentCardBestEffort(state, active, anchor.messageId);
-    await this.replyControlBestEffort(
-      message.messageId,
-      `已将队列中的 ${nextBatchSize} 条消息注入当前任务。队列剩余 ${state.pendingBatch.length} 条。`
-    );
-    await this.markMessagesCompletedBestEffort([message.messageId]);
+    const pending = toPendingMessage(message, text, { queueBoundary: false });
+    await this.forceSteerPendingMessage(state, context, pending);
   }
 
   private async handleNewCommand(
@@ -6162,6 +6103,7 @@ export class ConversationManager {
         await this.moveReactionBestEffort(active, message.messageId);
       }
       await this.moveAgentCardBestEffort(state, active, message.messageId);
+      this.notifyThreadSteerWatchers(active.threadId);
       return;
     }
 
@@ -6191,6 +6133,7 @@ export class ConversationManager {
         await this.moveReactionBestEffort(active, message.messageId);
       }
       await this.moveAgentCardBestEffort(state, active, message.messageId);
+      this.notifyThreadSteerWatchers(active.threadId);
     } catch (error) {
       this.log.warn(
         { error, threadId: active.threadId, turnId: active.turnId, messageId: message.messageId },
@@ -6233,6 +6176,83 @@ export class ConversationManager {
       return;
     }
     await this.enqueuePendingMessage(state, context, message);
+  }
+
+  private async deliverPendingMessageWithMode(
+    state: ConversationState,
+    context: MessageContext,
+    message: PendingMessage,
+    mode: SyntheticMessageDeliveryMode
+  ): Promise<LarkMessageStatus> {
+    if (mode === "queue") {
+      const initialStatus = this.willProcessPendingMessageImmediately(state, message) ? "processing" : "queued";
+      await this.schedulePendingMessage(state, context, message);
+      return initialStatus;
+    }
+    if (mode === "interrupt") {
+      return await this.interruptThenStartPendingMessage(state, context, message);
+    }
+    return await this.forceSteerPendingMessage(state, context, message);
+  }
+
+  private pendingMessageWouldForceSteerImmediately(state: ConversationState): boolean {
+    const active = state.active;
+    if (!active) {
+      return state.suspendedActiveTurns.length === 0;
+    }
+    return active.kind !== "compact" && !active.cancelRequested;
+  }
+
+  private async forceSteerPendingMessage(
+    state: ConversationState,
+    context: MessageContext,
+    message: PendingMessage
+  ): Promise<LarkMessageStatus> {
+    const active = state.active;
+    if (active && active.kind !== "compact" && !active.cancelRequested) {
+      await this.steerOrDefer(state, active, message);
+      return "processing";
+    }
+    if (!active && state.suspendedActiveTurns.length === 0) {
+      await this.startImmediatePendingMessages(state, context, [message]);
+      return state.active?.messagesById.has(message.messageId) ? "processing" : "queued";
+    }
+    await this.addQueuedReactionBestEffort(message);
+    state.pendingBatch.unshift(message);
+    await this.markPendingMessagesQueuedBestEffort([message]);
+    await this.tryStartRunnableQueueHead(state, context);
+    return "queued";
+  }
+
+  private async interruptThenStartPendingMessage(
+    state: ConversationState,
+    context: MessageContext,
+    message: PendingMessage
+  ): Promise<LarkMessageStatus> {
+    const active = state.active;
+    if (!active && state.suspendedActiveTurns.length === 0) {
+      await this.startImmediatePendingMessages(state, context, [message]);
+      return state.active?.messagesById.has(message.messageId) ? "processing" : "queued";
+    }
+    if (!active) {
+      await this.addQueuedReactionBestEffort(message);
+      state.pendingBatch.unshift(message);
+      await this.markPendingMessagesQueuedBestEffort([message]);
+      return "queued";
+    }
+    state.waitingInterruptBatch = {
+      context,
+      messages: [message],
+      allowAnySameUserMessage: true
+    };
+    await this.markPendingMessagesQueuedBestEffort([message]);
+    if (!active.cancelRequested) {
+      await this.cancelActiveTurn(state, { waitForCompletion: true });
+    }
+    if (!state.active) {
+      await this.startWaitingInterruptBatch(state);
+    }
+    return state.active?.messagesById.has(message.messageId) ? "processing" : "queued";
   }
 
   private async tryRunPendingMessageDirectly(
@@ -7929,7 +7949,10 @@ export class ConversationManager {
         threads: request.targetThreadIds.map((threadId) => waitSnapshotResponse(snapshots.get(threadId)!, waitedMs))
       });
     } catch (error) {
-      if (error instanceof TwinnyError && error.code === "THREAD_WAIT_TIMEOUT") {
+      if (
+        error instanceof TwinnyError &&
+        (error.code === "THREAD_WAIT_TIMEOUT" || error.code === "THREAD_WAIT_STEER_RECEIVED")
+      ) {
         for (const targetThreadId of pendingThreadIds) {
           const ready = await this.threadWaitSnapshotIfReady(targetThreadId);
           if (ready) {
@@ -7939,6 +7962,7 @@ export class ConversationManager {
         const waitedMs = Date.now() - startedAt;
         return dynamicToolJsonResponse(true, {
           ok: false,
+          ...(error.code === "THREAD_WAIT_STEER_RECEIVED" ? { reason: "received steer message" } : {}),
           waited_ms: waitedMs,
           threads: request.targetThreadIds.map((threadId) => {
             const snapshot = snapshots.get(threadId);
@@ -7973,11 +7997,12 @@ export class ConversationManager {
     startedAt: number
   ): Promise<ThreadWaitSnapshot[]> {
     const watchers: ThreadIdleWatcher[] = [];
+    let steerWatcher: ThreadSteerWatcher | undefined;
     try {
       for (const targetThreadId of targetThreadIds) {
         this.addWaitEdge(callerThreadId, targetThreadId);
       }
-      return await Promise.all(targetThreadIds.map((targetThreadId) =>
+      const idlePromise = Promise.all(targetThreadIds.map((targetThreadId) =>
         new Promise<ThreadWaitSnapshot>((resolve, reject) => {
           const watcher: ThreadIdleWatcher = {
             callerThreadId,
@@ -7996,9 +8021,17 @@ export class ConversationManager {
           void this.resolveThreadIdleWatchersIfReady(targetThreadId);
         })
       ));
+      const steerPromise = new Promise<never>((_resolve, reject) => {
+        steerWatcher = { threadId: callerThreadId, reject };
+        this.addThreadSteerWatcher(steerWatcher);
+      });
+      return await Promise.race([idlePromise, steerPromise]);
     } finally {
       for (const watcher of watchers) {
         this.removeThreadIdleWatcher(watcher);
+      }
+      if (steerWatcher) {
+        this.removeThreadSteerWatcher(steerWatcher);
       }
       for (const targetThreadId of targetThreadIds) {
         this.removeWaitEdge(callerThreadId, targetThreadId);
@@ -8103,6 +8136,7 @@ export class ConversationManager {
     routeKind: "thread_message" | "cron_message";
     rawContext: (input: { messageId: string; createTime: number; larkThreadId?: string }) => Record<string, unknown>;
     syntheticEnvelope: SyntheticMessageEnvelope;
+    deliveryMode?: SyntheticMessageDeliveryMode;
   }): Promise<{ larkMessageId: string; status: LarkMessageStatus }> {
     const targetContext = createMessageContextForThread(input.conversation, input.target);
     const targetState = this.getState(targetContext.stateKey);
@@ -8140,15 +8174,21 @@ export class ConversationManager {
     };
     const pending = toPendingMessage(proxyMessage, input.codexText, {
       queueBoundary: true,
-      forceQueueWhenActive: true,
+      forceQueueWhenActive: input.deliveryMode === undefined || input.deliveryMode === "queue",
       excludeFromParticipants: true,
       skipQueuedRefresh: true,
       syntheticEnvelope: input.syntheticEnvelope
     });
+    const deliveryMode = input.deliveryMode ?? "queue";
 
     const status = await targetState.controlQueue.enqueue(async () => {
       await this.exitPlanModeForSyntheticMessage(targetState, input.target);
-      const initialStatus = this.willProcessPendingMessageImmediately(targetState, pending) ? "processing" : "queued";
+      const initialStatus =
+        deliveryMode === "queue"
+          ? this.willProcessPendingMessageImmediately(targetState, pending) ? "processing" : "queued"
+          : deliveryMode === "steer"
+            ? this.pendingMessageWouldForceSteerImmediately(targetState) ? "processing" : "queued"
+            : targetState.active || targetState.suspendedActiveTurns.length > 0 ? "queued" : "processing";
       await this.options.repository.insertLarkMessage({
         larkMessageId: proxyMessage.messageId,
         eventId: proxyMessage.eventId,
@@ -8163,8 +8203,7 @@ export class ConversationManager {
         larkCreateTime: proxyMessage.createTime,
         rawEventJson: safeJsonStringify(proxyMessage.raw)
       });
-      await this.schedulePendingMessage(targetState, targetContext, pending);
-      return initialStatus;
+      return await this.deliverPendingMessageWithMode(targetState, targetContext, pending, deliveryMode);
     });
 
     return { larkMessageId, status };
@@ -8265,7 +8304,8 @@ export class ConversationManager {
         kind: "message_from_other_thread",
         sourceThreadId: active.threadId,
         threadRelationship
-      }
+      },
+      deliveryMode: request.mode
     });
 
     return dynamicToolJsonResponse(true, {
@@ -8273,6 +8313,7 @@ export class ConversationManager {
       thread_id: target.codexThreadId,
       lark_thread_id: target.larkThreadId ?? null,
       lark_message_id: result.larkMessageId,
+      mode: request.mode,
       status: result.status
     });
   }
@@ -8498,6 +8539,38 @@ export class ConversationManager {
     watchers.delete(watcher);
     if (watchers.size === 0) {
       this.threadIdleWatchers.delete(watcher.targetThreadId);
+    }
+  }
+
+  private addThreadSteerWatcher(watcher: ThreadSteerWatcher | undefined): void {
+    if (!watcher) {
+      return;
+    }
+    const watchers = this.threadSteerWatchers.get(watcher.threadId) ?? new Set<ThreadSteerWatcher>();
+    watchers.add(watcher);
+    this.threadSteerWatchers.set(watcher.threadId, watchers);
+  }
+
+  private removeThreadSteerWatcher(watcher: ThreadSteerWatcher): void {
+    const watchers = this.threadSteerWatchers.get(watcher.threadId);
+    if (!watchers) {
+      return;
+    }
+    watchers.delete(watcher);
+    if (watchers.size === 0) {
+      this.threadSteerWatchers.delete(watcher.threadId);
+    }
+  }
+
+  private notifyThreadSteerWatchers(threadId: string): void {
+    const watchers = this.threadSteerWatchers.get(threadId);
+    if (!watchers || watchers.size === 0) {
+      return;
+    }
+    const error = new TwinnyError("Received steer message", "THREAD_WAIT_STEER_RECEIVED");
+    for (const watcher of [...watchers]) {
+      this.removeThreadSteerWatcher(watcher);
+      watcher.reject(error);
     }
   }
 
@@ -11835,7 +11908,7 @@ function parseSlashCommand(text: string): ParsedCommand {
     return { kind: "next" };
   }
   if (command === "steer") {
-    return { kind: "steer" };
+    return { kind: "steer", text: rest };
   }
   if (command === "status") {
     return { kind: "status" };
@@ -14180,6 +14253,9 @@ function controlMessageTypeForParsedCommand(parsed: ParsedCommand): ControlMessa
   if (parsed.kind === "message" || parsed.kind === "side" || parsed.kind === "goal") {
     return undefined;
   }
+  if (parsed.kind === "steer" && parsed.text.length > 0) {
+    return undefined;
+  }
   return parsed.kind;
 }
 
@@ -14194,6 +14270,15 @@ function classifyInitialRoute(
 ): ClassifiedMessageRoute {
   const originalText = message.text;
   const active = state.active;
+  if (parsed.kind === "steer" && parsed.text.length > 0) {
+    if (active && active.kind !== "compact" && !active.cancelRequested) {
+      return routeForParsedCommand(parsed, { routeKind: "steered_message", status: "processing", text: parsed.text });
+    }
+    if (!active && state.suspendedActiveTurns.length === 0) {
+      return routeForParsedCommand(parsed, { routeKind: "message", status: "processing", text: parsed.text });
+    }
+    return queuedRouteForParsedCommand(parsed, message, active?.kind === "compact" ? "active_compact" : "active_turn");
+  }
   if (state.waitingInterruptBatch && isSchedulableParsedCommand(parsed)) {
     const batchOwnerOpenId = state.waitingInterruptBatch.messages[0]?.original.senderOpenId;
     if (batchOwnerOpenId && message.senderOpenId === batchOwnerOpenId) {
@@ -14381,10 +14466,9 @@ function countNextPendingMessages(messages: PendingMessage[]): number {
   if (messages.length === 0) {
     return 0;
   }
-  const firstSenderOpenId = messages[0]!.original.senderOpenId;
   for (let index = 1; index < messages.length; index += 1) {
     const message = messages[index]!;
-    if (message.queueBoundary || message.original.senderOpenId !== firstSenderOpenId) {
+    if (message.queueBoundary) {
       return index;
     }
   }
@@ -14404,6 +14488,9 @@ function directRouteForParsedCommand(
   }
   if (parsed.kind === "goal") {
     return routeForParsedCommand(parsed, { routeKind: "goal_message", status: "processing", text: parsed.text });
+  }
+  if (parsed.kind === "steer" && parsed.text.length > 0) {
+    return routeForParsedCommand(parsed, { routeKind: "steered_message", status: "processing", text: parsed.text });
   }
   if (parsed.kind === "plan") {
     return parsed.text.trim().length > 0
@@ -14427,6 +14514,7 @@ function isSchedulableParsedCommand(parsed: ParsedCommand): boolean {
   return (
     parsed.kind === "message" ||
     (parsed.kind === "queue" && parsed.text.length > 0) ||
+    (parsed.kind === "steer" && parsed.text.length > 0) ||
     parsed.kind === "goal" ||
     parsed.kind === "plan" ||
     parsed.kind === "exit" ||
@@ -14450,6 +14538,9 @@ function queuedRouteForParsedCommand(
     return routeForParsedCommand(parsed, { routeKind: "goal_message", status: "queued", text: parsed.text, queueReason });
   }
   if (parsed.kind === "plan") {
+    return routeForParsedCommand(parsed, { routeKind: "queued_message", status: "queued", text: parsed.text, queueReason });
+  }
+  if (parsed.kind === "steer" && parsed.text.length > 0) {
     return routeForParsedCommand(parsed, { routeKind: "queued_message", status: "queued", text: parsed.text, queueReason });
   }
   return routeForParsedCommand(parsed, {

@@ -170,10 +170,13 @@ export interface CodexSendThreadRefToolRequest extends CodexDynamicToolRequestBa
   targetThreadId: string;
 }
 
+export type CodexTellThreadMode = "queue" | "steer" | "interrupt";
+
 export interface CodexTellThreadToolRequest extends CodexDynamicToolRequestBase {
   tool: "tell_thread";
   targetThreadId: string;
   message: string;
+  mode: CodexTellThreadMode;
 }
 
 export interface CodexAddCronToolRequest extends CodexDynamicToolRequestBase {
@@ -1161,6 +1164,10 @@ function parseTwinnyDynamicToolRequest(
       if (!targetThreadId || !message) {
         return "Invalid tell_thread arguments: thread_id and msg are required.";
       }
+      const mode = parseTellThreadMode(params.arguments.mode);
+      if (!mode) {
+        return "Invalid tell_thread arguments: mode must be queue, steer, or interrupt.";
+      }
       return {
         requestId,
         threadId: params.threadId,
@@ -1169,6 +1176,7 @@ function parseTwinnyDynamicToolRequest(
         tool: "tell_thread",
         targetThreadId,
         message,
+        mode,
         rawArguments: params.arguments
       };
     }
@@ -1330,6 +1338,13 @@ function parseThreadSearchSortDirection(value: unknown, defaultValue: "asc" | "d
     return defaultValue;
   }
   return value === "asc" || value === "desc" ? value : undefined;
+}
+
+function parseTellThreadMode(value: unknown): CodexTellThreadMode | undefined {
+  if (value === undefined || value === null) {
+    return "queue";
+  }
+  return value === "queue" || value === "steer" || value === "interrupt" ? value : undefined;
 }
 
 function parseThreadIds(value: unknown): string[] | undefined {

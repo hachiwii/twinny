@@ -181,14 +181,15 @@ export const TELL_THREAD_TOOL_SPEC: DynamicToolSpec = {
   namespace: "twinny",
   name: "tell_thread",
   description:
-    "Send a text message to another Twinny-managed thread in the current conversation. The target thread receives the message through its Lark thread, or the conversation chat for the main thread. If the target is active, the message is queued for its next turn.",
+    "Send a text message to another Twinny-managed thread in the current conversation. The target thread receives the message through its Lark thread, or the conversation chat for the main thread. mode defaults to queue. queue creates a new queued item, preserving the existing behavior. steer injects into the target's current active turn; if the target has no active turn, it starts a new turn. interrupt interrupts the target's active turn if present, then starts a new turn.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["thread_id", "msg"],
     properties: {
       thread_id: { type: "string", minLength: 1 },
-      msg: { type: "string", minLength: 1 }
+      msg: { type: "string", minLength: 1 },
+      mode: { type: "string", enum: ["queue", "steer", "interrupt"], default: "queue" }
     }
   },
   deferLoading: false

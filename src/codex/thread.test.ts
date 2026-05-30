@@ -69,6 +69,20 @@ describe("codex thread payloads", () => {
     });
     expect(JSON.stringify(searchTool?.inputSchema)).not.toContain("sourceKinds");
     expect(JSON.stringify(searchTool?.inputSchema)).not.toContain("archived");
+    const tellTool = buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools.find((candidate) =>
+      candidate.namespace === "twinny" && candidate.name === "tell_thread"
+    );
+    expect(tellTool).toMatchObject({
+      description: expect.stringContaining("mode defaults to queue"),
+      inputSchema: expect.objectContaining({
+        properties: expect.objectContaining({
+          mode: expect.objectContaining({
+            enum: ["queue", "steer", "interrupt"],
+            default: "queue"
+          })
+        })
+      })
+    });
     expect(buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools).toHaveLength(11);
   });
 

@@ -376,11 +376,48 @@ describe("handleTurnServerRequest", () => {
       tool: "tell_thread",
       targetThreadId: "thread_target",
       message: "please check this",
+      mode: "queue",
       rawArguments: { thread_id: "thread_target", msg: "please check this" }
     });
     expect(protocol.respondMock).toHaveBeenCalledWith("req-tell", {
       success: true,
       contentItems: [{ type: "inputText", text: "tell_thread:call_tell" }]
+    });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-tell-steer",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_tell_steer",
+          namespace: "twinny",
+          tool: "tell_thread",
+          arguments: { thread_id: "thread_target", msg: "urgent check", mode: "steer" }
+        }
+      }
+    );
+
+    await Promise.resolve();
+
+    expect(onDynamicToolCall).toHaveBeenLastCalledWith({
+      requestId: "req-tell-steer",
+      threadId: "thread_123",
+      turnId: "turn_1",
+      callId: "call_tell_steer",
+      tool: "tell_thread",
+      targetThreadId: "thread_target",
+      message: "urgent check",
+      mode: "steer",
+      rawArguments: { thread_id: "thread_target", msg: "urgent check", mode: "steer" }
     });
 
     handleTurnServerRequest(
@@ -619,6 +656,37 @@ describe("handleTurnServerRequest", () => {
       contentItems: [{
         type: "inputText",
         text: "Invalid tell_thread arguments: thread_id and msg are required."
+      }]
+    });
+
+    handleTurnServerRequest(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "work",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onDynamicToolCall
+      },
+      {
+        id: "req-tell-mode",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread_123",
+          turnId: "turn_1",
+          callId: "call_tell_mode",
+          namespace: "twinny",
+          tool: "tell_thread",
+          arguments: { thread_id: "thread_target", msg: "hello", mode: "later" }
+        }
+      }
+    );
+
+    expect(onDynamicToolCall).not.toHaveBeenCalled();
+    expect(protocol.respondMock).toHaveBeenCalledWith("req-tell-mode", {
+      success: false,
+      contentItems: [{
+        type: "inputText",
+        text: "Invalid tell_thread arguments: mode must be queue, steer, or interrupt."
       }]
     });
 
