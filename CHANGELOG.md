@@ -1,3 +1,25 @@
+# 1.4.0
+
+发布时间：2026/06/01
+
+## 新增功能
+
+- 新增 side turn 卡片追问输入框：运行中可追加补充说明，完成或被打断后可继续追问并在原 side thread 中开启新一轮。
+- 新增 `/rewind <n>` / `/rollback <n>` 指令，用于回退当前 Codex thread 最近若干轮，并同步更新 thread token 用量。
+- 新增 Twinny thread 搜索动态工具 `search_threads`，支持在当前 conversation 内搜索 Twinny 管理的 thread 并返回 Codex 搜索片段。
+- 增强 `wait_for_threads` 动态工具：支持 `timeout_ms: 0` 查看当前状态和最新输出，并改为任一目标 thread idle 后即返回。
+- 增强跨 thread 消息路由：`tell_thread` 支持 `queue`、`steer`、`interrupt` 模式，运行中的目标 thread 可被注入或打断后继续处理。
+- 更新 `/watch` 文档监听管理：移除 `none` 模式，新增 `/watch rm <id|url>` 删除监听；空 `/watch` 会列出监听 id。
+- 新增文档监听动态工具 `watch_lark_url`、`list_lark_url_watchers`、`rm_lark_url_watchers`。
+- 增强指令解析：支持从左到右解析连续指令，`/queue`、`/steer`、`/thread`、`/fork` 和 `/cron` 的消息内容可在执行时继续解析指令。
+- cron 消息支持通过新版指令解析器触发 `/goal` 等指令，便于配置周期性目标任务。
+- Codex CLI 最低版本要求更新为 0.134.0。
+
+## Bug 修复
+
+- 修复 fork、side 或 resume 出来的 thread 首轮会继承并重复计算历史 token 用量的问题。
+- 修复 stale Codex turn notification 可能影响当前 Lark 消息状态的问题。
+
 # 1.3.1
 
 发布时间：2026/05/29
