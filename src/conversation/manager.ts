@@ -133,6 +133,7 @@ const LARK_SINGLE_MESSAGE_UPDATE_FREQUENCY_LIMIT_CODE = 230020;
 const AGENT_CARD_TIMER_INTERVAL_MS = 10_000;
 const NON_TERMINAL_AGENT_CARD_RATE_LIMIT_FALLBACK_THRESHOLD = 3;
 const COMPLETED_AGENT_CARD_PATCH_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000] as const;
+const SIDE_FOLLOWUP_CARD_PATCH_RETRY_MS = 1_000;
 const RESUME_HISTORY_VISIBLE_MESSAGE_LIMIT = 10;
 const RESUME_HISTORY_COLLAPSED_MESSAGE_LIMIT = 20;
 const RESUME_HISTORY_MESSAGE_LIMIT = RESUME_HISTORY_VISIBLE_MESSAGE_LIMIT + RESUME_HISTORY_COLLAPSED_MESSAGE_LIMIT;
@@ -1116,6 +1117,7 @@ type SideSessionStatus = "processing" | "finished" | "interrupted" | "failed";
 
 interface SideFollowupInput {
   eventId: string;
+  inputId: string;
   operatorOpenId: string;
   openMessageId?: string;
   openChatId?: string;
@@ -1138,6 +1140,9 @@ interface SideSessionRuntime {
   mode: CodexThreadMode;
   runId: number;
   startedAt: number;
+  inputId: string;
+  inputSeq: number;
+  processedInputIds: Set<string>;
   card: ActiveTurnCardState;
   allowInput: boolean;
   completedAt?: number;
@@ -1267,6 +1272,7 @@ interface ParsedSideFollowupCardActionCommand {
   action: "side_input_submit";
   stateKey: string;
   sideSessionId: string;
+  inputId?: string;
   text: string;
 }
 
@@ -4840,6 +4846,7 @@ export class ConversationManager {
       cancelRequested: false
     };
     state.sideTurns.set(params.sideId, active);
+    const inputSeq = 1;
     state.sideSessions.set(sideSessionId, {
       id: sideSessionId,
       status: "processing",
@@ -4856,6 +4863,9 @@ export class ConversationManager {
       mode: "default",
       runId: active.runId,
       startedAt,
+      inputSeq,
+      inputId: sideFollowupInputId(sideSessionId, inputSeq),
+      processedInputIds: new Set(),
       card,
       allowInput: true,
       historyMessages: [],
@@ -5625,14 +5635,25 @@ export class ConversationManager {
       return cardActionErrorToast("会话已被清理，不可继续发送消息");
     }
 
+    const inputId = command.inputId ?? action.eventId;
+    if (session.processedInputIds.has(inputId)) {
+      return cardActionInfoToast("已收到，处理中");
+    }
+    if (command.inputId && command.inputId !== session.inputId) {
+      return cardActionErrorToast("输入框已更新，请在最新卡片重新提交");
+    }
+
     const text = extractSideFollowupText(action);
     if (!text) {
       return cardActionErrorToast("请输入内容");
     }
 
     state.processedSideCardActionEventIds.add(action.eventId);
+    session.processedInputIds.add(inputId);
+    rotateSideFollowupInputId(session);
     const input: SideFollowupInput = {
       eventId: action.eventId,
+      inputId,
       operatorOpenId: action.operatorOpenId,
       ...(action.openMessageId ? { openMessageId: action.openMessageId } : {}),
       ...(action.openChatId ? { openChatId: action.openChatId } : {}),
@@ -5662,22 +5683,16 @@ export class ConversationManager {
     const message = sideFollowupCardMessage(input, "supplement");
     active.card?.messages.push(message);
     active.processMessages.push(message.text);
+    const patched = await this.patchAgentCardBestEffort(state, active, "working");
+    if (!patched) {
+      this.scheduleSideFollowupCardPatchRetry(state, active);
+    }
     if (!active.turnId) {
       active.pendingSideFollowups ??= [];
       active.pendingSideFollowups.push(input);
-      await this.patchAgentCardBestEffort(state, active, "working");
       return;
     }
-    await this.options.codex.steerTurn({
-      profile: active.profile,
-      threadId: activeRuntimeThreadId(active),
-      turnId: active.turnId,
-      input: formatSideFollowupInputForCodex(input, "supplement"),
-      cwd: active.workspace,
-      approvalPolicy: "never"
-    });
-    active.steerMessageCount += 1;
-    await this.patchAgentCardBestEffort(state, active, "working");
+    void this.steerSideFollowupBestEffort(state, active, input, "supplement");
   }
 
   private async continueSideSession(
@@ -5726,7 +5741,6 @@ export class ConversationManager {
       messageTokenUsage: session.messageTokenUsage,
       generatedImagePaths: [],
       processMessages: messages.map((message) => message.text),
-      reaction: await this.addReactionBestEffort(session.sourceMessage.messageId),
       card: session.card,
       pendingSteers: [],
       pendingSideFollowups: [],
@@ -5745,9 +5759,68 @@ export class ConversationManager {
     session.summaryText = undefined;
     session.turnTokenUsage = emptyThreadTokenUsageSnapshot();
     state.sideTurns.set(sideId, active);
-    await this.patchAgentCardBestEffort(state, active, "working");
+    const patched = await this.patchAgentCardBestEffort(state, active, "working");
+    if (!patched) {
+      this.scheduleSideFollowupCardPatchRetry(state, active);
+    }
+    active.reaction = await this.addReactionBestEffort(session.sourceMessage.messageId);
     this.startAgentCardTimer(state, active);
     this.runSideActiveTurn(state, active, () => formatSideFollowupInputForCodex(input, "question"));
+  }
+
+  private scheduleSideFollowupCardPatchRetry(state: ConversationState, active: ActiveTurn): void {
+    const card = active.card;
+    if (!card?.messageId || card.fallbackPlain) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      void state.controlQueue.enqueue(async () => {
+        if (!isSideTurnCurrent(state, active) || active.cancelRequested) {
+          return;
+        }
+        const patched = await this.patchAgentCardBestEffort(state, active, "working");
+        if (!patched) {
+          this.scheduleSideFollowupCardPatchRetry(state, active);
+        }
+      }).catch((error) => {
+        this.log.warn({ error, messageId: card.messageId }, "failed to retry side follow-up card update");
+      });
+    }, SIDE_FOLLOWUP_CARD_PATCH_RETRY_MS);
+    timer.unref?.();
+  }
+
+  private async steerSideFollowupBestEffort(
+    state: ConversationState,
+    active: ActiveTurn,
+    input: SideFollowupInput,
+    kind: "supplement"
+  ): Promise<void> {
+    try {
+      if (!active.turnId || !isSideTurnCurrent(state, active) || active.cancelRequested) {
+        return;
+      }
+      await this.options.codex.steerTurn({
+        profile: active.profile,
+        threadId: activeRuntimeThreadId(active),
+        turnId: active.turnId,
+        input: formatSideFollowupInputForCodex(input, kind),
+        cwd: active.workspace,
+        approvalPolicy: "never"
+      });
+      active.steerMessageCount += 1;
+    } catch (error) {
+      this.log.warn(
+        {
+          error,
+          eventId: input.eventId,
+          inputId: input.inputId,
+          sideSessionId: active.sideSessionId,
+          threadId: active.threadId,
+          runtimeThreadId: activeRuntimeThreadId(active)
+        },
+        "failed to steer side follow-up input"
+      );
+    }
   }
 
   private async processCardAction(
@@ -11585,7 +11658,7 @@ export class ConversationManager {
           ...processMessages,
           {
             id: `side-final:${active.turnId ?? active.runId}`,
-            text: `[上次回复] ${finalText}`,
+            text: finalText,
             processOnly: true
           }
         ]
@@ -11855,6 +11928,7 @@ export class ConversationManager {
       sideFollowupInput: session.allowInput
         ? {
             sideSessionId: session.id,
+            inputId: session.inputId,
             placeholder: "继续追问"
           }
         : undefined
@@ -11865,7 +11939,7 @@ export class ConversationManager {
     state: ConversationState,
     active: ActiveTurn,
     status: TwinnyAgentCardStatus
-  ): { sideSessionId: string; placeholder: string } | undefined {
+  ): { sideSessionId: string; inputId: string; placeholder: string } | undefined {
     if (active.kind !== "side" || !active.sideSessionId || status === "failed") {
       return undefined;
     }
@@ -11878,6 +11952,7 @@ export class ConversationManager {
     }
     return {
       sideSessionId: session.id,
+      inputId: session.inputId,
       placeholder: status === "working" ? "追加补充说明" : "继续追问"
     };
   }
@@ -12797,6 +12872,9 @@ function parseTwinnyCardAction(value: Record<string, unknown>): ParsedCardAction
     const sideSessionId = typeof value.sideSessionId === "string" && value.sideSessionId.trim()
       ? value.sideSessionId.trim()
       : undefined;
+    const inputId = typeof value.inputId === "string" && value.inputId.trim()
+      ? value.inputId.trim()
+      : undefined;
     if (!sideSessionId) {
       return undefined;
     }
@@ -12804,6 +12882,7 @@ function parseTwinnyCardAction(value: Record<string, unknown>): ParsedCardAction
       action,
       stateKey,
       sideSessionId,
+      ...(inputId ? { inputId } : {}),
       text: twinnyCardActionText(action)
     };
   }
@@ -12964,6 +13043,15 @@ function allocateSideSessionId(state: ConversationState): string {
   }
   state.nextSideSessionId = nextId;
   return String(nextId);
+}
+
+function sideFollowupInputId(sideSessionId: string, inputSeq: number): string {
+  return `${sideSessionId}:${inputSeq}`;
+}
+
+function rotateSideFollowupInputId(session: SideSessionRuntime): void {
+  session.inputSeq += 1;
+  session.inputId = sideFollowupInputId(session.id, session.inputSeq);
 }
 
 function sideCardSubtitle(status: TwinnyAgentCardStatus, sideId: number | undefined): string {
@@ -13197,7 +13285,7 @@ function sideFollowupCardMessage(
   kind: "supplement" | "question"
 ): TwinnyAgentCardMessage {
   return {
-    id: `side-followup:${input.eventId}`,
+    id: `side-followup:${input.inputId}`,
     text: kind === "question" ? `[收到追问] ${input.text}` : `[收到补充说明] ${input.text}`,
     processOnly: true
   };
@@ -13209,11 +13297,20 @@ function formatSideFollowupInputForCodex(
 ): CodexTurnInput {
   const label = kind === "question" ? "用户追问" : "用户补充说明";
   return [
-    `<side_card_followup kind="${kind}" event_id="${escapeXmlAttribute(input.eventId)}" operator_ouid="${escapeXmlAttribute(input.operatorOpenId)}">`,
+    `<side_card_followup kind="${kind}" event_id="${escapeXmlAttribute(input.eventId)}" input_id="${escapeXmlAttribute(input.inputId)}" operator_ouid="${escapeXmlAttribute(input.operatorOpenId)}">`,
     `${label}:`,
     escapeXmlText(input.text),
     "</side_card_followup>"
   ].join("\n");
+}
+
+function cardActionInfoToast(content: string): LarkCardActionCallbackResponse {
+  return {
+    toast: {
+      type: "info",
+      content
+    }
+  };
 }
 
 function cardActionErrorToast(content: string): LarkCardActionCallbackResponse {

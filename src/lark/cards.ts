@@ -45,6 +45,7 @@ export interface TwinnySideFollowupCardActionValue {
   action: "side_input_submit";
   stateKey: string;
   sideSessionId: string;
+  inputId: string;
 }
 
 export interface TwinnyStatusCardActionValue {
@@ -102,6 +103,7 @@ export interface RenderTwinnyAgentCardOptions {
   error?: string;
   sideFollowupInput?: {
     sideSessionId: string;
+    inputId: string;
     placeholder: string;
   };
 }
@@ -1564,7 +1566,8 @@ function sideFollowupInputElements(options: RenderTwinnyAgentCardOptions): LarkC
             twinny: true,
             action: "side_input_submit",
             stateKey: options.stateKey,
-            sideSessionId: options.sideFollowupInput.sideSessionId
+            sideSessionId: options.sideFollowupInput.sideSessionId,
+            inputId: options.sideFollowupInput.inputId
           }
         }
       ],

@@ -7495,6 +7495,8 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
     const workingCard = vi.mocked(lark.replyCard).mock.calls[0]![1];
     const actionValue = findTwinnyCardActionValue(workingCard, "side_input_submit");
+    const inputId = actionValue.inputId;
+    expect(inputId).toBe("1:1");
 
     await manager.submitCardAction({
       eventId: "event_side_input",
@@ -7517,6 +7519,21 @@ describe("ConversationManager", () => {
     );
     const patched = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown>;
     expect(JSON.stringify(patched)).toContain("[收到补充说明] include the edge case");
+    const updatedActionValue = findTwinnyCardActionValue(patched, "side_input_submit");
+    expect(updatedActionValue.inputId).toBe("1:2");
+
+    const duplicateResponse = await manager.submitCardAction({
+      eventId: "event_side_input_duplicate",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m_side_1",
+      openChatId: "oc_ignored",
+      actionTag: "input",
+      actionValue,
+      inputValue: "include the duplicate",
+      raw: { event_id: "event_side_input_duplicate" }
+    });
+    expect(duplicateResponse).toEqual({ toast: { type: "info", content: "已收到，处理中" } });
+    expect(codex.steerTurn).toHaveBeenCalledTimes(1);
     expect(
       vi.mocked(repository.insertLarkMessage).mock.calls.some(([input]) =>
         input.eventId === "event_side_input" || input.routeKind === "card_action"
@@ -7558,6 +7575,8 @@ describe("ConversationManager", () => {
     );
     const finishedCard = vi.mocked(lark.patchCard).mock.calls.at(-1)![1];
     const actionValue = findTwinnyCardActionValue(finishedCard, "side_input_submit");
+    const inputId = actionValue.inputId;
+    expect(inputId).toBe("1:1");
 
     await manager.submitCardAction({
       eventId: "event_side_question",
@@ -7579,9 +7598,26 @@ describe("ConversationManager", () => {
     const processingCard = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown>;
     const serializedProcessing = JSON.stringify(processingCard);
     expect(serializedProcessing).toContain("工作中...");
-    expect(serializedProcessing).toContain("[上次回复] first final");
+    expect(serializedProcessing).toContain("first final");
+    expect(serializedProcessing).not.toContain("[上次回复]");
     expect(serializedProcessing).toContain("[收到追问] why this result?");
     expect(serializedProcessing).toContain("追加补充说明");
+    const updatedActionValue = findTwinnyCardActionValue(processingCard, "side_input_submit");
+    expect(updatedActionValue.inputId).toBe("1:2");
+    expect(updatedActionValue.inputId).not.toBe(inputId);
+
+    const duplicateResponse = await manager.submitCardAction({
+      eventId: "event_side_question_duplicate",
+      operatorOpenId: "ou_guest",
+      openMessageId: "card_m_side_1",
+      openChatId: "oc_ignored",
+      actionTag: "input",
+      actionValue,
+      inputValue: "duplicate question",
+      raw: { event_id: "event_side_question_duplicate" }
+    });
+    expect(duplicateResponse).toEqual({ toast: { type: "info", content: "已收到，处理中" } });
+    expect(codex.startTurn).toHaveBeenCalledTimes(2);
     expect(
       vi.mocked(repository.insertLarkMessage).mock.calls.some(([input]) =>
         input.eventId === "event_side_question" || input.routeKind === "card_action"

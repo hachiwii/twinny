@@ -315,6 +315,7 @@ describe("renderTwinnyAgentCard", () => {
       hideQueueControls: true,
       sideFollowupInput: {
         sideSessionId: "side_1",
+        inputId: "side_1:1",
         placeholder: "追加补充说明"
       }
     }));
@@ -332,7 +333,8 @@ describe("renderTwinnyAgentCard", () => {
             twinny: true,
             action: "side_input_submit",
             stateKey: "p2p_ou_guest",
-            sideSessionId: "side_1"
+            sideSessionId: "side_1",
+            inputId: "side_1:1"
           }
         })
       ]
@@ -346,6 +348,7 @@ describe("renderTwinnyAgentCard", () => {
       messages: [{ id: "process_1", text: "done" }],
       sideFollowupInput: {
         sideSessionId: "side_1",
+        inputId: "side_1:1",
         placeholder: "继续追问"
       },
       finalElements: [markdownElement("final")]
@@ -371,6 +374,7 @@ describe("renderTwinnyAgentCard", () => {
       status: "failed",
       sideFollowupInput: {
         sideSessionId: "side_1",
+        inputId: "side_1:1",
         placeholder: "继续追问"
       }
     }));
