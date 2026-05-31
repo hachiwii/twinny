@@ -4881,7 +4881,7 @@ describe("ConversationManager", () => {
     expect(menuActionInputs[0]).not.toHaveProperty("larkMessageId");
   });
 
-  it("handles bot menu status and help as direct p2p replies", async () => {
+  it("handles bot menu status as a direct card and help as a direct text reply", async () => {
     const row = conversationRecord({ codexThreadId: "thread_status" });
     const { repository } = createRepository(row);
     vi.mocked(repository.getCodexThreadById).mockReturnValue(codexThreadRecord({
@@ -4901,12 +4901,16 @@ describe("ConversationManager", () => {
     manager.submitBotMenuAction(botMenuAction("menu-status", "status"));
     manager.submitBotMenuAction(botMenuAction("menu-help", "help"));
 
-    await waitForExpect(() => expect(lark.sendTextToOpenId).toHaveBeenCalledTimes(2));
-    expect(lark.sendTextToOpenId).toHaveBeenCalledWith(
+    await waitForExpect(() => expect(lark.sendCardToOpenId).toHaveBeenCalledTimes(1));
+    const statusCard = vi.mocked(lark.sendCardToOpenId).mock.calls[0]![1] as Record<string, unknown>;
+    expect(JSON.stringify(statusCard)).toContain("p2p_ou_guest");
+    expect(JSON.stringify(statusCard)).toContain("thread_status");
+    expect(JSON.stringify(statusCard)).toContain("刷新");
+    expect(lark.sendCardToOpenId).toHaveBeenCalledWith(
       "ou_guest",
-      expect.stringContaining("Conversation Key: p2p_ou_guest")
+      expect.objectContaining({ schema: "2.0" })
     );
-    expect(lark.sendTextToOpenId).toHaveBeenCalledWith("ou_guest", expect.stringContaining("Codex Thread ID: thread_status"));
+    expect(lark.sendTextToOpenId).toHaveBeenCalledTimes(1);
     expect(lark.sendTextToOpenId).toHaveBeenCalledWith("ou_guest", expect.stringContaining("/help - 查看可用指令和使用说明"));
     expect(lark.replyText).not.toHaveBeenCalled();
     expect(codex.startTurn).not.toHaveBeenCalled();
