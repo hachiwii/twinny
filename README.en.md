@@ -121,19 +121,29 @@ Send normal messages to the bot to start or continue a Codex turn. In groups, th
 | `/new`                                | Stop the current task, clear queued messages, and open a new Codex thread.                                   |
 | `/stop [all\|<side_id>]`              | Stop the active task and clear queued messages. Use `all` to stop side turns too, or a side id to stop one side turn. |
 | `/next`                               | Interrupt the current task and start the next queued message.                                                |
-| `/steer`                              | Inject the next queued batch into the currently running Codex turn.                                          |
-| `/queue [message]`                    | Without a message, queue your next message. With a message, add that message to the next turn.               |
+| `/steer <message>`                    | Inject `message` into the currently running Codex turn; `message` may be parsed as commands.                 |
+| `/queue [message]`                    | Without a message, queue your next message. With a message, add it to the next turn and parse commands when dequeued. |
 | `/goal <objective>`                   | Set and run a Codex goal. A later `/goal` while the goal is active updates the objective.                    |
 | `/plan [message]`                     | Enter plan mode. If a message is provided, process it in plan mode immediately.                              |
 | `/exit`                               | Exit plan mode in the next queued control step.                                                              |
 | `/side <message>` or `/btw <message>` | Start an ephemeral side conversation forked from the current Codex thread.                                   |
 | `/compact`                            | Compact the current Codex thread context in the next queued control step.                                    |
-| `/thread [message]`                   | Create a new Lark topic backed by a new Codex thread. If `message` is present, proxy it into that new topic. |
-| `/fork [message]`                     | Fork the current Codex thread into a new Lark topic. If `message` is present, proxy it into that new topic.  |
+| `/thread [message]`                   | Create a new Lark topic backed by a new Codex thread. If `message` is present, proxy it into that topic and parse commands there. |
+| `/fork [message]`                     | Fork the current Codex thread into a new Lark topic. If `message` is present, proxy it into that topic and parse commands there. |
 | `/watch <lark_doc_url> [owner\|all]` or `/watch rm <id\|url>` | Watch @bot comments on a Feishu/Lark document and route them to the current thread. Without arguments, list watcher ids for the current thread. `owner` responds only to the owner, `all` responds to everyone, and `rm` deletes a watcher from the current thread. |
 | `/model <model> <effort>`             | Set the model and reasoning effort for future turns in the current thread.                                   |
+| `/cron <cron exp> <message>`, `/cron`, `/cron rm <id>` | Manage cron jobs for the current conversation; `message` may be parsed as commands when the job triggers.    |
 | `/logo`                               | Send the Twinny logo image.                                                                                  |
 | `/twinny` or `/banner`                | Send the Twinny banner card.                                                                                 |
+
+Commands are parsed left to right. Fixed-argument commands only consume their own arguments, so another command can follow `/model <model> <effort>`. `/plan`, `/goal`, and `/side` consume the remaining text as raw text and do not parse commands inside it. `/queue`, `/steer`, `/thread`, `/fork`, and `/cron <cron exp> <message>` recursively parse their `message` when it is executed. `/queue` and `/steer` are valid only as the outermost first command; inside `/thread`, `/fork`, or another command tail they are treated as ordinary text.
+
+Examples:
+
+```text
+/queue /model gpt-5.5 xhigh /plan xxx
+/cron * * * * * /goal xxx
+```
 
 
 ### Group Administration

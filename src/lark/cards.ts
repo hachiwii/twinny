@@ -471,7 +471,7 @@ export function renderTwinnyCronListCard(options: RenderTwinnyCronListCardOption
     `Usage: ${inlineCode("/cron")}`,
     `Usage: ${inlineCode("/cron <cron exp> <message>")}`,
     `Usage: ${inlineCode("/cron rm <id>")}`,
-    `说明：定时向当前 conversation 的指定 thread 发送消息。时区：${inlineCode(options.timezone)}。`
+    `说明：定时向当前 conversation 的指定 thread 发送消息；触发时 message 可继续解析指令。时区：${inlineCode(options.timezone)}。`
   ], cronListTable(options.items));
   return renderMarkdownOnlyCard(content);
 }

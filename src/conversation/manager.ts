@@ -984,6 +984,7 @@ interface PendingMessage {
   original: IncomingLarkMessage;
   queueBoundary: boolean;
   control?: "plan_on" | "plan_off" | "compact" | "rewind" | "goal_set";
+  program?: ParsedCommandProgram;
   rewindTurns?: number;
   forceQueueWhenActive?: boolean;
   excludeFromParticipants?: boolean;
@@ -1200,9 +1201,14 @@ interface ConversationState {
   nextSideSessionId: number;
 }
 
+interface ParsedCommandProgram {
+  text: string;
+  steps: ParsedCommand[];
+}
+
 type ParsedCommand =
   | { kind: "message"; text: string }
-  | { kind: "queue"; text: string }
+  | { kind: "queue"; text: string; program?: ParsedCommandProgram }
   | { kind: "side"; text: string }
   | { kind: "goal"; text: string }
   | { kind: "plan"; text: string }
@@ -1213,17 +1219,17 @@ type ParsedCommand =
   | { kind: "banner" }
   | { kind: "stop"; text: string }
   | { kind: "next" }
-  | { kind: "steer"; text: string }
+  | { kind: "steer"; text: string; program?: ParsedCommandProgram }
   | { kind: "status" }
   | { kind: "workspace"; text: string }
   | { kind: "cd"; text: string }
   | { kind: "model"; text: string }
   | { kind: "new" }
-  | { kind: "thread"; text: string }
-  | { kind: "fork"; text: string }
+  | { kind: "thread"; text: string; program?: ParsedCommandProgram }
+  | { kind: "fork"; text: string; program?: ParsedCommandProgram }
   | { kind: "resume"; text: string }
   | { kind: "watch"; text: string }
-  | { kind: "cron"; text: string }
+  | { kind: "cron"; text: string; program?: ParsedCommandProgram }
   | { kind: "activate"; text: string }
   | { kind: "pair"; text: string }
   | { kind: "reload"; text: string }
@@ -2006,21 +2012,25 @@ export class ConversationManager {
     if (!normalized) {
       return undefined;
     }
-    const parsed = parseQueuedAwareSlashCommand(normalized.text);
-    const rewind = parsed.kind === "rewind" ? parseRewindCommand(parsed.text) : undefined;
-    const text = record.status === "queued" && (normalized.resources?.length ?? 0) > 0 ? normalized.text : record.text;
     const syntheticEnvelope = await this.syntheticEnvelopeForRecoveredRecord(record, raw);
     const isSyntheticMessage = syntheticEnvelope !== undefined;
+    const parsed = parseQueuedAwareSlashCommand(isSyntheticMessage ? record.text : normalized.text);
+    const rewind = parsed.kind === "rewind" ? parseRewindCommand(parsed.text) : undefined;
+    const text = record.status === "queued" && (normalized.resources?.length ?? 0) > 0 ? normalized.text : record.text;
+    const program = pendingProgramForRecoveredText(isSyntheticMessage ? record.text : normalized.text, {
+      allowSingleCommand: isSyntheticMessage
+    });
     return toPendingMessage(normalized, text, {
       queueBoundary:
         isSyntheticMessage ||
+        !!program ||
         parsed.kind === "compact" ||
         (rewind?.kind === "valid") ||
         parsed.kind === "goal" ||
         (record.status === "queued" &&
           (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit")),
       control:
-        isSyntheticMessage
+        isSyntheticMessage || program
           ? undefined
           : parsed.kind === "goal"
           ? "goal_set"
@@ -2033,6 +2043,7 @@ export class ConversationManager {
               : rewind?.kind === "valid"
                 ? "rewind"
               : undefined,
+      program,
       rewindTurns: rewind?.kind === "valid" ? rewind.numTurns : undefined,
       forceQueueWhenActive: isSyntheticMessage,
       excludeFromParticipants: isSyntheticMessage,
@@ -2090,21 +2101,25 @@ export class ConversationManager {
     if (record.status === "queued") {
       await this.prepareIncomingMessageForCodex(context, normalized);
     }
-    const parsed = parseQueuedAwareSlashCommand(normalized.text);
-    const rewind = parsed.kind === "rewind" ? parseRewindCommand(parsed.text) : undefined;
-    const text = (record.status === "queued" && (normalized.resources?.length ?? 0) > 0) ? normalized.text : record.text;
     const syntheticEnvelope = await this.syntheticEnvelopeForRecoveredRecord(record, raw);
     const isSyntheticMessage = syntheticEnvelope !== undefined;
+    const parsed = parseQueuedAwareSlashCommand(isSyntheticMessage ? record.text : normalized.text);
+    const rewind = parsed.kind === "rewind" ? parseRewindCommand(parsed.text) : undefined;
+    const text = (record.status === "queued" && (normalized.resources?.length ?? 0) > 0) ? normalized.text : record.text;
+    const program = pendingProgramForRecoveredText(isSyntheticMessage ? record.text : normalized.text, {
+      allowSingleCommand: isSyntheticMessage
+    });
     return toPendingMessage(normalized, text, {
       queueBoundary:
         isSyntheticMessage ||
+        !!program ||
         parsed.kind === "compact" ||
         (rewind?.kind === "valid") ||
         parsed.kind === "goal" ||
         (record.status === "queued" &&
           (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit")),
       control:
-        isSyntheticMessage
+        isSyntheticMessage || program
           ? undefined
           : parsed.kind === "goal"
           ? "goal_set"
@@ -2117,6 +2132,7 @@ export class ConversationManager {
               : rewind?.kind === "valid"
                 ? "rewind"
               : undefined,
+      program,
       rewindTurns: rewind?.kind === "valid" ? rewind.numTurns : undefined,
       forceQueueWhenActive: isSyntheticMessage,
       excludeFromParticipants: isSyntheticMessage,
@@ -2511,16 +2527,17 @@ export class ConversationManager {
     }
 
     message.text = routed.text;
-    const parsed = routed.parsed;
-    if (parsed.kind === "activate") {
+    const initialProgram = parseCommandProgram(message.text);
+    const parsed = firstParsedCommand(initialProgram) ?? routed.parsed;
+    if (parsed.kind === "activate" && initialProgram.steps.length === 1) {
       await this.handleActivateCommand(state, context, message, parsed.text);
       return;
     }
-    if (parsed.kind === "pair") {
+    if (parsed.kind === "pair" && initialProgram.steps.length === 1) {
       await this.handlePairCommand(state, context, message, parsed.text);
       return;
     }
-    if (parsed.kind === "reload") {
+    if (parsed.kind === "reload" && initialProgram.steps.length === 1) {
       await this.handleReloadCommand(state, context, message, parsed.text);
       return;
     }
@@ -2530,11 +2547,12 @@ export class ConversationManager {
     }
 
     await this.prepareIncomingMessageForCodex(context, message);
-    const preparedParsed: ParsedCommand = parsed.kind === "message" ? { kind: "message", text: message.text } : parsed;
+    const program = parsed.kind === "message" ? parseCommandProgram(message.text) : initialProgram;
+    const preparedParsed: ParsedCommand = firstParsedCommand(program) ?? { kind: "message", text: message.text };
     const queueDepthBefore = state.pendingBatch.length;
     const route = await this.recordIncomingMessage(state, context, message, preparedParsed);
     try {
-      await this.handleRecordedParsedCommand(state, context, message, preparedParsed);
+      await this.handleRecordedCommandProgram(state, context, message, program);
     } finally {
       this.captureMessageReceived(state, context, message, route, queueDepthBefore);
     }
@@ -2761,11 +2779,44 @@ export class ConversationManager {
     return downloadedFiles;
   }
 
+  private async handleRecordedCommandProgram(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    program: ParsedCommandProgram,
+    options: { messageDelivery?: "normal" | "steer"; pendingTemplate?: PendingMessage } = {}
+  ): Promise<void> {
+    for (const step of program.steps) {
+      if (step.kind === "message") {
+        if (options.messageDelivery === "steer") {
+          const pending = toPendingMessage(message, step.text, { queueBoundary: false });
+          await this.forceSteerPendingMessage(state, context, pending);
+        } else if (options.pendingTemplate) {
+          const pending = toPendingMessage(message, step.text, {
+            queueBoundary: false,
+            forceQueueWhenActive: options.pendingTemplate.forceQueueWhenActive,
+            excludeFromParticipants: options.pendingTemplate.excludeFromParticipants,
+            skipQueuedRefresh: options.pendingTemplate.skipQueuedRefresh,
+            syntheticEnvelope: options.pendingTemplate.syntheticEnvelope
+          });
+          await this.schedulePendingMessage(state, context, pending);
+        } else {
+          await this.handleUserMessage(state, context, message, step.text);
+        }
+        continue;
+      }
+      await this.handleRecordedParsedCommand(state, context, message, step, {
+        pendingTemplate: options.pendingTemplate
+      });
+    }
+  }
+
   private async handleRecordedParsedCommand(
     state: ConversationState,
     context: MessageContext,
     message: IncomingLarkMessage,
-    parsed: ParsedCommand
+    parsed: ParsedCommand,
+    options: { pendingTemplate?: PendingMessage } = {}
   ): Promise<void> {
     if (isOwnerOnlyParsedCommand(parsed) && profileForSender(this.options.config, message.senderOpenId) !== "host") {
       await this.replyControlBestEffort(message.messageId, `只有 owner 可以执行 /${parsed.kind}。`);
@@ -2774,7 +2825,15 @@ export class ConversationManager {
     }
 
     if (parsed.kind === "activate") {
-      await this.handleActivateCommand(state, context, message, parsed.text);
+      await this.handleActivateCommand(state, context, message, parsed.text, { recordIncoming: false });
+      return;
+    }
+    if (parsed.kind === "pair") {
+      await this.handlePairCommand(state, context, message, parsed.text, { recordIncoming: false });
+      return;
+    }
+    if (parsed.kind === "reload") {
+      await this.handleReloadCommand(state, context, message, parsed.text, { recordIncoming: false });
       return;
     }
     if (parsed.kind === "help") {
@@ -2806,7 +2865,7 @@ export class ConversationManager {
       return;
     }
     if (parsed.kind === "steer") {
-      await this.handleSteerCommand(state, context, message, parsed.text);
+      await this.handleSteerCommand(state, context, message, parsed);
       return;
     }
     if (parsed.kind === "new") {
@@ -2814,11 +2873,11 @@ export class ConversationManager {
       return;
     }
     if (parsed.kind === "thread") {
-      await this.handleThreadCommand(state, context, message, parsed.text);
+      await this.handleThreadCommand(state, context, message, parsed);
       return;
     }
     if (parsed.kind === "fork") {
-      await this.handleForkCommand(state, context, message, parsed.text);
+      await this.handleForkCommand(state, context, message, parsed);
       return;
     }
     if (parsed.kind === "resume") {
@@ -2830,7 +2889,7 @@ export class ConversationManager {
       return;
     }
     if (parsed.kind === "cron") {
-      await this.handleCronCommand(context, message, parsed.text);
+      await this.handleCronCommand(context, message, parsed);
       return;
     }
     if (parsed.kind === "deactivate") {
@@ -2838,7 +2897,7 @@ export class ConversationManager {
       return;
     }
     if (parsed.kind === "queue") {
-      await this.handleQueueCommand(state, context, message, parsed.text);
+      await this.handleQueueCommand(state, context, message, parsed);
       return;
     }
     if (parsed.kind === "side") {
@@ -2850,7 +2909,9 @@ export class ConversationManager {
       return;
     }
     if (parsed.kind === "plan") {
-      await this.handlePlanCommand(state, context, message, parsed.text);
+      await this.handlePlanCommand(state, context, message, parsed.text, {
+        pendingTemplate: options.pendingTemplate
+      });
       return;
     }
     if (parsed.kind === "exit") {
@@ -3211,10 +3272,16 @@ export class ConversationManager {
     state: ConversationState,
     context: MessageContext,
     message: IncomingLarkMessage,
-    text: string
+    text: string,
+    options: { recordIncoming?: boolean } = {}
   ): Promise<void> {
+    const recordIncoming = async (): Promise<void> => {
+      if (options.recordIncoming !== false) {
+        await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
+      }
+    };
     if (!isGroupConversationType(context.type)) {
-      await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
+      await recordIncoming();
       await this.replyControlBestEffort(message.messageId, "activate 只支持群聊。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
@@ -3224,7 +3291,7 @@ export class ConversationManager {
     const existing = await this.options.repository.findByConversationKey(context.conversationKey);
     if (senderProfile !== "host") {
       if (existing && existing.responseMode !== "none") {
-        await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
+        await recordIncoming();
         await this.replyControlBestEffort(message.messageId, "只有 owner 可以激活群聊。");
         await this.markMessagesCompletedBestEffort([message.messageId]);
       } else {
@@ -3235,21 +3302,21 @@ export class ConversationManager {
 
     const parsed = parseActivateCommand(text);
     if (parsed.kind === "invalid") {
-      await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
+      await recordIncoming();
       await this.replyControlBestEffort(message.messageId, parsed.message);
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
 
     if (parsed.profile && !this.options.config.profiles[parsed.profile]) {
-      await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
+      await recordIncoming();
       await this.replyControlBestEffort(message.messageId, `未知 profile：${parsed.profile}`);
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
 
     if (existing && parsed.profile && existing.profile !== parsed.profile) {
-      await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
+      await recordIncoming();
       await this.replyControlBestEffort(
         message.messageId,
         `该群已绑定 profile=${existing.profile}，本期不支持修改为 ${parsed.profile}。`
@@ -3309,7 +3376,7 @@ export class ConversationManager {
       replyLines.push("", featureWarning);
     }
 
-    await this.recordIncomingMessage(state, context, message, { kind: "activate", text });
+    await recordIncoming();
     await this.replyControlBestEffort(message.messageId, replyLines.join("\n"));
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
@@ -3318,9 +3385,12 @@ export class ConversationManager {
     state: ConversationState,
     context: MessageContext,
     message: IncomingLarkMessage,
-    text: string
+    text: string,
+    options: { recordIncoming?: boolean } = {}
   ): Promise<void> {
-    await this.recordIncomingMessage(state, context, message, { kind: "pair", text });
+    if (options.recordIncoming !== false) {
+      await this.recordIncomingMessage(state, context, message, { kind: "pair", text });
+    }
     if (profileForSender(this.options.config, message.senderOpenId) !== "host") {
       await this.replyControlBestEffort(message.messageId, "只有 owner 可以授权 /pair。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -3386,9 +3456,12 @@ export class ConversationManager {
     state: ConversationState,
     context: MessageContext,
     message: IncomingLarkMessage,
-    text: string
+    text: string,
+    options: { recordIncoming?: boolean } = {}
   ): Promise<void> {
-    await this.recordIncomingMessage(state, context, message, { kind: "reload", text });
+    if (options.recordIncoming !== false) {
+      await this.recordIncomingMessage(state, context, message, { kind: "reload", text });
+    }
     if (profileForSender(this.options.config, message.senderOpenId) !== "host") {
       await this.replyControlBestEffort(message.messageId, "只有 owner 可以执行 /reload。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -3487,15 +3560,11 @@ export class ConversationManager {
     state: ConversationState,
     context: MessageContext,
     message: IncomingLarkMessage,
-    text: string
+    command: Extract<ParsedCommand, { kind: "thread" }>
   ): Promise<void> {
+    const text = command.text;
     if (!isThreadCommandMessageType(message.messageType)) {
       await this.replyControlBestEffort(message.messageId, "thread 只支持 text/post 消息。");
-      await this.markMessagesCompletedBestEffort([message.messageId]);
-      return;
-    }
-    if (parseSlashCommand(text).kind === "side") {
-      await this.replyControlBestEffort(message.messageId, "side 只能作为最外层指令使用。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
@@ -3543,9 +3612,10 @@ export class ConversationManager {
     const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
     const proxyMessage = createThreadReplyMessage(context, message, proxy.messageId, topic.larkThreadId, proxy.text);
     const proxyState = this.getState(proxyContext.stateKey);
-    const proxyParsed = parseSlashCommand(proxyMessage.text);
+    const proxyProgram = parseCommandProgram(proxyMessage.text, { nested: true });
+    const proxyParsed = firstParsedCommand(proxyProgram) ?? { kind: "message", text: proxyMessage.text };
     await this.recordIncomingMessage(proxyState, proxyContext, proxyMessage, proxyParsed);
-    await this.handleRecordedParsedCommand(proxyState, proxyContext, proxyMessage, proxyParsed);
+    await this.handleRecordedCommandProgram(proxyState, proxyContext, proxyMessage, proxyProgram);
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
@@ -3553,15 +3623,11 @@ export class ConversationManager {
     state: ConversationState,
     context: MessageContext,
     message: IncomingLarkMessage,
-    text: string
+    command: Extract<ParsedCommand, { kind: "fork" }>
   ): Promise<void> {
+    const text = command.text;
     if (!isThreadCommandMessageType(message.messageType)) {
       await this.replyControlBestEffort(message.messageId, "fork 只支持 text/post 消息。");
-      await this.markMessagesCompletedBestEffort([message.messageId]);
-      return;
-    }
-    if (parseSlashCommand(text).kind === "side") {
-      await this.replyControlBestEffort(message.messageId, "side 只能作为最外层指令使用。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
@@ -3658,9 +3724,10 @@ export class ConversationManager {
     const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
     const proxyMessage = createThreadReplyMessage(context, message, proxy.messageId, topic.larkThreadId, proxy.text);
     const proxyState = this.getState(proxyContext.stateKey);
-    const proxyParsed = parseSlashCommand(proxyMessage.text);
+    const proxyProgram = parseCommandProgram(proxyMessage.text, { nested: true });
+    const proxyParsed = firstParsedCommand(proxyProgram) ?? { kind: "message", text: proxyMessage.text };
     await this.recordIncomingMessage(proxyState, proxyContext, proxyMessage, proxyParsed);
-    await this.handleRecordedParsedCommand(proxyState, proxyContext, proxyMessage, proxyParsed);
+    await this.handleRecordedCommandProgram(proxyState, proxyContext, proxyMessage, proxyProgram);
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
@@ -4509,8 +4576,9 @@ export class ConversationManager {
     state: ConversationState,
     context: MessageContext,
     message: IncomingLarkMessage,
-    text: string
+    command: Extract<ParsedCommand, { kind: "queue" }>
   ): Promise<void> {
+    const text = command.text;
     if (!text) {
       state.queueNextMessage = true;
       if (state.active) {
@@ -4522,23 +4590,11 @@ export class ConversationManager {
     }
 
     state.queueNextMessage = false;
-    const nested = parseSlashCommand(text);
-    const rewind = nested.kind === "rewind" ? parseRewindCommand(nested.text) : undefined;
-    if (rewind?.kind === "invalid") {
-      await this.replyControlBestEffort(message.messageId, rewind.message);
-      await this.markMessagesCompletedBestEffort([message.messageId]);
-      return;
-    }
-    const pending = nested.kind === "goal"
-      ? toPendingMessage(message, nested.text, { queueBoundary: true, control: "goal_set" })
-      : rewind?.kind === "valid"
-        ? toPendingMessage(message, "", { queueBoundary: true, control: "rewind", rewindTurns: rewind.numTurns })
-        : toPendingMessage(message, text, { queueBoundary: true });
-    if (pending.control === "goal_set" && !goalContentForPendingMessage(pending)) {
-      await this.replyControlBestEffort(message.messageId, "用法：/goal <objective>");
-      await this.markMessagesCompletedBestEffort([message.messageId]);
-      return;
-    }
+    const program = command.program ?? parseCommandProgram(text, { nested: true });
+    const pending = toPendingMessage(message, text, {
+      queueBoundary: true,
+      program: programContainsCommand(program) ? program : undefined
+    });
     await this.schedulePendingMessage(state, context, pending);
   }
 
@@ -4898,7 +4954,8 @@ export class ConversationManager {
     state: ConversationState,
     context: MessageContext,
     message: IncomingLarkMessage,
-    text: string
+    text: string,
+    options: { pendingTemplate?: PendingMessage } = {}
   ): Promise<void> {
     if (parseSlashCommand(text).kind === "goal") {
       await this.replyControlBestEffort(message.messageId, "goal 不能在 plan 中使用。");
@@ -4908,7 +4965,11 @@ export class ConversationManager {
     state.queueNextMessage = false;
     const pending = toPendingMessage(message, text, {
       queueBoundary: true,
-      control: "plan_on"
+      control: "plan_on",
+      forceQueueWhenActive: options.pendingTemplate?.forceQueueWhenActive,
+      excludeFromParticipants: options.pendingTemplate?.excludeFromParticipants,
+      skipQueuedRefresh: options.pendingTemplate?.skipQueuedRefresh,
+      syntheticEnvelope: options.pendingTemplate?.syntheticEnvelope
     });
     await this.schedulePendingMessage(state, context, pending);
   }
@@ -5019,8 +5080,9 @@ export class ConversationManager {
   private async handleCronCommand(
     context: MessageContext,
     message: IncomingLarkMessage,
-    text: string
+    command: Extract<ParsedCommand, { kind: "cron" }>
   ): Promise<void> {
+    const text = command.text;
     const parsed = parseCronCommand(text, localTimezone());
     if (parsed.kind === "invalid") {
       await this.replyControlBestEffort(message.messageId, parsed.message);
@@ -6082,11 +6144,18 @@ export class ConversationManager {
     state: ConversationState,
     context: MessageContext,
     message: IncomingLarkMessage,
-    text: string
+    command: Extract<ParsedCommand, { kind: "steer" }>
   ): Promise<void> {
+    const text = command.text;
     if (text.trim().length === 0) {
       await this.replyControlBestEffort(message.messageId, "用法：/steer <msg>");
       await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const program = command.program ?? parseCommandProgram(text, { nested: true });
+    if (!(program.steps.length === 1 && program.steps[0]?.kind === "message")) {
+      await this.handleRecordedCommandProgram(state, context, message, program, { messageDelivery: "steer" });
       return;
     }
 
@@ -6249,10 +6318,20 @@ export class ConversationManager {
   private async startPendingBatch(state: ConversationState, context: MessageContext): Promise<void> {
     while (!state.active && state.suspendedActiveTurns.length === 0 && state.pendingBatch.length > 0) {
       const first = state.pendingBatch[0]!;
-      if (first.control) {
+      if (first.control || first.program) {
         state.pendingBatch.shift();
         await this.clearQueuedReactionBestEffort(first);
-        await this.processPendingControlMessage(state, context, first);
+        const refreshed = await this.refreshPendingMessageBeforeStart(context, first);
+        if (!refreshed) {
+          continue;
+        }
+        if (refreshed.program) {
+          await this.processPendingProgramMessage(state, context, refreshed);
+        } else if (refreshed.control) {
+          await this.processPendingControlMessage(state, context, refreshed);
+        } else {
+          state.pendingBatch.unshift(refreshed);
+        }
         continue;
       }
       const count = countNextPendingBatch(state);
@@ -6261,6 +6340,29 @@ export class ConversationManager {
       const refreshedMessages = await this.refreshPendingMessagesBeforeStart(context, messages);
       if (refreshedMessages.length === 0) {
         continue;
+      }
+      const commandIndex = refreshedMessages.findIndex((message) => !!message.control || !!message.program);
+      if (commandIndex === 0) {
+        const [command, ...remaining] = refreshedMessages;
+        if (remaining.length > 0) {
+          state.pendingBatch.unshift(...remaining);
+          await this.addQueuedReactionsBestEffort(remaining);
+          await this.markPendingMessagesQueuedBestEffort(remaining);
+        }
+        if (command!.program) {
+          await this.processPendingProgramMessage(state, context, command!);
+        } else {
+          await this.processPendingControlMessage(state, context, command!);
+        }
+        continue;
+      }
+      if (commandIndex > 0) {
+        const commandMessages = refreshedMessages.slice(commandIndex);
+        state.pendingBatch.unshift(...commandMessages);
+        await this.addQueuedReactionsBestEffort(commandMessages);
+        await this.markPendingMessagesQueuedBestEffort(commandMessages);
+        await this.startTurnForMessages(state, context, refreshedMessages.slice(0, commandIndex));
+        return;
       }
       await this.startTurnForMessages(state, context, refreshedMessages);
       return;
@@ -6495,9 +6597,13 @@ export class ConversationManager {
     const remaining = [...messages];
     while (!state.active && state.suspendedActiveTurns.length === 0 && remaining.length > 0) {
       const first = remaining[0]!;
-      if (first.control) {
+      if (first.control || first.program) {
         remaining.shift();
-        await this.processPendingControlMessage(state, context, first);
+        if (first.program) {
+          await this.processPendingProgramMessage(state, context, first);
+        } else {
+          await this.processPendingControlMessage(state, context, first);
+        }
         continue;
       }
       const count = countNextPendingMessages(remaining);
@@ -6511,6 +6617,22 @@ export class ConversationManager {
       await this.addQueuedReactionsBestEffort(remaining);
       await this.markPendingMessagesQueuedBestEffort(remaining);
     }
+  }
+
+  private async processPendingProgramMessage(
+    state: ConversationState,
+    context: MessageContext,
+    pending: PendingMessage
+  ): Promise<void> {
+    if (!pending.program) {
+      return;
+    }
+    await this.markPendingMessagesProcessingBestEffort([pending], {
+      conversationKey: context.conversationKey
+    });
+    await this.handleRecordedCommandProgram(state, context, pending.original, pending.program, {
+      pendingTemplate: pending
+    });
   }
 
   private async processPendingControlMessage(
@@ -6803,17 +6925,18 @@ export class ConversationManager {
         normalized,
         profileForSender(this.options.config, normalized.senderOpenId)
       );
-      const parsed = parseSlashCommand(normalized.text);
-      const nested = parsed.kind === "queue" ? parseSlashCommand(parsed.text) : undefined;
-      const text = nested?.kind === "goal" ? nested.text : parsed.kind === "queue" ? parsed.text : normalized.text;
-      const queuedParsed = parseQueuedAwareSlashCommand(normalized.text);
-      if (pending.control === "rewind") {
-        const rewind = queuedParsed.kind === "rewind" ? parseRewindCommand(queuedParsed.text) : undefined;
-        pending.rewindTurns = rewind?.kind === "valid" ? rewind.numTurns : undefined;
-      }
       await this.prepareIncomingMessageForCodex(context, normalized);
+      const parsed = parseSlashCommand(normalized.text);
+      const text = parsed.kind === "queue" && parsed.text.length > 0 ? parsed.text : normalized.text;
       pending.original = normalized;
       pending.text = (normalized.downloadedFiles?.length ?? 0) > 0 ? normalized.text : text;
+      pending.control = undefined;
+      pending.rewindTurns = undefined;
+      pending.program = parsed.kind === "message"
+        ? undefined
+        : parsed.kind === "queue" && parsed.text.length > 0
+          ? commandProgramIfContainsCommand(parsed.program ?? parseCommandProgram(parsed.text, { nested: true }))
+          : commandProgramIfContainsCommand(parseCommandProgram(normalized.text));
       await this.updateQueuedMessageBestEffort(pending.messageId, {
         text: pending.text,
         rawEventJson: safeJsonStringify(latestRaw)
@@ -8382,6 +8505,7 @@ export class ConversationManager {
     };
     const pending = toPendingMessage(proxyMessage, input.codexText, {
       queueBoundary: true,
+      program: commandProgramIfContainsCommand(parseCommandProgram(input.codexText, { nested: true })),
       forceQueueWhenActive: input.deliveryMode === undefined || input.deliveryMode === "queue",
       excludeFromParticipants: true,
       skipQueuedRefresh: true,
@@ -12224,96 +12348,7 @@ function formatSendToLarkError(reason: string): string {
 }
 
 function parseSlashCommand(text: string): ParsedCommand {
-  const trimmed = text.trim();
-  const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(trimmed);
-  if (!match) {
-    return { kind: "message", text };
-  }
-
-  const command = match[1]!.toLowerCase();
-  const rest = match[2]?.trim() ?? "";
-  if (command === "stop") {
-    return { kind: "stop", text: rest };
-  }
-  if (command === "next") {
-    return { kind: "next" };
-  }
-  if (command === "steer") {
-    return { kind: "steer", text: rest };
-  }
-  if (command === "status") {
-    return { kind: "status" };
-  }
-  if (command === "workspace") {
-    return { kind: "workspace", text: rest };
-  }
-  if (command === "cd") {
-    return { kind: "cd", text: rest };
-  }
-  if (command === "model") {
-    return { kind: "model", text: rest };
-  }
-  if (command === "new") {
-    return { kind: "new" };
-  }
-  if (command === "thread") {
-    return { kind: "thread", text: rest };
-  }
-  if (command === "fork") {
-    return { kind: "fork", text: rest };
-  }
-  if (command === "resume") {
-    return { kind: "resume", text: rest };
-  }
-  if (command === "watch") {
-    return { kind: "watch", text: rest };
-  }
-  if (command === "cron") {
-    return { kind: "cron", text: rest };
-  }
-  if (command === "help") {
-    return { kind: "help" };
-  }
-  if (command === "activate") {
-    return { kind: "activate", text: rest };
-  }
-  if (command === "pair") {
-    return { kind: "pair", text: rest };
-  }
-  if (command === "reload") {
-    return { kind: "reload", text: rest };
-  }
-  if (command === "deactivate") {
-    return { kind: "deactivate" };
-  }
-  if (command === "queue") {
-    return { kind: "queue", text: rest };
-  }
-  if (command === "side" || command === "btw") {
-    return { kind: "side", text: rest };
-  }
-  if (command === "goal") {
-    return { kind: "goal", text: rest };
-  }
-  if (command === "plan") {
-    return { kind: "plan", text: rest };
-  }
-  if (command === "exit") {
-    return { kind: "exit" };
-  }
-  if (command === "compact") {
-    return { kind: "compact" };
-  }
-  if (command === "rewind" || command === "rollback") {
-    return { kind: "rewind", text: rest };
-  }
-  if (command === "logo") {
-    return { kind: "logo" };
-  }
-  if (command === "twinny" || command === "banner") {
-    return { kind: "banner" };
-  }
-  return { kind: "message", text };
+  return firstParsedCommand(parseCommandProgram(text)) ?? { kind: "message", text };
 }
 
 function parseQueuedAwareSlashCommand(text: string): ParsedCommand {
@@ -12321,10 +12356,334 @@ function parseQueuedAwareSlashCommand(text: string): ParsedCommand {
   if (parsed.kind !== "queue") {
     return parsed;
   }
-  const nested = parseSlashCommand(parsed.text);
-  return nested.kind === "goal" || (nested.kind === "rewind" && parseRewindCommand(nested.text).kind === "valid")
+  const nested = firstParsedCommand(parsed.program ?? parseCommandProgram(parsed.text, { nested: true }));
+  return nested && (nested.kind === "goal" || (nested.kind === "rewind" && parseRewindCommand(nested.text).kind === "valid"))
     ? nested
     : parsed;
+}
+
+function parseCommandProgram(
+  text: string,
+  options: { nested?: boolean } = {}
+): ParsedCommandProgram {
+  return {
+    text,
+    steps: parseCommandProgramSteps(text, { nested: options.nested === true })
+  };
+}
+
+function firstParsedCommand(program: ParsedCommandProgram): ParsedCommand | undefined {
+  return program.steps[0];
+}
+
+function parseCommandProgramSteps(
+  text: string,
+  context: { nested: boolean }
+): ParsedCommand[] {
+  const steps: ParsedCommand[] = [];
+  let cursor = skipCommandWhitespace(text, 0);
+  while (cursor < text.length) {
+    const command = readCommandToken(text, cursor);
+    if (!command || !isKnownSlashCommand(command.name)) {
+      const messageText = text.slice(cursor).trim();
+      if (messageText.length > 0) {
+        steps.push({ kind: "message", text: messageText });
+      }
+      break;
+    }
+
+    const commandIndex = steps.length;
+    const afterCommand = skipCommandWhitespace(text, command.end);
+    const name = normalizeSlashCommandName(command.name);
+
+    if (name === "queue" || name === "steer") {
+      const tail = text.slice(afterCommand).trim();
+      if (context.nested || commandIndex !== 0) {
+        const messageText = text.slice(cursor).trim();
+        if (messageText.length > 0) {
+          steps.push({ kind: "message", text: messageText });
+        }
+        break;
+      }
+      const program = tail.length > 0 ? parseCommandProgram(tail, { nested: true }) : undefined;
+      steps.push(name === "queue" ? { kind: "queue", text: tail, program } : { kind: "steer", text: tail, program });
+      break;
+    }
+
+    if (name === "thread" || name === "fork") {
+      const tail = text.slice(afterCommand).trim();
+      const program = tail.length > 0 ? parseCommandProgram(tail, { nested: true }) : undefined;
+      steps.push(name === "thread" ? { kind: "thread", text: tail, program } : { kind: "fork", text: tail, program });
+      break;
+    }
+
+    if (name === "cron") {
+      const tail = text.slice(afterCommand).trim();
+      steps.push(parseCronProgramCommand(tail));
+      break;
+    }
+
+    if (name === "goal" || name === "plan" || name === "side") {
+      const tail = text.slice(afterCommand).trim();
+      steps.push(name === "goal" ? { kind: "goal", text: tail } : name === "plan" ? { kind: "plan", text: tail } : { kind: "side", text: tail });
+      break;
+    }
+
+    if (name === "help" || name === "status" || name === "new" || name === "next" || name === "exit" ||
+      name === "compact" || name === "logo" || name === "banner" || name === "deactivate") {
+      steps.push(noArgParsedCommand(name));
+      cursor = skipCommandWhitespace(text, afterCommand);
+      continue;
+    }
+
+    const fixed = parseFixedArgCommand(name, text, afterCommand);
+    steps.push(fixed.command);
+    cursor = skipCommandWhitespace(text, fixed.cursor);
+  }
+  return steps;
+}
+
+function parseCronProgramCommand(text: string): Extract<ParsedCommand, { kind: "cron" }> {
+  const parsed = parseCronCommand(text, localTimezone());
+  if (parsed.kind !== "create") {
+    return { kind: "cron", text };
+  }
+  const program = parseCommandProgram(parsed.messageText, { nested: true });
+  return { kind: "cron", text, program };
+}
+
+function noArgParsedCommand(
+  name: "help" | "status" | "new" | "next" | "exit" | "compact" | "logo" | "banner" | "deactivate"
+): ParsedCommand {
+  if (name === "help") {
+    return { kind: "help" };
+  }
+  if (name === "status") {
+    return { kind: "status" };
+  }
+  if (name === "new") {
+    return { kind: "new" };
+  }
+  if (name === "next") {
+    return { kind: "next" };
+  }
+  if (name === "exit") {
+    return { kind: "exit" };
+  }
+  if (name === "compact") {
+    return { kind: "compact" };
+  }
+  if (name === "logo") {
+    return { kind: "logo" };
+  }
+  if (name === "banner") {
+    return { kind: "banner" };
+  }
+  return { kind: "deactivate" };
+}
+
+function parseFixedArgCommand(
+  name: string,
+  text: string,
+  cursor: number
+): { command: ParsedCommand; cursor: number } {
+  if (name === "stop") {
+    const result = readOptionalNonCommandToken(text, cursor);
+    return { command: { kind: "stop", text: result.token?.value ?? "" }, cursor: result.cursor };
+  }
+  if (name === "rewind") {
+    const result = readRequiredTokens(text, cursor, 1);
+    return { command: { kind: "rewind", text: commandTextFromTokens(result.tokens) }, cursor: result.cursor };
+  }
+  if (name === "model") {
+    const result = readRequiredTokens(text, cursor, 2);
+    return { command: { kind: "model", text: commandTextFromTokens(result.tokens) }, cursor: result.cursor };
+  }
+  if (name === "workspace" || name === "cd" || name === "reload") {
+    const result = readOptionalNonCommandToken(text, cursor);
+    const commandText = result.token?.value ?? "";
+    return {
+      command: name === "workspace" ? { kind: "workspace", text: commandText } : name === "cd" ? { kind: "cd", text: commandText } : { kind: "reload", text: commandText },
+      cursor: result.cursor
+    };
+  }
+  if (name === "resume") {
+    const first = readOptionalNonCommandToken(text, cursor);
+    if (!first.token) {
+      return { command: { kind: "resume", text: "" }, cursor };
+    }
+    const second = readOptionalNonCommandToken(text, first.cursor);
+    return {
+      command: { kind: "resume", text: commandTextFromTokens(second.token ? [first.token, second.token] : [first.token]) },
+      cursor: second.cursor
+    };
+  }
+  if (name === "watch") {
+    const first = readOptionalNonCommandToken(text, cursor);
+    if (!first.token) {
+      return { command: { kind: "watch", text: "" }, cursor };
+    }
+    const second = readOptionalNonCommandToken(text, first.cursor);
+    const third = first.token.value.toLowerCase() === "rm" && !second.token
+      ? { token: undefined, cursor: second.cursor }
+      : readOptionalNonCommandToken(text, second.cursor);
+    const tokens = [first.token, second.token, third.token].filter((token): token is CommandToken => !!token);
+    return { command: { kind: "watch", text: commandTextFromTokens(tokens) }, cursor: third.cursor };
+  }
+  if (name === "activate") {
+    const first = readRequiredTokens(text, cursor, 1);
+    const second = readOptionalNonCommandToken(text, first.cursor);
+    return {
+      command: { kind: "activate", text: commandTextFromTokens(second.token ? [...first.tokens, second.token] : first.tokens) },
+      cursor: second.cursor
+    };
+  }
+  if (name === "pair") {
+    const result = readRequiredTokens(text, cursor, 2);
+    return { command: { kind: "pair", text: commandTextFromTokens(result.tokens) }, cursor: result.cursor };
+  }
+  return { command: { kind: "message", text: text.slice(cursor).trim() }, cursor: text.length };
+}
+
+interface CommandToken {
+  value: string;
+  cursor: number;
+  quoted: boolean;
+}
+
+function readRequiredTokens(text: string, cursor: number, count: number): { tokens: CommandToken[]; cursor: number } {
+  const tokens: CommandToken[] = [];
+  let nextCursor = cursor;
+  for (let index = 0; index < count; index += 1) {
+    const token = readCommandArgumentToken(text, nextCursor);
+    if (!token) {
+      break;
+    }
+    tokens.push(token);
+    nextCursor = token.cursor;
+  }
+  return { tokens, cursor: nextCursor };
+}
+
+function readOptionalNonCommandToken(text: string, cursor: number): { token?: CommandToken; cursor: number } {
+  const token = readCommandArgumentToken(text, cursor);
+  if (!token || (!token.quoted && isKnownSlashCommandToken(token.value))) {
+    return { cursor };
+  }
+  return { token, cursor: token.cursor };
+}
+
+function commandTextFromTokens(tokens: CommandToken[]): string {
+  return tokens.map((token) => token.value).join(" ");
+}
+
+function readCommandToken(text: string, cursor: number): { name: string; end: number } | undefined {
+  if (text[cursor] !== "/") {
+    return undefined;
+  }
+  const match = /^\/([^\s]+)/.exec(text.slice(cursor));
+  if (!match) {
+    return undefined;
+  }
+  return { name: match[1]!.toLowerCase(), end: cursor + match[0]!.length };
+}
+
+function readCommandArgumentToken(text: string, cursor: number): CommandToken | undefined {
+  let nextCursor = skipCommandWhitespace(text, cursor);
+  if (nextCursor >= text.length) {
+    return undefined;
+  }
+  if (text[nextCursor] === "\"") {
+    nextCursor += 1;
+    let value = "";
+    while (nextCursor < text.length) {
+      const char = text[nextCursor]!;
+      if (char === "\\") {
+        const escaped = text[nextCursor + 1];
+        if (escaped !== undefined) {
+          value += escaped;
+          nextCursor += 2;
+          continue;
+        }
+      }
+      if (char === "\"") {
+        return { value, cursor: nextCursor + 1, quoted: true };
+      }
+      value += char;
+      nextCursor += 1;
+    }
+    return { value, cursor: nextCursor, quoted: true };
+  }
+
+  const start = nextCursor;
+  while (nextCursor < text.length && !/\s/.test(text[nextCursor]!)) {
+    nextCursor += 1;
+  }
+  return { value: text.slice(start, nextCursor), cursor: nextCursor, quoted: false };
+}
+
+function skipCommandWhitespace(text: string, cursor: number): number {
+  let nextCursor = cursor;
+  while (nextCursor < text.length && /\s/.test(text[nextCursor]!)) {
+    nextCursor += 1;
+  }
+  return nextCursor;
+}
+
+function normalizeSlashCommandName(name: string): string {
+  if (name === "btw") {
+    return "side";
+  }
+  if (name === "rollback") {
+    return "rewind";
+  }
+  if (name === "twinny") {
+    return "banner";
+  }
+  return name;
+}
+
+function isKnownSlashCommandToken(value: string): boolean {
+  if (!value.startsWith("/")) {
+    return false;
+  }
+  const command = /^\/([^\s]+)/.exec(value)?.[1]?.toLowerCase();
+  return command ? isKnownSlashCommand(command) : false;
+}
+
+function isKnownSlashCommand(command: string): boolean {
+  return (
+    command === "stop" ||
+    command === "next" ||
+    command === "steer" ||
+    command === "status" ||
+    command === "workspace" ||
+    command === "cd" ||
+    command === "model" ||
+    command === "new" ||
+    command === "thread" ||
+    command === "fork" ||
+    command === "resume" ||
+    command === "watch" ||
+    command === "cron" ||
+    command === "help" ||
+    command === "activate" ||
+    command === "pair" ||
+    command === "reload" ||
+    command === "deactivate" ||
+    command === "queue" ||
+    command === "side" ||
+    command === "btw" ||
+    command === "goal" ||
+    command === "plan" ||
+    command === "exit" ||
+    command === "compact" ||
+    command === "rewind" ||
+    command === "rollback" ||
+    command === "logo" ||
+    command === "twinny" ||
+    command === "banner"
+  );
 }
 
 function parseRewindCommand(text: string): { kind: "valid"; numTurns: number } | { kind: "invalid"; message: string } {
@@ -14572,8 +14931,8 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
     "/stop [all|<side_id>] - 停止当前任务并清空待处理消息；可停止全部或指定临时会话",
     "/next - 打断当前任务，并执行队列中的下一条消息",
-    "/steer - 将队列中的下一批消息注入当前任务",
-    "/queue [message] - 不带 message 时开启排队模式；带 message 时将消息加入下一轮队列",
+    "/steer <message> - 将 message 注入当前正在运行的任务；message 可继续解析指令",
+    "/queue [message] - 不带 message 时开启排队模式；带 message 时将消息加入下一轮队列，出队时可继续解析指令",
     "/goal <objective> - 设置并自动实现 Codex goal；运行中再次使用会更新目标",
     "/plan [message] - 开启 plan mode；带 message 时直接以 plan mode 处理",
     "/exit - 退出 plan mode；默认加入下一轮队列",
@@ -14582,10 +14941,10 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/rewind <n> 或 /rollback <n> - 将当前 Codex thread 回滚 n 个 turn；默认加入下一轮队列",
     "/logo - 发送 Twinny logo.png",
     "/twinny 或 /banner - 发送 Twinny banner 卡片",
-    "/thread [message] - 创建新话题",
-    "/fork [message] - 从当前 Codex thread fork 出新话题",
+    "/thread [message] - 创建新话题；message 会在新话题中继续解析指令",
+    "/fork [message] - 从当前 Codex thread fork 出新话题；message 会在新话题中继续解析指令",
     "/watch <lark_doc_url> [owner|all] 或 /watch rm <id|url> - 监听或删除文档 @bot 评论；不带参数查看当前 thread 监听",
-    "/cron [cron exp message|rm id] - 管理当前 conversation 的定时任务"
+    "/cron [cron exp message|rm id] - 管理当前 conversation 的定时任务；触发时 message 可继续解析指令"
   ];
   if (isOwner) {
     lines.push(
@@ -14805,12 +15164,40 @@ function canUpdateActiveGoal(active: ActiveTurn | undefined): active is ActiveTu
   );
 }
 
+function pendingProgramForRecoveredText(
+  text: string,
+  options: { allowSingleCommand?: boolean } = {}
+): ParsedCommandProgram | undefined {
+  const parsed = parseSlashCommand(text);
+  if (parsed.kind === "message") {
+    return undefined;
+  }
+  if (parsed.kind === "queue" && parsed.text.length > 0) {
+    return commandProgramIfContainsCommand(parsed.program ?? parseCommandProgram(parsed.text, { nested: true }));
+  }
+  const program = parseCommandProgram(text);
+  return options.allowSingleCommand ? commandProgramIfContainsCommand(program) : commandProgramIfMultiStep(program);
+}
+
+function commandProgramIfMultiStep(program: ParsedCommandProgram): ParsedCommandProgram | undefined {
+  return program.steps.length > 1 ? program : undefined;
+}
+
+function commandProgramIfContainsCommand(program: ParsedCommandProgram): ParsedCommandProgram | undefined {
+  return programContainsCommand(program) ? program : undefined;
+}
+
+function programContainsCommand(program: ParsedCommandProgram): boolean {
+  return program.steps.some((step) => step.kind !== "message");
+}
+
 function toPendingMessage(
   message: IncomingLarkMessage,
   text: string,
   options: {
     queueBoundary?: boolean;
     control?: PendingMessage["control"];
+    program?: PendingMessage["program"];
     rewindTurns?: number;
     docComment?: PendingDocCommentContext;
     forceQueueWhenActive?: boolean;
@@ -14825,6 +15212,7 @@ function toPendingMessage(
     original: message,
     queueBoundary: options.queueBoundary ?? false,
     control: options.control,
+    program: options.program,
     rewindTurns: options.rewindTurns,
     forceQueueWhenActive: options.forceQueueWhenActive,
     excludeFromParticipants: options.excludeFromParticipants,
@@ -14835,16 +15223,17 @@ function toPendingMessage(
 }
 
 function isUnrecoverableControlMessage(record: LarkMessageRecord, message: PendingMessage): boolean {
-  return record.routeKind === "control_message" && !message.control;
+  return record.routeKind === "control_message" && !message.control && !message.program;
 }
 
 function shouldRecoverPendingControlMessage(record: LarkMessageRecord, message: PendingMessage): boolean {
   return (
-    !!message.control &&
-    (record.status === "queued" ||
-      record.routeKind === "control_message" ||
-      message.control === "compact" ||
-      message.control === "rewind")
+    (!!message.control &&
+      (record.status === "queued" ||
+        record.routeKind === "control_message" ||
+        message.control === "compact" ||
+        message.control === "rewind")) ||
+    (!!message.program && record.status === "queued")
   );
 }
 

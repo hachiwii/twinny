@@ -2484,7 +2484,7 @@ describe("ConversationManager", () => {
     expect(lark.getMessageReadOpenIds).not.toHaveBeenCalled();
   });
 
-  it("recovers queued synthetic messages without parsing slash commands", async () => {
+  it("recovers queued cron messages by parsing slash command payloads", async () => {
     const proxyRecord = larkMessageRecord({
       larkMessageId: "cron_recovered",
       eventId: "cron_message:7:100:cron_recovered",
@@ -2519,12 +2519,12 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
 
     expect(larkMessages.getMessage).not.toHaveBeenCalled();
-    expect(repository.updateCodexThreadMode).not.toHaveBeenCalledWith("group_oc_group", "thread_main", "plan");
+    expect(repository.updateCodexThreadMode).toHaveBeenCalledWith("group_oc_group", "thread_main", "plan");
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         threadId: "thread_main",
-        mode: "default",
-        input: `<cron_message cron_id="7">\n/plan keep this literal\n</cron_message>`
+        mode: "plan",
+        input: `<cron_message cron_id="7">\nkeep this literal\n</cron_message>`
       })
     );
 
@@ -2803,6 +2803,48 @@ describe("ConversationManager", () => {
       });
       turns[0]!.resolve(completed("thread_main", "turn_1"));
       await turns[0]!.promise;
+    } finally {
+      await manager.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
+  it("parses slash commands from cron job messages when they trigger", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-29T00:00:00+08:00"));
+    const { codex, goals } = createDeferredGoalCodex();
+    const { repository } = createRepository(groupConversationRecord({ codexThreadId: "thread_main" }));
+    const lark = createLarkResponder();
+    const job = await repository.createCronJob({
+      conversationKey: "group_oc_group",
+      threadId: "thread_main",
+      cronExpression: "* * * * *",
+      messageText: "/goal refresh weekly metrics",
+      timezone: "Asia/Shanghai",
+      createdByOpenId: "ou_owner"
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    try {
+      await manager.startCronScheduler();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(lark.sendTextToChatId).toHaveBeenCalledWith(
+        "oc_group",
+        `定时任务 #${job.id} 触发：\n\n/goal refresh weekly metrics`,
+        { uuid: expect.stringMatching(UUID_PATTERN) }
+      );
+      await waitForExpect(() => expect(codex.runGoal).toHaveBeenCalledTimes(1));
+      expect(codex.runGoal).toHaveBeenCalledWith(expect.objectContaining({
+        threadId: "thread_main",
+        objective: "refresh weekly metrics"
+      }));
+      expect(codex.startTurn).not.toHaveBeenCalled();
+
+      goals[0]!.resolve(completed("thread_main", "goal_1"));
+      await goals[0]!.promise;
     } finally {
       await manager.shutdown();
       vi.useRealTimers();
@@ -3338,6 +3380,41 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ input: `${wrappedMessage("queued", "m2")}\n${wrappedMessage("second queued", "m3")}` })
+    );
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("executes nested command programs when a /queue message is consumed", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    vi.mocked(repository.updateCodexThreadModelSettings).mockClear();
+    manager.submitIncoming(message("m2", "/queue /model gpt-5.4 xhigh /plan queued plan"));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+
+    expect(repository.updateCodexThreadModelSettings).not.toHaveBeenCalled();
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(repository.updateCodexThreadModelSettings).toHaveBeenCalledWith({
+      codexThreadId: "thread_1",
+      model: "gpt-5.4",
+      effort: "xhigh"
+    });
+    expect(repository.updateCodexThreadMode).toHaveBeenCalledWith("p2p_ou_guest", "thread_1", "plan");
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        threadId: "thread_1",
+        mode: "plan",
+        model: "gpt-5.4",
+        effort: "xhigh",
+        input: wrappedMessage("queued plan", "m2")
+      })
     );
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
@@ -4921,8 +4998,8 @@ describe("ConversationManager", () => {
       "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
       "/stop [all|<side_id>] - 停止当前任务并清空待处理消息；可停止全部或指定临时会话",
       "/next - 打断当前任务，并执行队列中的下一条消息",
-      "/steer - 将队列中的下一批消息注入当前任务",
-      "/queue [message] - 不带 message 时开启排队模式；带 message 时将消息加入下一轮队列",
+      "/steer <message> - 将 message 注入当前正在运行的任务；message 可继续解析指令",
+      "/queue [message] - 不带 message 时开启排队模式；带 message 时将消息加入下一轮队列，出队时可继续解析指令",
       "/goal <objective> - 设置并自动实现 Codex goal；运行中再次使用会更新目标",
       "/plan [message] - 开启 plan mode；带 message 时直接以 plan mode 处理",
       "/exit - 退出 plan mode；默认加入下一轮队列",
@@ -4931,9 +5008,10 @@ describe("ConversationManager", () => {
       "/rewind <n> 或 /rollback <n> - 将当前 Codex thread 回滚 n 个 turn；默认加入下一轮队列",
       "/logo - 发送 Twinny logo.png",
       "/twinny 或 /banner - 发送 Twinny banner 卡片",
-      "/thread [message] - 创建新话题",
-      "/fork [message] - 从当前 Codex thread fork 出新话题",
-      "/watch <lark_doc_url> [owner|all] 或 /watch rm <id|url> - 监听或删除文档 @bot 评论；不带参数查看当前 thread 监听"
+      "/thread [message] - 创建新话题；message 会在新话题中继续解析指令",
+      "/fork [message] - 从当前 Codex thread fork 出新话题；message 会在新话题中继续解析指令",
+      "/watch <lark_doc_url> [owner|all] 或 /watch rm <id|url> - 监听或删除文档 @bot 评论；不带参数查看当前 thread 监听",
+      "/cron [cron exp message|rm id] - 管理当前 conversation 的定时任务；触发时 message 可继续解析指令"
     ]) {
       expect(helpText).toContain(usage);
     }
@@ -4980,6 +5058,32 @@ describe("ConversationManager", () => {
     );
     expect(runtime.reloadProfile).toHaveBeenCalledWith(undefined, { inlineStateKey: "p2p_ou_owner" });
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m_reload"]);
+  });
+
+  it("runs /reload when it is chained after another command without recording twice", async () => {
+    const { repository } = createRepository(ownerConversationRecord());
+    const lark = createLarkResponder();
+    const runtime: ConstructorParameters<typeof ConversationManager>[0]["runtime"] = {
+      reloadProfile: vi.fn(async () => undefined)
+    };
+    const manager = createManager({ repository, lark, runtime });
+
+    manager.submitIncoming(ownerMessage("m_chain_reload", "/model gpt-5.4 high /reload host"));
+
+    await waitForExpect(() => expect(runtime.reloadProfile).toHaveBeenCalledWith("host", {
+      inlineStateKey: "p2p_ou_owner"
+    }));
+    expect(repository.updateCodexThreadModelSettings).toHaveBeenCalledWith({
+      codexThreadId: "thread_1",
+      model: "gpt-5.4",
+      effort: "high"
+    });
+    expect(repository.insertLarkMessage).toHaveBeenCalledTimes(1);
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "m_chain_reload",
+      "已设置当前 thread 后续 turn 模型：gpt-5.4 / high"
+    );
+    expect(lark.replyText).toHaveBeenCalledWith("m_chain_reload", "已 reload profile=host。");
   });
 
   it("replies to /logo with the uploaded logo image key", async () => {
@@ -6159,6 +6263,62 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_thread_plan"]);
   });
 
+  it("treats /queue and /steer inside /thread initial text as ordinary text", async () => {
+    const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
+    const { repository } = createRepository(row);
+    let threadCount = 0;
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: ++threadCount === 1 ? "thread_thread_queue" : "thread_thread_steer" }))
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendCardToChatId)
+      .mockResolvedValueOnce({ messageId: "card_thread_queue", raw: {} })
+      .mockResolvedValueOnce({ messageId: "card_thread_steer", raw: {} });
+    vi.mocked(lark.replyText)
+      .mockResolvedValueOnce({
+        messageId: "reply_thread_queue_intro",
+        raw: { data: { thread_id: "topic_thread_queue" } }
+      })
+      .mockResolvedValueOnce({
+        messageId: "reply_thread_queue",
+        raw: { data: { thread_id: "topic_thread_queue" } }
+      })
+      .mockResolvedValueOnce({
+        messageId: "reply_thread_steer_intro",
+        raw: { data: { thread_id: "topic_thread_steer" } }
+      })
+      .mockResolvedValueOnce({
+        messageId: "reply_thread_steer",
+        raw: { data: { thread_id: "topic_thread_steer" } }
+      });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_thread_queue", "/thread /queue nested text", {
+      senderOpenId: "ou_guest"
+    }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(groupMessage("g_thread_steer", "/thread /steer nested text", {
+      senderOpenId: "ou_guest"
+    }));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    expect(codex.steerTurn).not.toHaveBeenCalled();
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        threadId: "thread_thread_queue",
+        input: wrappedMessage("/queue nested text", "reply_thread_queue", "ou_guest")
+      })
+    );
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        threadId: "thread_thread_steer",
+        input: wrappedMessage("/steer nested text", "reply_thread_steer", "ou_guest")
+      })
+    );
+  });
+
   it("forks the current group Codex thread into a new topic and proxies initial text", async () => {
     const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
@@ -6253,6 +6413,61 @@ describe("ConversationManager", () => {
     expect(forkInput).toEqual(expect.stringContaining(wrappedMessage("try alternate path", "reply_fork_1", "ou_guest")));
     expect(repository.hasUserMessageForCodexThread).toHaveBeenCalledWith("thread_forked", ["reply_fork_1"]);
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_fork"]);
+  });
+
+  it("parses nested slash commands from /fork initial text in the forked topic", async () => {
+    const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      forkThread: vi.fn(async () => ({ threadId: "thread_forked_nested" })),
+      startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
+        await onTurnStarted?.("turn_1");
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: "card_fork_nested",
+      raw: {}
+    });
+    vi.mocked(lark.replyText)
+      .mockResolvedValueOnce({
+        messageId: "reply_fork_nested_intro",
+        raw: { data: { thread_id: "topic_fork_nested" } }
+      })
+      .mockResolvedValueOnce({
+        messageId: "reply_fork_nested",
+        raw: { data: { thread_id: "topic_fork_nested" } }
+      });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_fork_nested", "/fork /model gpt-5.4 xhigh /plan fork plan", {
+      senderOpenId: "ou_guest"
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(lark.replyText).toHaveBeenNthCalledWith(
+      2,
+      "card_fork_nested",
+      "/model gpt-5.4 xhigh /plan fork plan",
+      { replyInThread: true }
+    );
+    expect(repository.updateCodexThreadModelSettings).toHaveBeenCalledWith({
+      codexThreadId: "thread_forked_nested",
+      model: "gpt-5.4",
+      effort: "xhigh"
+    });
+    expect(repository.updateCodexThreadMode).toHaveBeenCalledWith("group_oc_group", "thread_forked_nested", "plan");
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread_forked_nested",
+        mode: "plan",
+        model: "gpt-5.4",
+        effort: "xhigh",
+        input: expect.stringContaining(wrappedMessage("fork plan", "reply_fork_nested", "ou_guest"))
+      })
+    );
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_fork_nested"]);
   });
 
   it("excludes inherited source tokens from the first forked topic message", async () => {
@@ -7571,26 +7786,6 @@ describe("ConversationManager", () => {
 
     turns[0]!.resolve(completed("thread_group_side_1", "turn_1", "interrupted"));
     turns[1]!.resolve(completed("thread_group_side_2", "turn_2", "interrupted"));
-  });
-
-  it("rejects /side nested under /thread or /fork", async () => {
-    const { repository } = createRepository(groupConversationRecord({ profile: "host" }));
-    const codex = createCodex();
-    const lark = createLarkResponder();
-    const manager = createManager({ repository, codex, lark });
-
-    manager.submitIncoming(groupMessage("g_thread_side", "/thread /side no"));
-    await waitForExpect(() =>
-      expect(lark.replyText).toHaveBeenCalledWith("g_thread_side", "side 只能作为最外层指令使用。")
-    );
-
-    manager.submitIncoming(groupMessage("g_fork_side", "/fork /side no"));
-    await waitForExpect(() =>
-      expect(lark.replyText).toHaveBeenCalledWith("g_fork_side", "side 只能作为最外层指令使用。")
-    );
-    expect(codex.startThread).not.toHaveBeenCalled();
-    expect(codex.forkThread).not.toHaveBeenCalled();
-    expect(codex.startTurn).not.toHaveBeenCalled();
   });
 
   it("rebuilds /thread text replies with send-side at mentions", async () => {

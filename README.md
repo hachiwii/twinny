@@ -118,22 +118,32 @@ card.action.trigger
 | `/new` | 停止当前任务、清空队列，并新开 Codex thread。 |
 | `/stop [all\|<side_id>]` | 停止当前任务并清空队列。用 `all` 同时停止 side turn，或传 side id 停止指定 side turn。 |
 | `/next` | 打断当前任务，并开始执行下一条排队消息。 |
-| `/steer` | 把队列中的下一批消息注入当前正在运行的 Codex turn。 |
-| `/queue [message]` | 不带 message 时让你的下一条消息排队；带 message 时把该消息加入下一轮。 |
+| `/steer <message>` | 把 `message` 注入当前正在运行的 Codex turn；`message` 可继续解析指令。 |
+| `/queue [message]` | 不带 message 时让你的下一条消息排队；带 message 时把该消息加入下一轮，出队时可继续解析指令。 |
 | `/goal <objective>` | 设置并运行 Codex goal。goal 运行中再次发送 `/goal` 会更新目标。 |
 | `/plan [message]` | 进入 plan mode。带 message 时直接用 plan mode 处理该消息。 |
 | `/exit` | 在下一轮队列控制步骤中退出 plan mode。 |
 | `/side <message>` 或 `/btw <message>` | 基于当前 Codex thread 发起临时 side conversation。 |
 | `/compact` | 在下一轮队列控制步骤中压缩当前 Codex thread 上下文。 |
-| `/thread [message]` | 创建一个新的 Lark 话题，并绑定新的 Codex thread。带 `message` 时会把消息代理到新话题内。 |
-| `/fork [message]` | 从当前 Codex thread fork 出一个新的 Lark 话题。带 `message` 时会把消息代理到新话题内。 |
+| `/thread [message]` | 创建一个新的 Lark 话题，并绑定新的 Codex thread。带 `message` 时会把消息代理到新话题内继续解析。 |
+| `/fork [message]` | 从当前 Codex thread fork 出一个新的 Lark 话题。带 `message` 时会把消息代理到新话题内继续解析。 |
 | `/watch <lark_doc_url> [owner\|all]` 或 `/watch rm <id\|url>` | 监听飞书/Lark 文档中的 @bot 评论，并把评论路由到当前 thread。不带参数时列出当前 thread 的监听和 id；`owner` 只响应 owner，`all` 响应所有人；`rm` 删除当前 thread 的监听。 |
 | `/workspace [dir\|num]` | 仅 owner 可用。查看或设置当前 conversation workspace，并同步主会话 thread。可传绝对路径、`~/...`，或最近 workspace 列表中的序号。 |
 | `/cd [dir\|num]` | 仅 owner 可用。查看或设置当前非主 thread workspace。可传绝对路径、`~/...`，或最近 workspace 列表中的序号。 |
 | `/resume [thread_id\|num] [session\|local]` | 仅 owner 可用。列出本机可恢复 Codex thread，或把指定 thread 恢复为 Twinny 话题；默认使用原会话 cwd，`local` 使用当前会话 cwd。 |
 | `/model <model> <effort>` | 设置当前 thread 后续 turn 使用的模型和推理强度。 |
+| `/cron <cron exp> <message>`、`/cron`、`/cron rm <id>` | 管理当前 conversation 的定时任务；触发时 `message` 可继续解析指令。 |
 | `/logo` | 发送 Twinny logo 图片。 |
 | `/twinny` 或 `/banner` | 发送 Twinny banner 卡片。 |
+
+指令按从左到右的语法解析器执行。固定参数只消费自己的参数，例如 `/model <model> <effort>` 后面仍可继续跟下一条指令；`/plan`、`/goal`、`/side` 会把后续文本作为原始消息，不再解析其中的指令；`/queue`、`/steer`、`/thread`、`/fork` 和 `/cron <cron exp> <message>` 的 `message` 会在实际执行时递归解析。`/queue` 和 `/steer` 只能作为最外层第一条指令，放在 `/thread`、`/fork` 或其他指令尾部时会作为普通文本。
+
+例如：
+
+```text
+/queue /model gpt-5.5 xhigh /plan xxx
+/cron * * * * * /goal xxx
+```
 
 ### 群管理指令
 
