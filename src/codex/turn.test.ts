@@ -437,7 +437,7 @@ describe("handleTurnServerRequest", () => {
           callId: "call_add_cron",
           namespace: "twinny",
           tool: "add_cron",
-          arguments: { cron_exp: "*/5 * * * *", msg: "ping", thread_id: "thread_target", as_goal: true }
+          arguments: { cron_exp: "*/5 * * * *", msg: "ping", thread_id: "thread_target" }
         }
       }
     );
@@ -453,8 +453,7 @@ describe("handleTurnServerRequest", () => {
       cronExpression: "*/5 * * * *",
       message: "ping",
       targetThreadId: "thread_target",
-      asGoal: true,
-      rawArguments: { cron_exp: "*/5 * * * *", msg: "ping", thread_id: "thread_target", as_goal: true }
+      rawArguments: { cron_exp: "*/5 * * * *", msg: "ping", thread_id: "thread_target" }
     });
     expect(protocol.respondMock).toHaveBeenCalledWith("req-add-cron", {
       success: true,
@@ -823,37 +822,6 @@ describe("handleTurnServerRequest", () => {
       contentItems: [{
         type: "inputText",
         text: "Invalid add_cron arguments: cron_exp and msg are required."
-      }]
-    });
-
-    handleTurnServerRequest(
-      protocol as unknown as CodexProtocolClient,
-      {
-        threadId: "thread_123",
-        text: "work",
-        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
-        onDynamicToolCall
-      },
-      {
-        id: "req-add-cron-as-goal",
-        method: "item/tool/call",
-        params: {
-          threadId: "thread_123",
-          turnId: "turn_1",
-          callId: "call_add_cron_goal",
-          namespace: "twinny",
-          tool: "add_cron",
-          arguments: { cron_exp: "*/5 * * * *", msg: "ping", as_goal: "true" }
-        }
-      }
-    );
-
-    expect(onDynamicToolCall).not.toHaveBeenCalled();
-    expect(protocol.respondMock).toHaveBeenCalledWith("req-add-cron-as-goal", {
-      success: false,
-      contentItems: [{
-        type: "inputText",
-        text: "Invalid add_cron arguments: as_goal must be a boolean."
       }]
     });
 

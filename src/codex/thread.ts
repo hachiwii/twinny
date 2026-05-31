@@ -200,7 +200,7 @@ export const ADD_CRON_TOOL_SPEC: DynamicToolSpec = {
   namespace: "twinny",
   name: "add_cron",
   description:
-    "Create a cron job in the current conversation. The job sends msg to the current thread by default, or to thread_id when provided. Cron expressions use the local timezone. Set as_goal only when the user explicitly asks to set the scheduled message as a goal or target.",
+    "Create a cron job in the current conversation. The job sends msg to the current thread by default, or to thread_id when provided. Cron expressions use the local timezone.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -208,13 +208,7 @@ export const ADD_CRON_TOOL_SPEC: DynamicToolSpec = {
     properties: {
       cron_exp: { type: "string", minLength: 1 },
       msg: { type: "string", minLength: 1 },
-      thread_id: { type: "string", minLength: 1 },
-      as_goal: {
-        type: "boolean",
-        default: false,
-        description:
-          "When true, Twinny stores the cron message with a /goal prefix so the scheduled run is handled as a goal. Only set this when the user explicitly asks for a goal or target."
-      }
+      thread_id: { type: "string", minLength: 1 }
     }
   },
   deferLoading: false

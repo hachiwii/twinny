@@ -1766,12 +1766,10 @@ export class ConversationManager {
     }
 
     const larkText = formatCronMessageProxyText(job.id, job.messageText);
-    const cronGoal = cronGoalCommandForMessageText(job.messageText);
     const result = await this.injectSyntheticMessage({
       conversation,
       target,
-      codexText: cronGoal?.text ?? job.messageText,
-      recordText: job.messageText,
+      codexText: job.messageText,
       larkText,
       eventIdPrefix: `cron_message:${job.id}:${dueAt}`,
       uuid: createLarkUuid("twinny-cron", String(job.id), String(dueAt)),
@@ -1785,8 +1783,7 @@ export class ConversationManager {
         createTime,
         larkThreadId
       }),
-      syntheticEnvelope: { kind: "cron_message", cronId: job.id },
-      control: cronGoal?.control
+      syntheticEnvelope: { kind: "cron_message", cronId: job.id }
     });
     await this.options.repository.updateCronJobLastRun(job.id, dueAt, result.larkMessageId);
   }
@@ -2014,8 +2011,7 @@ export class ConversationManager {
     const text = record.status === "queued" && (normalized.resources?.length ?? 0) > 0 ? normalized.text : record.text;
     const syntheticEnvelope = await this.syntheticEnvelopeForRecoveredRecord(record, raw);
     const isSyntheticMessage = syntheticEnvelope !== undefined;
-    const syntheticRoute = recoveredSyntheticMessageRoute(syntheticEnvelope, text);
-    return toPendingMessage(normalized, syntheticRoute.text, {
+    return toPendingMessage(normalized, text, {
       queueBoundary:
         isSyntheticMessage ||
         parsed.kind === "compact" ||
@@ -2025,7 +2021,7 @@ export class ConversationManager {
           (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit")),
       control:
         isSyntheticMessage
-          ? syntheticRoute.control
+          ? undefined
           : parsed.kind === "goal"
           ? "goal_set"
           : parsed.kind === "plan"
@@ -2099,8 +2095,7 @@ export class ConversationManager {
     const text = (record.status === "queued" && (normalized.resources?.length ?? 0) > 0) ? normalized.text : record.text;
     const syntheticEnvelope = await this.syntheticEnvelopeForRecoveredRecord(record, raw);
     const isSyntheticMessage = syntheticEnvelope !== undefined;
-    const syntheticRoute = recoveredSyntheticMessageRoute(syntheticEnvelope, text);
-    return toPendingMessage(normalized, syntheticRoute.text, {
+    return toPendingMessage(normalized, text, {
       queueBoundary:
         isSyntheticMessage ||
         parsed.kind === "compact" ||
@@ -2110,7 +2105,7 @@ export class ConversationManager {
           (parsed.kind === "queue" || parsed.kind === "plan" || parsed.kind === "exit")),
       control:
         isSyntheticMessage
-          ? syntheticRoute.control
+          ? undefined
           : parsed.kind === "goal"
           ? "goal_set"
           : parsed.kind === "plan"
@@ -8343,14 +8338,12 @@ export class ConversationManager {
     conversation: ConversationRecord;
     target: CodexThreadRecord;
     codexText: string;
-    recordText?: string;
     larkText: string;
     eventIdPrefix: string;
     uuid: string;
     routeKind: "thread_message" | "cron_message";
     rawContext: (input: { messageId: string; createTime: number; larkThreadId?: string }) => Record<string, unknown>;
     syntheticEnvelope: SyntheticMessageEnvelope;
-    control?: PendingMessage["control"];
     deliveryMode?: SyntheticMessageDeliveryMode;
   }): Promise<{ larkMessageId: string; status: LarkMessageStatus }> {
     const targetContext = createMessageContextForThread(input.conversation, input.target);
@@ -8389,7 +8382,6 @@ export class ConversationManager {
     };
     const pending = toPendingMessage(proxyMessage, input.codexText, {
       queueBoundary: true,
-      control: input.control,
       forceQueueWhenActive: input.deliveryMode === undefined || input.deliveryMode === "queue",
       excludeFromParticipants: true,
       skipQueuedRefresh: true,
@@ -8415,7 +8407,7 @@ export class ConversationManager {
         codexThreadId: input.target.codexThreadId,
         routeKind: input.routeKind,
         status: initialStatus,
-        text: input.recordText ?? input.codexText,
+        text: input.codexText,
         larkCreateTime: proxyMessage.createTime,
         rawEventJson: safeJsonStringify(proxyMessage.raw)
       });
@@ -8552,11 +8544,10 @@ export class ConversationManager {
     }
     const timezone = localTimezone();
     const cronExpression = request.cronExpression.trim();
-    const simplifiedMessageText = simplifyCronMessageText(request.message);
-    if (!simplifiedMessageText) {
+    const messageText = simplifyCronMessageText(request.message);
+    if (!messageText) {
       return dynamicToolErrorResponse("CRON_MESSAGE_EMPTY", "Cron message is empty after simplification.");
     }
-    const messageText = request.asGoal ? ensureCronGoalMessageText(simplifiedMessageText) : simplifiedMessageText;
     const validation = validateCronExpression(cronExpression, timezone);
     if (validation.kind === "invalid") {
       return dynamicToolErrorResponse("CRON_EXPRESSION_INVALID", validation.message);
@@ -13139,15 +13130,6 @@ function parseCronCommand(text: string, timezone: string):
   return { kind: "create", cronExpression: split.cronExpression, messageText };
 }
 
-function cronGoalCommandForMessageText(text: string): { control: "goal_set"; text: string } | undefined {
-  const parsed = parseSlashCommand(text);
-  return parsed.kind === "goal" ? { control: "goal_set", text: parsed.text } : undefined;
-}
-
-function ensureCronGoalMessageText(messageText: string): string {
-  return cronGoalCommandForMessageText(messageText) ? messageText : `/goal ${messageText}`;
-}
-
 function splitCronExpressionAndMessage(
   text: string,
   timezone: string
@@ -14821,17 +14803,6 @@ function canUpdateActiveGoal(active: ActiveTurn | undefined): active is ActiveTu
     active.completedStatus === undefined &&
     active.goal.completed !== true
   );
-}
-
-function recoveredSyntheticMessageRoute(
-  envelope: SyntheticMessageEnvelope | undefined,
-  text: string
-): { text: string; control?: PendingMessage["control"] } {
-  if (envelope?.kind !== "cron_message") {
-    return { text };
-  }
-  const cronGoal = cronGoalCommandForMessageText(text);
-  return cronGoal ? { text: cronGoal.text, control: cronGoal.control } : { text };
 }
 
 function toPendingMessage(

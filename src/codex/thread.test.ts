@@ -93,21 +93,6 @@ describe("codex thread payloads", () => {
         })
       })
     });
-    const addCronTool = buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools.find((candidate) =>
-      candidate.namespace === "twinny" && candidate.name === "add_cron"
-    );
-    expect(addCronTool).toMatchObject({
-      description: expect.stringContaining("Set as_goal only when the user explicitly asks"),
-      inputSchema: expect.objectContaining({
-        properties: expect.objectContaining({
-          as_goal: expect.objectContaining({
-            type: "boolean",
-            default: false,
-            description: expect.stringContaining("Only set this when the user explicitly asks")
-          })
-        })
-      })
-    });
     const watchTool = buildThreadStartParams({ cwd: "/tmp/twinny/workspaces/p2p_ou_1" }).dynamicTools.find((candidate) =>
       candidate.namespace === "twinny" && candidate.name === "watch_lark_url"
     );

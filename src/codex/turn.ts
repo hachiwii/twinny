@@ -185,7 +185,6 @@ export interface CodexAddCronToolRequest extends CodexDynamicToolRequestBase {
   cronExpression: string;
   message: string;
   targetThreadId?: string;
-  asGoal: boolean;
 }
 
 export interface CodexListCronToolRequest extends CodexDynamicToolRequestBase {
@@ -1243,9 +1242,6 @@ function parseTwinnyDynamicToolRequest(
       const cronExpression = trimmedString(params.arguments.cron_exp);
       const message = trimmedString(params.arguments.msg);
       const targetThreadId = trimmedString(params.arguments.thread_id);
-      if (params.arguments.as_goal !== undefined && typeof params.arguments.as_goal !== "boolean") {
-        return "Invalid add_cron arguments: as_goal must be a boolean.";
-      }
       if (!cronExpression || !message) {
         return "Invalid add_cron arguments: cron_exp and msg are required.";
       }
@@ -1258,7 +1254,6 @@ function parseTwinnyDynamicToolRequest(
         cronExpression,
         message,
         ...(targetThreadId ? { targetThreadId } : {}),
-        asGoal: params.arguments.as_goal === true,
         rawArguments: params.arguments
       };
     }
