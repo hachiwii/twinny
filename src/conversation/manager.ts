@@ -4835,7 +4835,7 @@ export class ConversationManager {
       messageTokenUsage: emptyLarkMessageTokenUsageSnapshot(),
       generatedImagePaths: [],
       processMessages: [],
-      reaction: await this.addReactionBestEffort(message.messageId),
+      reaction: null,
       card,
       pendingSteers: [],
       pendingSideFollowups: [],
@@ -4876,6 +4876,7 @@ export class ConversationManager {
       generatedImagePaths: []
     });
 
+    this.addReactionForActiveBestEffort(state, active, message.messageId);
     this.runSideActiveTurn(state, active, () => this.formatPendingMessageForThreadCodexInput(active.threadId, message));
     await this.createAgentCardBestEffort(state, active);
   }
@@ -5763,7 +5764,7 @@ export class ConversationManager {
     if (!patched) {
       this.scheduleSideFollowupCardPatchRetry(state, active);
     }
-    active.reaction = await this.addReactionBestEffort(session.sourceMessage.messageId);
+    this.addReactionForActiveBestEffort(state, active, session.sourceMessage.messageId);
     this.startAgentCardTimer(state, active);
     this.runSideActiveTurn(state, active, () => formatSideFollowupInputForCodex(input, "question"));
   }
@@ -9377,8 +9378,12 @@ export class ConversationManager {
     if (!isSideTurnCurrent(state, active) || active.cancelRequested) {
       return false;
     }
+    if (active.sideId !== undefined) {
+      state.sideTurns.delete(active.sideId);
+    }
     active.cancelRequested = true;
     active.pendingSteers = [];
+    active.pendingSideFollowups = [];
     await this.clearReactionBestEffort(active);
     await this.markMessagesInterruptedBestEffort([...active.processingMessageIds]);
     await this.interruptAgentCardBestEffort(state, active);
@@ -9389,6 +9394,8 @@ export class ConversationManager {
       await this.interruptActiveTurnBestEffort(active);
     }
     this.rememberThreadWaitSnapshot(active);
+    this.stopAgentCardTimer(active);
+    await this.unsubscribeSideThreadBestEffort(active);
     this.notifyThreadIdleWatchersBestEffort(active.threadId);
     return true;
   }
@@ -10661,6 +10668,25 @@ export class ConversationManager {
       this.log.warn({ error, messageId }, "failed to add typing reaction");
       return null;
     }
+  }
+
+  private addReactionForActiveBestEffort(state: ConversationState, active: ActiveTurn, messageId: string): void {
+    void this.addReactionBestEffort(messageId).then(async (reaction) => {
+      if (!reaction) {
+        return;
+      }
+      if (isActiveTurnCurrent(state, active) && !active.cancelRequested) {
+        const previous = active.reaction;
+        active.reaction = reaction;
+        if (previous && previous !== reaction) {
+          await this.removeReactionBestEffort(previous);
+        }
+        return;
+      }
+      await this.removeReactionBestEffort(reaction);
+    }).catch((error) => {
+      this.log.warn({ error, messageId }, "failed to attach typing reaction");
+    });
   }
 
   private async addQueuedReactionBestEffort(message: PendingMessage): Promise<void> {
