@@ -7484,7 +7484,7 @@ describe("ConversationManager", () => {
     );
   });
 
-  it("steers processing side sessions from the side card input without recording a new Lark message", async () => {
+  it("omits processing side input and still handles stale processing side submissions", async () => {
     const { repository } = createRepository(conversationRecord());
     const { codex, turns } = createDeferredCodex();
     vi.mocked(codex.forkThread).mockResolvedValue({ threadId: "thread_1_side" });
@@ -7494,9 +7494,14 @@ describe("ConversationManager", () => {
     manager.submitIncoming(message("m_side", "/side inspect"));
     await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
     const workingCard = vi.mocked(lark.replyCard).mock.calls[0]![1];
-    const actionValue = findTwinnyCardActionValue(workingCard, "side_input_submit");
-    const inputId = actionValue.inputId;
-    expect(inputId).toBe("1:1");
+    expect(JSON.stringify(workingCard)).not.toContain("side_input_submit");
+    const actionValue = {
+      twinny: true,
+      action: "side_input_submit",
+      stateKey: "p2p_ou_guest",
+      sideSessionId: "1",
+      inputId: "1:1"
+    };
 
     await manager.submitCardAction({
       eventId: "event_side_input",
@@ -7518,9 +7523,9 @@ describe("ConversationManager", () => {
       }))
     );
     const patched = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1] as Record<string, unknown>;
-    expect(JSON.stringify(patched)).toContain("[收到补充说明] include the edge case");
-    const updatedActionValue = findTwinnyCardActionValue(patched, "side_input_submit");
-    expect(updatedActionValue.inputId).toBe("1:2");
+    const serializedPatched = JSON.stringify(patched);
+    expect(serializedPatched).toContain("[收到补充说明] include the edge case");
+    expect(serializedPatched).not.toContain("side_input_submit");
 
     const duplicateResponse = await manager.submitCardAction({
       eventId: "event_side_input_duplicate",
@@ -7578,7 +7583,14 @@ describe("ConversationManager", () => {
     const inputId = actionValue.inputId;
     expect(inputId).toBe("1:1");
 
-    await manager.submitCardAction({
+    vi.mocked(lark.patchCard).mockClear();
+    const patchGate = deferred<void>();
+    vi.mocked(lark.patchCard).mockImplementationOnce(async (messageId) => {
+      await patchGate.promise;
+      return { messageId };
+    });
+    let callbackReturned = false;
+    const actionPromise = Promise.resolve(manager.submitCardAction({
       eventId: "event_side_question",
       operatorOpenId: "ou_guest",
       openMessageId: "card_m_side_1",
@@ -7587,7 +7599,14 @@ describe("ConversationManager", () => {
       actionValue,
       inputValue: "why this result?",
       raw: { event_id: "event_side_question" }
+    })).then(() => {
+      callbackReturned = true;
     });
+
+    await waitForExpect(() => expect(lark.patchCard).toHaveBeenCalledTimes(1));
+    expect(callbackReturned).toBe(false);
+    patchGate.resolve(undefined);
+    await actionPromise;
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
     expect(codex.forkThread).toHaveBeenCalledTimes(1);
@@ -7601,10 +7620,8 @@ describe("ConversationManager", () => {
     expect(serializedProcessing).toContain("first final");
     expect(serializedProcessing).not.toContain("[上次回复]");
     expect(serializedProcessing).toContain("[收到追问] why this result?");
-    expect(serializedProcessing).toContain("追加补充说明");
-    const updatedActionValue = findTwinnyCardActionValue(processingCard, "side_input_submit");
-    expect(updatedActionValue.inputId).toBe("1:2");
-    expect(updatedActionValue.inputId).not.toBe(inputId);
+    expect(serializedProcessing).not.toContain("side_input_submit");
+    expect(serializedProcessing).not.toContain("追加补充说明");
 
     const duplicateResponse = await manager.submitCardAction({
       eventId: "event_side_question_duplicate",

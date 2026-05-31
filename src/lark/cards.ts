@@ -931,7 +931,7 @@ function bodyElements(options: RenderTwinnyAgentCardOptions, parsedPlan?: Parsed
   }
 
   const elements = workingProcessElements(workingMessagesWithError(options));
-  if (options.status !== "failed") {
+  if (options.status === "interrupted") {
     elements.push(...sideFollowupInputElements(options));
   }
   elements.push(elapsedElement(options.elapsedMs, options.runtimeStats, options.mode));

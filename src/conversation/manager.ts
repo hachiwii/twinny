@@ -11943,7 +11943,7 @@ export class ConversationManager {
     if (active.kind !== "side" || !active.sideSessionId || status === "failed") {
       return undefined;
     }
-    if (status !== "working" && status !== "finished" && status !== "interrupted") {
+    if (status !== "finished" && status !== "interrupted") {
       return undefined;
     }
     const session = state.sideSessions.get(active.sideSessionId);
@@ -11953,7 +11953,7 @@ export class ConversationManager {
     return {
       sideSessionId: session.id,
       inputId: session.inputId,
-      placeholder: status === "working" ? "追加补充说明" : "继续追问"
+      placeholder: "继续追问"
     };
   }
 

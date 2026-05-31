@@ -309,7 +309,7 @@ describe("renderTwinnyAgentCard", () => {
     });
   });
 
-  it("renders side follow-up input without an extra submit button", () => {
+  it("does not render side follow-up input on working cards", () => {
     const card = renderTwinnyAgentCard(createOptions({
       status: "working",
       hideQueueControls: true,
@@ -320,25 +320,7 @@ describe("renderTwinnyAgentCard", () => {
       }
     }));
 
-    expect(findElementByTag(card, "input")).toMatchObject({
-      name: SIDE_FOLLOWUP_INPUT_FORM_NAME,
-      placeholder: {
-        tag: "plain_text",
-        content: "追加补充说明"
-      },
-      behaviors: [
-        expect.objectContaining({
-          type: "callback",
-          value: {
-            twinny: true,
-            action: "side_input_submit",
-            stateKey: "p2p_ou_guest",
-            sideSessionId: "side_1",
-            inputId: "side_1:1"
-          }
-        })
-      ]
-    });
+    expect(findElementByTag(card, "input")).toBeUndefined();
     expect(findButton(card, "提交")).toBeUndefined();
   });
 
@@ -362,11 +344,25 @@ describe("renderTwinnyAgentCard", () => {
     expect(inputIndex).toBeGreaterThanOrEqual(0);
     expect(statusIndex).toBeGreaterThan(inputIndex);
     expect(bodyElements[inputIndex]).toMatchObject({
+      name: SIDE_FOLLOWUP_INPUT_FORM_NAME,
       placeholder: {
         tag: "plain_text",
         content: "继续追问"
-      }
+      },
+      behaviors: [
+        expect.objectContaining({
+          type: "callback",
+          value: {
+            twinny: true,
+            action: "side_input_submit",
+            stateKey: "p2p_ou_guest",
+            sideSessionId: "side_1",
+            inputId: "side_1:1"
+          }
+        })
+      ]
     });
+    expect(findButton(card, "提交")).toBeUndefined();
   });
 
   it("does not render side follow-up input on failed cards", () => {
