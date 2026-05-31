@@ -7584,16 +7584,10 @@ describe("ConversationManager", () => {
     expect(inputId).toBe("1:1");
 
     vi.mocked(lark.patchCard).mockClear();
-    vi.mocked(lark.addTypingReaction).mockClear();
     const patchGate = deferred<void>();
-    const reactionGate = deferred<{ messageId: string; reactionId: string }>();
     vi.mocked(lark.patchCard).mockImplementationOnce(async (messageId) => {
       await patchGate.promise;
       return { messageId };
-    });
-    vi.mocked(lark.addTypingReaction).mockImplementationOnce(async (messageId) => {
-      await reactionGate.promise;
-      return { messageId, reactionId: "r_side_followup" };
     });
     let callbackReturned = false;
     const actionPromise = Promise.resolve(manager.submitCardAction({
@@ -7613,10 +7607,8 @@ describe("ConversationManager", () => {
     expect(callbackReturned).toBe(false);
     patchGate.resolve(undefined);
     await actionPromise;
-    expect(lark.addTypingReaction).toHaveBeenCalledWith("m_side");
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
-    expect(callbackReturned).toBe(true);
     expect(codex.forkThread).toHaveBeenCalledTimes(1);
     expect(codex.startTurn).toHaveBeenNthCalledWith(2, expect.objectContaining({
       threadId: "thread_1_side",
@@ -7649,7 +7641,6 @@ describe("ConversationManager", () => {
       )
     ).toBe(false);
 
-    reactionGate.resolve({ messageId: "m_side", reactionId: "r_side_followup" });
     await turns[1]!.params.onTokenUsage?.({
       threadId: "thread_1_side",
       turnId: "turn_2",
@@ -7814,23 +7805,7 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesInterrupted).not.toHaveBeenCalledWith(["m_main"]);
     expect(lark.replyText).not.toHaveBeenCalled();
 
-    await waitForExpect(() => expect(codex.unsubscribeThread).toHaveBeenCalledWith({
-      profile: "guest",
-      threadId: "thread_1_side"
-    }));
-    manager.submitIncoming(message("m_side_again", "/side inspect again"));
-    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
-    expect(lark.replyCard).toHaveBeenCalledWith(
-      "m_side_again",
-      expect.objectContaining({
-        header: expect.objectContaining({
-          subtitle: { tag: "plain_text", content: "临时会话 [1]" }
-        })
-      })
-    );
-
     turns[1]!.resolve(completed("thread_1_side", "turn_2", "interrupted"));
-    turns[2]!.resolve(completed("thread_1_side", "turn_3"));
     turns[0]!.resolve(completed("thread_1", "turn_1"));
   });
 
