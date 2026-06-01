@@ -320,6 +320,11 @@ export interface LarkDocWatcherRecord {
   updatedAt: number;
 }
 
+export interface CodexRenderedLarkMessage {
+  attributes: Array<[string, string]>;
+  content: string;
+}
+
 export interface IncomingLarkMessage {
   eventId: string;
   messageId: string;
@@ -336,6 +341,7 @@ export interface IncomingLarkMessage {
   mentions?: IncomingLarkMention[];
   resources?: IncomingLarkMessageResource[];
   downloadedFiles?: DownloadedLarkFile[];
+  replyToMessageForCodex?: CodexRenderedLarkMessage;
   rawForCodex?: boolean;
   text: string;
   createTime?: number;

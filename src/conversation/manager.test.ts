@@ -6230,6 +6230,58 @@ describe("ConversationManager", () => {
     }));
   });
 
+  it("includes the root message as reply-to context for the first received message in an untracked Lark thread", async () => {
+    const row = groupConversationRecord({ profile: "host", responseMode: "all" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_backfilled" })),
+      startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
+        await onTurnStarted?.("turn_1");
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockResolvedValueOnce({
+      messageId: "card_backfilled",
+      raw: { data: { thread_id: "topic_manual" } }
+    });
+    const larkMessages: LarkMessageReader = {
+      getMessage: vi.fn(async () => ({
+        message_id: "topic_manual_root",
+        msg_type: "text",
+        create_time: "111",
+        sender: { id: "ou_owner", id_type: "open_id", sender_type: "user" },
+        body: { content: JSON.stringify({ text: "root topic" }) }
+      }))
+    };
+    const larkUsers: LarkUserDirectory = {
+      getUserNameByOpenId: vi.fn(async (openId) => openId === "ou_owner" ? "Owner" : "Guest User")
+    };
+    const manager = createManager({ repository, codex, lark, larkMessages, larkUsers });
+
+    manager.submitIncoming(groupMessage("g_manual_topic", "manual topic message", {
+      chatType: "topic_group",
+      larkThreadId: "topic_manual",
+      larkRootMessageId: "topic_manual_root",
+      senderOpenId: "ou_guest"
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(larkMessages.getMessage).toHaveBeenCalledWith("topic_manual_root");
+    expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread_backfilled",
+      input:
+        '<lark_message lark_message_id="g_manual_topic" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+        "<reply_to>\n" +
+        '<lark_message lark_message_id="topic_manual_root" timestamp="111" message_type="text" sender_id="ou_owner" sender_ouid="ou_owner" sender_id_type="open_id" sender_type="user" sender_name="Owner">\n' +
+        "root topic\n" +
+        "</lark_message>\n" +
+        "</reply_to>\n" +
+        "manual topic message\n" +
+        "</lark_message>"
+    }));
+  });
+
   it("unescapes normalized post markdown when proxying /thread initial text", async () => {
     const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);
@@ -8902,6 +8954,44 @@ describe("ConversationManager", () => {
         input:
           '<lark_message lark_message_id="m1" timestamp="1700000000123" sender_ouid="ou_guest" sender_name="Guest &quot;User&quot;">\n' +
           'hello <codex> & "friend"\n' +
+          "</lark_message>"
+      })
+    );
+  });
+
+  it("includes reply-to context for non-thread replies", async () => {
+    const codex = createCodex();
+    const larkUsers: LarkUserDirectory = {
+      getUserNameByOpenId: vi.fn(async (openId) => openId === "ou_parent" ? "Parent User" : "Guest User")
+    };
+    const larkMessages: LarkMessageReader = {
+      getMessage: vi.fn(async () => ({
+        message_id: "parent_msg",
+        msg_type: "text",
+        create_time: "111",
+        sender: { id: "ou_parent", id_type: "open_id", sender_type: "user" },
+        body: { content: JSON.stringify({ text: "parent text" }) }
+      }))
+    };
+    const manager = createManager({ codex, larkUsers, larkMessages });
+
+    manager.submitIncoming(message("m_reply", "follow up", {
+      larkParentMessageId: "parent_msg",
+      larkRootMessageId: "root_msg"
+    }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(larkMessages.getMessage).toHaveBeenCalledWith("parent_msg");
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input:
+          '<lark_message lark_message_id="m_reply" timestamp="1234" sender_ouid="ou_guest" sender_name="Guest User">\n' +
+          "<reply_to>\n" +
+          '<lark_message lark_message_id="parent_msg" timestamp="111" message_type="text" sender_id="ou_parent" sender_ouid="ou_parent" sender_id_type="open_id" sender_type="user" sender_name="Parent User">\n' +
+          "parent text\n" +
+          "</lark_message>\n" +
+          "</reply_to>\n" +
+          "follow up\n" +
           "</lark_message>"
       })
     );

@@ -2566,8 +2566,69 @@ export class ConversationManager {
   }
 
   private async prepareIncomingMessageForCodex(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
+    await this.prepareReplyToMessageForCodex(context, message);
     await this.expandMergeForwardMessage(context, message);
     await this.prepareMessageResources(context.conversationKey, message);
+  }
+
+  private async prepareReplyToMessageForCodex(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
+    const targetMessageId = await this.replyToMessageIdForCodex(context, message);
+    if (!targetMessageId) {
+      return;
+    }
+    const reader = this.options.larkMessages;
+    if (!reader) {
+      this.log.warn(
+        { messageId: message.messageId, targetMessageId },
+        "Lark message reader cannot fetch reply-to message context"
+      );
+      return;
+    }
+
+    try {
+      const raw = await reader.getMessage(targetMessageId);
+      const item = larkMessageItemForCodex(raw, targetMessageId);
+      if (!item) {
+        this.log.warn(
+          { messageId: message.messageId, targetMessageId },
+          "reply-to message could not be rendered for Codex"
+        );
+        return;
+      }
+      message.replyToMessageForCodex = await this.renderLarkMessageItemForCodex(context, targetMessageId, item);
+    } catch (error) {
+      const details = { error, messageId: message.messageId, targetMessageId };
+      if (isLarkMessageUnavailableError(error)) {
+        this.log.info(details, "reply-to message context is unavailable; continuing without it");
+      } else {
+        this.log.warn(details, "failed to fetch reply-to message context; continuing without it");
+      }
+    }
+  }
+
+  private async replyToMessageIdForCodex(context: MessageContext, message: IncomingLarkMessage): Promise<string | undefined> {
+    if (!context.larkThreadId) {
+      return firstDifferentMessageId(message.messageId, message.larkParentMessageId, message.larkRootMessageId);
+    }
+
+    const rootMessageId = firstDifferentMessageId(message.messageId, message.larkRootMessageId);
+    if (!rootMessageId) {
+      return undefined;
+    }
+
+    try {
+      const existingThread = await this.options.repository.getCodexThreadByConversationAndLarkThread(
+        context.conversationKey,
+        context.larkThreadId
+      );
+      return existingThread ? undefined : rootMessageId;
+    } catch (error) {
+      this.log.warn(
+        { error, messageId: message.messageId, larkThreadId: context.larkThreadId },
+        "failed to check existing Lark thread binding before fetching root message context"
+      );
+      return undefined;
+    }
   }
 
   private async expandMergeForwardMessage(context: MessageContext, message: IncomingLarkMessage): Promise<void> {
@@ -2601,7 +2662,7 @@ export class ConversationManager {
           continue;
         }
 
-        const rendered = await this.renderMergeForwardChildMessage(context, message.messageId, child);
+        const rendered = await this.renderLarkMessageItemForCodex(context, message.messageId, child);
         const childContentBytes = byteLength(rendered.content);
         if (childContentBytes > MERGE_FORWARD_CHILD_CONTENT_MAX_BYTES) {
           renderedChildren.push(formatMergeForwardChildMessage(rendered.attributes, "", {
@@ -2657,9 +2718,9 @@ export class ConversationManager {
     return source;
   }
 
-  private async renderMergeForwardChildMessage(
+  private async renderLarkMessageItemForCodex(
     context: MessageContext,
-    mergeForwardMessageId: string,
+    resourceMessageId: string,
     item: Record<string, unknown>
   ): Promise<{ attributes: Array<[string, string]>; content: string }> {
     const messageId = nonEmptyString(stringRecordValue(item, "message_id")) ?? "unknown";
@@ -2707,7 +2768,7 @@ export class ConversationManager {
     let text = normalized.text ?? "";
     const resources = mergeForwardResourcesForCodex(normalized.resources);
     if (resources.length > 0) {
-      const downloadedFiles = await this.downloadMergeForwardChildResources(context, mergeForwardMessageId, messageId, resources);
+      const downloadedFiles = await this.downloadMergeForwardChildResources(context, resourceMessageId, messageId, resources);
       text = formatMessageTextWithDownloadedFiles(text, downloadedFiles, messageType);
     }
     return { attributes, content: text };
@@ -15653,7 +15714,13 @@ function formatPendingMessageForCodex(message: PendingMessage): string {
     .map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`)
     .join(" ");
   const text = message.original.rawForCodex ? compactRawMessageTextForCodex(message.original.raw, message.text) : message.text;
-  return `<lark_message ${renderedAttributes}>\n${text}\n</lark_message>`;
+  const replyTo = message.original.replyToMessageForCodex
+    ? `<reply_to>\n${formatMergeForwardChildMessage(
+        message.original.replyToMessageForCodex.attributes,
+        message.original.replyToMessageForCodex.content
+      )}\n</reply_to>\n`
+    : "";
+  return `<lark_message ${renderedAttributes}>\n${replyTo}${text}\n</lark_message>`;
 }
 
 function compactRawMessageTextForCodex(raw: unknown, fallbackText: string): string {
@@ -15877,6 +15944,58 @@ function firstChildChatId(children: Record<string, unknown>[]): string | undefin
     }
   }
   return undefined;
+}
+
+function firstDifferentMessageId(currentMessageId: string, ...candidates: Array<string | undefined>): string | undefined {
+  for (const candidate of candidates) {
+    const messageId = nonEmptyString(candidate);
+    if (messageId && messageId !== currentMessageId) {
+      return messageId;
+    }
+  }
+  return undefined;
+}
+
+function larkMessageItemForCodex(raw: unknown, fallbackMessageId: string): Record<string, unknown> | undefined {
+  if (!isRecord(raw)) {
+    return undefined;
+  }
+  if (nonEmptyString(stringRecordValue(raw, "message_id"))) {
+    return raw;
+  }
+
+  const event = isRecord(raw.event) ? raw.event : raw;
+  const message = isRecord(event.message) ? event.message : undefined;
+  if (!message) {
+    return undefined;
+  }
+
+  const sender = isRecord(event.sender) ? event.sender : {};
+  const senderId = isRecord(sender.sender_id) ? sender.sender_id : {};
+  const senderOpenId = nonEmptyString(stringRecordValue(senderId, "open_id"));
+  const renderedSender = senderOpenId
+    ? {
+        id: senderOpenId,
+        id_type: "open_id",
+        sender_type: nonEmptyString(stringRecordValue(sender, "sender_type")) ?? "user"
+      }
+    : undefined;
+
+  return {
+    message_id: nonEmptyString(stringRecordValue(message, "message_id")) ?? fallbackMessageId,
+    msg_type:
+      nonEmptyString(stringRecordValue(message, "message_type")) ??
+      nonEmptyString(stringRecordValue(message, "msg_type")) ??
+      "unknown",
+    create_time:
+      nonEmptyString(stringRecordValue(message, "create_time")) ??
+      nonEmptyString(stringRecordValue(event, "create_time")) ??
+      "",
+    ...(renderedSender ? { sender: renderedSender } : {}),
+    body: {
+      content: message.content
+    }
+  };
 }
 
 function stringRecordValue(record: Record<string, unknown>, key: string): string | undefined {
