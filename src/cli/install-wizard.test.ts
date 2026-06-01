@@ -24,7 +24,6 @@ import {
   detectLarkCliBinary,
   ensureLarkCliProfile,
   installCodexCli,
-  installLarkCli,
   installWizardIntro,
   installWizardLarkBrand,
   isNpxEntrypoint,
@@ -280,15 +279,12 @@ describe("install wizard helpers", () => {
     expect(result).toBe(path.join(home, "runner", "node_modules", ".bin", "twinny.cmd"));
   });
 
-  it("detects and installs lark-cli with non-TTY commands", async () => {
+  it("detects missing lark-cli without installing it", async () => {
     const detectRunner = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 1 }));
-    const installRunner = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
 
     await expect(detectLarkCliBinary({ runCommand: detectRunner as unknown as LarkCliDetectRunner })).resolves.toBeUndefined();
-    await installLarkCli({ runCommand: installRunner as unknown as LarkCliDetectRunner });
 
     expect(detectRunner).toHaveBeenCalledWith("which", ["lark-cli"], expect.objectContaining({ reject: false }));
-    expect(installRunner).toHaveBeenCalledWith("npx", ["@larksuite/cli@latest", "install"], expect.objectContaining({ stdio: "pipe" }));
   });
 
   it("parses lark-cli profiles and persists an existing bot profile name", async () => {
@@ -472,6 +468,46 @@ describe("install wizard helpers", () => {
         lark_cli_profile_add_result: "succeeded"
       }),
       expect.objectContaining({ codexVersion: "0.133.0" })
+    );
+  });
+
+  it("skips lark-cli setup and suggests manual install when lark-cli is missing", async () => {
+    const home = await tempHome();
+    const { output, runCommand, telemetry } = await runAgentInstallForSecretStorage({
+      home,
+      platform: "linux"
+    });
+
+    expect(runCommand).toHaveBeenCalledWith("which", ["lark-cli"], expect.objectContaining({ reject: false }));
+    expect(runCommand.mock.calls.some(([command]) => command === "npx")).toBe(false);
+    expect(runCommand.mock.calls.some(([command, args]) =>
+      typeof command === "string" &&
+      command.includes("lark-cli") &&
+      Array.isArray(args) &&
+      args[0] === "profile"
+    )).toBe(false);
+    expect(output.events()).toContainEqual({
+      type: "progress",
+      step: "lark_cli",
+      status: "skipped",
+      detail: {
+        reason: "missing",
+        recommendation: "建议安装 lark-cli (https://github.com/larksuite/cli) 以获得更好体验"
+      }
+    });
+    await expect(fs.readFile(path.join(home, "lark-cli-profile.json"), "utf8")).rejects.toThrow();
+    expect(telemetry.capture).toHaveBeenCalledWith(
+      "twinny_install",
+      expect.objectContaining({
+        install_mode: "agent",
+        install_status: "completed",
+        lark_cli_detect_result: "missing",
+        lark_cli_install_choice: "not_prompted",
+        lark_cli_install_result: "not_attempted",
+        lark_cli_profile_list_result: "skipped",
+        lark_cli_profile_persisted: false
+      }),
+      expect.any(Object)
     );
   });
 
@@ -710,8 +746,13 @@ async function runAgentInstallForSecretStorage(input: {
   env?: NodeJS.ProcessEnv;
   secretStore?: NonNullable<Parameters<typeof runInstallAgent>[0]>["secretStore"];
   installManagedService?: NonNullable<Parameters<typeof runInstallAgent>[0]>["installManagedService"];
-}): Promise<void> {
+}): Promise<{
+  output: ReturnType<typeof createNdjsonOutput>;
+  runCommand: ReturnType<typeof vi.fn>;
+  telemetry: TelemetryClient;
+}> {
   const output = createNdjsonOutput();
+  const telemetry = createTelemetry();
   const runCommand = vi.fn(async (command: string, args: string[]) => {
     if ((command === "which" || command === "where") && args[0] === "codex") {
       return { stdout: "/usr/local/bin/codex\n", stderr: "", exitCode: 0 };
@@ -734,7 +775,7 @@ async function runAgentInstallForSecretStorage(input: {
     disableKeychain: input.disableKeychain,
     systemDaemon: input.systemDaemon,
     assertGuiLaunchAgentAvailable: async () => undefined,
-    telemetry: createTelemetry(),
+    telemetry,
     stdout: output.writer,
     homeRandom: "b".repeat(32),
     runCommand: runCommand as unknown as CodexCommandRunner,
@@ -745,7 +786,6 @@ async function runAgentInstallForSecretStorage(input: {
     startManagedService: vi.fn(async () => undefined) as NonNullable<Parameters<typeof runInstallAgent>[0]>["startManagedService"],
     uploadBundledAssets: vi.fn(async () => undefined) as NonNullable<Parameters<typeof runInstallAgent>[0]>["uploadBundledAssets"],
     validateBotCredentials: vi.fn(async () => undefined),
-    installLarkCli: "never",
     start: false,
     auth: {
       requestAppRegistration: vi.fn(async () => ({
@@ -777,4 +817,5 @@ async function runAgentInstallForSecretStorage(input: {
       getBrowserUserInfo: vi.fn(async () => ({ openId: "ou_owner", name: "Owner" }))
     }
   });
+  return { output, runCommand, telemetry };
 }

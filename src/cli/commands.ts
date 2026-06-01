@@ -41,7 +41,6 @@ export async function runCli(argv: string[]): Promise<void> {
     .option("--env-mode <mode>", "Environment import mode: default, manual, or none.", "default")
     .option("--env-key <key>", "Environment key to import when --env-mode manual is used.", collectOption, [])
     .option("--install-codex <mode>", "Codex install behavior: auto or never.", "auto")
-    .option("--install-lark-cli <mode>", "lark-cli install behavior: auto or never.", "auto")
     .option("--start <value>", "Whether to start Twinny after installing: true or false.", "true")
     .option("--disable-keychain", "Store the Lark app secret in auth.json instead of macOS Keychain.")
     .option("--system-daemon", "Install the macOS service as a sudo-managed system LaunchDaemon.")
@@ -49,7 +48,6 @@ export async function runCli(argv: string[]): Promise<void> {
       envMode: string;
       envKey: string[];
       installCodex: string;
-      installLarkCli: string;
       start: string;
       disableKeychain?: boolean;
       systemDaemon?: boolean;
@@ -60,7 +58,6 @@ export async function runCli(argv: string[]): Promise<void> {
         envMode: parseChoice(options.envMode, ["default", "manual", "none"], "--env-mode"),
         envKeys: options.envKey,
         installCodex: parseChoice(options.installCodex, ["auto", "never"], "--install-codex"),
-        installLarkCli: parseChoice(options.installLarkCli, ["auto", "never"], "--install-lark-cli"),
         start: parseBooleanOption(options.start, "--start"),
         disableKeychain: Boolean(options.disableKeychain || parentOptions.disableKeychain),
         systemDaemon: Boolean(options.systemDaemon || parentOptions.systemDaemon)

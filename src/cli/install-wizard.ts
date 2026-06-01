@@ -52,6 +52,7 @@ import type { LarkBrand, ServiceConfig, TelemetryConfig, TwinnyConfig } from "..
 const minimumCodexVersion = "0.130.0";
 export const installWizardIntro = "🐰 Twinny install";
 export const installWizardLarkBrand: LarkBrand = "feishu";
+const larkCliInstallRecommendation = "建议安装 lark-cli (https://github.com/larksuite/cli) 以获得更好体验";
 
 const sensitiveEnvPattern = /(?:SECRET|TOKEN|PASSWORD|PASS|PWD|API_KEY|ACCESS_KEY|PRIVATE_KEY|COOKIE|SESSION|CREDENTIAL|AUTH)/i;
 const terminalEnvKeys = new Set([
@@ -174,7 +175,6 @@ export interface RunInstallAgentOptions {
   envMode?: ServiceEnvironmentChoice;
   envKeys?: string[];
   installCodex?: InstallAgentAutoPreference;
-  installLarkCli?: InstallAgentAutoPreference;
   start?: boolean;
   runCommand?: CommandRunner;
   secretStore?: SecretStore;
@@ -229,6 +229,7 @@ export interface LarkCliProfileSetupResult {
   profileName?: string;
   profilePersisted: boolean;
   profileStatus?: "existing" | "created";
+  skipReason?: "missing";
 }
 
 export interface ServiceEnvironmentStats {
@@ -488,7 +489,6 @@ export async function runInstallAgent(options: RunInstallAgentOptions = {}): Pro
   const finalizeResult = createInitialFinalizeInstallResult();
   const events = new InstallAgentEventWriter(options.stdout ?? process.stdout);
   const installCodex = options.installCodex ?? "auto";
-  const installLarkCli = options.installLarkCli ?? "auto";
   const envMode = options.envMode ?? "default";
   const envKeys = options.envKeys ?? [];
   let telemetry = options.telemetry;
@@ -601,7 +601,6 @@ export async function runInstallAgent(options: RunInstallAgentOptions = {}): Pro
       telemetry: installTelemetry,
       secretStore: options.secretStore,
       interactive: false,
-      larkCliInstallPreference: installLarkCli,
       runCommand: options.runCommand,
       resolveServiceEntrypoint: options.resolveServiceEntrypoint,
       installManagedService: options.installManagedService,
@@ -1522,7 +1521,6 @@ async function finalizeInstall(input: {
   telemetry: InstallTelemetryState;
   secretStore?: SecretStore;
   interactive?: boolean;
-  larkCliInstallPreference?: InstallAgentAutoPreference;
   runCommand?: CommandRunner;
   resolveServiceEntrypoint?: (home: string) => Promise<string>;
   installManagedService?: InstallManagedServiceFn;
@@ -1613,12 +1611,17 @@ async function finalizeInstall(input: {
       config: input.config,
       appSecret: input.appSecret,
       telemetry: input.telemetry,
-      installPreference: input.larkCliInstallPreference ?? "auto",
       runCommand: input.runCommand,
       platform
     });
   input.result.larkCliProfilePersisted = larkCliSetup.profilePersisted;
-  input.onProgress?.("lark_cli", larkCliSetup.profilePersisted ? "completed" : "skipped");
+  input.onProgress?.(
+    "lark_cli",
+    larkCliSetup.profilePersisted ? "completed" : "skipped",
+    larkCliSetup.skipReason === "missing"
+      ? { reason: "missing", recommendation: larkCliInstallRecommendation }
+      : undefined
+  );
 }
 
 async function uploadBundledAssets(
@@ -1646,26 +1649,11 @@ async function promptLarkCliProfileSetup(
   telemetry: InstallTelemetryState,
   options: { platform?: NodeJS.Platform } = {}
 ): Promise<LarkCliProfileSetupResult> {
-  let binary = await detectLarkCliBinary({ telemetry, platform: options.platform });
+  const binary = await detectLarkCliBinary({ telemetry, platform: options.platform });
   if (!binary) {
-    const shouldInstall = await cancelable(
-      p.confirm({
-        message: "未检测到 lark-cli。是否自动安装 lark-cli？",
-        initialValue: true
-      })
-    );
-    if (!shouldInstall) {
-      telemetry.larkCliInstallChoice = "declined";
-      telemetry.larkCliProfileListResult = "skipped";
-      p.log.info("已跳过 lark-cli 配置");
-      return { profilePersisted: false };
-    }
-    telemetry.larkCliInstallChoice = "accepted";
-    await installLarkCli({ telemetry });
-    binary = await detectLarkCliBinary({ telemetry, platform: options.platform });
-    if (!binary) {
-      throw new Error("lark-cli install completed, but lark-cli was not found in PATH");
-    }
+    telemetry.larkCliProfileListResult = "skipped";
+    p.log.warn(`未检测到 lark-cli。${larkCliInstallRecommendation}`);
+    return { profilePersisted: false, skipReason: "missing" };
   } else {
     p.log.success(`lark-cli 已安装：${binary}`);
   }
@@ -1694,23 +1682,13 @@ async function setupLarkCliProfileForAgent(input: {
   config: TwinnyConfig;
   appSecret: string;
   telemetry: InstallTelemetryState;
-  installPreference: InstallAgentAutoPreference;
   runCommand?: CommandRunner;
   platform?: NodeJS.Platform;
 }): Promise<LarkCliProfileSetupResult> {
-  let binary = await detectLarkCliBinary({ telemetry: input.telemetry, runCommand: input.runCommand, platform: input.platform });
+  const binary = await detectLarkCliBinary({ telemetry: input.telemetry, runCommand: input.runCommand, platform: input.platform });
   if (!binary) {
-    if (input.installPreference === "never") {
-      input.telemetry.larkCliInstallChoice = "declined";
-      input.telemetry.larkCliProfileListResult = "skipped";
-      return { profilePersisted: false };
-    }
-    input.telemetry.larkCliInstallChoice = "accepted";
-    await installLarkCli({ telemetry: input.telemetry, runCommand: input.runCommand, interactive: false });
-    binary = await detectLarkCliBinary({ telemetry: input.telemetry, runCommand: input.runCommand, platform: input.platform });
-    if (!binary) {
-      throw new Error("lark-cli install completed, but lark-cli was not found in PATH");
-    }
+    input.telemetry.larkCliProfileListResult = "skipped";
+    return { profilePersisted: false, skipReason: "missing" };
   }
 
   return ensureLarkCliProfile({
@@ -1754,25 +1732,6 @@ function configWithLarkAppSecret(config: TwinnyConfig, appSecret: string): Twinn
       larkAppSecret: appSecret
     }
   };
-}
-
-export async function installLarkCli(options: {
-  runCommand?: CommandRunner;
-  telemetry?: InstallTelemetryState;
-  interactive?: boolean;
-} = {}): Promise<void> {
-  const s = options.interactive === false ? undefined : p.spinner();
-  s?.start("安装 lark-cli");
-  try {
-    await (options.runCommand ?? execa)("npx", ["@larksuite/cli@latest", "install"], { stdio: "pipe" });
-    options.telemetry && (options.telemetry.larkCliInstallResult = "succeeded");
-    s?.stop("lark-cli 已安装");
-  } catch (error) {
-    options.telemetry && (options.telemetry.larkCliInstallResult = "failed");
-    s?.error("lark-cli 安装失败");
-    const output = childProcessErrorOutput(error);
-    throw new Error(output ? `failed to install lark-cli:\n${output}` : "failed to install lark-cli", { cause: error });
-  }
 }
 
 export interface LarkCliProfileListItem {
