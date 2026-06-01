@@ -1242,8 +1242,24 @@ describe("ConversationManager", () => {
     expect(settled).toBe(false);
 
     const lines = Array.from({ length: 105 }, (_, index) => `line ${index + 1}`);
+    const rawUsage = {
+      tokenUsage: {
+        total: {
+          totalTokens: 42,
+          inputTokens: 30,
+          cachedInputTokens: 12,
+          outputTokens: 12,
+          reasoningOutputTokens: 4
+        },
+        last: {
+          totalTokens: 9
+        }
+      },
+      modelContextWindow: 100_000
+    };
     await turns[0]!.params.onAgentMessage?.({ id: "agent_process", text: lines.join("\n"), phase: "commentary" });
     await turns[0]!.params.onAgentMessage?.({ id: "agent_final", text: "final from target", phase: "final_answer" });
+    await turns[0]!.params.onTokenUsage?.({ threadId: "thread_topic", turnId: "turn_1", totalTokens: 42, raw: rawUsage });
     turns[0]!.resolve({ ...completed("thread_topic", "turn_1"), text: "fallback final" });
 
     const payload = dynamicToolPayload(await waitPromise);
@@ -1255,7 +1271,16 @@ describe("ConversationManager", () => {
         status: "idle",
         turn_id: "turn_1",
         final_message: "final from target",
-        omitted_process_lines: 5
+        omitted_process_lines: 5,
+        thread_token_usage: {
+          total_tokens: 42,
+          input_tokens: 30,
+          cached_input_tokens: 12,
+          output_tokens: 12,
+          reasoning_output_tokens: 4,
+          context_tokens: 9,
+          context_window: 100_000
+        }
       }]
     });
     expect(payload.threads[0].process_tail).toContain("前面省略 5 行工作过程。");
@@ -1275,7 +1300,14 @@ describe("ConversationManager", () => {
           codexThreadId: "thread_topic",
           conversationKey: "group_oc_group",
           category: "thread",
-          larkThreadId: "topic_1"
+          larkThreadId: "topic_1",
+          inputTokens: 20,
+          cachedInputTokens: 6,
+          outputTokens: 8,
+          reasoningOutputTokens: 3,
+          totalTokens: 28,
+          contextTokens: 8,
+          contextWindow: 100_000
         })
       ]
     });
@@ -1328,7 +1360,14 @@ describe("ConversationManager", () => {
           codexThreadId: "thread_topic",
           conversationKey: "group_oc_group",
           category: "thread",
-          larkThreadId: "topic_1"
+          larkThreadId: "topic_1",
+          inputTokens: 20,
+          cachedInputTokens: 6,
+          outputTokens: 8,
+          reasoningOutputTokens: 3,
+          totalTokens: 28,
+          contextTokens: 8,
+          contextWindow: 100_000
         })
       ]
     });
@@ -1359,7 +1398,16 @@ describe("ConversationManager", () => {
         status: "idle",
         turn_id: null,
         process_tail: "工作内容缓存已丢失，无法显示该 thread 的工作过程。",
-        omitted_process_lines: 0
+        omitted_process_lines: 0,
+        thread_token_usage: {
+          total_tokens: 28,
+          input_tokens: 20,
+          cached_input_tokens: 6,
+          output_tokens: 8,
+          reasoning_output_tokens: 3,
+          context_tokens: 8,
+          context_window: 100_000
+        }
       }]
     });
     expect(payload).not.toHaveProperty("error");
@@ -1497,6 +1545,26 @@ describe("ConversationManager", () => {
     manager.submitIncoming(groupMessage("topic_a_msg", "target a", { chatType: "topic_group", larkThreadId: "topic_a" }));
     manager.submitIncoming(groupMessage("topic_b_msg", "target b", { chatType: "topic_group", larkThreadId: "topic_b" }));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    await turns[0]!.params.onTokenUsage?.({
+      threadId: "thread_topic_a",
+      turnId: "turn_1",
+      totalTokens: 18,
+      raw: {
+        tokenUsage: {
+          total: {
+            totalTokens: 18,
+            inputTokens: 12,
+            cachedInputTokens: 4,
+            outputTokens: 6,
+            reasoningOutputTokens: 2
+          },
+          last: {
+            totalTokens: 7
+          }
+        },
+        modelContextWindow: 100_000
+      }
+    });
     await turns[1]!.params.onAgentMessage?.({ id: "agent_process", text: "still working", phase: "commentary" });
     manager.submitIncoming(groupMessage("main_msg", "main work"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
@@ -1523,7 +1591,16 @@ describe("ConversationManager", () => {
           thread_id: "thread_topic_a",
           outcome: "timeout",
           status: "working",
-          turn_id: "turn_1"
+          turn_id: "turn_1",
+          thread_token_usage: {
+            total_tokens: 18,
+            input_tokens: 12,
+            cached_input_tokens: 4,
+            output_tokens: 6,
+            reasoning_output_tokens: 2,
+            context_tokens: 7,
+            context_window: 100_000
+          }
         },
         {
           ok: false,

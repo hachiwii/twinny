@@ -1311,6 +1311,7 @@ interface ThreadWaitSnapshot {
   finalMessage?: string;
   processTail: string;
   omittedProcessLines: number;
+  threadTokenUsage: ThreadTokenUsageSnapshot;
   interruptedReason?: "interrupted" | "failed";
   updatedAt: number;
 }
@@ -8275,7 +8276,7 @@ export class ConversationManager {
           continue;
         }
         if (await this.threadIsIdleWithoutWaitSnapshot(targetThreadId)) {
-          snapshots.set(targetThreadId, this.missingWorkContentWaitSnapshot(targetThreadId));
+          snapshots.set(targetThreadId, await this.missingWorkContentWaitSnapshot(targetThreadId));
           continue;
         }
         pendingThreadIds.push(targetThreadId);
@@ -8358,6 +8359,7 @@ export class ConversationManager {
       turn_id: active?.turnId ?? null,
       process_tail: process.text,
       omitted_process_lines: process.omitted,
+      thread_token_usage: threadTokenUsageResponse(active?.threadTokenUsage ?? emptyThreadTokenUsageSnapshot()),
       updated_at: new Date(Date.now()).toISOString()
     };
   }
@@ -8374,17 +8376,19 @@ export class ConversationManager {
       turn_id: active?.turnId ?? null,
       process_tail: process.text,
       omitted_process_lines: process.omitted,
+      thread_token_usage: threadTokenUsageResponse(active?.threadTokenUsage ?? emptyThreadTokenUsageSnapshot()),
       updated_at: new Date(Date.now()).toISOString()
     };
   }
 
-  private missingWorkContentWaitSnapshot(threadId: string): ThreadWaitSnapshot {
+  private async missingWorkContentWaitSnapshot(threadId: string): Promise<ThreadWaitSnapshot> {
     return {
       threadId,
       outcome: "unknown",
       status: "idle",
       processTail: MISSING_THREAD_WORK_CONTENT,
       omittedProcessLines: 0,
+      threadTokenUsage: await this.readThreadTokenUsageBestEffort(threadId),
       updatedAt: Date.now()
     };
   }
@@ -9146,6 +9150,7 @@ export class ConversationManager {
       finalMessage: interrupted ? undefined : active.finalAgentMessageText ?? active.resultText,
       processTail: process.text,
       omittedProcessLines: process.omitted,
+      threadTokenUsage: active.threadTokenUsage,
       interruptedReason: interrupted ? active.completedStatus === "failed" || active.resultError ? "failed" : "interrupted" : undefined,
       updatedAt: Date.now()
     });
@@ -13963,8 +13968,21 @@ function waitSnapshotResponse(snapshot: ThreadWaitSnapshot, waitedMs: number): R
     ...(snapshot.outcome === "completed" ? { final_message: snapshot.finalMessage ?? "" } : {}),
     process_tail: snapshot.processTail,
     omitted_process_lines: snapshot.omittedProcessLines,
+    thread_token_usage: threadTokenUsageResponse(snapshot.threadTokenUsage),
     ...(snapshot.interruptedReason ? { interrupted_reason: snapshot.interruptedReason } : {}),
     updated_at: new Date(snapshot.updatedAt).toISOString()
+  };
+}
+
+function threadTokenUsageResponse(usage: ThreadTokenUsageSnapshot): Record<string, number> {
+  return {
+    total_tokens: usage.totalTokens,
+    input_tokens: usage.inputTokens,
+    cached_input_tokens: usage.cachedInputTokens,
+    output_tokens: usage.outputTokens,
+    reasoning_output_tokens: usage.reasoningOutputTokens,
+    context_tokens: usage.contextTokens,
+    context_window: usage.contextWindow
   };
 }
 
