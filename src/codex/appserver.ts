@@ -220,9 +220,17 @@ export class CodexAppServer extends EventEmitter {
     });
   }
 
-  async startThread(cwd: string, options: { developerInstructions?: string } = {}): Promise<ThreadStartResponse> {
+  async startThread(
+    cwd: string,
+    options: { developerInstructions?: string; model?: string; effort?: string } = {}
+  ): Promise<ThreadStartResponse> {
     await this.prepareThreadWorkspace(cwd);
-    return startCodexThread(this.protocol, { cwd, developerInstructions: options.developerInstructions });
+    return startCodexThread(this.protocol, {
+      cwd,
+      developerInstructions: options.developerInstructions,
+      model: options.model,
+      effort: options.effort
+    });
   }
 
   async resumeThread(threadId: string, cwd: string): Promise<ThreadResumeResponse> {

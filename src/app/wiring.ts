@@ -735,13 +735,17 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool) {
     startThread: async ({
       profile,
       cwd,
-      developerInstructions
+      developerInstructions,
+      model,
+      effort
     }: {
       profile: ProfileName;
       cwd: string;
       developerInstructions?: string;
+      model?: string;
+      effort?: string;
     }) => {
-      const response = await pool.get(profile).startThread(cwd, { developerInstructions });
+      const response = await pool.get(profile).startThread(cwd, { developerInstructions, model, effort });
       return { threadId: response.thread.id };
     },
     resumeThread: async ({ profile, threadId, cwd }: { profile: ProfileName; threadId: string; cwd: string }) => {

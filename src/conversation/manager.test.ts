@@ -465,6 +465,60 @@ describe("ConversationManager", () => {
     await waitForDelay();
   });
 
+  it("keeps effort optional on /model and updates effort with /effort", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_1",
+          conversationKey: "p2p_ou_guest",
+          model: "gpt-5.3",
+          effort: "xhigh"
+        })
+      ]
+    });
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m_model_optional", "/model gpt-5.4"));
+
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadModelSettings).toHaveBeenCalledWith({
+        codexThreadId: "thread_1",
+        model: "gpt-5.4",
+        effort: "xhigh"
+      })
+    );
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "m_model_optional",
+      "已设置当前 thread 后续 turn 模型：gpt-5.4 / xhigh"
+    );
+
+    manager.submitIncoming(message("m_effort", "/effort high"));
+
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadModelSettings).toHaveBeenLastCalledWith({
+        codexThreadId: "thread_1",
+        model: "gpt-5.4",
+        effort: "high"
+      })
+    );
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "m_effort",
+      "已设置当前 thread 后续 turn effort：gpt-5.4 / high"
+    );
+
+    manager.submitIncoming(message("m1", "hello"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(turns[0]!.params).toMatchObject({
+      model: "gpt-5.4",
+      effort: "high"
+    });
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForDelay();
+  });
+
   it("lists cached workspaces and selects one with /workspace", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-manager-workspace-"));
     try {
@@ -5073,6 +5127,8 @@ describe("ConversationManager", () => {
       "/help - 查看可用指令和使用说明",
       "/status - 查看当前会话、Codex thread 和 token 用量",
       "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
+      "/model <model> [effort] - 设置当前 thread 后续 turn 的模型；effort 可省略",
+      "/effort <effort> - 设置当前 thread 后续 turn 的 effort",
       "/stop [all|<side_id>] - 停止当前任务并清空待处理消息；可停止全部或指定临时会话",
       "/next - 打断当前任务，并执行队列中的下一条消息",
       "/steer <message> - 将 message 注入当前正在运行的任务；message 可继续解析指令",
@@ -5929,12 +5985,12 @@ describe("ConversationManager", () => {
     }));
 
     await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
-    expect(codex.startThread).toHaveBeenCalledWith({
+    expect(codex.startThread).toHaveBeenCalledWith(expect.objectContaining({
       profile: "host",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
       approvalPolicy: "never",
       developerInstructions: expect.stringContaining("Twinny Lark Context")
-    });
+    }));
     expect(vi.mocked(codex.startThread).mock.calls[0]![0].developerInstructions).toContain(
       "The current device owner is Owner, whose Feishu/Lark open_id is ou_owner."
     );
@@ -5999,12 +6055,12 @@ describe("ConversationManager", () => {
     manager.submitIncoming(groupMessage("g_thread", "/thread", { senderOpenId: "ou_guest" }));
 
     await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
-    expect(codex.startThread).toHaveBeenCalledWith({
+    expect(codex.startThread).toHaveBeenCalledWith(expect.objectContaining({
       profile: "host",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
       approvalPolicy: "never",
       developerInstructions: expect.stringContaining("Twinny Lark Context")
-    });
+    }));
     expect(vi.mocked(codex.startThread).mock.calls[0]![0].developerInstructions).toContain(
       "The current Twinny conversation key is group_oc_group. The current conversation type is group_chat."
     );
@@ -6037,6 +6093,51 @@ describe("ConversationManager", () => {
     );
     expect(codex.startTurn).not.toHaveBeenCalled();
     expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["g_thread"]);
+  });
+
+  it("inherits the current thread workspace and model settings when creating /thread topics", async () => {
+    const inheritedWorkspace = "/tmp/twinny/workspaces/group_oc_group/current-topic";
+    const row = groupConversationRecord({
+      profile: "host",
+      responseMode: "all_at",
+      workspace: inheritedWorkspace
+    });
+    const { repository } = createRepository(row, {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_group",
+          conversationKey: "group_oc_group",
+          workspace: inheritedWorkspace,
+          profile: "host",
+          model: "gpt-5.6",
+          effort: "xhigh"
+        })
+      ]
+    });
+    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_inherited" })) });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_inherited_intro",
+      raw: { data: { thread_id: "topic_thread_inherited" } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("g_thread_inherit", "/thread", { senderOpenId: "ou_guest" }));
+
+    await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledTimes(1));
+    expect(codex.startThread).toHaveBeenCalledWith(expect.objectContaining({
+      profile: "host",
+      cwd: inheritedWorkspace,
+      model: "gpt-5.6",
+      effort: "xhigh"
+    }));
+    expect(repository.getCodexThreadById("thread_inherited")).toMatchObject({
+      codexThreadId: "thread_inherited",
+      workspace: inheritedWorkspace,
+      parentCodexThreadId: "thread_group",
+      model: "gpt-5.6",
+      effort: "xhigh"
+    });
   });
 
   it("starts /thread initial text from the bot in-thread reply without resuming an empty card thread", async () => {
@@ -6450,7 +6551,18 @@ describe("ConversationManager", () => {
 
   it("forks the current group Codex thread into a new topic and proxies initial text", async () => {
     const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
-    const { repository } = createRepository(row);
+    const { repository } = createRepository(row, {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_group",
+          conversationKey: "group_oc_group",
+          workspace: "/tmp/twinny/workspaces/group_oc_group",
+          profile: "host",
+          model: "gpt-5.6",
+          effort: "high"
+        })
+      ]
+    });
     const codex = createCodex({
       forkThread: vi.fn(async () => ({ threadId: "thread_forked" })),
       startTurn: vi.fn(async ({ threadId, onTurnStarted }) => {
@@ -6484,6 +6596,8 @@ describe("ConversationManager", () => {
       threadId: "thread_group",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
       approvalPolicy: "never",
+      model: "gpt-5.6",
+      effort: "high",
       developerInstructions: expect.stringContaining(
         "The current Twinny conversation key is group_oc_group. The current conversation type is group_chat."
       )
@@ -6520,7 +6634,9 @@ describe("ConversationManager", () => {
       parentCodexThreadId: "thread_group",
       createMethod: "fork",
       createRequestText: "try alternate path",
-      codexThreadHasRollout: true
+      codexThreadHasRollout: true,
+      model: "gpt-5.6",
+      effort: "high"
     });
     expect(repository.insertLarkMessage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -7312,6 +7428,8 @@ describe("ConversationManager", () => {
           conversationKey: "group_oc_group",
           larkThreadId: "topic_source",
           profile: "host",
+          model: "gpt-5.7",
+          effort: "xhigh",
           codexThreadHasRollout: true
         })
       ]
@@ -7351,6 +7469,8 @@ describe("ConversationManager", () => {
       threadId: "thread_topic_source",
       cwd: "/tmp/twinny/workspaces/group_oc_group",
       approvalPolicy: "never",
+      model: "gpt-5.7",
+      effort: "xhigh",
       developerInstructions: expect.stringContaining(
         "The current Twinny conversation key is group_oc_group. The current conversation type is group_chat."
       )
@@ -7371,7 +7491,9 @@ describe("ConversationManager", () => {
     expect(repository.getCodexThreadById("thread_topic_fork")).toMatchObject({
       larkThreadId: "topic_fork_nested",
       parentCodexThreadId: "thread_topic_source",
-      codexThreadHasRollout: true
+      codexThreadHasRollout: true,
+      model: "gpt-5.7",
+      effort: "xhigh"
     });
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({

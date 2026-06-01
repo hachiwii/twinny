@@ -128,6 +128,19 @@ describe("codex thread payloads", () => {
     });
   });
 
+  it("includes optional thread/start model settings", () => {
+    expect(
+      buildThreadStartParams({
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        model: "gpt-5.5",
+        effort: "high"
+      })
+    ).toMatchObject({
+      model: "gpt-5.5",
+      config: { model_reasoning_effort: "high" }
+    });
+  });
+
   it("builds thread/fork with the persisted thread id and lightweight response payload", () => {
     expect(buildThreadForkParams("thread_123", { cwd: "/tmp/twinny/workspaces/p2p_ou_1" })).toEqual({
       threadId: "thread_123",

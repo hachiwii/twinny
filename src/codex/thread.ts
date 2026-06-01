@@ -12,6 +12,8 @@ export interface ThreadRuntimeParams {
 export interface ThreadStartParams extends ThreadRuntimeParams {
   dynamicTools: DynamicToolSpec[];
   developerInstructions?: string;
+  model?: string;
+  config?: Record<string, unknown>;
 }
 
 export interface ThreadResumeParams extends ThreadRuntimeParams {
@@ -437,13 +439,18 @@ export interface ThreadRuntimeOptions {
   developerInstructions?: string;
 }
 
+export interface ThreadStartOptions extends ThreadRuntimeOptions {
+  model?: string;
+  effort?: string;
+}
+
 export interface ThreadForkOptions extends ThreadRuntimeOptions {
   ephemeral?: boolean;
   model?: string;
   effort?: string;
 }
 
-export function buildThreadStartParams(options: ThreadRuntimeOptions): ThreadStartParams {
+export function buildThreadStartParams(options: ThreadStartOptions): ThreadStartParams {
   const params: ThreadStartParams = {
     cwd: options.cwd,
     approvalPolicy: "never",
@@ -452,6 +459,12 @@ export function buildThreadStartParams(options: ThreadRuntimeOptions): ThreadSta
   };
   if (options.developerInstructions) {
     params.developerInstructions = options.developerInstructions;
+  }
+  if (options.model) {
+    params.model = options.model;
+  }
+  if (options.effort) {
+    params.config = { model_reasoning_effort: options.effort };
   }
   return params;
 }
@@ -496,7 +509,7 @@ export interface ThreadSetNameParams {
 
 export async function startCodexThread(
   protocol: CodexProtocolClient,
-  options: ThreadRuntimeOptions
+  options: ThreadStartOptions
 ): Promise<ThreadStartResponse> {
   return protocol.request<ThreadStartResponse, ThreadStartParams>("thread/start", buildThreadStartParams(options));
 }

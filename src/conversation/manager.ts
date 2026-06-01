@@ -625,6 +625,8 @@ export interface CodexBridge {
     cwd: string;
     approvalPolicy: "never";
     developerInstructions?: string;
+    model?: string;
+    effort?: string;
   }): Promise<{ threadId: string }>;
   resumeThread(params: {
     profile: ProfileName;
@@ -896,6 +898,7 @@ interface NewSessionTopicRequest {
   anchorMessage?: IncomingLarkMessage;
   codexThread?: NewSessionTopicCodexThread;
   name?: string;
+  workspace?: string;
   model?: string;
   effort?: string;
   parentCodexThreadId?: string;
@@ -1229,6 +1232,7 @@ type ParsedCommand =
   | { kind: "workspace"; text: string }
   | { kind: "cd"; text: string }
   | { kind: "model"; text: string }
+  | { kind: "effort"; text: string }
   | { kind: "new" }
   | { kind: "thread"; text: string; program?: ParsedCommandProgram }
   | { kind: "fork"; text: string; program?: ParsedCommandProgram }
@@ -2924,6 +2928,10 @@ export class ConversationManager {
       await this.handleModelCommand(state, context, message, parsed.text);
       return;
     }
+    if (parsed.kind === "effort") {
+      await this.handleEffortCommand(state, context, message, parsed.text);
+      return;
+    }
     if (parsed.kind === "stop") {
       await this.handleStopCommand(state, message, parsed.text);
       return;
@@ -3652,7 +3660,7 @@ export class ConversationManager {
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
-    const parentCodexThreadId = await this.resolveSourceThreadIdForContext(state, context);
+    const sourceThread = await this.resolveThreadCreationSource(state, context);
     const createRequestText = threadCreateRequestTextForCommand(text, message);
     let topic = await this.createNewSessionTopic(context, {
       chatId,
@@ -3660,7 +3668,10 @@ export class ConversationManager {
       eventId: message.eventId,
       anchorMessage: message,
       name: initialThreadNameForCommand(text, message, "新会话"),
-      parentCodexThreadId,
+      workspace: sourceThread.workspace,
+      model: sourceThread.model,
+      effort: sourceThread.effort,
+      parentCodexThreadId: sourceThread.threadId,
       createMethod: "fresh",
       createRequestText
     });
@@ -3726,7 +3737,10 @@ export class ConversationManager {
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
-    const sourceWorkspace = sourceThread.record?.workspace || conversation.workspace;
+    const sourceWorkspace = sourceThread.workspace || sourceThread.record?.workspace || conversation.workspace;
+    const sourceModelSettings = this.threadModelSettings(sourceThread.record, sourceThread.record?.profile ?? conversation.profile);
+    const sourceModel = sourceThread.model ?? sourceModelSettings.model;
+    const sourceEffort = sourceThread.effort ?? sourceModelSettings.effort;
 
     const chatId = context.type === "p2p"
       ? message.senderOpenId
@@ -3745,7 +3759,9 @@ export class ConversationManager {
         threadId: sourceThread.threadId,
         cwd: sourceWorkspace,
         approvalPolicy: "never",
-        developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context)
+        developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context),
+        model: sourceModel,
+        effort: sourceEffort
       });
       forkedThreadId = forked.threadId;
     } catch (error) {
@@ -3766,6 +3782,8 @@ export class ConversationManager {
       codexThread: {
         threadId: forkedThreadId,
         workspace: sourceWorkspace,
+        model: sourceModel,
+        effort: sourceEffort,
         codexThreadHasRollout: true,
         parentCodexThreadId: sourceThread.threadId,
         forkedAt,
@@ -4323,46 +4341,60 @@ export class ConversationManager {
     state: ConversationState,
     context: MessageContext,
     conversation: ConversationRecord
-  ): Promise<{ threadId?: string; record?: CodexThreadRecord }> {
-    const activeThreadId = state.active?.threadId;
+  ): Promise<{ threadId?: string; record?: CodexThreadRecord; workspace?: string; model?: string; effort?: string }> {
+    return this.resolveThreadCreationSource(state, context, conversation);
+  }
+
+  private async resolveThreadCreationSource(
+    state: ConversationState,
+    context: MessageContext,
+    conversation?: ConversationRecord
+  ): Promise<{ threadId?: string; record?: CodexThreadRecord; workspace?: string; model?: string; effort?: string }> {
+    const active = state.active;
+    const activeThreadId = active?.threadId;
     if (activeThreadId) {
+      const record = await this.options.repository.getCodexThreadById(activeThreadId);
+      const settings = this.threadModelSettings(record, record?.profile ?? active.profile);
       return {
         threadId: activeThreadId,
-        record: await this.options.repository.getCodexThreadById(activeThreadId)
+        record,
+        workspace: active.workspace,
+        model: nonEmptyString(active.model) ?? settings.model,
+        effort: nonEmptyString(active.modelReasoningEffort) ?? settings.effort
       };
     }
 
-    if (context.larkThreadId) {
-      const record = await this.options.repository.getCodexThreadByConversationAndLarkThread(
-        context.conversationKey,
-        context.larkThreadId
-      );
-      return { threadId: record?.codexThreadId, record };
-    }
-
-    const record = await this.options.repository.getCodexThreadById(conversation.codexThreadId);
-    return { threadId: conversation.codexThreadId, record };
-  }
-
-  private async resolveSourceThreadIdForContext(
-    state: ConversationState,
-    context: MessageContext
-  ): Promise<string | undefined> {
-    if (state.active?.threadId) {
-      return state.active.threadId;
-    }
-    const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
-    if (!conversation) {
-      return undefined;
+    const binding = conversation ?? await this.options.repository.findByConversationKey(context.conversationKey);
+    if (!binding) {
+      return {};
     }
     if (context.larkThreadId) {
       const record = await this.options.repository.getCodexThreadByConversationAndLarkThread(
         context.conversationKey,
         context.larkThreadId
       );
-      return record?.codexThreadId;
+      if (!record) {
+        return {};
+      }
+      const settings = this.threadModelSettings(record, record.profile);
+      return {
+        threadId: record.codexThreadId,
+        record,
+        workspace: record.workspace,
+        model: settings.model,
+        effort: settings.effort
+      };
     }
-    return conversation.codexThreadId;
+
+    const record = await this.options.repository.getCodexThreadById(binding.codexThreadId);
+    const settings = this.threadModelSettings(record, record?.profile ?? binding.profile);
+    return {
+      threadId: binding.codexThreadId,
+      record,
+      workspace: record?.workspace ?? binding.workspace,
+      model: settings.model,
+      effort: settings.effort
+    };
   }
 
   private async replyThreadCommandMessage(
@@ -4519,7 +4551,10 @@ export class ConversationManager {
     }
 
     const profile = conversation.profile;
-    const workspace = request.codexThread?.workspace ?? conversation.workspace;
+    const workspace = request.codexThread?.workspace ?? request.workspace ?? conversation.workspace;
+    const modelSettings = this.profileDefaultModelSettings(profile);
+    const threadModel = request.codexThread?.model ?? request.model ?? modelSettings.model;
+    const threadEffort = request.codexThread?.effort ?? request.effort ?? modelSettings.effort;
     const thread = request.codexThread
       ? { threadId: request.codexThread.threadId }
       : createdThreadId
@@ -4528,12 +4563,11 @@ export class ConversationManager {
           profile,
           cwd: workspace,
           approvalPolicy: "never",
-          developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context)
+          developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context),
+          model: threadModel,
+          effort: threadEffort
         });
     const threadName = this.consumePendingThreadName(thread.threadId) ?? request.name;
-    const modelSettings = this.profileDefaultModelSettings(profile);
-    const threadModel = request.codexThread?.model ?? request.model ?? modelSettings.model;
-    const threadEffort = request.codexThread?.effort ?? request.effort ?? modelSettings.effort;
     await this.options.repository.upsertCodexThread({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
@@ -5381,6 +5415,8 @@ export class ConversationManager {
     }
 
     const existing = await this.options.repository.getCodexThreadById(target.threadId);
+    const currentSettings = this.threadModelSettings(existing, existing?.profile ?? target.profile);
+    const nextEffort = parsed.effort ?? currentSettings.effort;
     if (!existing) {
       await this.recordCodexThreadBestEffort({
         conversationKey: context.conversationKey,
@@ -5396,7 +5432,7 @@ export class ConversationManager {
       await this.options.repository.updateCodexThreadModelSettings({
         codexThreadId: target.threadId,
         model: parsed.model,
-        effort: parsed.effort
+        effort: nextEffort
       });
     } catch (error) {
       this.log.warn({ error, threadId: target.threadId }, "failed to update codex thread model settings");
@@ -5407,7 +5443,60 @@ export class ConversationManager {
 
     await this.replyControlBestEffort(
       message.messageId,
-      `已设置当前 thread 后续 turn 模型：${parsed.model} / ${parsed.effort}`
+      `已设置当前 thread 后续 turn 模型：${parsed.model} / ${nextEffort}`
+    );
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async handleEffortCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    const parsed = parseEffortCommand(text);
+    if (parsed.kind === "invalid") {
+      await this.replyControlBestEffort(message.messageId, parsed.message);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const target = await this.resolveCurrentThreadForModelCommand(state, context);
+    if (!target) {
+      await this.replyControlBestEffort(message.messageId, "当前会话还没有 Codex thread，无法设置 effort。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const existing = await this.options.repository.getCodexThreadById(target.threadId);
+    const currentSettings = this.threadModelSettings(existing, existing?.profile ?? target.profile);
+    if (!existing) {
+      await this.recordCodexThreadBestEffort({
+        conversationKey: context.conversationKey,
+        codexThreadId: target.threadId,
+        profile: target.profile,
+        workspace: target.workspace,
+        name: isMainSessionContext(context) ? MAIN_THREAD_NAME : undefined,
+        larkThreadId: context.larkThreadId
+      });
+    }
+
+    try {
+      await this.options.repository.updateCodexThreadModelSettings({
+        codexThreadId: target.threadId,
+        model: currentSettings.model,
+        effort: parsed.effort
+      });
+    } catch (error) {
+      this.log.warn({ error, threadId: target.threadId }, "failed to update codex thread effort setting");
+      await this.replyErrorBestEffort(message.messageId, error);
+      await this.markMessagesFailedBestEffort([message.messageId]);
+      return;
+    }
+
+    await this.replyControlBestEffort(
+      message.messageId,
+      `已设置当前 thread 后续 turn effort：${currentSettings.model} / ${parsed.effort}`
     );
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
@@ -8242,6 +8331,7 @@ export class ConversationManager {
         eventId: syntheticMessage.eventId,
         anchorMessage: syntheticMessage,
         name: threadName,
+        workspace: workspace.workspace,
         model,
         effort,
         parentCodexThreadId: active.threadId,
@@ -12645,8 +12735,19 @@ function parseFixedArgCommand(
     return { command: { kind: "rewind", text: commandTextFromTokens(result.tokens) }, cursor: result.cursor };
   }
   if (name === "model") {
-    const result = readRequiredTokens(text, cursor, 2);
-    return { command: { kind: "model", text: commandTextFromTokens(result.tokens) }, cursor: result.cursor };
+    const first = readOptionalNonCommandToken(text, cursor);
+    if (!first.token) {
+      return { command: { kind: "model", text: "" }, cursor: first.cursor };
+    }
+    const second = readOptionalNonCommandToken(text, first.cursor);
+    return {
+      command: { kind: "model", text: commandTextFromTokens(second.token ? [first.token, second.token] : [first.token]) },
+      cursor: second.cursor
+    };
+  }
+  if (name === "effort") {
+    const result = readOptionalNonCommandToken(text, cursor);
+    return { command: { kind: "effort", text: result.token?.value ?? "" }, cursor: result.cursor };
   }
   if (name === "workspace" || name === "cd" || name === "reload") {
     const result = readOptionalNonCommandToken(text, cursor);
@@ -12809,6 +12910,7 @@ function isKnownSlashCommand(command: string): boolean {
     command === "workspace" ||
     command === "cd" ||
     command === "model" ||
+    command === "effort" ||
     command === "new" ||
     command === "thread" ||
     command === "fork" ||
@@ -12850,13 +12952,21 @@ function parseRewindCommand(text: string): { kind: "valid"; numTurns: number } |
   return { kind: "valid", numTurns };
 }
 
-function parseModelCommand(text: string): { kind: "valid"; model: string; effort: string } | { kind: "invalid"; message: string } {
+function parseModelCommand(text: string): { kind: "valid"; model: string; effort?: string } | { kind: "invalid"; message: string } {
   const parts = text.trim().split(/\s+/).filter(Boolean);
-  if (parts.length !== 2) {
-    return { kind: "invalid", message: "用法：/model <model> <effort>" };
+  if (parts.length < 1 || parts.length > 2) {
+    return { kind: "invalid", message: "用法：/model <model> [effort]" };
   }
-  const [model, effort] = parts as [string, string];
-  return { kind: "valid", model, effort };
+  const [model, effort] = parts as [string, string | undefined];
+  return { kind: "valid", model, ...(effort ? { effort } : {}) };
+}
+
+function parseEffortCommand(text: string): { kind: "valid"; effort: string } | { kind: "invalid"; message: string } {
+  const parts = text.trim().split(/\s+/).filter(Boolean);
+  if (parts.length !== 1) {
+    return { kind: "invalid", message: "用法：/effort <effort>" };
+  }
+  return { kind: "valid", effort: parts[0]! };
 }
 
 function parseResumeCommand(
@@ -15121,6 +15231,8 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/help - 查看可用指令和使用说明",
     "/status - 查看当前会话、Codex thread 和 token 用量",
     "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
+    "/model <model> [effort] - 设置当前 thread 后续 turn 的模型；effort 可省略",
+    "/effort <effort> - 设置当前 thread 后续 turn 的 effort",
     "/stop [all|<side_id>] - 停止当前任务并清空待处理消息；可停止全部或指定临时会话",
     "/next - 打断当前任务，并执行队列中的下一条消息",
     "/steer <message> - 将 message 注入当前正在运行的任务；message 可继续解析指令",
@@ -15303,6 +15415,7 @@ function classifyInitialRoute(
     parsed.kind === "workspace" ||
     parsed.kind === "cd" ||
     parsed.kind === "model" ||
+    parsed.kind === "effort" ||
     parsed.kind === "stop" ||
     parsed.kind === "next" ||
     parsed.kind === "steer" ||
