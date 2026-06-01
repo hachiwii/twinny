@@ -8605,6 +8605,37 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("ignores non-bot mentions in all and owner group modes", async () => {
+    const aliceMention = { key: "@_alice", openId: "ou_alice", name: "Alice" };
+    const allModeRow = groupConversationRecord({ responseMode: "all", profile: "host", codexThreadId: "thread_group" });
+    const { repository: allModeRepository } = createRepository(allModeRow);
+    const allModeCodex = createCodex();
+    const allModeManager = createManager({ repository: allModeRepository, codex: allModeCodex, botOpenId: "ou_bot" });
+
+    allModeManager.submitIncoming(groupMessage("g_all_mention_other", "@Alice hello", { mentions: [aliceMention] }));
+    await waitForDelay();
+    expect(allModeRepository.insertLarkMessage).not.toHaveBeenCalled();
+    expect(allModeCodex.startTurn).not.toHaveBeenCalled();
+
+    allModeManager.submitIncoming(
+      groupMessage("g_all_mention_bot", "@Alice @Twinny hello", {
+        mentions: [aliceMention, botMention()]
+      })
+    );
+    await waitForExpect(() => expect(allModeCodex.startTurn).toHaveBeenCalledTimes(1));
+    expect(allModeCodex.startTurn).toHaveBeenCalledWith(expect.objectContaining({ input: wrappedMessage("hello", "g_all_mention_bot") }));
+
+    const ownerModeRow = groupConversationRecord({ responseMode: "owner", profile: "host", codexThreadId: "thread_owner_group" });
+    const { repository: ownerModeRepository } = createRepository(ownerModeRow);
+    const ownerModeCodex = createCodex();
+    const ownerModeManager = createManager({ repository: ownerModeRepository, codex: ownerModeCodex, botOpenId: "ou_bot" });
+
+    ownerModeManager.submitIncoming(ownerGroupMessage("g_owner_mention_other", "@Alice hello", { mentions: [aliceMention] }));
+    await waitForDelay();
+    expect(ownerModeRepository.insertLarkMessage).not.toHaveBeenCalled();
+    expect(ownerModeCodex.startTurn).not.toHaveBeenCalled();
+  });
+
   it("ignores unmentioned at-mode topic messages and still reuses thread on the next mention", async () => {
     const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
     const { repository } = createRepository(row);

@@ -3121,6 +3121,14 @@ export class ConversationManager {
     }
 
     if (
+      groupResponseModeIgnoresNonBotMentions(conversation.responseMode) &&
+      messageHasMentions(message) &&
+      !hasBotMention
+    ) {
+      return { kind: "ignored" };
+    }
+
+    if (
       groupResponseModeRequiresMention(conversation.responseMode) &&
       !hasBotMention &&
       parsed.kind !== "thread" &&
@@ -13756,6 +13764,10 @@ function groupResponseModeRequiresOwner(mode: ConversationResponseMode): boolean
   return mode === "owner_at" || mode === "owner";
 }
 
+function groupResponseModeIgnoresNonBotMentions(mode: ConversationResponseMode): boolean {
+  return mode === "owner" || mode === "all";
+}
+
 function createMessageContext(type: ConversationType, message: IncomingLarkMessage): MessageContext {
   const conversationKey = conversationKeyForChat(type, message);
   const larkThreadId = message.larkThreadId;
@@ -14997,6 +15009,10 @@ function messageMentionsBot(message: IncomingLarkMessage, botOpenId: string | un
     return false;
   }
   return (message.mentions ?? []).some((mention) => mention.openId === botOpenId);
+}
+
+function messageHasMentions(message: IncomingLarkMessage): boolean {
+  return (message.mentions ?? []).length > 0;
 }
 
 function stripLeadingLarkMentions(text: string, message: IncomingLarkMessage): string {
