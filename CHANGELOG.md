@@ -13,12 +13,15 @@
 - 新增文档监听动态工具 `watch_lark_url`、`list_lark_url_watchers`、`rm_lark_url_watchers`。
 - 增强指令解析：支持从左到右解析连续指令，`/queue`、`/steer`、`/thread`、`/fork` 和 `/cron` 的消息内容可在执行时继续解析指令。
 - cron 消息支持通过新版指令解析器触发 `/goal` 等指令，便于配置周期性目标任务。
+- `wait_for_threads` 动态工具返回结果新增 thread token usage 信息。
 - Codex CLI 最低版本要求更新为 0.134.0。
 
 ## Bug 修复
 
 - 修复 fork、side 或 resume 出来的 thread 首轮会继承并重复计算历史 token 用量的问题。
 - 修复 stale Codex turn notification 可能影响当前 Lark 消息状态的问题。
+- 修复群聊 `all` / `owner` 模式下，用户 at 其他人但没有 at bot 的消息仍会被处理的问题。
+- 调整安装 wizard：检测到未安装 `lark-cli` 时只提示建议安装并跳过相关流程，不再自动安装。
 
 # 1.3.1
 
