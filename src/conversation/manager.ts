@@ -120,6 +120,8 @@ import {
 const COMPACT_PROGRESS_TEXT = "正在压缩上下文";
 const COMPACT_COMPLETED_TEXT = "完成上下文压缩";
 const REWIND_USAGE_TEXT = "用法：/rewind <n> 或 /rollback <n>，n 为正整数。";
+const MODEL_EFFORT_USAGE_TEXT = "effort 可选值：low medium high xhigh";
+const MODEL_EFFORT_VALUES = new Set(["low", "medium", "high", "xhigh"]);
 const SIDE_SHUTDOWN_ERROR = "Twinny 服务退出";
 const UNRECOVERABLE_CONTROL_MESSAGE_RECOVERY_TEXT = "上一条控制命令在 Twinny daemon 重启前中断，已终止；请重新执行。";
 const MAIN_THREAD_NAME = "主会话";
@@ -12739,7 +12741,7 @@ function parseFixedArgCommand(
     if (!first.token) {
       return { command: { kind: "model", text: "" }, cursor: first.cursor };
     }
-    const second = readOptionalNonCommandToken(text, first.cursor);
+    const second = readOptionalModelEffortToken(text, first.cursor);
     return {
       command: { kind: "model", text: commandTextFromTokens(second.token ? [first.token, second.token] : [first.token]) },
       cursor: second.cursor
@@ -12821,6 +12823,14 @@ function readOptionalNonCommandToken(text: string, cursor: number): { token?: Co
     return { cursor };
   }
   return { token, cursor: token.cursor };
+}
+
+function readOptionalModelEffortToken(text: string, cursor: number): { token?: CommandToken; cursor: number } {
+  const token = readCommandArgumentToken(text, cursor);
+  if (!token || (!token.quoted && isKnownSlashCommandToken(token.value))) {
+    return { cursor };
+  }
+  return isModelEffortValue(token.value) ? { token, cursor: token.cursor } : { cursor };
 }
 
 function commandTextFromTokens(tokens: CommandToken[]): string {
@@ -12958,15 +12968,26 @@ function parseModelCommand(text: string): { kind: "valid"; model: string; effort
     return { kind: "invalid", message: "用法：/model <model> [effort]" };
   }
   const [model, effort] = parts as [string, string | undefined];
+  if (effort && !isModelEffortValue(effort)) {
+    return { kind: "invalid", message: MODEL_EFFORT_USAGE_TEXT };
+  }
   return { kind: "valid", model, ...(effort ? { effort } : {}) };
 }
 
 function parseEffortCommand(text: string): { kind: "valid"; effort: string } | { kind: "invalid"; message: string } {
   const parts = text.trim().split(/\s+/).filter(Boolean);
   if (parts.length !== 1) {
-    return { kind: "invalid", message: "用法：/effort <effort>" };
+    return { kind: "invalid", message: `用法：/effort <effort>，${MODEL_EFFORT_USAGE_TEXT}` };
   }
-  return { kind: "valid", effort: parts[0]! };
+  const effort = parts[0]!;
+  if (!isModelEffortValue(effort)) {
+    return { kind: "invalid", message: MODEL_EFFORT_USAGE_TEXT };
+  }
+  return { kind: "valid", effort };
+}
+
+function isModelEffortValue(value: string): boolean {
+  return MODEL_EFFORT_VALUES.has(value);
 }
 
 function parseResumeCommand(
@@ -15231,8 +15252,8 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/help - 查看可用指令和使用说明",
     "/status - 查看当前会话、Codex thread 和 token 用量",
     "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
-    "/model <model> [effort] - 设置当前 thread 后续 turn 的模型；effort 可省略",
-    "/effort <effort> - 设置当前 thread 后续 turn 的 effort",
+    "/model <model> [low|medium|high|xhigh] - 设置当前 thread 后续 turn 的模型；effort 可省略",
+    "/effort <low|medium|high|xhigh> - 设置当前 thread 后续 turn 的 effort",
     "/stop [all|<side_id>] - 停止当前任务并清空待处理消息；可停止全部或指定临时会话",
     "/next - 打断当前任务，并执行队列中的下一条消息",
     "/steer <message> - 将 message 注入当前正在运行的任务；message 可继续解析指令",

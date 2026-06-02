@@ -519,6 +519,57 @@ describe("ConversationManager", () => {
     await waitForDelay();
   });
 
+  it("only treats known effort values after /model as effort tokens", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_1",
+          conversationKey: "p2p_ou_guest",
+          model: "gpt-5.3",
+          effort: "xhigh"
+        })
+      ]
+    });
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m_model_prompt", "/model gpt-5.4 investigate now"));
+
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadModelSettings).toHaveBeenCalledWith({
+        codexThreadId: "thread_1",
+        model: "gpt-5.4",
+        effort: "xhigh"
+      })
+    );
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(turns[0]!.params).toMatchObject({
+      model: "gpt-5.4",
+      effort: "xhigh",
+      input: wrappedMessage("investigate now", "m_model_prompt")
+    });
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForDelay();
+  });
+
+  it("rejects unsupported /effort values", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const { codex } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m_effort_invalid", "/effort extreme"));
+
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith(
+      "m_effort_invalid",
+      "effort 可选值：low medium high xhigh"
+    ));
+    expect(repository.updateCodexThreadModelSettings).not.toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+  });
+
   it("lists cached workspaces and selects one with /workspace", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-manager-workspace-"));
     try {
@@ -5127,8 +5178,8 @@ describe("ConversationManager", () => {
       "/help - 查看可用指令和使用说明",
       "/status - 查看当前会话、Codex thread 和 token 用量",
       "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
-      "/model <model> [effort] - 设置当前 thread 后续 turn 的模型；effort 可省略",
-      "/effort <effort> - 设置当前 thread 后续 turn 的 effort",
+      "/model <model> [low|medium|high|xhigh] - 设置当前 thread 后续 turn 的模型；effort 可省略",
+      "/effort <low|medium|high|xhigh> - 设置当前 thread 后续 turn 的 effort",
       "/stop [all|<side_id>] - 停止当前任务并清空待处理消息；可停止全部或指定临时会话",
       "/next - 打断当前任务，并执行队列中的下一条消息",
       "/steer <message> - 将 message 注入当前正在运行的任务；message 可继续解析指令",
