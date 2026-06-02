@@ -1,13 +1,17 @@
 import type {
   IncomingLarkBotMenuAction,
+  IncomingLarkBotAddedToChat,
   IncomingLarkCardAction,
   IncomingLarkMessage,
   IncomingLarkDocCommentAdd,
   IncomingLarkMessageRecall,
+  IncomingLarkP2pChatCreate,
   LarkReactionHandle
 } from "../types.js";
 
 export const LARK_BOT_MENU_EVENT = "application.bot.menu_v6" as const;
+export const LARK_P2P_CHAT_CREATE_EVENT = "p2p_chat_create" as const;
+export const LARK_BOT_ADDED_TO_CHAT_EVENT = "im.chat.member.bot.added_v1" as const;
 export const LARK_MESSAGE_RECEIVE_EVENT = "im.message.receive_v1" as const;
 export const LARK_MESSAGE_RECALLED_EVENT = "im.message.recalled_v1" as const;
 export const LARK_CARD_ACTION_TRIGGER_EVENT = "card.action.trigger" as const;
@@ -111,9 +115,11 @@ export interface LarkSendMessageResult {
 
 export type {
   IncomingLarkBotMenuAction,
+  IncomingLarkBotAddedToChat,
   IncomingLarkCardAction,
   IncomingLarkMessage,
   IncomingLarkDocCommentAdd,
   IncomingLarkMessageRecall,
+  IncomingLarkP2pChatCreate,
   LarkReactionHandle
 };

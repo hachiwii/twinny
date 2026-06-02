@@ -12,6 +12,9 @@ import {
   GUEST_PROFILE_NAME,
   HOST_PROFILE_NAME,
   NONE_PROFILE_NAME,
+  type GreetingConfig,
+  type GreetingMode,
+  type GreetingTargetConfig,
   type LarkMessageRedactionConfig,
   type LarkMessageRedactionStrategy,
   type LarkCliProfileConfig,
@@ -37,6 +40,7 @@ export const DEFAULT_POSTHOG_PROJECT_TOKEN = "phc_yXXd2mi9J33Awy7vs8VY8UbEoYdtXP
 export const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com";
 
 const redactionSchema = z.enum(["mask", "whitespace", "none"]);
+const greetingModeSchema = z.enum(["none", "text", "codex_turn"]);
 
 const rawProfileSchema = z
   .object({
@@ -81,6 +85,25 @@ const rawConfigSchema = z
         group_default_profile: z.string().optional(),
         group_default_mode: z.enum(["all", "all_at", "owner", "owner_at", "none"]).optional(),
         group_default_workspace: z.string().optional()
+      })
+      .strict()
+      .optional(),
+    greeting: z
+      .object({
+        p2p: z
+          .object({
+            mode: greetingModeSchema.optional(),
+            message: z.string().optional()
+          })
+          .strict()
+          .optional(),
+        group: z
+          .object({
+            mode: greetingModeSchema.optional(),
+            message: z.string().optional()
+          })
+          .strict()
+          .optional()
       })
       .strict()
       .optional(),
@@ -142,6 +165,10 @@ export interface CreateTwinnyConfigInput {
     messageRedaction?: Partial<LarkMessageRedactionConfig>;
   };
   permissions?: Partial<PermissionsConfig>;
+  greeting?: {
+    p2p?: Partial<GreetingTargetConfig>;
+    group?: Partial<GreetingTargetConfig>;
+  };
   service?: {
     launchd?: Partial<LaunchdServiceConfig>;
   };
@@ -190,6 +217,7 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
       groupDefaultMode: normalizeGroupDefaultMode(input.permissions?.groupDefaultMode),
       groupDefaultWorkspace: normalizeWorkspaceTemplate(input.permissions?.groupDefaultWorkspace)
     },
+    greeting: normalizeGreetingConfig(input.greeting),
     service: normalizeServiceConfig(input.service),
     telemetry: normalizeTelemetryConfig(input.telemetry),
     larkCliProfile: normalizeLarkCliProfileConfig(input.larkCliProfile),
@@ -426,6 +454,8 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
     issues.push("permissions.group_default_mode must be owner_at, owner, all_at, all, or none");
   }
   issues.push(...validateWorkspaceTemplate(config.permissions.groupDefaultWorkspace, "permissions.group_default_workspace"));
+  issues.push(...validateGreetingTargetConfig(config.greeting.p2p, "greeting.p2p"));
+  issues.push(...validateGreetingTargetConfig(config.greeting.group, "greeting.group"));
   return issues;
 }
 
@@ -465,6 +495,16 @@ function createRuntimeConfig(
       groupDefaultMode: normalizeGroupDefaultMode(parsed.permissions?.group_default_mode),
       groupDefaultWorkspace: normalizeWorkspaceTemplate(parsed.permissions?.group_default_workspace)
     },
+    greeting: normalizeGreetingConfig({
+      p2p: {
+        mode: parsed.greeting?.p2p?.mode,
+        message: parsed.greeting?.p2p?.message
+      },
+      group: {
+        mode: parsed.greeting?.group?.mode,
+        message: parsed.greeting?.group?.message
+      }
+    }),
     service: normalizeServiceConfig({
       launchd: {
         mode: parsed.service?.launchd?.mode,
@@ -572,6 +612,16 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
       group_default_mode: config.permissions.groupDefaultMode,
       group_default_workspace: config.permissions.groupDefaultWorkspace
     },
+    greeting: {
+      p2p: {
+        mode: config.greeting.p2p.mode,
+        message: config.greeting.p2p.message
+      },
+      group: {
+        mode: config.greeting.group.mode,
+        message: config.greeting.group.message
+      }
+    },
     profiles
   };
   if (config.service.launchd.mode !== "gui") {
@@ -648,6 +698,27 @@ function normalizeGroupDefaultMode(value: ConversationResponseMode | undefined):
   return isConversationResponseMode(value) ? value : NONE_PROFILE_NAME;
 }
 
+function normalizeGreetingConfig(input: {
+  p2p?: Partial<GreetingTargetConfig>;
+  group?: Partial<GreetingTargetConfig>;
+} | undefined): GreetingConfig {
+  return {
+    p2p: normalizeGreetingTargetConfig(input?.p2p),
+    group: normalizeGreetingTargetConfig(input?.group)
+  };
+}
+
+function normalizeGreetingTargetConfig(input: Partial<GreetingTargetConfig> | undefined): GreetingTargetConfig {
+  return {
+    mode: normalizeGreetingMode(input?.mode),
+    message: input?.message?.trim() ?? ""
+  };
+}
+
+function normalizeGreetingMode(value: GreetingMode | undefined): GreetingMode {
+  return value === "text" || value === "codex_turn" ? value : "none";
+}
+
 function normalizeWorkspaceTemplate(value: string | undefined): string {
   return normalizeOptionalString(value) ?? DEFAULT_CONVERSATION_WORKSPACE_TEMPLATE;
 }
@@ -668,8 +739,23 @@ function validateWorkspaceTemplate(value: string, field: string): string[] {
   return issues;
 }
 
+function validateGreetingTargetConfig(config: GreetingTargetConfig, field: string): string[] {
+  const issues: string[] = [];
+  if (!isGreetingMode(config.mode)) {
+    issues.push(`${field}.mode must be none, text, or codex_turn`);
+  }
+  if (config.mode !== "none" && !normalizeOptionalString(config.message)) {
+    issues.push(`${field}.message is required when mode is ${config.mode}`);
+  }
+  return issues;
+}
+
 function isConversationResponseMode(value: unknown): value is ConversationResponseMode {
   return value === "all" || value === "all_at" || value === "owner" || value === "owner_at" || value === "none";
+}
+
+function isGreetingMode(value: unknown): value is GreetingMode {
+  return value === "none" || value === "text" || value === "codex_turn";
 }
 
 function normalizeMessageRedactionConfig(

@@ -23,6 +23,8 @@ export type CodexThreadMode = "default" | "plan";
 
 export type CodexThreadStatus = "idle" | "working" | "waiting";
 
+export type GreetingMode = "none" | "text" | "codex_turn";
+
 export type CodexThreadCategory = "main" | "thread" | "previous_main";
 export type CodexThreadCreateMethod = "init_main" | "new_main" | "fresh" | "fork" | "resume";
 
@@ -72,6 +74,7 @@ export type LarkMessageRouteKind =
   | "queued_message"
   | "thread_message"
   | "cron_message"
+  | "greeting_message"
   | "doc_comment"
   | "doc_comment_reply_steer"
   | "control_message"
@@ -149,6 +152,16 @@ export interface PermissionsConfig {
   groupDefaultWorkspace: string;
 }
 
+export interface GreetingTargetConfig {
+  mode: GreetingMode;
+  message: string;
+}
+
+export interface GreetingConfig {
+  p2p: GreetingTargetConfig;
+  group: GreetingTargetConfig;
+}
+
 export interface TelemetryConfig {
   enabled: boolean;
   posthogProjectToken: string;
@@ -177,6 +190,7 @@ export interface TwinnyConfig {
   auth: TwinnyAuthFile;
   homeIdentity: TwinnyHomeIdentity;
   permissions: PermissionsConfig;
+  greeting: GreetingConfig;
   service: ServiceConfig;
   telemetry?: TelemetryConfig;
   larkCliProfile?: LarkCliProfileConfig;
@@ -361,6 +375,25 @@ export interface IncomingLarkMessageRecall {
   messageId: string;
   chatId?: string;
   recallTime?: number;
+  raw: unknown;
+}
+
+export interface IncomingLarkP2pChatCreate {
+  eventId: string;
+  userOpenId: string;
+  operatorOpenId?: string;
+  chatId?: string;
+  chatName?: string;
+  createTime?: number;
+  raw: unknown;
+}
+
+export interface IncomingLarkBotAddedToChat {
+  eventId: string;
+  chatId: string;
+  chatName?: string;
+  operatorOpenId?: string;
+  createTime?: number;
   raw: unknown;
 }
 

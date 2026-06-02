@@ -83,6 +83,8 @@ wiki:node:read
 
 推荐同时申请 `im:message.group_msg`。它允许 `/activate owner` 和 `/activate all` 在群聊中接收非 @ 消息；如果只使用 `owner_at` 或 `all_at`，基础的 `im:message.group_at_msg:readonly` 已足够。安装指引页面的导入 JSON 会预填这个推荐权限，便于后续切换群响应模式。
 
+如果启用默认自动激活（`permissions.p2p_default_profile != "none"`，或群聊的 `group_default_profile` 与 `group_default_mode` 都不是 `none`），还需要申请 `im:chat.members:bot_access`，并额外订阅 `p2p_chat_create` 和 `im.chat.member.bot.added_v1`。
+
 订阅这些事件/回调：
 
 ```text
@@ -221,6 +223,10 @@ Twinny 从 `TWINNY_HOME` 读取 `config.toml`。
 | `[permissions].group_default_profile` | 新群聊自动激活时使用的 profile。必须和 `group_default_mode` 同时为非 `none` 才会生效；默认是 `none`。 |
 | `[permissions].group_default_mode` | 新群聊自动激活后的群响应模式，取值为 `owner_at`、`owner`、`all_at`、`all` 或 `none`。当它和 `group_default_profile` 都不是 `none` 时，新群聊收到第一条满足该模式触发条件的消息会自动创建 workspace 并激活。默认是 `none`。 |
 | `[permissions].group_default_workspace` | 新 group conversation 的默认 workspace 模板。支持 `{{twinny_home}}` 和 `{{conversation_key}}` 变量；默认是 `{{twinny_home}}/workspaces/{{conversation_key}}`。如果渲染后的目录已存在会直接使用，否则会创建。 |
+| `[greeting.p2p].mode` | P2P conversation 创建后的 greeting 模式：`none`、`text` 或 `codex_turn`。`text` 会直接向单聊发送固定文案；`codex_turn` 会把 `message` 作为 Codex turn 输入并向单聊发送 turn card。默认是 `none`。 |
+| `[greeting.p2p].message` | P2P greeting 文案或 Codex turn 输入。`mode` 不是 `none` 时必须配置非空字符串。 |
+| `[greeting.group].mode` | 群聊 conversation 创建后的 greeting 模式：`none`、`text` 或 `codex_turn`。默认是 `none`。 |
+| `[greeting.group].message` | 群聊 greeting 文案或 Codex turn 输入。`mode` 不是 `none` 时必须配置非空字符串。 |
 | `[service.launchd].mode` | macOS launchd 安装位置。`gui` 使用当前 `gui/<uid>` LaunchAgent（默认）；`daemon` 使用系统 LaunchDaemon。通常由 `twinny install --system-daemon` 写入。 |
 | `[service.launchd].user_name` | `mode = "daemon"` 时写入 plist 的 `UserName`。通常由 `twinny install --system-daemon` 自动写入当前用户。 |
 | `[profiles.<name>].codex_home` | 该 profile 使用的 `CODEX_HOME`。绝对路径会直接使用；相对路径会以 `TWINNY_HOME` 为基准解析。`host` 默认是 `~/.codex`；其他 profile 未设置时继承 `host`。 |
@@ -251,6 +257,14 @@ p2p_default_workspace = "{{twinny_home}}/workspaces/{{conversation_key}}"
 group_default_profile = "none"
 group_default_mode = "none"
 group_default_workspace = "{{twinny_home}}/workspaces/{{conversation_key}}"
+
+[greeting.p2p]
+mode = "none"
+message = ""
+
+[greeting.group]
+mode = "none"
+message = ""
 
 [profiles.host]
 codex_home = "~/.codex"

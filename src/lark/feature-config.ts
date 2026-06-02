@@ -1,5 +1,6 @@
 import { toErrorMessage } from "../errors.js";
 import {
+  LARK_BOT_ADDED_TO_CHAT_EVENT,
   LARK_BOT_MENU_EVENT,
   LARK_CONTACT_USER_BASE_SCOPE,
   LARK_DOC_COMMENT_ADD_EVENT,
@@ -7,11 +8,12 @@ import {
   LARK_GROUP_MENTION_SCOPE,
   LARK_MESSAGE_RECEIVE_EVENT,
   LARK_MESSAGE_RECALLED_EVENT,
+  LARK_P2P_CHAT_CREATE_EVENT,
   LARK_REQUIRED_SCOPE_ALTERNATIVES,
   type LarkLogger
 } from "./types.js";
 
-export type LarkFeatureSetKey = "necessary" | "group_non_at" | "doc_watch" | "bot_menu";
+export type LarkFeatureSetKey = "necessary" | "group_non_at" | "doc_watch" | "bot_menu" | "auto_activation";
 
 export interface LarkFeatureSetDefinition {
   key: LarkFeatureSetKey;
@@ -83,6 +85,10 @@ export const LARK_DOC_WATCH_FEATURE_SCOPES = [
   "wiki:node:read"
 ] as const;
 
+export const LARK_AUTO_ACTIVATION_FEATURE_SCOPES = [
+  "im:chat.members:bot_access"
+] as const;
+
 export const LARK_FEATURE_SET_DEFINITIONS: Readonly<Record<LarkFeatureSetKey, LarkFeatureSetDefinition>> = {
   necessary: {
     key: "necessary",
@@ -107,6 +113,12 @@ export const LARK_FEATURE_SET_DEFINITIONS: Readonly<Record<LarkFeatureSetKey, La
     label: "Bot 菜单",
     scopes: [],
     events: [LARK_BOT_MENU_EVENT]
+  },
+  auto_activation: {
+    key: "auto_activation",
+    label: "自动激活",
+    scopes: LARK_AUTO_ACTIVATION_FEATURE_SCOPES,
+    events: [LARK_P2P_CHAT_CREATE_EVENT, LARK_BOT_ADDED_TO_CHAT_EVENT]
   }
 };
 

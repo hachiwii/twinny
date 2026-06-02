@@ -24,6 +24,7 @@ import {
   LarkOpenApiClient,
   resolveLarkEndpoints,
   resolveLarkEventDomain,
+  type LarkFeatureSetKey,
   type LarkSdkLogger,
   TenantAccessTokenManager
 } from "../lark/index.js";
@@ -186,9 +187,9 @@ export class TwinnyRuntime {
         logger: this.log
       });
       this.systemNotifier = systemNotifier;
-      const startupFeatureChecks = await larkFeatureConfig.checkAllFeatureSets();
+      const startupFeatureChecks = await larkFeatureConfig.checkAllFeatureSets(startupLarkFeatureSetKeys(this.config));
       await systemNotifier.notifyMissingLarkConfiguration(
-        startupFeatureChecks.filter((result) => result.key === "necessary")
+        startupFeatureChecks.filter((result) => result.key === "necessary" || result.key === "auto_activation")
       );
       const repository = createConversationRepository(this.db);
       const workspaceManager = WorkspaceManager.fromRuntimePaths(this.paths, this.config.permissions);
@@ -239,6 +240,12 @@ export class TwinnyRuntime {
         },
         onDocCommentAdd: (comment) => {
           conversation.submitDocCommentAdd(comment);
+        },
+        onP2pChatCreate: (event) => {
+          conversation.submitP2pChatCreate(event);
+        },
+        onBotAddedToChat: (event) => {
+          conversation.submitBotAddedToChat(event);
         },
         onBotMenu: (action) => {
           conversation.submitBotMenuAction(action);
@@ -971,6 +978,19 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool) {
       return pool.get(profile).readAccountRateLimits();
     }
   };
+}
+
+function startupLarkFeatureSetKeys(config: TwinnyConfig): LarkFeatureSetKey[] {
+  const keys: LarkFeatureSetKey[] = ["necessary"];
+  if (isAutoActivationEnabled(config)) {
+    keys.push("auto_activation");
+  }
+  return keys;
+}
+
+function isAutoActivationEnabled(config: TwinnyConfig): boolean {
+  return config.permissions.p2pDefaultProfile !== "none" ||
+    (config.permissions.groupDefaultProfile !== "none" && config.permissions.groupDefaultMode !== "none");
 }
 
 function adaptLarkSender(

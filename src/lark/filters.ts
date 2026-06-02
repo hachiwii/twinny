@@ -1,10 +1,12 @@
 import type {
+  IncomingLarkBotAddedToChat,
   IncomingLarkBotMenuAction,
   IncomingLarkDocCommentAdd,
   IncomingLarkMention,
   IncomingLarkMessage,
   IncomingLarkMessageRecall,
-  IncomingLarkMessageResource
+  IncomingLarkMessageResource,
+  IncomingLarkP2pChatCreate
 } from "../types.js";
 
 export interface RawLarkMessageReceiveEvent {
@@ -59,6 +61,10 @@ export type LarkBotMenuIgnoreReason =
   | "unsupported_event_key"
   | "missing_operator_open_id";
 
+export type LarkP2pChatCreateIgnoreReason = "malformed_event" | "missing_user_open_id";
+
+export type LarkBotAddedToChatIgnoreReason = "malformed_event" | "missing_chat_id";
+
 export interface NormalizeLarkMessageOptions {
   botOpenId?: string;
 }
@@ -78,6 +84,14 @@ export type NormalizeLarkBotMenuResult =
 export type NormalizeLarkDocCommentResult =
   | { kind: "doc_comment"; comment: IncomingLarkDocCommentAdd }
   | { kind: "ignored"; reason: LarkDocCommentIgnoreReason; raw: unknown };
+
+export type NormalizeLarkP2pChatCreateResult =
+  | { kind: "p2p_chat_create"; event: IncomingLarkP2pChatCreate }
+  | { kind: "ignored"; reason: LarkP2pChatCreateIgnoreReason; raw: unknown };
+
+export type NormalizeLarkBotAddedToChatResult =
+  | { kind: "bot_added_to_chat"; event: IncomingLarkBotAddedToChat }
+  | { kind: "ignored"; reason: LarkBotAddedToChatIgnoreReason; raw: unknown };
 
 export function normalizeIncomingLarkMessage(
   raw: unknown,
@@ -292,6 +306,77 @@ export function normalizeLarkDocCommentAddWithReason(raw: unknown): NormalizeLar
       ),
       isMentioned: booleanValue(event.is_mentioned) || booleanValue(reply.is_mentioned) || booleanValue(comment.is_mentioned),
       createTime: parseEpochMs(event.create_time ?? reply.create_time ?? comment.create_time ?? header.create_time),
+      raw
+    }
+  };
+}
+
+export function normalizeLarkP2pChatCreateWithReason(raw: unknown): NormalizeLarkP2pChatCreateResult {
+  if (!isRecord(raw)) {
+    return ignoredP2pChatCreate("malformed_event", raw);
+  }
+
+  const header = eventHeader(raw);
+  const event = eventPayload(raw);
+  const userOpenId = firstStringValue(
+    event.open_id,
+    event.user_open_id,
+    event.user_id,
+    getRecordValue(event.user, "open_id"),
+    getRecordValue(event.user_id, "open_id"),
+    getRecordValue(event.sender, "open_id"),
+    event.sender_id,
+    getRecordValue(event.sender_id, "open_id"),
+    getRecordValue(event.operator, "open_id"),
+    event.operator_id,
+    getRecordValue(event.operator_id, "open_id")
+  );
+  if (!userOpenId) {
+    return ignoredP2pChatCreate("missing_user_open_id", raw);
+  }
+
+  return {
+    kind: "p2p_chat_create",
+    event: {
+      eventId: firstStringValue(header.event_id, raw.event_id, raw.uuid, `${userOpenId}:p2p_chat_create`) ?? `${userOpenId}:p2p_chat_create`,
+      userOpenId,
+      operatorOpenId: firstStringValue(
+        getRecordValue(event.operator, "open_id"),
+        getRecordValue(event.operator_id, "open_id"),
+        event.operator_open_id
+      ),
+      chatId: firstStringValue(event.chat_id, event.open_chat_id),
+      chatName: firstStringValue(event.name, event.chat_name),
+      createTime: parseEventEpochMs(event.ts ?? event.create_time ?? header.create_time ?? raw.ts ?? raw.create_time),
+      raw
+    }
+  };
+}
+
+export function normalizeLarkBotAddedToChatWithReason(raw: unknown): NormalizeLarkBotAddedToChatResult {
+  if (!isRecord(raw)) {
+    return ignoredBotAddedToChat("malformed_event", raw);
+  }
+
+  const header = eventHeader(raw);
+  const event = eventPayload(raw);
+  const chatId = firstStringValue(event.chat_id, event.open_chat_id);
+  if (!chatId) {
+    return ignoredBotAddedToChat("missing_chat_id", raw);
+  }
+
+  return {
+    kind: "bot_added_to_chat",
+    event: {
+      eventId: firstStringValue(header.event_id, raw.event_id, raw.uuid, `${chatId}:bot_added`) ?? `${chatId}:bot_added`,
+      chatId,
+      chatName: firstStringValue(event.name, event.chat_name),
+      operatorOpenId: firstStringValue(
+        getRecordValue(event.operator_id, "open_id"),
+        getRecordValue(event.operator, "open_id"),
+        event.operator_open_id
+      ),
+      createTime: parseEventEpochMs(event.create_time ?? header.create_time ?? raw.create_time),
       raw
     }
   };
@@ -868,6 +953,14 @@ function parseEpochMs(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function parseEventEpochMs(value: unknown): number | undefined {
+  const parsed = parseEpochMs(value);
+  if (parsed === undefined) {
+    return undefined;
+  }
+  return parsed < 1_000_000_000_000 ? parsed * 1000 : parsed;
+}
+
 function ignored(reason: LarkMessageIgnoreReason, raw: unknown): NormalizeLarkMessageResult {
   return { kind: "ignored", reason, raw };
 }
@@ -884,6 +977,14 @@ function ignoredBotMenu(reason: LarkBotMenuIgnoreReason, raw: unknown): Normaliz
 }
 
 function ignoredDocComment(reason: LarkDocCommentIgnoreReason, raw: unknown): NormalizeLarkDocCommentResult {
+  return { kind: "ignored", reason, raw };
+}
+
+function ignoredP2pChatCreate(reason: LarkP2pChatCreateIgnoreReason, raw: unknown): NormalizeLarkP2pChatCreateResult {
+  return { kind: "ignored", reason, raw };
+}
+
+function ignoredBotAddedToChat(reason: LarkBotAddedToChatIgnoreReason, raw: unknown): NormalizeLarkBotAddedToChatResult {
   return { kind: "ignored", reason, raw };
 }
 

@@ -28,6 +28,10 @@ const config: TwinnyConfig = {
     groupDefaultMode: "none",
     groupDefaultWorkspace: "{{twinny_home}}/workspaces/{{conversation_key}}"
   },
+  greeting: {
+    p2p: { mode: "none", message: "" },
+    group: { mode: "none", message: "" }
+  },
   service: { launchd: { mode: "gui" } },
   telemetry: { enabled: true, posthogProjectToken: "ph_test", posthogHost: "https://posthog.example" },
   owner: { openId: "ou_owner", displayName: "Owner" },

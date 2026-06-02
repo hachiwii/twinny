@@ -2,22 +2,28 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 import { DEFAULT_LARK_MAX_MESSAGE_AGE_SECONDS, type LarkBrand } from "../types.js";
 import { TenantAccessTokenManager } from "./auth.js";
 import {
+  normalizeLarkBotAddedToChatWithReason,
   normalizeLarkBotMenuWithReason,
   normalizeLarkDocCommentAddWithReason,
   normalizeIncomingLarkMessageWithReason,
+  normalizeLarkP2pChatCreateWithReason,
   normalizeLarkMessageRecallWithReason
 } from "./filters.js";
 import {
+  LARK_BOT_ADDED_TO_CHAT_EVENT,
   LARK_BOT_MENU_EVENT,
   LARK_CARD_ACTION_TRIGGER_EVENT,
   LARK_DOC_COMMENT_ADD_EVENT,
   LARK_MESSAGE_RECEIVE_EVENT,
   LARK_MESSAGE_RECALLED_EVENT,
+  LARK_P2P_CHAT_CREATE_EVENT,
+  type IncomingLarkBotAddedToChat,
   type IncomingLarkBotMenuAction,
   type IncomingLarkCardAction,
   type IncomingLarkDocCommentAdd,
   type IncomingLarkMessage,
   type IncomingLarkMessageRecall,
+  type IncomingLarkP2pChatCreate,
   type LarkCardActionCallbackResponse,
   type LarkLogger,
   type LarkSdkLogger
@@ -48,6 +54,8 @@ export interface LarkEventConsumerOptions {
   onMessage: (message: IncomingLarkMessage) => Promise<void> | void;
   onMessageRecall?: (recall: IncomingLarkMessageRecall) => Promise<void> | void;
   onDocCommentAdd?: (comment: IncomingLarkDocCommentAdd) => Promise<void> | void;
+  onP2pChatCreate?: (event: IncomingLarkP2pChatCreate) => Promise<void> | void;
+  onBotAddedToChat?: (event: IncomingLarkBotAddedToChat) => Promise<void> | void;
   onBotMenu?: (action: IncomingLarkBotMenuAction) => Promise<void> | void;
   onCardAction?: (action: IncomingLarkCardAction) => Promise<LarkCardActionCallbackResponse | void> | LarkCardActionCallbackResponse | void;
   onConnectionError?: (error: Error) => void;
@@ -145,6 +153,30 @@ export class LarkEventConsumer {
           return;
         }
         await this.options.onDocCommentAdd(result.comment);
+      },
+      [LARK_P2P_CHAT_CREATE_EVENT]: async (data: unknown) => {
+        if (!this.options.onP2pChatCreate) {
+          return;
+        }
+        const result = normalizeLarkP2pChatCreateWithReason(data);
+        if (result.kind === "ignored") {
+          this.options.onIgnored?.(result.reason, result.raw);
+          this.options.logger?.debug?.({ reason: result.reason }, "ignored Lark p2p chat create event");
+          return;
+        }
+        await this.options.onP2pChatCreate(result.event);
+      },
+      [LARK_BOT_ADDED_TO_CHAT_EVENT]: async (data: unknown) => {
+        if (!this.options.onBotAddedToChat) {
+          return;
+        }
+        const result = normalizeLarkBotAddedToChatWithReason(data);
+        if (result.kind === "ignored") {
+          this.options.onIgnored?.(result.reason, result.raw);
+          this.options.logger?.debug?.({ reason: result.reason }, "ignored Lark bot added to chat event");
+          return;
+        }
+        await this.options.onBotAddedToChat(result.event);
       },
       [LARK_BOT_MENU_EVENT]: async (data: unknown) => {
         if (!this.options.onBotMenu) {

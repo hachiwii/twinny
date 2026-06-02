@@ -2459,6 +2459,7 @@ function assertValidRouteKind(routeKind: LarkMessageRouteKind): void {
     routeKind !== "queued_message" &&
     routeKind !== "thread_message" &&
     routeKind !== "cron_message" &&
+    routeKind !== "greeting_message" &&
     routeKind !== "doc_comment" &&
     routeKind !== "doc_comment_reply_steer" &&
     routeKind !== "side_message" &&

@@ -83,6 +83,8 @@ wiki:node:read
 
 Recommended: also grant `im:message.group_msg`. It lets `/activate owner` and `/activate all` receive non-@ group messages. If you only use `owner_at` or `all_at`, the required `im:message.group_at_msg:readonly` scope is enough. The install guide page pre-fills this recommended scope in its import JSON so you can switch group response modes later.
 
+If you enable default auto-activation (`permissions.p2p_default_profile != "none"`, or both `group_default_profile` and `group_default_mode` are not `none`), also grant `im:chat.members:bot_access` and subscribe to `p2p_chat_create` and `im.chat.member.bot.added_v1`.
+
 Subscribe to these events/callbacks:
 
 ```text
@@ -225,6 +227,10 @@ Recognized fields:
 | `[permissions].group_default_profile`   | Profile used when a new group auto-activates. It only takes effect when both this field and `group_default_mode` are not `none`. Defaults to `none`.                                                                                                                                                                                                                                      |
 | `[permissions].group_default_mode`      | Group response mode after auto-activation. Values are `owner_at`, `owner`, `all_at`, `all`, or `none`. When this and `group_default_profile` are both not `none`, the first new-group message matching the mode creates the workspace and activates the group. Defaults to `none`.                                                                                                       |
 | `[permissions].group_default_workspace` | Default workspace template for new group conversations. Supports `{{twinny_home}}` and `{{conversation_key}}` variables. Defaults to `{{twinny_home}}/workspaces/{{conversation_key}}`. If the rendered directory already exists, Twinny reuses it; otherwise it creates it.                                                                                                             |
+| `[greeting.p2p].mode`                   | Greeting mode after a P2P conversation is created: `none`, `text`, or `codex_turn`. `text` sends the configured message directly to the P2P chat; `codex_turn` sends `message` to Codex and posts a turn card. Defaults to `none`.                                                                                                                                                       |
+| `[greeting.p2p].message`                | P2P greeting text or Codex turn input. Required as a non-empty string when `mode` is not `none`.                                                                                                                                                                                                                                                                                         |
+| `[greeting.group].mode`                 | Greeting mode after a group conversation is created: `none`, `text`, or `codex_turn`. Defaults to `none`.                                                                                                                                                                                                                                                                               |
+| `[greeting.group].message`              | Group greeting text or Codex turn input. Required as a non-empty string when `mode` is not `none`.                                                                                                                                                                                                                                                                                       |
 | `[service.launchd].mode`                | macOS launchd placement. `gui` uses the current `gui/<uid>` LaunchAgent by default; `daemon` uses a system LaunchDaemon. Usually written by `twinny install --system-daemon`.                                                                                                                                                                                                              |
 | `[service.launchd].user_name`           | The plist `UserName` when `mode = "daemon"`. Usually written automatically by `twinny install --system-daemon` from the current user.                                                                                                                                                                                                                                                      |
 | `[profiles.<name>].codex_home`          | `CODEX_HOME` for that profile. Absolute paths are used as-is; relative paths are resolved under `TWINNY_HOME`. `host` defaults to `~/.codex`; other profiles inherit `host` unless set.                                                                                                                                                                                                  |
@@ -256,6 +262,14 @@ p2p_default_workspace = "{{twinny_home}}/workspaces/{{conversation_key}}"
 group_default_profile = "none"
 group_default_mode = "none"
 group_default_workspace = "{{twinny_home}}/workspaces/{{conversation_key}}"
+
+[greeting.p2p]
+mode = "none"
+message = ""
+
+[greeting.group]
+mode = "none"
+message = ""
 
 [profiles.host]
 codex_home = "~/.codex"

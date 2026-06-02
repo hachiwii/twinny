@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeIncomingLarkMessage,
   normalizeIncomingLarkMessageWithReason,
+  normalizeLarkBotAddedToChatWithReason,
   normalizeLarkBotMenuWithReason,
   normalizeLarkDocCommentAddWithReason,
   normalizeLarkMessageRecallWithReason,
+  normalizeLarkP2pChatCreateWithReason,
   normalizeTextContent
 } from "./filters.js";
 
@@ -629,6 +631,73 @@ describe("normalizeLarkBotMenuWithReason", () => {
         }
       })
     ).toMatchObject({ kind: "ignored", reason: "unsupported_event_key" });
+  });
+});
+
+describe("normalizeLarkP2pChatCreateWithReason", () => {
+  it("normalizes legacy p2p chat create events", () => {
+    expect(
+      normalizeLarkP2pChatCreateWithReason({
+        uuid: "event-p2p",
+        ts: "1669364458",
+        event: {
+          user: { open_id: "ou_guest" },
+          operator_id: { open_id: "ou_owner" },
+          open_chat_id: "oc_p2p",
+          name: "Guest DM"
+        }
+      })
+    ).toEqual({
+      kind: "p2p_chat_create",
+      event: {
+        eventId: "event-p2p",
+        userOpenId: "ou_guest",
+        operatorOpenId: "ou_owner",
+        chatId: "oc_p2p",
+        chatName: "Guest DM",
+        createTime: 1669364458000,
+        raw: expect.anything()
+      }
+    });
+  });
+
+  it("ignores p2p chat create events without a user open id", () => {
+    expect(normalizeLarkP2pChatCreateWithReason({ event: { chat_id: "oc_p2p" } })).toMatchObject({
+      kind: "ignored",
+      reason: "missing_user_open_id"
+    });
+  });
+});
+
+describe("normalizeLarkBotAddedToChatWithReason", () => {
+  it("normalizes bot added to chat events", () => {
+    expect(
+      normalizeLarkBotAddedToChatWithReason({
+        header: { event_id: "event-group", create_time: "1669364459000" },
+        event: {
+          chat_id: "oc_group",
+          name: "Project Group",
+          operator_id: { open_id: "ou_owner" }
+        }
+      })
+    ).toEqual({
+      kind: "bot_added_to_chat",
+      event: {
+        eventId: "event-group",
+        chatId: "oc_group",
+        chatName: "Project Group",
+        operatorOpenId: "ou_owner",
+        createTime: 1669364459000,
+        raw: expect.anything()
+      }
+    });
+  });
+
+  it("ignores bot added to chat events without a chat id", () => {
+    expect(normalizeLarkBotAddedToChatWithReason({ event: { name: "Missing chat" } })).toMatchObject({
+      kind: "ignored",
+      reason: "missing_chat_id"
+    });
   });
 });
 

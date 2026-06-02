@@ -64,6 +64,10 @@ const config: TwinnyConfig = {
     groupDefaultMode: "none",
     groupDefaultWorkspace: "{{twinny_home}}/workspaces/{{conversation_key}}"
   },
+  greeting: {
+    p2p: { mode: "none", message: "" },
+    group: { mode: "none", message: "" }
+  },
   service: { launchd: { mode: "gui" } },
   owner: { openId: "ou_owner", displayName: "Owner" },
   profiles: {
@@ -8695,6 +8699,140 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("auto-activates p2p conversations from chat-create events and sends configured text greeting once", async () => {
+    const { repository } = createRepository();
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({
+      repository,
+      codex,
+      lark,
+      config: {
+        ...config,
+        greeting: {
+          ...config.greeting,
+          p2p: { mode: "text", message: "Welcome DM" }
+        }
+      }
+    });
+
+    manager.submitP2pChatCreate({
+      eventId: "event_p2p_create",
+      userOpenId: "ou_guest",
+      chatId: "oc_p2p",
+      createTime: 1234,
+      raw: {}
+    });
+
+    await waitForExpect(() =>
+      expect(lark.sendTextToOpenId).toHaveBeenCalledWith("ou_guest", "Welcome DM", {
+        uuid: expect.stringMatching(UUID_PATTERN)
+      })
+    );
+    expect(codex.startThread).toHaveBeenCalledWith(expect.objectContaining({
+      profile: "guest",
+      cwd: "/tmp/twinny/workspaces/p2p_ou_guest"
+    }));
+    expect(repository.findByConversationKey("p2p_ou_guest")).toMatchObject({
+      conversationKey: "p2p_ou_guest",
+      type: "p2p",
+      chatId: "ou_guest",
+      responseMode: "all",
+      profile: "guest"
+    });
+
+    manager.submitP2pChatCreate({
+      eventId: "event_p2p_create_again",
+      userOpenId: "ou_guest",
+      raw: {}
+    });
+    await waitForDelay();
+    expect(lark.sendTextToOpenId).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto-activates groups from bot-added events and sends configured codex turn greeting as a direct card", async () => {
+    const { repository } = createRepository();
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const larkChats: LarkChatDirectory = {
+      getChatInfo: vi.fn(async () => ({ name: "Added Room", chatMode: "group" as const }))
+    };
+    const manager = createManager({
+      repository,
+      codex,
+      lark,
+      larkChats,
+      botOpenId: "ou_bot",
+      config: {
+        ...groupDefaultConfig({ profile: "guest", mode: "all_at" }),
+        greeting: {
+          ...config.greeting,
+          group: { mode: "codex_turn", message: "Introduce Twinny to this room" }
+        }
+      }
+    });
+
+    manager.submitBotAddedToChat({
+      eventId: "event_bot_added",
+      chatId: "oc_group",
+      chatName: "Event Room",
+      operatorOpenId: "ou_owner",
+      createTime: 1234,
+      raw: {}
+    });
+
+    await waitForExpect(() => expect(lark.sendCardToChatId).toHaveBeenCalledWith(
+      "oc_group",
+      expect.anything(),
+      { uuid: expect.stringMatching(UUID_PATTERN) }
+    ));
+    expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
+      conversationKey: "group_oc_group",
+      name: "Added Room",
+      responseMode: "all_at",
+      profile: "guest"
+    });
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(expect.objectContaining({
+      larkMessageId: "greeting:bot_added_to_chat:event_bot_added",
+      larkGroupId: "oc_group",
+      conversationKey: "group_oc_group",
+      routeKind: "greeting_message",
+      text: "Introduce Twinny to this room"
+    }));
+    expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread_1",
+      input: '<greeting_message source="bot_added_to_chat">\nIntroduce Twinny to this room\n</greeting_message>'
+    }));
+    expect(lark.addTypingReaction).not.toHaveBeenCalledWith("greeting:bot_added_to_chat:event_bot_added");
+  });
+
+  it("does not send greeting when user messages trigger group default activation", async () => {
+    const { repository } = createRepository();
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({
+      repository,
+      codex,
+      lark,
+      botOpenId: "ou_bot",
+      config: {
+        ...groupDefaultConfig({ profile: "guest", mode: "all_at" }),
+        greeting: {
+          ...config.greeting,
+          group: { mode: "text", message: "Welcome group" }
+        }
+      }
+    });
+
+    manager.submitIncoming(groupMessage("g_default", "@_bot hello group", { mentions: [botMention()] }));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(lark.sendTextToChatId).not.toHaveBeenCalledWith("oc_group", "Welcome group", expect.anything());
+    expect(repository.insertLarkMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+      routeKind: "greeting_message"
+    }));
+  });
+
   it("lets the owner activate a group with default at/guest mode and records the control message", async () => {
     const { repository, row } = createRepository();
     const codex = createCodex();
@@ -8743,6 +8881,63 @@ describe("ConversationManager", () => {
       responseMode: "all_at",
       profile: "guest",
       workspace: "/tmp/twinny/workspaces/group_oc_group"
+    });
+  });
+
+  it("sends group greeting after manual activation", async () => {
+    const { repository } = createRepository();
+    const lark = createLarkResponder();
+    const larkChats: LarkChatDirectory = {
+      getChatInfo: vi.fn(async () => ({ name: "Greeting Room", chatMode: "group" as const }))
+    };
+    const manager = createManager({
+      repository,
+      lark,
+      larkChats,
+      botOpenId: "ou_bot",
+      config: {
+        ...config,
+        greeting: {
+          ...config.greeting,
+          group: { mode: "text", message: "Welcome group" }
+        }
+      }
+    });
+
+    manager.submitIncoming(groupMessage("g_activate", "/activate all_at guest", { senderOpenId: "ou_owner", senderName: "Owner" }));
+
+    await waitForExpect(() =>
+      expect(lark.sendTextToChatId).toHaveBeenCalledWith("oc_group", "Welcome group", {
+        uuid: expect.stringMatching(UUID_PATTERN)
+      })
+    );
+  });
+
+  it("sends p2p greeting after manual pair creates a conversation", async () => {
+    const { repository } = createRepository();
+    const lark = createLarkResponder();
+    const manager = createManager({
+      repository,
+      lark,
+      config: {
+        ...config,
+        greeting: {
+          ...config.greeting,
+          p2p: { mode: "text", message: "Welcome paired user" }
+        }
+      }
+    });
+
+    manager.submitIncoming(ownerMessage("m_pair", "/pair ou_guest guest"));
+
+    await waitForExpect(() =>
+      expect(lark.sendTextToOpenId).toHaveBeenCalledWith("ou_guest", "Welcome paired user", {
+        uuid: expect.stringMatching(UUID_PATTERN)
+      })
+    );
+    expect(repository.findByConversationKey("p2p_ou_guest")).toMatchObject({
+      conversationKey: "p2p_ou_guest",
+      profile: "guest"
     });
   });
 

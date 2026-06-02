@@ -74,6 +74,10 @@ describe("Twinny config loading and bootstrap", () => {
       groupDefaultMode: "none",
       groupDefaultWorkspace: "{{twinny_home}}/workspaces/{{conversation_key}}"
     });
+    expect(loaded.greeting).toEqual({
+      p2p: { mode: "none", message: "" },
+      group: { mode: "none", message: "" }
+    });
     expect(loaded.profiles.host.codexHome).toBe(path.join(home, ".codex"));
     expect(loaded.profiles.guest.codexHome).toBe(path.join(home, ".codex"));
     expect(rawRandom.trim()).toBe(homeRandom);
@@ -107,10 +111,13 @@ describe("Twinny config loading and bootstrap", () => {
     expect(serialized).toContain("[profiles.host]");
     expect(serialized).toContain("[profiles.guest]");
     expect(serialized).toContain("[permissions]");
+    expect(serialized).toContain("[greeting.p2p]");
+    expect(serialized).toContain("[greeting.group]");
     expect(serialized).toContain('p2p_default_workspace = "{{twinny_home}}/workspaces/{{conversation_key}}"');
     expect(serialized).toContain('group_default_profile = "none"');
     expect(serialized).toContain('group_default_mode = "none"');
     expect(serialized).toContain('group_default_workspace = "{{twinny_home}}/workspaces/{{conversation_key}}"');
+    expect(serialized).toContain('mode = "none"');
     expect(serialized).toContain('working = "JubilantRabbit"');
     expect(serialized).not.toContain("masquerade_as_codex_cli");
     expect(serialized).not.toContain("[service]");
@@ -176,6 +183,34 @@ describe("Twinny config loading and bootstrap", () => {
       groupDefaultProfile: "guest",
       groupDefaultMode: "all_at",
       groupDefaultWorkspace: "/srv/twinny/groups/{{conversation_key}}"
+    });
+  });
+
+  it("round-trips greeting configuration", () => {
+    const config = createTwinnyConfig({
+      home: "/tmp/twinny",
+      homeRandom,
+      auth: { larkAppId: "cli_test", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner" },
+      greeting: {
+        p2p: { mode: "text", message: "Welcome to Twinny" },
+        group: { mode: "codex_turn", message: "Introduce yourself for this group" }
+      },
+      profiles: {
+        host: {},
+        guest: {}
+      }
+    });
+
+    const serialized = serializeTwinnyConfig(config);
+    const parsed = parseTwinnyConfig(serialized, { home: "/tmp/twinny" });
+
+    expect(serialized).toContain("[greeting.p2p]");
+    expect(serialized).toContain('message = "Welcome to Twinny"');
+    expect(serialized).toContain("[greeting.group]");
+    expect(serialized).toContain('mode = "codex_turn"');
+    expect(parsed.greeting).toEqual({
+      p2p: { mode: "text", message: "Welcome to Twinny" },
+      group: { mode: "codex_turn", message: "Introduce yourself for this group" }
     });
   });
 

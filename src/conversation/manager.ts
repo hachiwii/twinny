@@ -64,11 +64,14 @@ import type {
   ConversationRecord,
   ConversationType,
   CronJobRecord,
+  GreetingTargetConfig,
+  IncomingLarkBotAddedToChat,
   IncomingLarkDocCommentAdd,
   IncomingLarkBotMenuAction,
   IncomingLarkCardAction,
   IncomingLarkMessage,
   IncomingLarkMessageRecall,
+  IncomingLarkP2pChatCreate,
   LarkDocWatcherRecord,
   LarkDocWatchMode,
   LarkMessageRecord,
@@ -982,7 +985,8 @@ type SyntheticMessageDeliveryMode = "queue" | "steer" | "interrupt";
 
 type SyntheticMessageEnvelope =
   | { kind: "message_from_other_thread"; sourceThreadId: string; threadRelationship: ThreadRelationship }
-  | { kind: "cron_message"; cronId: number };
+  | { kind: "cron_message"; cronId: number }
+  | { kind: "greeting_message"; source: "p2p_chat_create" | "bot_added_to_chat" | "manual_activate" | "manual_pair" };
 
 interface PendingMessage {
   messageId: string;
@@ -997,6 +1001,8 @@ interface PendingMessage {
   skipQueuedRefresh?: boolean;
   queuedReaction?: LarkReactionHandle | null;
   docComment?: PendingDocCommentContext;
+  cardDelivery?: ActiveTurnCardDelivery;
+  skipReaction?: boolean;
   syntheticEnvelope?: SyntheticMessageEnvelope;
   docQueuedReaction?: LarkDocCommentReactionHandle | null;
   docWorkingReaction?: LarkDocCommentReactionHandle | null;
@@ -1420,6 +1426,53 @@ export class ConversationManager {
         "conversation doc comment event failed"
       );
     });
+  }
+
+  submitP2pChatCreate(event: IncomingLarkP2pChatCreate): void {
+    if (this.shuttingDown) {
+      throw new TwinnyError("Conversation manager is shutting down", "CONVERSATION_MANAGER_SHUTTING_DOWN");
+    }
+
+    const conversationKey = conversationKeyForP2p(event.userOpenId);
+    const context: MessageContext = { type: "p2p", conversationKey, stateKey: conversationKey };
+    const state = this.getState(context.stateKey);
+    void state.controlQueue
+      .enqueue(() => this.processP2pChatCreate(state, context, event))
+      .catch((error) => {
+        this.options.telemetry?.captureError(error, {
+          errorType: "conversation",
+          errorSite: "conversation.submitP2pChatCreate",
+          operation: "submit_p2p_chat_create",
+          fatal: false,
+          conversationKey,
+          larkSenderOpenId: event.userOpenId,
+          larkEventId: event.eventId
+        });
+        this.log.error({ error, eventId: event.eventId, userOpenId: event.userOpenId }, "conversation p2p create event failed");
+      });
+  }
+
+  submitBotAddedToChat(event: IncomingLarkBotAddedToChat): void {
+    if (this.shuttingDown) {
+      throw new TwinnyError("Conversation manager is shutting down", "CONVERSATION_MANAGER_SHUTTING_DOWN");
+    }
+
+    const conversationKey = conversationKeyForGroup(event.chatId);
+    const context: MessageContext = { type: "group", conversationKey, stateKey: conversationKey };
+    const state = this.getState(context.stateKey);
+    void state.controlQueue
+      .enqueue(() => this.processBotAddedToChat(state, context, event))
+      .catch((error) => {
+        this.options.telemetry?.captureError(error, {
+          errorType: "conversation",
+          errorSite: "conversation.submitBotAddedToChat",
+          operation: "submit_bot_added_to_chat",
+          fatal: false,
+          conversationKey,
+          larkEventId: event.eventId
+        });
+        this.log.error({ error, eventId: event.eventId, chatId: event.chatId }, "conversation bot added to chat event failed");
+      });
   }
 
   submitBotMenuAction(action: IncomingLarkBotMenuAction): void {
@@ -3237,6 +3290,114 @@ export class ConversationManager {
     return { responseMode: groupDefaultMode, profile: groupDefaultProfile };
   }
 
+  private async processP2pChatCreate(
+    state: ConversationState,
+    context: MessageContext,
+    event: IncomingLarkP2pChatCreate
+  ): Promise<void> {
+    const profile = this.options.config.permissions.p2pDefaultProfile;
+    if (profile === "none") {
+      return;
+    }
+    if (!this.options.config.profiles[profile]) {
+      this.log.warn({ profile }, "ignored p2p chat create activation with unknown profile");
+      return;
+    }
+    const existing = await this.options.repository.findByConversationKey(context.conversationKey);
+    if (existing) {
+      return;
+    }
+
+    const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
+    const thread = await this.options.codex.startThread({
+      profile,
+      cwd: workspace,
+      approvalPolicy: "never",
+      developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context, { mainThread: true })
+    });
+    const name = await this.resolveP2pActivationName(event);
+    const conversation = await this.options.repository.create({
+      conversationKey: context.conversationKey,
+      type: "p2p",
+      chatId: event.userOpenId,
+      name,
+      responseMode: "all",
+      profile,
+      codexThreadId: thread.threadId,
+      workspace,
+      profileCodexHome: this.options.profiles.codexHomeFor(profile)
+    });
+    await this.recordCodexThreadBestEffort({
+      conversationKey: context.conversationKey,
+      codexThreadId: thread.threadId,
+      profile,
+      workspace,
+      name: MAIN_THREAD_NAME,
+      codexThreadHasRollout: false
+    });
+    this.syncMainConversationThreadNameToCodexBestEffort(profile, thread.threadId, name);
+    await this.sendGreetingForConversation(state, context, conversation, this.options.config.greeting.p2p, {
+      source: "p2p_chat_create",
+      eventId: event.eventId,
+      createTime: event.createTime,
+      raw: event.raw
+    });
+  }
+
+  private async processBotAddedToChat(
+    state: ConversationState,
+    context: MessageContext,
+    event: IncomingLarkBotAddedToChat
+  ): Promise<void> {
+    const { groupDefaultMode, groupDefaultProfile } = this.options.config.permissions;
+    if (groupDefaultProfile === "none" || groupDefaultMode === "none") {
+      return;
+    }
+    if (!this.options.config.profiles[groupDefaultProfile]) {
+      this.log.warn({ profile: groupDefaultProfile }, "ignored bot-added activation with unknown profile");
+      return;
+    }
+    const existing = await this.options.repository.findByConversationKey(context.conversationKey);
+    if (existing) {
+      return;
+    }
+
+    const workspace = await this.options.workspaces.ensureWorkspace(context.conversationKey);
+    const thread = await this.options.codex.startThread({
+      profile: groupDefaultProfile,
+      cwd: workspace,
+      approvalPolicy: "never",
+      developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context, { mainThread: true })
+    });
+    const name = await this.resolveGroupActivationName(event.chatId, event.chatName);
+    const conversation = await this.options.repository.create({
+      conversationKey: context.conversationKey,
+      type: "group",
+      chatId: event.chatId,
+      name,
+      responseMode: groupDefaultMode,
+      profile: groupDefaultProfile,
+      codexThreadId: thread.threadId,
+      workspace,
+      profileCodexHome: this.options.profiles.codexHomeFor(groupDefaultProfile)
+    });
+    await this.recordCodexThreadBestEffort({
+      conversationKey: context.conversationKey,
+      codexThreadId: thread.threadId,
+      profile: groupDefaultProfile,
+      workspace,
+      name: MAIN_THREAD_NAME,
+      codexThreadHasRollout: false
+    });
+    this.syncMainConversationThreadNameToCodexBestEffort(groupDefaultProfile, thread.threadId, name);
+    await this.sendGreetingForConversation(state, context, conversation, this.options.config.greeting.group, {
+      source: "bot_added_to_chat",
+      eventId: event.eventId,
+      createTime: event.createTime,
+      raw: event.raw
+    });
+  }
+
   private async activateNewGroupConversationFromDefaults(
     context: MessageContext,
     message: IncomingLarkMessage,
@@ -3282,6 +3443,191 @@ export class ConversationManager {
       "auto-activated group conversation from defaults"
     );
     return conversation;
+  }
+
+  private async resolveP2pActivationName(event: IncomingLarkP2pChatCreate): Promise<string> {
+    const eventName = nonEmptyString(event.chatName);
+    if (eventName) {
+      return eventName;
+    }
+    if (this.options.larkUsers) {
+      try {
+        const name = nonEmptyString(await this.options.larkUsers.getUserNameByOpenId(event.userOpenId));
+        if (name) {
+          return name;
+        }
+      } catch (error) {
+        this.log.warn({ error, larkUserId: event.userOpenId }, "failed to resolve p2p activation user name");
+      }
+    }
+    return event.userOpenId;
+  }
+
+  private async resolveGroupActivationName(chatId: string, fallbackName?: string): Promise<string> {
+    if (this.options.larkChats?.getChatInfo) {
+      try {
+        const name = nonEmptyString((await this.options.larkChats.getChatInfo(chatId))?.name);
+        if (name) {
+          return name;
+        }
+      } catch (error) {
+        this.log.warn({ error, chatId }, "failed to resolve lark chat info for activation");
+      }
+    } else {
+      try {
+        const name = nonEmptyString(await this.options.larkChats?.getChatName?.(chatId));
+        if (name) {
+          return name;
+        }
+      } catch (error) {
+        this.log.warn({ error, chatId }, "failed to resolve lark chat name for activation");
+      }
+    }
+    return nonEmptyString(fallbackName) ?? chatId;
+  }
+
+  private async sendGreetingForConversation(
+    currentState: ConversationState,
+    currentContext: MessageContext,
+    conversation: ConversationRecord,
+    greeting: GreetingTargetConfig,
+    metadata: {
+      source: "p2p_chat_create" | "bot_added_to_chat" | "manual_activate" | "manual_pair";
+      eventId: string;
+      createTime?: number;
+      raw: unknown;
+    }
+  ): Promise<void> {
+    try {
+      await this.sendGreetingForConversationUnsafe(currentState, currentContext, conversation, greeting, metadata);
+    } catch (error) {
+      this.log.warn(
+        { error, conversationKey: conversation.conversationKey, source: metadata.source },
+        "failed to send greeting"
+      );
+    }
+  }
+
+  private async sendGreetingForConversationUnsafe(
+    currentState: ConversationState,
+    currentContext: MessageContext,
+    conversation: ConversationRecord,
+    greeting: GreetingTargetConfig,
+    metadata: {
+      source: "p2p_chat_create" | "bot_added_to_chat" | "manual_activate" | "manual_pair";
+      eventId: string;
+      createTime?: number;
+      raw: unknown;
+    }
+  ): Promise<void> {
+    const message = nonEmptyString(greeting.message);
+    if (greeting.mode === "none" || !message) {
+      return;
+    }
+    const uuid = createLarkUuid("twinny-greeting", metadata.source, metadata.eventId, conversation.conversationKey);
+    if (greeting.mode === "text") {
+      await this.sendGreetingTextBestEffort(conversation, message, uuid);
+      return;
+    }
+
+    const target = await this.options.repository.getCodexThreadById(conversation.codexThreadId);
+    if (!target) {
+      this.log.warn({ conversationKey: conversation.conversationKey }, "skipping greeting turn because main thread record is missing");
+      return;
+    }
+    const targetContext = createMessageContextForThread(conversation, target);
+    const targetState = this.getState(targetContext.stateKey);
+    const run = () => this.injectGreetingMessageInQueue(targetState, targetContext, conversation, target, message, metadata);
+    if (targetState === currentState && targetContext.stateKey === currentContext.stateKey) {
+      await run();
+      return;
+    }
+    await targetState.controlQueue.enqueue(run);
+  }
+
+  private async sendGreetingTextBestEffort(
+    conversation: ConversationRecord,
+    message: string,
+    uuid: string
+  ): Promise<void> {
+    try {
+      if (conversation.type === "p2p") {
+        await this.options.lark.sendTextToOpenId(conversation.chatId, message, { uuid });
+        return;
+      }
+      await this.options.lark.sendTextToChatId(conversation.chatId, message, { uuid });
+    } catch (error) {
+      this.log.warn({ error, conversationKey: conversation.conversationKey }, "failed to send greeting text");
+    }
+  }
+
+  private async injectGreetingMessageInQueue(
+    state: ConversationState,
+    context: MessageContext,
+    conversation: ConversationRecord,
+    target: CodexThreadRecord,
+    message: string,
+    metadata: {
+      source: "p2p_chat_create" | "bot_added_to_chat" | "manual_activate" | "manual_pair";
+      eventId: string;
+      createTime?: number;
+      raw: unknown;
+    }
+  ): Promise<void> {
+    const createTime = Date.now();
+    const larkMessageId = `greeting:${metadata.source}:${metadata.eventId}`;
+    const botOpenId = nonEmptyString(this.options.botOpenId) ?? MISSING_BOT_OPEN_ID;
+    const syntheticMessage: IncomingLarkMessage = {
+      eventId: `greeting:${metadata.source}:${metadata.eventId}`,
+      messageId: larkMessageId,
+      chatId: conversation.chatId,
+      chatType: context.type,
+      messageType: "greeting",
+      senderOpenId: botOpenId,
+      senderName: "Twinny",
+      larkGroupId: isGroupConversationType(context.type) ? conversation.chatId : undefined,
+      larkThreadId: context.larkThreadId,
+      text: message,
+      createTime,
+      raw: {
+        twinny: true,
+        kind: "greeting",
+        source: metadata.source,
+        event_id: metadata.eventId,
+        create_time: metadata.createTime,
+        raw: metadata.raw
+      }
+    };
+    const pending = toPendingMessage(syntheticMessage, message, {
+      queueBoundary: true,
+      forceQueueWhenActive: true,
+      excludeFromParticipants: true,
+      skipQueuedRefresh: true,
+      skipReaction: true,
+      cardDelivery: {
+        kind: "direct",
+        conversationType: conversation.type,
+        chatId: conversation.chatId,
+        uuid: createLarkUuid("twinny-greeting-card", metadata.source, metadata.eventId, conversation.conversationKey)
+      },
+      syntheticEnvelope: { kind: "greeting_message", source: metadata.source }
+    });
+    const initialStatus = this.willProcessPendingMessageImmediately(state, pending) ? "processing" : "queued";
+    await this.options.repository.insertLarkMessage({
+      larkMessageId,
+      eventId: syntheticMessage.eventId,
+      larkUserId: botOpenId,
+      larkGroupId: syntheticMessage.larkGroupId,
+      larkThreadId: syntheticMessage.larkThreadId,
+      conversationKey: target.conversationKey,
+      codexThreadId: target.codexThreadId,
+      routeKind: "greeting_message",
+      status: initialStatus,
+      text: message,
+      larkCreateTime: createTime,
+      rawEventJson: safeJsonStringify(syntheticMessage.raw)
+    });
+    await this.deliverPendingMessageWithMode(state, context, pending, "queue");
   }
 
   private async rejectUnauthorizedP2pBestEffort(
@@ -3413,8 +3759,10 @@ export class ConversationManager {
 
     const profile = parsed.profile ?? existing?.profile ?? "guest";
     const groupInfo = await this.resolveGroupInfo(message, existing);
+    const shouldSendGreeting = !existing || existing.responseMode === "none";
+    let conversation: ConversationRecord;
     if (existing) {
-      await this.options.repository.updateConversationSettings(context.conversationKey, {
+      conversation = await this.options.repository.updateConversationSettings(context.conversationKey, {
         name: groupInfo.name,
         responseMode: parsed.responseMode
       });
@@ -3426,7 +3774,7 @@ export class ConversationManager {
         approvalPolicy: "never",
         developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context, { mainThread: true })
       });
-      await this.options.repository.create({
+      conversation = await this.options.repository.create({
         conversationKey: context.conversationKey,
         type: context.type,
         chatId: message.chatId,
@@ -3465,6 +3813,14 @@ export class ConversationManager {
     await recordIncoming();
     await this.replyControlBestEffort(message.messageId, replyLines.join("\n"));
     await this.markMessagesCompletedBestEffort([message.messageId]);
+    if (shouldSendGreeting) {
+      await this.sendGreetingForConversation(state, context, conversation, this.options.config.greeting.group, {
+        source: "manual_activate",
+        eventId: message.eventId,
+        createTime: message.createTime,
+        raw: message.raw
+      });
+    }
   }
 
   private async handlePairCommand(
@@ -3514,7 +3870,7 @@ export class ConversationManager {
         { mainThread: true }
       )
     });
-    await this.options.repository.create({
+    const conversation = await this.options.repository.create({
       conversationKey,
       type: "p2p",
       chatId: parsed.guestOpenId,
@@ -3536,6 +3892,12 @@ export class ConversationManager {
     this.syncMainConversationThreadNameToCodexBestEffort(parsed.profile, thread.threadId, parsed.guestOpenId);
     await this.replyControlBestEffort(message.messageId, `已授权 ${parsed.guestOpenId} 使用 profile=${parsed.profile}。`);
     await this.markMessagesCompletedBestEffort([message.messageId]);
+    await this.sendGreetingForConversation(state, { type: "p2p", conversationKey, stateKey: conversationKey }, conversation, this.options.config.greeting.p2p, {
+      source: "manual_pair",
+      eventId: message.eventId,
+      createTime: message.createTime,
+      raw: message.raw
+    });
   }
 
   private async handleReloadCommand(
@@ -7683,7 +8045,7 @@ export class ConversationManager {
       messageTokenUsage: params.usageCarryover ?? emptyLarkMessageTokenUsageSnapshot(),
       generatedImagePaths: [],
       processMessages: [],
-      reaction: anchor.docComment ? undefined : await this.addReactionBestEffort(anchor.messageId),
+      reaction: anchor.docComment || anchor.skipReaction ? undefined : await this.addReactionBestEffort(anchor.messageId),
       card: params.card ?? {
         anchorMessageId: cardDelivery?.kind === "reply"
           ? cardDelivery.messageId
@@ -10834,7 +11196,7 @@ export class ConversationManager {
     if (message.queuedReaction) {
       return;
     }
-    if (!message.docComment) {
+    if (!message.docComment && !message.skipReaction) {
       try {
         message.queuedReaction = await this.options.lark.addQueuedReaction(message.messageId);
       } catch (error) {
@@ -12133,6 +12495,11 @@ export class ConversationManager {
     if (text.length === 0) {
       return;
     }
+    const directDelivery = active.card?.delivery?.kind === "direct" ? active.card.delivery : undefined;
+    if (directDelivery) {
+      await this.sendDirectAgentMessageBestEffort(active, directDelivery, agentMessage);
+      return;
+    }
     const markdown = renderLocalPathMarkdownLinksAsCode(text);
     try {
       const parseCodexMentions = agentMessage.phase === "final_answer";
@@ -12176,6 +12543,58 @@ export class ConversationManager {
     } catch (error) {
       this.log.warn({ error, messageId, agentMessageId: agentMessage.id }, "failed to send agent message item to lark");
     }
+  }
+
+  private async sendDirectAgentMessageBestEffort(
+    active: ActiveTurn,
+    delivery: Extract<ActiveTurnCardDelivery, { kind: "direct" }>,
+    agentMessage: CodexAgentMessage
+  ): Promise<void> {
+    const text = agentMessage.text.trim();
+    if (text.length === 0) {
+      return;
+    }
+    const markdown = renderLocalPathMarkdownLinksAsCode(text);
+    const parseCodexMentions = agentMessage.phase === "final_answer";
+    const uuid = createLarkUuid("twinny-agent-direct", active.threadId, agentMessage.id);
+    try {
+      const outbound = await this.prepareAgentReplyForLark(markdown, active.workspace, { parseCodexMentions });
+      if (outbound === undefined) {
+        if (parseCodexMentions && hasCodexMentionSyntax(markdown)) {
+          await this.sendDirectAgentPost(delivery, postContentForCodexMentionText(markdown));
+          return;
+        }
+        const result = delivery.conversationType === "p2p"
+          ? await this.options.lark.sendTextToOpenId(delivery.chatId, markdown, { uuid })
+          : await this.options.lark.sendTextToChatId(delivery.chatId, markdown, { uuid });
+        if (result?.messageId) {
+          active.lastAgentReplyMessageId = result.messageId;
+        }
+        return;
+      }
+
+      const result = await this.sendDirectAgentPost(delivery, outbound.postContent);
+      if (result?.messageId) {
+        active.lastAgentReplyMessageId = result.messageId;
+      }
+      if (outbound.files.length > 0) {
+        this.log.warn(
+          { threadId: active.threadId, fileCount: outbound.files.length },
+          "direct agent message fallback omitted file attachments"
+        );
+      }
+    } catch (error) {
+      this.log.warn({ error, chatId: delivery.chatId, agentMessageId: agentMessage.id }, "failed to send direct agent message to lark");
+    }
+  }
+
+  private async sendDirectAgentPost(
+    delivery: Extract<ActiveTurnCardDelivery, { kind: "direct" }>,
+    content: LarkPostContent
+  ): Promise<LarkSendMessageResult | void> {
+    return delivery.conversationType === "p2p"
+      ? this.options.lark.sendPostToOpenId(delivery.chatId, content)
+      : this.options.lark.sendPostToChatId(delivery.chatId, content);
   }
 
   private async prepareAgentReplyForLark(
@@ -14479,6 +14898,9 @@ function activeTurnCardDeliveryForAnchor(
   anchor: PendingMessage,
   thread: CodexThreadRecord | undefined
 ): ActiveTurnCardDelivery | undefined {
+  if (anchor.cardDelivery) {
+    return anchor.cardDelivery;
+  }
   const doc = anchor.docComment;
   if (!doc) {
     return undefined;
@@ -15527,6 +15949,8 @@ function toPendingMessage(
     program?: PendingMessage["program"];
     rewindTurns?: number;
     docComment?: PendingDocCommentContext;
+    cardDelivery?: ActiveTurnCardDelivery;
+    skipReaction?: boolean;
     forceQueueWhenActive?: boolean;
     excludeFromParticipants?: boolean;
     skipQueuedRefresh?: boolean;
@@ -15545,6 +15969,8 @@ function toPendingMessage(
     excludeFromParticipants: options.excludeFromParticipants,
     skipQueuedRefresh: options.skipQueuedRefresh,
     docComment: options.docComment,
+    cardDelivery: options.cardDelivery,
+    skipReaction: options.skipReaction,
     syntheticEnvelope: options.syntheticEnvelope
   };
 }
@@ -15830,6 +16256,13 @@ function formatPendingMessageForCodex(message: PendingMessage): string {
       formatXmlOpenTag("cron_message", [["cron_id", String(message.syntheticEnvelope.cronId)]]),
       message.text,
       "</cron_message>"
+    ].join("\n");
+  }
+  if (message.syntheticEnvelope?.kind === "greeting_message") {
+    return [
+      formatXmlOpenTag("greeting_message", [["source", message.syntheticEnvelope.source]]),
+      message.text,
+      "</greeting_message>"
     ].join("\n");
   }
   const timestamp = message.original.createTime === undefined ? "" : String(message.original.createTime);

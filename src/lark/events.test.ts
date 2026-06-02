@@ -19,6 +19,8 @@ describe("LarkEventConsumer", () => {
     const onMessage = vi.fn();
     const onBotMenu = vi.fn();
     const onDocCommentAdd = vi.fn();
+    const onP2pChatCreate = vi.fn();
+    const onBotAddedToChat = vi.fn();
     const onIgnored = vi.fn();
     const consumer = new LarkEventConsumer({
       appId: "cli_1234567890abcdef",
@@ -27,6 +29,8 @@ describe("LarkEventConsumer", () => {
       onMessage,
       onBotMenu,
       onDocCommentAdd,
+      onP2pChatCreate,
+      onBotAddedToChat,
       onIgnored,
       eventDispatcherFactory: () => dispatcher,
       wsClientFactory: () => wsClient
@@ -41,8 +45,10 @@ describe("LarkEventConsumer", () => {
       "application.bot.menu_v6",
       "card.action.trigger",
       "drive.notice.comment_add_v1",
+      "im.chat.member.bot.added_v1",
       "im.message.recalled_v1",
-      "im.message.receive_v1"
+      "im.message.receive_v1",
+      "p2p_chat_create"
     ]);
     expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "hello", chatId: "ou_user" }));
     expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "hello", chatId: "oc_group", chatType: "group" }));
@@ -52,6 +58,68 @@ describe("LarkEventConsumer", () => {
     await consumer.stop({ force: true });
     expect(wsClient.close).toHaveBeenCalledWith({ force: true });
     expect(consumer.isRunning).toBe(false);
+  });
+
+  it("forwards normalized auto-activation events", async () => {
+    const registered: Record<string, (data: unknown) => unknown> = {};
+    const dispatcher: EventDispatcherLike = {
+      register(handles) {
+        Object.assign(registered, handles);
+        return this;
+      }
+    };
+    const wsClient: WsClientLike = {
+      start: vi.fn(),
+      close: vi.fn()
+    };
+    const onP2pChatCreate = vi.fn();
+    const onBotAddedToChat = vi.fn();
+    const onIgnored = vi.fn();
+    const consumer = new LarkEventConsumer({
+      appId: "cli_1234567890abcdef",
+      appSecret: "secret",
+      warmTenantToken: false,
+      onMessage: vi.fn(),
+      onP2pChatCreate,
+      onBotAddedToChat,
+      onIgnored,
+      eventDispatcherFactory: () => dispatcher,
+      wsClientFactory: () => wsClient
+    });
+
+    await consumer.start();
+    await registered["p2p_chat_create"]({
+      uuid: "event-p2p",
+      ts: "1669364458",
+      event: {
+        user: { open_id: "ou_guest" },
+        open_chat_id: "oc_p2p"
+      }
+    });
+    await registered["im.chat.member.bot.added_v1"]({
+      header: { event_id: "event-group", create_time: "1669364459000" },
+      event: {
+        chat_id: "oc_group",
+        name: "Project Group",
+        operator_id: { open_id: "ou_owner" }
+      }
+    });
+    await registered["p2p_chat_create"]({ event: {} });
+
+    expect(onP2pChatCreate).toHaveBeenCalledWith(expect.objectContaining({
+      eventId: "event-p2p",
+      userOpenId: "ou_guest",
+      chatId: "oc_p2p",
+      createTime: 1669364458000
+    }));
+    expect(onBotAddedToChat).toHaveBeenCalledWith(expect.objectContaining({
+      eventId: "event-group",
+      chatId: "oc_group",
+      chatName: "Project Group",
+      operatorOpenId: "ou_owner",
+      createTime: 1669364459000
+    }));
+    expect(onIgnored).toHaveBeenCalledWith("missing_user_open_id", expect.anything());
   });
 
   it("forwards normalized doc comment add events", async () => {
