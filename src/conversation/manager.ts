@@ -5409,7 +5409,7 @@ export class ConversationManager {
       return;
     }
 
-    const target = await this.resolveCurrentThreadForModelCommand(state, context);
+    const target = await this.resolveCurrentThreadForModelCommand(state, context, message);
     if (!target) {
       await this.replyControlBestEffort(message.messageId, "当前会话还没有 Codex thread，无法设置模型。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -5463,7 +5463,7 @@ export class ConversationManager {
       return;
     }
 
-    const target = await this.resolveCurrentThreadForModelCommand(state, context);
+    const target = await this.resolveCurrentThreadForModelCommand(state, context, message);
     if (!target) {
       await this.replyControlBestEffort(message.messageId, "当前会话还没有 Codex thread，无法设置 effort。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -5505,7 +5505,8 @@ export class ConversationManager {
 
   private async resolveCurrentThreadForModelCommand(
     state: ConversationState,
-    context: MessageContext
+    context: MessageContext,
+    message: IncomingLarkMessage
   ): Promise<{ threadId: string; profile: ProfileName; workspace: string } | undefined> {
     if (state.active) {
       return { threadId: state.active.threadId, profile: state.active.profile, workspace: state.active.workspace };
@@ -5520,7 +5521,7 @@ export class ConversationManager {
       if (topicThread) {
         return { threadId: topicThread.codexThreadId, profile: topicThread.profile, workspace: topicThread.workspace };
       }
-      return undefined;
+      return this.resolveThreadForMessage(context, message);
     }
 
     if (!conversation) {

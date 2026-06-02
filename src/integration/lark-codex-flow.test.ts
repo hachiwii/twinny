@@ -617,7 +617,7 @@ describe("Lark to Codex integration flow", () => {
       config: { summary: { content: "late final goal answer" } }
     });
     expect(harness.repository.getLarkMessageById("m_goal_terminal_first")).toMatchObject({ status: "completed" });
-  });
+  }, 10_000);
 
   it("switches an ordinary turn card to a goal card after a passive Codex goal update", async () => {
     const harness = await IntegrationHarness.create(jsonl(

@@ -519,6 +519,83 @@ describe("ConversationManager", () => {
     await waitForDelay();
   });
 
+  it("creates a topic thread before applying /model in a new Lark thread", async () => {
+    const { repository } = createRepository(groupConversationRecord({ profile: "host", responseMode: "all" }));
+    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_topic_model" })) });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("m_topic_model", "/model gpt-5.7 high", {
+      chatType: "topic_group",
+      larkThreadId: "topic_model",
+      larkRootMessageId: "topic_model_root"
+    }));
+
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadModelSettings).toHaveBeenCalledWith({
+        codexThreadId: "thread_topic_model",
+        model: "gpt-5.7",
+        effort: "high"
+      })
+    );
+    expect(codex.startThread).toHaveBeenCalledWith(expect.objectContaining({
+      profile: "host",
+      cwd: "/tmp/twinny/workspaces/group_oc_group"
+    }));
+    expect(repository.getCodexThreadById("thread_topic_model")).toMatchObject({
+      conversationKey: "group_oc_group",
+      larkThreadId: "topic_model",
+      profile: "host",
+      workspace: "/tmp/twinny/workspaces/group_oc_group",
+      model: "gpt-5.7",
+      effort: "high"
+    });
+    expect(lark.replyCard).toHaveBeenCalledWith(
+      "topic_model_root",
+      expect.any(Object),
+      expect.objectContaining({ replyInThread: true, uuid: expect.stringMatching(UUID_PATTERN) })
+    );
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "m_topic_model",
+      "已设置当前 thread 后续 turn 模型：gpt-5.7 / high"
+    );
+    expect(codex.startTurn).not.toHaveBeenCalled();
+  });
+
+  it("creates a topic thread before applying /effort in a new Lark thread", async () => {
+    const { repository } = createRepository(groupConversationRecord({ profile: "host", responseMode: "all" }));
+    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "thread_topic_effort" })) });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage("m_topic_effort", "/effort xhigh", {
+      chatType: "topic_group",
+      larkThreadId: "topic_effort"
+    }));
+
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadModelSettings).toHaveBeenCalledWith({
+        codexThreadId: "thread_topic_effort",
+        model: "gpt-5.5",
+        effort: "xhigh"
+      })
+    );
+    expect(codex.startThread).toHaveBeenCalledTimes(1);
+    expect(repository.getCodexThreadById("thread_topic_effort")).toMatchObject({
+      conversationKey: "group_oc_group",
+      larkThreadId: "topic_effort",
+      profile: "host",
+      workspace: "/tmp/twinny/workspaces/group_oc_group",
+      model: "gpt-5.5",
+      effort: "xhigh"
+    });
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "m_topic_effort",
+      "已设置当前 thread 后续 turn effort：gpt-5.5 / xhigh"
+    );
+    expect(codex.startTurn).not.toHaveBeenCalled();
+  });
+
   it("only treats known effort values after /model as effort tokens", async () => {
     const { repository } = createRepository(conversationRecord(), {
       codexThreads: [
