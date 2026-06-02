@@ -136,6 +136,26 @@ describe("Lark feature configuration checks", () => {
     expect(result.eventConfigUrl).toBe("https://open.larkoffice.com/app/cli_app/event?tab=event");
   });
 
+  it("evaluates only requested auto activation events for dynamic startup checks", () => {
+    const snapshot = parseCurrentPublishedLarkAppVersion(appVersionResponse({
+      scopes: LARK_FEATURE_SET_DEFINITIONS.auto_activation.scopes,
+      events: ["p2p_chat_create"]
+    }));
+    const result = evaluateLarkFeatureSet(
+      {
+        ...LARK_FEATURE_SET_DEFINITIONS.auto_activation,
+        events: ["p2p_chat_create"]
+      },
+      snapshot,
+      "cli_app"
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.missingScopes).toEqual([]);
+    expect(result.missingEvents).toEqual([]);
+    expect(result.eventConfigUrl).toBeUndefined();
+  });
+
   it("builds event configuration links for event and callback combinations", () => {
     expect(buildLarkEventConfigUrl("cli_app", { hasEventIssues: true, hasCallbackIssues: false })).toBe(
       "https://open.larkoffice.com/app/cli_app/event?tab=event"

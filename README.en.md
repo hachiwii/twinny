@@ -83,7 +83,7 @@ wiki:node:read
 
 Recommended: also grant `im:message.group_msg`. It lets `/activate owner` and `/activate all` receive non-@ group messages. If you only use `owner_at` or `all_at`, the required `im:message.group_at_msg:readonly` scope is enough. The install guide page pre-fills this recommended scope in its import JSON so you can switch group response modes later.
 
-If you enable default auto-activation (`permissions.p2p_default_profile != "none"`, or both `group_default_profile` and `group_default_mode` are not `none`), also grant `im:chat.members:bot_access` and subscribe to `p2p_chat_create` and `im.chat.member.bot.added_v1`.
+If you enable auto-activation greeting (P2P requires `permissions.p2p_default_profile != "none"` and `greeting.p2p.mode != "none"`; groups require both `group_default_profile` and `group_default_mode` to be non-`none` and `greeting.group.mode != "none"`), also grant `im:chat.members:bot_access`. P2P greeting additionally needs `p2p_chat_create`; group greeting additionally needs `im.chat.member.bot.added_v1`.
 
 Subscribe to these events/callbacks:
 

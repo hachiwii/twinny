@@ -21,10 +21,13 @@ import {
   LarkChatDirectory,
   LarkUserDirectory,
   LarkFeatureConfigurationChecker,
+  LARK_BOT_ADDED_TO_CHAT_EVENT,
+  LARK_FEATURE_SET_DEFINITIONS,
   LarkOpenApiClient,
+  LARK_P2P_CHAT_CREATE_EVENT,
   resolveLarkEndpoints,
   resolveLarkEventDomain,
-  type LarkFeatureSetKey,
+  type LarkFeatureSetDefinition,
   type LarkSdkLogger,
   TenantAccessTokenManager
 } from "../lark/index.js";
@@ -187,7 +190,7 @@ export class TwinnyRuntime {
         logger: this.log
       });
       this.systemNotifier = systemNotifier;
-      const startupFeatureChecks = await larkFeatureConfig.checkAllFeatureSets(startupLarkFeatureSetKeys(this.config));
+      const startupFeatureChecks = await larkFeatureConfig.checkFeatureSetDefinitions(startupLarkFeatureSetDefinitions(this.config));
       await systemNotifier.notifyMissingLarkConfiguration(
         startupFeatureChecks.filter((result) => result.key === "necessary" || result.key === "auto_activation")
       );
@@ -980,17 +983,37 @@ function adaptCodexPool(pool: ProfileCodexAppServerPool) {
   };
 }
 
-function startupLarkFeatureSetKeys(config: TwinnyConfig): LarkFeatureSetKey[] {
-  const keys: LarkFeatureSetKey[] = ["necessary"];
-  if (isAutoActivationEnabled(config)) {
-    keys.push("auto_activation");
+export function startupLarkFeatureSetDefinitions(config: TwinnyConfig): LarkFeatureSetDefinition[] {
+  const definitions: LarkFeatureSetDefinition[] = [LARK_FEATURE_SET_DEFINITIONS.necessary];
+  const autoActivationEvents = startupAutoActivationGreetingEvents(config);
+  if (autoActivationEvents.length > 0) {
+    definitions.push({
+      ...LARK_FEATURE_SET_DEFINITIONS.auto_activation,
+      events: autoActivationEvents
+    });
   }
-  return keys;
+  return definitions;
 }
 
-function isAutoActivationEnabled(config: TwinnyConfig): boolean {
-  return config.permissions.p2pDefaultProfile !== "none" ||
-    (config.permissions.groupDefaultProfile !== "none" && config.permissions.groupDefaultMode !== "none");
+function startupAutoActivationGreetingEvents(config: TwinnyConfig): string[] {
+  const events: string[] = [];
+  if (isP2pAutoActivationGreetingEnabled(config)) {
+    events.push(LARK_P2P_CHAT_CREATE_EVENT);
+  }
+  if (isGroupAutoActivationGreetingEnabled(config)) {
+    events.push(LARK_BOT_ADDED_TO_CHAT_EVENT);
+  }
+  return events;
+}
+
+function isP2pAutoActivationGreetingEnabled(config: TwinnyConfig): boolean {
+  return config.permissions.p2pDefaultProfile !== "none" && config.greeting.p2p.mode !== "none";
+}
+
+function isGroupAutoActivationGreetingEnabled(config: TwinnyConfig): boolean {
+  return config.permissions.groupDefaultProfile !== "none" &&
+    config.permissions.groupDefaultMode !== "none" &&
+    config.greeting.group.mode !== "none";
 }
 
 function adaptLarkSender(

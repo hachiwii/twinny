@@ -83,7 +83,7 @@ wiki:node:read
 
 推荐同时申请 `im:message.group_msg`。它允许 `/activate owner` 和 `/activate all` 在群聊中接收非 @ 消息；如果只使用 `owner_at` 或 `all_at`，基础的 `im:message.group_at_msg:readonly` 已足够。安装指引页面的导入 JSON 会预填这个推荐权限，便于后续切换群响应模式。
 
-如果启用默认自动激活（`permissions.p2p_default_profile != "none"`，或群聊的 `group_default_profile` 与 `group_default_mode` 都不是 `none`），还需要申请 `im:chat.members:bot_access`，并额外订阅 `p2p_chat_create` 和 `im.chat.member.bot.added_v1`。
+如果启用自动激活 greeting（私聊需 `permissions.p2p_default_profile != "none"` 且 `greeting.p2p.mode != "none"`；群聊需 `group_default_profile` 与 `group_default_mode` 都不是 `none` 且 `greeting.group.mode != "none"`），还需要申请 `im:chat.members:bot_access`。私聊 greeting 额外订阅 `p2p_chat_create`；群聊 greeting 额外订阅 `im.chat.member.bot.added_v1`。
 
 订阅这些事件/回调：
 

@@ -8,7 +8,7 @@ import { createTwinnyConfig } from "../config/index.js";
 import type { CodexAppServer, ProfileCodexAppServerPool } from "../codex/index.js";
 import type { TelemetryClient } from "../telemetry/index.js";
 import type { ProfileName } from "../types.js";
-import { TwinnyRuntime } from "./wiring.js";
+import { startupLarkFeatureSetDefinitions, TwinnyRuntime } from "./wiring.js";
 
 interface RuntimeInternals {
   codexPool?: ProfileCodexAppServerPool;
@@ -85,6 +85,36 @@ describe("TwinnyRuntime Codex app-server exit telemetry", () => {
     );
   });
 
+  it("only checks auto activation event subscriptions for enabled greeting targets", () => {
+    expect(autoActivationEvents(createConfig({
+      permissions: { p2pDefaultProfile: "guest" },
+      greeting: { p2p: { mode: "none" } }
+    }))).toEqual([]);
+    expect(autoActivationEvents(createConfig({
+      permissions: { p2pDefaultProfile: "guest" },
+      greeting: { p2p: { mode: "text", message: "Welcome" } }
+    }))).toEqual(["p2p_chat_create"]);
+    expect(autoActivationEvents(createConfig({
+      permissions: { groupDefaultProfile: "guest", groupDefaultMode: "all_at" },
+      greeting: { group: { mode: "codex_turn", message: "Introduce Twinny" } }
+    }))).toEqual(["im.chat.member.bot.added_v1"]);
+    expect(autoActivationEvents(createConfig({
+      permissions: {
+        p2pDefaultProfile: "guest",
+        groupDefaultProfile: "guest",
+        groupDefaultMode: "owner_at"
+      },
+      greeting: {
+        p2p: { mode: "text", message: "Welcome" },
+        group: { mode: "text", message: "Welcome" }
+      }
+    }))).toEqual(["p2p_chat_create", "im.chat.member.bot.added_v1"]);
+    expect(autoActivationEvents(createConfig({
+      permissions: { groupDefaultProfile: "guest", groupDefaultMode: "none" },
+      greeting: { group: { mode: "text", message: "Welcome" } }
+    }))).toEqual([]);
+  });
+
   function createRuntimeWithServer(options: { telemetry: ReturnType<typeof createTelemetry>; logger: Logger }): {
     runtime: TwinnyRuntime;
     server: CodexAppServer;
@@ -99,17 +129,22 @@ describe("TwinnyRuntime Codex app-server exit telemetry", () => {
     return { runtime, server };
   }
 
-  function createConfig() {
+  function createConfig(overrides: Partial<Pick<Parameters<typeof createTwinnyConfig>[0], "permissions" | "greeting">> = {}) {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-runtime-"));
     tempDirs.push(home);
     return createTwinnyConfig({
       home,
       homeRandom: "0123456789abcdef0123456789abcdef",
       auth: { larkAppId: "cli_app", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner User" },
-      telemetry: { enabled: false }
+      telemetry: { enabled: false },
+      ...overrides
     });
   }
 });
+
+function autoActivationEvents(config: ReturnType<typeof createTwinnyConfig>): readonly string[] {
+  return startupLarkFeatureSetDefinitions(config).find((definition) => definition.key === "auto_activation")?.events ?? [];
+}
 
 function createTelemetry() {
   return {

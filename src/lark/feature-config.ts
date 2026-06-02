@@ -143,47 +143,49 @@ export class LarkFeatureConfigurationChecker {
   }
 
   async checkAllFeatureSets(keys: readonly LarkFeatureSetKey[] = LARK_FEATURE_SET_KEYS): Promise<LarkFeatureCheckResult[]> {
-    const remaining = keys.filter((key) => !this.satisfied.has(key));
-    if (remaining.length === 0) {
-      return keys.map((key) => this.satisfiedResult(key));
+    return this.checkFeatureSetDefinitions(keys.map((key) => LARK_FEATURE_SET_DEFINITIONS[key]));
+  }
+
+  async checkFeatureSetDefinitions(definitions: readonly LarkFeatureSetDefinition[]): Promise<LarkFeatureCheckResult[]> {
+    const results: LarkFeatureCheckResult[] = new Array(definitions.length);
+    const pending: Array<{ index: number; definition: LarkFeatureSetDefinition; cacheable: boolean }> = [];
+    definitions.forEach((definition, index) => {
+      const cacheable = isStaticFeatureSetDefinition(definition);
+      if (cacheable && this.satisfied.has(definition.key)) {
+        results[index] = this.satisfiedResult(definition);
+        return;
+      }
+      pending.push({ index, definition, cacheable });
+    });
+    if (pending.length === 0) {
+      return results;
     }
 
     const snapshot = await this.fetchSnapshot();
     if (!snapshot) {
-      return keys.map((key) => this.skippedResult(key));
+      for (const { index, definition } of pending) {
+        results[index] = this.skippedResult(definition);
+      }
+      return results;
     }
 
-    const evaluated = new Map<LarkFeatureSetKey, LarkFeatureCheckResult>();
-    for (const key of remaining) {
+    for (const { index, definition, cacheable } of pending) {
       const result = evaluateLarkFeatureSet(
-        LARK_FEATURE_SET_DEFINITIONS[key],
+        definition,
         snapshot,
         this.appId
       );
-      if (result.ok) {
-        this.satisfied.add(key);
+      if (result.ok && cacheable) {
+        this.satisfied.add(definition.key);
       }
-      evaluated.set(key, result);
+      results[index] = result;
     }
 
-    return keys.map((key) => this.satisfied.has(key) && !evaluated.has(key)
-      ? this.satisfiedResult(key)
-      : evaluated.get(key) ?? this.satisfiedResult(key)
-    );
+    return results;
   }
 
   async checkFeatureSet(key: LarkFeatureSetKey): Promise<LarkFeatureCheckResult> {
-    if (this.satisfied.has(key)) {
-      return this.satisfiedResult(key);
-    }
-    const snapshot = await this.fetchSnapshot();
-    if (!snapshot) {
-      return this.skippedResult(key);
-    }
-    const result = evaluateLarkFeatureSet(LARK_FEATURE_SET_DEFINITIONS[key], snapshot, this.appId);
-    if (result.ok) {
-      this.satisfied.add(key);
-    }
+    const [result] = await this.checkFeatureSetDefinitions([LARK_FEATURE_SET_DEFINITIONS[key]]);
     return result;
   }
 
@@ -208,10 +210,9 @@ export class LarkFeatureConfigurationChecker {
     }
   }
 
-  private satisfiedResult(key: LarkFeatureSetKey): LarkFeatureCheckResult {
-    const definition = LARK_FEATURE_SET_DEFINITIONS[key];
+  private satisfiedResult(definition: LarkFeatureSetDefinition): LarkFeatureCheckResult {
     return {
-      key,
+      key: definition.key,
       label: definition.label,
       ok: true,
       skipped: false,
@@ -224,10 +225,9 @@ export class LarkFeatureConfigurationChecker {
     };
   }
 
-  private skippedResult(key: LarkFeatureSetKey): LarkFeatureCheckResult {
-    const definition = LARK_FEATURE_SET_DEFINITIONS[key];
+  private skippedResult(definition: LarkFeatureSetDefinition): LarkFeatureCheckResult {
     return {
-      key,
+      key: definition.key,
       label: definition.label,
       ok: true,
       skipped: true,
@@ -240,6 +240,10 @@ export class LarkFeatureConfigurationChecker {
       hasPublishedVersion: false
     };
   }
+}
+
+function isStaticFeatureSetDefinition(definition: LarkFeatureSetDefinition): boolean {
+  return definition === LARK_FEATURE_SET_DEFINITIONS[definition.key];
 }
 
 export function evaluateLarkFeatureSet(
