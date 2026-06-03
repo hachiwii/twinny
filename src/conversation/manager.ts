@@ -15674,6 +15674,8 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "可用指令：",
     "/help - 查看可用指令和使用说明",
     "/status - 查看当前会话、Codex thread 和 token 用量",
+    "/workspace [dir|num] - 查看或设置当前 conversation workspace；会同步主会话 thread",
+    "/cd [dir|num] - 查看或设置当前非主 thread workspace",
     "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
     "/model <model> [low|medium|high|xhigh] - 设置当前 thread 后续 turn 的模型；effort 可省略",
     "/effort <low|medium|high|xhigh> - 设置当前 thread 后续 turn 的 effort",
@@ -15696,8 +15698,6 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
   ];
   if (isOwner) {
     lines.push(
-      "/workspace [dir|num] - 查看或设置当前 conversation workspace；会同步主会话 thread",
-      "/cd [dir|num] - 查看或设置当前非主 thread workspace",
       "/resume [thread_id|num] [session|local] - 查看或恢复本机 Codex thread"
     );
   }
@@ -15749,7 +15749,7 @@ function controlMessageTypeForParsedCommand(parsed: ParsedCommand): ControlMessa
 }
 
 function isOwnerOnlyParsedCommand(parsed: ParsedCommand): boolean {
-  return parsed.kind === "workspace" || parsed.kind === "cd" || parsed.kind === "resume";
+  return parsed.kind === "resume";
 }
 
 function classifyInitialRoute(

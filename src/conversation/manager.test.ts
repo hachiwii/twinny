@@ -714,7 +714,27 @@ describe("ConversationManager", () => {
     );
   });
 
-  it("rejects workspace, cd, and resume commands from non-owner senders", async () => {
+  it("allows workspace and cd commands from non-owner senders", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m_workspace_guest", "/workspace"));
+
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("m_workspace_guest", expect.any(Object)));
+    expect(repository.listRecentThreadWorkspaces).toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+
+    manager.submitIncoming(message("m_cd_guest", "/cd"));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith("m_cd_guest", "主会话请使用 /workspace 设置 workspace。")
+    );
+    expect(codex.startTurn).not.toHaveBeenCalled();
+  });
+
+  it("rejects resume commands from non-owner senders", async () => {
     const { repository } = createRepository(conversationRecord());
     const codex = createCodex({
       listThreads: vi.fn(async () => ({ data: [], nextCursor: null, backwardsCursor: null }))
@@ -722,15 +742,10 @@ describe("ConversationManager", () => {
     const lark = createLarkResponder();
     const manager = createManager({ repository, codex, lark });
 
-    manager.submitIncoming(message("m_workspace_guest", "/workspace"));
-    manager.submitIncoming(message("m_cd_guest", "/cd"));
     manager.submitIncoming(message("m_resume_guest", "/resume"));
 
-    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledTimes(3));
-    expect(lark.replyText).toHaveBeenCalledWith("m_workspace_guest", "只有 owner 可以执行 /workspace。");
-    expect(lark.replyText).toHaveBeenCalledWith("m_cd_guest", "只有 owner 可以执行 /cd。");
+    await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledTimes(1));
     expect(lark.replyText).toHaveBeenCalledWith("m_resume_guest", "只有 owner 可以执行 /resume。");
-    expect(repository.listRecentThreadWorkspaces).not.toHaveBeenCalled();
     expect(codex.listThreads).not.toHaveBeenCalled();
   });
 
@@ -762,7 +777,7 @@ describe("ConversationManager", () => {
         larkRootMessageId: "topic_root"
       };
 
-      manager.submitIncoming(ownerGroupMessage("m_topic_workspace_list", "/workspace", topicContext));
+      manager.submitIncoming(groupMessage("m_topic_workspace_list", "/workspace", topicContext));
 
       await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("m_topic_workspace_list", expect.any(Object)));
       const workspaceCard = vi.mocked(lark.replyCard).mock.calls.find(([messageId]) => messageId === "m_topic_workspace_list")?.[1] as
@@ -775,7 +790,7 @@ describe("ConversationManager", () => {
       expect(serializedWorkspaceCard).toContain("| 序号 | cwd |");
       expect(serializedWorkspaceCard).toContain(`| 1 | ${topicWorkspace} |`);
 
-      manager.submitIncoming(ownerGroupMessage("m_topic_cd_list", "/cd", topicContext));
+      manager.submitIncoming(groupMessage("m_topic_cd_list", "/cd", topicContext));
 
       await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledWith("m_topic_cd_list", expect.any(Object)));
       const cdCard = vi.mocked(lark.replyCard).mock.calls.find(([messageId]) => messageId === "m_topic_cd_list")?.[1] as
@@ -788,7 +803,7 @@ describe("ConversationManager", () => {
       expect(serializedCdCard).toContain("| 序号 | cwd |");
       expect(serializedCdCard).toContain(`| 1 | ${topicWorkspace} |`);
 
-      manager.submitIncoming(ownerGroupMessage("m_topic_cd_select", "/cd 1", topicContext));
+      manager.submitIncoming(groupMessage("m_topic_cd_select", "/cd 1", topicContext));
 
       await waitForExpect(() =>
         expect(lark.replyText).toHaveBeenCalledWith(
@@ -5258,6 +5273,8 @@ describe("ConversationManager", () => {
     for (const usage of [
       "/help - 查看可用指令和使用说明",
       "/status - 查看当前会话、Codex thread 和 token 用量",
+      "/workspace [dir|num] - 查看或设置当前 conversation workspace；会同步主会话 thread",
+      "/cd [dir|num] - 查看或设置当前非主 thread workspace",
       "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
       "/model <model> [low|medium|high|xhigh] - 设置当前 thread 后续 turn 的模型；effort 可省略",
       "/effort <low|medium|high|xhigh> - 设置当前 thread 后续 turn 的 effort",
@@ -5280,15 +5297,13 @@ describe("ConversationManager", () => {
     ]) {
       expect(helpText).toContain(usage);
     }
-    expect(helpText).not.toContain("/workspace [dir|num]");
-    expect(helpText).not.toContain("/cd [dir|num]");
     expect(helpText).not.toContain("/resume [thread_id|num]");
     expect(helpText).not.toContain("/activate all_at guest");
     expect(helpText).not.toContain("/deactivate");
     expect(codex.startTurn).not.toHaveBeenCalled();
   });
 
-  it("shows owner-only slash commands in /help for the owner", async () => {
+  it("shows owner-only resume slash command in /help for the owner", async () => {
     const lark = createLarkResponder();
     const manager = createManager({ lark });
 
@@ -5296,8 +5311,6 @@ describe("ConversationManager", () => {
 
     await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledTimes(1));
     const helpText = vi.mocked(lark.replyText).mock.calls[0]?.[1] ?? "";
-    expect(helpText).toContain("/workspace [dir|num] - 查看或设置当前 conversation workspace；会同步主会话 thread");
-    expect(helpText).toContain("/cd [dir|num] - 查看或设置当前非主 thread workspace");
     expect(helpText).toContain("/resume [thread_id|num] [session|local] - 查看或恢复本机 Codex thread");
   });
 
