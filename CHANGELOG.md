@@ -1,3 +1,19 @@
+# 1.5.0
+
+发布时间：2026/06/03
+
+## 新增功能
+
+- 新增 reply-to 上下文注入：未绑定 Lark thread 的回复消息、未记录 Lark thread 的首条非 root 消息，会把被回复消息或 thread root 消息作为 `<reply_to>` 上下文传给 Codex。
+- `/thread` 和 `/fork` 创建的新 thread 默认继承来源 thread 的 model、effort 和 workspace；`/model` 指令的 effort 参数改为可选，并新增 `/effort` 指令单独设置 reasoning effort。
+- 新增 conversation greeting 配置：单聊和群聊可分别配置固定文案或 Codex turn greeting；自动激活事件或手动 `/activate`、`/pair` 创建 conversation 时可发送 greeting。
+
+## Bug 修复
+
+- 修复新 Lark thread 中直接执行 `/model`、`/effort` 等配置指令时，因为还没有 Codex thread 而报错的问题；现在会先创建 thread 再应用配置。
+- 修复 `/model` 指令可能把后续普通文本误解析为 effort 的问题。
+- 修复 greeting 自动激活检查，只有对应单聊或群聊 greeting 确实启用时才订阅和提示额外事件权限。
+
 # 1.4.0
 
 发布时间：2026/06/01
