@@ -99,7 +99,7 @@ describe("codex thread payloads", () => {
     expect(watchTool).toMatchObject({
       inputSchema: expect.objectContaining({
         properties: expect.objectContaining({
-          mode: expect.objectContaining({ enum: ["owner", "all"], default: "owner" }),
+          mode: expect.objectContaining({ enum: ["owner", "owner_at", "all", "all_at"], default: "owner_at" }),
           file_type: expect.objectContaining({ type: "string" }),
           file_token: expect.objectContaining({ type: "string" })
         })

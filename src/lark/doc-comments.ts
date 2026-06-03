@@ -385,7 +385,7 @@ function parseLarkDocUrl(value: string): ResolvedLarkDocTarget {
   try {
     url = new URL(value.trim());
   } catch {
-    throw new Error("用法：/watch <lark_doc_url> [owner|all] 或 /watch rm <id|url>");
+    throw new Error("用法：/watch <lark_doc_url> [owner_at|owner|all_at|all] 或 /watch rm <id|url>");
   }
   const parts = url.pathname.split("/").filter(Boolean);
   const typeIndex = parts.findIndex((part) => ["doc", "docs", "docx", "sheets", "sheet", "slides", "wiki", "base", "bitable", "file"].includes(part));

@@ -1590,10 +1590,14 @@ export class ConversationManager {
     if (!watcher) {
       return;
     }
-    if (watcher.watchMode === "owner" && comment.senderOpenId !== this.options.config.owner.openId) {
+    if (docWatchModeRequiresOwner(watcher.watchMode) && comment.senderOpenId !== this.options.config.owner.openId) {
       return;
     }
-    if (!comment.isMentioned && !(await this.options.repository.hasProcessedDocComment(comment.commentId))) {
+    if (
+      docWatchModeRequiresMention(watcher.watchMode) &&
+      !comment.isMentioned &&
+      !(await this.options.repository.hasProcessedDocComment(comment.commentId))
+    ) {
       return;
     }
     const thread = await this.options.repository.getCodexThreadById(watcher.threadId);
@@ -14170,7 +14174,7 @@ function parsePairCommand(text: string): { kind: "valid"; guestOpenId: string; p
   return { kind: "valid", guestOpenId, profile };
 }
 
-const WATCH_USAGE_TEXT = "用法：/watch <lark_doc_url> [owner|all] 或 /watch rm <id|url>";
+const WATCH_USAGE_TEXT = "用法：/watch <lark_doc_url> [owner_at|owner|all_at|all] 或 /watch rm <id|url>";
 
 function parseWatchCommand(text: string):
   | { kind: "list" }
@@ -14197,8 +14201,8 @@ function parseWatchCommand(text: string):
   if (tokens.length > 2) {
     return { kind: "invalid", message: WATCH_USAGE_TEXT };
   }
-  const watchMode = (tokens[1] ?? "owner").toLowerCase();
-  if (watchMode !== "owner" && watchMode !== "all") {
+  const watchMode = (tokens[1] ?? "owner_at").toLowerCase();
+  if (!isLarkDocWatchMode(watchMode)) {
     return { kind: "invalid", message: WATCH_USAGE_TEXT };
   }
   return { kind: "valid", url: tokens[0]!, watchMode };
@@ -14402,6 +14406,18 @@ function groupResponseModeRequiresOwner(mode: ConversationResponseMode): boolean
 
 function groupResponseModeIgnoresNonBotMentions(mode: ConversationResponseMode): boolean {
   return mode === "owner" || mode === "all";
+}
+
+function docWatchModeRequiresMention(mode: LarkDocWatchMode): boolean {
+  return mode === "owner_at" || mode === "all_at";
+}
+
+function docWatchModeRequiresOwner(mode: LarkDocWatchMode): boolean {
+  return mode === "owner_at" || mode === "owner";
+}
+
+function isLarkDocWatchMode(mode: string): mode is LarkDocWatchMode {
+  return mode === "owner_at" || mode === "owner" || mode === "all_at" || mode === "all";
 }
 
 function createMessageContext(type: ConversationType, message: IncomingLarkMessage): MessageContext {
@@ -15717,7 +15733,7 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/twinny 或 /banner - 发送 Twinny banner 卡片",
     "/thread [message] - 创建新话题；message 会在新话题中继续解析指令",
     "/fork [message] - 从当前 Codex thread fork 出新话题；message 会在新话题中继续解析指令",
-    "/watch <lark_doc_url> [owner|all] 或 /watch rm <id|url> - 监听或删除文档 @bot 评论；不带参数查看当前 thread 监听",
+    "/watch <lark_doc_url> [owner_at|owner|all_at|all] 或 /watch rm <id|url> - 监听或删除文档评论；不带参数查看当前 thread 监听",
     "/cron [cron exp message|rm id] - 管理当前 conversation 的定时任务；触发时 message 可继续解析指令"
   ];
   if (isOwner) {

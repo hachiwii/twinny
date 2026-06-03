@@ -1294,7 +1294,7 @@ function parseTwinnyDynamicToolRequest(
       }
       const watchMode = parseLarkDocWatchMode(params.arguments.mode);
       if (!watchMode) {
-        return "Invalid watch_lark_url arguments: mode must be owner or all.";
+        return "Invalid watch_lark_url arguments: mode must be owner_at, owner, all_at, or all.";
       }
       const url = trimmedString(params.arguments.url);
       const fileType = trimmedString(params.arguments.file_type);
@@ -1478,9 +1478,9 @@ function parseTellThreadMode(value: unknown): CodexTellThreadMode | undefined {
 
 function parseLarkDocWatchMode(value: unknown): LarkDocWatchMode | undefined {
   if (value === undefined || value === null) {
-    return "owner";
+    return "owner_at";
   }
-  return value === "owner" || value === "all" ? value : undefined;
+  return value === "owner" || value === "owner_at" || value === "all" || value === "all_at" ? value : undefined;
 }
 
 function parseThreadIds(value: unknown): string[] | undefined {

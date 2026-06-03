@@ -2965,7 +2965,7 @@ describe("ConversationManager", () => {
         turnId: "turn_1",
         callId: "call_watch_url",
         tool: "watch_lark_url",
-        watchMode: "owner",
+        watchMode: "owner_at",
         url: "https://example.feishu.cn/docx/other_doc",
         rawArguments: { url: "https://example.feishu.cn/docx/other_doc" }
       }));
@@ -2975,7 +2975,7 @@ describe("ConversationManager", () => {
           watcher_id: 2,
           file_type: "docx",
           file_token: "other_doc",
-          mode: "owner",
+          mode: "owner_at",
           watch_url: "https://example.feishu.cn/docx/other_doc"
         }
       });
@@ -3900,16 +3900,16 @@ describe("ConversationManager", () => {
         fileType: "docx",
         fileToken: "doc_token",
         threadId: "thread_1",
-        watchMode: "owner",
+        watchMode: "owner_at",
         watchUrl: "https://example.feishu.cn/docx/doc_token"
       })
     );
-    expect(lark.replyText).toHaveBeenCalledWith("m_watch", "已监听 docx/doc_token，mode=owner。");
+    expect(lark.replyText).toHaveBeenCalledWith("m_watch", "已监听 docx/doc_token，mode=owner_at。");
 
     manager.submitIncoming(message("m_watch_none", "/watch https://example.feishu.cn/docx/doc_token none"));
     await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledWith(
       "m_watch_none",
-      "用法：/watch <lark_doc_url> [owner|all] 或 /watch rm <id|url>"
+      "用法：/watch <lark_doc_url> [owner_at|owner|all_at|all] 或 /watch rm <id|url>"
     ));
     expect(repository.upsertLarkDocWatcher).not.toHaveBeenCalledWith(expect.objectContaining({ watchMode: "none" }));
 
@@ -3934,7 +3934,7 @@ describe("ConversationManager", () => {
     const watchListPost = vi.mocked(lark.replyPost).mock.calls.find(([messageId]) => messageId === "m_watch_list")?.[1];
     const watchListMarkdown = watchListPost?.[0]?.[0]?.tag === "md" ? watchListPost[0][0].text : "";
     expect(watchListMarkdown).toContain("| 2 | https://example.feishu.cn/docx/other_doc | all | 2025-01-01 08:00:00 |");
-    expect(watchListMarkdown).toContain("| 1 | https://example.feishu.cn/docx/doc_token | owner | 暂无 |");
+    expect(watchListMarkdown).toContain("| 1 | https://example.feishu.cn/docx/doc_token | owner_at | 暂无 |");
     expect(watchListMarkdown).not.toContain("（北京时间）");
     expect(vi.mocked(lark.replyText).mock.calls.find(([messageId]) => messageId === "m_watch_list")).toBeUndefined();
 
@@ -3966,7 +3966,7 @@ describe("ConversationManager", () => {
     await waitForExpect(() =>
       expect(lark.replyText).toHaveBeenCalledWith(
         "m_watch",
-        expect.stringContaining("已监听 docx/doc_token，mode=owner。")
+        expect.stringContaining("已监听 docx/doc_token，mode=owner_at。")
       )
     );
     expect(lark.replyText).toHaveBeenCalledWith(
@@ -3985,7 +3985,7 @@ describe("ConversationManager", () => {
       fileType: "docx",
       fileToken: "doc_token",
       threadId: "thread_1",
-      watchMode: "owner",
+      watchMode: "owner_at",
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     const lark = createLarkResponder();
@@ -4101,7 +4101,7 @@ describe("ConversationManager", () => {
       fileType: "docx",
       fileToken: "doc_token",
       threadId: "thread_forked",
-      watchMode: "owner",
+      watchMode: "owner_at",
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
@@ -4136,7 +4136,7 @@ describe("ConversationManager", () => {
       fileType: "docx",
       fileToken: "doc_token",
       threadId: "thread_1",
-      watchMode: "owner",
+      watchMode: "owner_at",
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     const lark = createLarkResponder();
@@ -4206,7 +4206,7 @@ describe("ConversationManager", () => {
       fileType: "docx",
       fileToken: "doc_token",
       threadId: "thread_1",
-      watchMode: "owner",
+      watchMode: "owner_at",
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     const { codex, turns } = createDeferredCodex();
@@ -4299,7 +4299,7 @@ describe("ConversationManager", () => {
       fileType: "docx",
       fileToken: "doc_token",
       threadId: "thread_group",
-      watchMode: "owner",
+      watchMode: "owner_at",
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     const lark = createLarkResponder();
@@ -4365,7 +4365,7 @@ describe("ConversationManager", () => {
       fileType: "docx",
       fileToken: "doc_token",
       threadId: "thread_1",
-      watchMode: "owner",
+      watchMode: "owner_at",
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     const { codex, turns } = createDeferredCodex();
@@ -4404,7 +4404,7 @@ describe("ConversationManager", () => {
     turns[0]!.resolve(completed("thread_1", "turn_1"));
   });
 
-  it("processes all-mode watched doc comments from non-owner senders", async () => {
+  it("processes all-mode watched doc comments without a bot mention from non-owner senders", async () => {
     const { repository } = createRepository(conversationRecord());
     repository.upsertLarkDocWatcher({
       fileType: "docx",
@@ -4417,7 +4417,7 @@ describe("ConversationManager", () => {
     const larkDocComments = createLarkDocCommentClient(larkDocCommentSnapshot({
       authorOpenId: "ou_reviewer",
       authorName: "Reviewer",
-      text: "@Twinny please check this"
+      text: "please check this"
     }));
     const codex = createCodex();
     const manager = createManager({ repository, codex, lark, larkDocComments });
@@ -4426,10 +4426,11 @@ describe("ConversationManager", () => {
       eventId: "event_doc_comment_reviewer",
       senderOpenId: "ou_reviewer",
       senderName: "Reviewer",
-      isMentioned: true
+      isMentioned: false
     }));
 
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(repository.hasProcessedDocComment).not.toHaveBeenCalled();
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         input: expect.stringContaining('<lark-doc-comment sender_id="ou_reviewer" sender_name="Reviewer"')
@@ -4496,13 +4497,13 @@ describe("ConversationManager", () => {
     expect(JSON.stringify(input)).not.toContain("localImage");
   });
 
-  it("ignores watched doc comments unless the comment mentions the bot", async () => {
+  it("ignores all-at-mode watched doc comments unless the comment mentions the bot", async () => {
     const { repository } = createRepository(conversationRecord());
     repository.upsertLarkDocWatcher({
       fileType: "docx",
       fileToken: "doc_token",
       threadId: "thread_1",
-      watchMode: "all",
+      watchMode: "all_at",
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     const codex = createCodex();
@@ -4537,7 +4538,7 @@ describe("ConversationManager", () => {
       fileType: "docx",
       fileToken: "doc_token",
       threadId: "thread_1",
-      watchMode: "owner",
+      watchMode: "owner_at",
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     const lark = createLarkResponder();
@@ -4590,7 +4591,7 @@ describe("ConversationManager", () => {
       fileType: "docx",
       fileToken: "doc_token",
       threadId: "thread_1",
-      watchMode: "owner",
+      watchMode: "owner_at",
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     const lark = createLarkResponder();
@@ -5292,7 +5293,7 @@ describe("ConversationManager", () => {
       "/twinny 或 /banner - 发送 Twinny banner 卡片",
       "/thread [message] - 创建新话题；message 会在新话题中继续解析指令",
       "/fork [message] - 从当前 Codex thread fork 出新话题；message 会在新话题中继续解析指令",
-      "/watch <lark_doc_url> [owner|all] 或 /watch rm <id|url> - 监听或删除文档 @bot 评论；不带参数查看当前 thread 监听",
+      "/watch <lark_doc_url> [owner_at|owner|all_at|all] 或 /watch rm <id|url> - 监听或删除文档评论；不带参数查看当前 thread 监听",
       "/cron [cron exp message|rm id] - 管理当前 conversation 的定时任务；触发时 message 可继续解析指令"
     ]) {
       expect(helpText).toContain(usage);

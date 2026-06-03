@@ -18,8 +18,8 @@ describe("store migrations", () => {
   it("loads the bundled store migrations", () => {
     const migrations = loadStoreMigrations();
 
-    expect(currentStoreSchemaVersion).toBe(8);
-    expect(migrations).toHaveLength(8);
+    expect(currentStoreSchemaVersion).toBe(9);
+    expect(migrations).toHaveLength(9);
     expect(migrations[0]).toMatchObject({
       version: 1,
       name: "0001_initial"
@@ -51,6 +51,10 @@ describe("store migrations", () => {
     expect(migrations[7]).toMatchObject({
       version: 8,
       name: "0008_lark_doc_watcher_remove_none"
+    });
+    expect(migrations[8]).toMatchObject({
+      version: 9,
+      name: "0009_lark_doc_watcher_four_modes"
     });
   });
 
@@ -271,6 +275,73 @@ describe("store migrations", () => {
     }
   });
 
+  it("maps existing Lark doc watcher modes to at-modes when upgrading to version 9", () => {
+    const db = new TwinnyDatabase(":memory:");
+    const migrations = loadStoreMigrations();
+    try {
+      expect(runStoreMigrations(db, { migrations: migrations.slice(0, 8) })).toBe(8);
+      db.exec(`
+        INSERT INTO lark_doc_watcher (
+          file_type,
+          file_token,
+          thread_id,
+          watch_mode,
+          watch_url,
+          created_at,
+          updated_at
+        ) VALUES
+          ('docx', 'doc_owner', 'thread_1', 'owner', 'https://example.feishu.cn/docx/doc_owner', 100, 100),
+          ('docx', 'doc_all', 'thread_2', 'all', 'https://example.feishu.cn/docx/doc_all', 120, 120);
+      `);
+
+      expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
+
+      const watchers = db
+        .prepare<[], { file_token: string; watch_mode: string }>(
+          "SELECT file_token, watch_mode FROM lark_doc_watcher ORDER BY id ASC"
+        )
+        .all();
+      expect(watchers).toEqual([
+        { file_token: "doc_owner", watch_mode: "owner_at" },
+        { file_token: "doc_all", watch_mode: "all_at" }
+      ]);
+      expect(() => db.exec(`
+        INSERT INTO lark_doc_watcher (
+          file_type,
+          file_token,
+          thread_id,
+          watch_mode,
+          watch_url,
+          created_at,
+          updated_at
+        ) VALUES
+          ('docx', 'doc_owner_non_at', 'thread_1', 'owner', 'https://example.feishu.cn/docx/doc_owner_non_at', 130, 130),
+          ('docx', 'doc_all_at', 'thread_1', 'all_at', 'https://example.feishu.cn/docx/doc_all_at', 140, 140);
+      `)).not.toThrow();
+      expect(() => db.exec(`
+        INSERT INTO lark_doc_watcher (
+          file_type,
+          file_token,
+          thread_id,
+          watch_mode,
+          watch_url,
+          created_at,
+          updated_at
+        ) VALUES (
+          'docx',
+          'doc_none_again',
+          'thread_1',
+          'none',
+          'https://example.feishu.cn/docx/doc_none_again',
+          150,
+          150
+        );
+      `)).toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
   it("uses user_version so repeated migration does not recreate tables", () => {
     const db = new TwinnyDatabase(":memory:");
     try {
@@ -309,7 +380,7 @@ describe("store migrations", () => {
           ('docx', 'doc_all', 'thread_2', 'all', 'https://example.feishu.cn/docx/doc_all', 120, 120);
       `);
 
-      expect(runStoreMigrations(db)).toBe(currentStoreSchemaVersion);
+      expect(runStoreMigrations(db, { migrations: migrations.slice(0, 8) })).toBe(8);
 
       const watchers = db
         .prepare<[], { file_token: string; watch_mode: string }>(

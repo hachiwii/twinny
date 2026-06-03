@@ -2263,7 +2263,7 @@ function mapRequiredLarkDocWatcherRow(row: LarkDocWatcherRow): LarkDocWatcherRec
     fileType: row.file_type,
     fileToken: row.file_token,
     threadId: row.thread_id,
-    watchMode: validLarkDocWatchMode(row.watch_mode) ? row.watch_mode : "owner",
+    watchMode: validLarkDocWatchMode(row.watch_mode) ? row.watch_mode : "owner_at",
     watchUrl: row.watch_url,
     lastCommentReceivedAt: row.last_comment_received_at ?? undefined,
     createdAt: row.created_at,
@@ -2479,7 +2479,7 @@ function assertValidLarkDocWatchMode(mode: LarkDocWatchMode): void {
 }
 
 function validLarkDocWatchMode(mode: unknown): mode is LarkDocWatchMode {
-  return mode === "owner" || mode === "all";
+  return mode === "owner" || mode === "owner_at" || mode === "all" || mode === "all_at";
 }
 
 function assertValidMessageStatus(status: LarkMessageStatus): void {

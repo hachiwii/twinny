@@ -883,7 +883,7 @@ describe("handleTurnServerRequest", () => {
       success: false,
       contentItems: [{
         type: "inputText",
-        text: "Invalid watch_lark_url arguments: mode must be owner or all."
+        text: "Invalid watch_lark_url arguments: mode must be owner_at, owner, all_at, or all."
       }]
     });
 

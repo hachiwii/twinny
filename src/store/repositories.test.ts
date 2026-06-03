@@ -281,7 +281,7 @@ describe("ConversationRepository", () => {
       fileType: "docx",
       fileToken: "doc_token",
       threadId: "thread_1",
-      watchMode: "owner",
+      watchMode: "owner_at",
       watchUrl: "https://example.feishu.cn/docx/doc_token"
     });
     expect(created).toMatchObject({
@@ -289,7 +289,7 @@ describe("ConversationRepository", () => {
       fileType: "docx",
       fileToken: "doc_token",
       threadId: "thread_1",
-      watchMode: "owner",
+      watchMode: "owner_at",
       watchUrl: "https://example.feishu.cn/docx/doc_token",
       createdAt: 1000,
       updatedAt: 1000
@@ -307,13 +307,13 @@ describe("ConversationRepository", () => {
       fileType: "docx",
       fileToken: "doc_token",
       threadId: "thread_2",
-      watchMode: "all",
+      watchMode: "all_at",
       watchUrl: "https://example.feishu.cn/docx/doc_token?from=updated"
     });
     expect(replaced).toMatchObject({
       id: 1,
       threadId: "thread_2",
-      watchMode: "all",
+      watchMode: "all_at",
       watchUrl: "https://example.feishu.cn/docx/doc_token?from=updated",
       lastCommentReceivedAt: 1234567890,
       createdAt: 1000,
@@ -335,21 +335,21 @@ describe("ConversationRepository", () => {
       fileType: "docx",
       fileToken: "doc_a",
       threadId: "thread_old",
-      watchMode: "owner",
+      watchMode: "owner_at",
       watchUrl: "https://example.feishu.cn/docx/doc_a"
     });
     repo.upsertLarkDocWatcher({
       fileType: "docx",
       fileToken: "doc_b",
       threadId: "thread_old",
-      watchMode: "all",
+      watchMode: "all_at",
       watchUrl: "https://example.feishu.cn/docx/doc_b"
     });
     const untouched = repo.upsertLarkDocWatcher({
       fileType: "docx",
       fileToken: "doc_c",
       threadId: "thread_other",
-      watchMode: "owner",
+      watchMode: "owner_at",
       watchUrl: "https://example.feishu.cn/docx/doc_c"
     });
 

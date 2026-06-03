@@ -320,7 +320,7 @@ export interface CronJobRecord {
   updatedAt: number;
 }
 
-export type LarkDocWatchMode = "owner" | "all";
+export type LarkDocWatchMode = Exclude<ConversationResponseMode, "none">;
 
 export interface LarkDocWatcherRecord {
   id: number;

@@ -14,7 +14,7 @@ export interface RunMigrationsOptions {
   migrations?: StoreMigration[];
 }
 
-export const currentStoreSchemaVersion = 8;
+export const currentStoreSchemaVersion = 9;
 
 const baselineMigrationFile = fileURLToPath(new URL("../../migrations/0001_initial.sql", import.meta.url));
 const larkDocWatcherMigrationFile = fileURLToPath(new URL("../../migrations/0002_lark_doc_watcher.sql", import.meta.url));
@@ -24,6 +24,7 @@ const threadCreateMethodMigrationFile = fileURLToPath(new URL("../../migrations/
 const cronJobsMigrationFile = fileURLToPath(new URL("../../migrations/0006_cron_jobs.sql", import.meta.url));
 const threadForkBaseTokenUsageMigrationFile = fileURLToPath(new URL("../../migrations/0007_thread_fork_base_token_usage.sql", import.meta.url));
 const larkDocWatcherRemoveNoneMigrationFile = fileURLToPath(new URL("../../migrations/0008_lark_doc_watcher_remove_none.sql", import.meta.url));
+const larkDocWatcherFourModesMigrationFile = fileURLToPath(new URL("../../migrations/0009_lark_doc_watcher_four_modes.sql", import.meta.url));
 
 export function loadStoreMigrations(): StoreMigration[] {
   return [
@@ -66,6 +67,11 @@ export function loadStoreMigrations(): StoreMigration[] {
       version: 8,
       name: "0008_lark_doc_watcher_remove_none",
       sql: fs.readFileSync(larkDocWatcherRemoveNoneMigrationFile, "utf8")
+    },
+    {
+      version: 9,
+      name: "0009_lark_doc_watcher_four_modes",
+      sql: fs.readFileSync(larkDocWatcherFourModesMigrationFile, "utf8")
     }
   ];
 }

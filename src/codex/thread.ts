@@ -248,7 +248,7 @@ export const WATCH_LARK_URL_TOOL_SPEC: DynamicToolSpec = {
   namespace: "twinny",
   name: "watch_lark_url",
   description:
-    "Watch @bot comments on a Feishu/Lark document and route them to the current thread. Provide either url, or file_type and file_token directly; mode defaults to owner.",
+    "Watch Feishu/Lark document comments and route them to the current thread. Provide either url, or file_type and file_token directly; mode defaults to owner_at.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -260,7 +260,7 @@ export const WATCH_LARK_URL_TOOL_SPEC: DynamicToolSpec = {
       },
       file_type: { type: "string", minLength: 1 },
       file_token: { type: "string", minLength: 1 },
-      mode: { type: "string", enum: ["owner", "all"], default: "owner" }
+      mode: { type: "string", enum: ["owner", "owner_at", "all", "all_at"], default: "owner_at" }
     }
   },
   deferLoading: false
