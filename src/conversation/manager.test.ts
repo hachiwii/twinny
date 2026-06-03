@@ -5798,6 +5798,29 @@ describe("ConversationManager", () => {
     expect(codex.startTurn).toHaveBeenCalledTimes(1);
   });
 
+  it("shows the cancelling sender on the interrupted card when /stop cancels active work", async () => {
+    const { repository } = createRepository(groupConversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(groupMessage("g1", "active", { senderOpenId: "ou_guest" }));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    manager.submitIncoming(groupMessage("g2", "/stop", { senderOpenId: "ou_cancel" }));
+
+    await waitForExpect(() => {
+      const interruptedCard = vi
+        .mocked(lark.patchCard)
+        .mock.calls.map(([, card]) => card as Record<string, unknown>)
+        .find((card) => JSON.stringify(card).includes("已中断"));
+      expect(JSON.stringify(interruptedCard)).toContain("被 <at id=ou_cancel></at> 取消");
+      expect(JSON.stringify(interruptedCard)).toContain("With [Twinny]");
+    });
+
+    turns[0]!.resolve(completed("thread_group", "turn_1", "interrupted"));
+  });
+
   it("clears the active goal before stopping it", async () => {
     const { codex, goals } = createDeferredGoalCodex();
     const manager = createManager({ codex });
@@ -5851,6 +5874,38 @@ describe("ConversationManager", () => {
     expect(lark.replyText).not.toHaveBeenCalled();
 
     turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("shows the card action operator on the interrupted card when the next button cancels active work", async () => {
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "active"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    const workingCard = vi.mocked(lark.replyCard).mock.calls[0]![1];
+    const actionValue = findTwinnyCardActionValue(workingCard, "next");
+
+    await manager.submitCardAction({
+      eventId: "event_next_cancel",
+      operatorOpenId: "ou_cancel",
+      openMessageId: "card_m1_1",
+      openChatId: "oc_ignored",
+      actionTag: "button",
+      actionValue,
+      raw: { event_id: "event_next_cancel" }
+    });
+
+    await waitForExpect(() => {
+      const interruptedCard = vi
+        .mocked(lark.patchCard)
+        .mock.calls.map(([, card]) => card as Record<string, unknown>)
+        .find((card) => JSON.stringify(card).includes("已中断"));
+      expect(JSON.stringify(interruptedCard)).toContain("被 <at id=ou_cancel></at> 取消");
+      expect(JSON.stringify(interruptedCard)).toContain("With [Twinny]");
+    });
+
+    turns[0]!.resolve(completed("thread_1", "turn_1", "interrupted"));
   });
 
   it("starts the next queued message when Codex reports the interrupted turn is already inactive", async () => {

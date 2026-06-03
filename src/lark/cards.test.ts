@@ -190,6 +190,28 @@ describe("renderTwinnyAgentCard", () => {
     expect(visibleProgress).toEqual(Array.from({ length: 10 }, (_, index) => `- step ${index + 3}`));
   });
 
+  it("renders cancellation attribution above the interrupted-card status line", () => {
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "interrupted",
+      messages: [{ id: "m1", text: "step 1" }],
+      cancelledByOpenId: "ou_cancel"
+    }));
+    const bodyElements = (card.body as { elements: Array<Record<string, unknown>> }).elements;
+    const markdownElements = bodyElements.filter((element) => element.tag === "markdown");
+    const cancelledIndex = markdownElements.findIndex((element) =>
+      element.content === "被 <at id=ou_cancel></at> 取消"
+    );
+    const statusLineIndex = markdownElements.findIndex((element) =>
+      typeof element.content === "string" && element.content.includes("With [Twinny]")
+    );
+
+    expect(cancelledIndex).toBeGreaterThanOrEqual(0);
+    expect(statusLineIndex).toBeGreaterThan(cancelledIndex);
+    expect(markdownElements[cancelledIndex]).toMatchObject({
+      text_size: "notation"
+    });
+  });
+
   it("submits requestUserInput answers through a form button", () => {
     const card = renderTwinnyAgentCard(createOptions({
       status: "waiting_input",

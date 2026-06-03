@@ -99,6 +99,7 @@ export interface RenderTwinnyAgentCardOptions {
   waiting?: TwinnyAgentCardWaiting;
   finalElements?: LarkCardElement[];
   mentionOpenIds?: string[];
+  cancelledByOpenId?: string;
   summaryText?: string;
   error?: string;
   sideFollowupInput?: {
@@ -921,6 +922,7 @@ function bodyElements(options: RenderTwinnyAgentCardOptions, parsedPlan?: Parsed
     } else if (options.waiting?.kind === "plan") {
       elements.push(...planElements(parsedPlan ?? parsePlanMarkdown(options.waiting.planText), options.status));
     }
+    elements.push(...cancelledByElements(options.cancelledByOpenId));
     elements.push(elapsedElement(options.elapsedMs, options.runtimeStats, options.mode));
     if (options.status === "waiting_input") {
       elements.push(waitingButtonsElement(options, "提交", "primary_filled", "request_input_submit", "跳过", "danger_filled", "request_input_interrupt"));
@@ -934,6 +936,7 @@ function bodyElements(options: RenderTwinnyAgentCardOptions, parsedPlan?: Parsed
   if (options.status === "interrupted") {
     elements.push(...sideFollowupInputElements(options));
   }
+  elements.push(...cancelledByElements(options.status === "interrupted" ? options.cancelledByOpenId : undefined));
   elements.push(elapsedElement(options.elapsedMs, options.runtimeStats, options.mode));
   if (options.status === "working") {
     elements.push(buttonsElement(options));
@@ -961,6 +964,19 @@ function workingMessagesWithError(options: RenderTwinnyAgentCardOptions): Twinny
 function finishedMentionElements(openIds: string[] | undefined): LarkCardElement[] {
   const mentions = uniqueNonEmpty(openIds).map((openId) => `<at id=${openId}></at>`);
   return mentions.length > 0 ? [markdownElement(mentions.join(" "))] : [];
+}
+
+function cancelledByElements(openId: string | undefined): LarkCardElement[] {
+  const [cancelledByOpenId] = uniqueNonEmpty(openId ? [openId] : undefined);
+  if (!cancelledByOpenId) {
+    return [];
+  }
+  return [
+    markdownElement(`被 <at id=${cancelledByOpenId}></at> 取消`, {
+      text_size: "notation",
+      margin: "4px 0px 0px 0px"
+    })
+  ];
 }
 
 function finishedProcessPanelElements(messages: TwinnyAgentCardMessage[]): LarkCardElement[] {

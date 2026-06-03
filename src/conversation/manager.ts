@@ -1107,6 +1107,7 @@ interface ActiveTurn {
   steeredMessageIds: Set<string>;
   telemetryTurnEndCaptured?: boolean;
   cancelRequested: boolean;
+  cancelledByOpenId?: string;
 }
 
 type ActiveTurnInterruptResult = "interrupted" | "missing" | "failed";
@@ -1160,6 +1161,7 @@ interface SideSessionRuntime {
   historyMessages: TwinnyAgentCardMessage[];
   finalElements?: LarkCardElement[];
   mentionOpenIds: string[];
+  cancelledByOpenId?: string;
   summaryText?: string;
   threadTokenUsage: ThreadTokenUsageSnapshot;
   turnTokenUsage: ThreadTokenUsageSnapshot;
@@ -2442,7 +2444,7 @@ export class ConversationManager {
           return;
         }
         case "stop": {
-          const { cleared, interrupted } = await this.stopConversationState(state);
+          const { cleared, interrupted } = await this.stopConversationState(state, { cancelledByOpenId: action.operatorOpenId });
           if (!interrupted && cleared === 0) {
             await this.sendDirectControlBestEffort(action.operatorOpenId, "当前没有正在运行的任务，队列为空。");
           }
@@ -6060,8 +6062,8 @@ export class ConversationManager {
   private async handleStopCommand(state: ConversationState, message: IncomingLarkMessage, text: string): Promise<void> {
     const target = text.trim().toLowerCase();
     if (target === "all") {
-      const { cleared, interrupted } = await this.stopConversationState(state);
-      const stoppedSides = await this.cancelAllSideTurns(state);
+      const { cleared, interrupted } = await this.stopConversationState(state, { cancelledByOpenId: message.senderOpenId });
+      const stoppedSides = await this.cancelAllSideTurns(state, { cancelledByOpenId: message.senderOpenId });
       if (!interrupted && cleared === 0 && stoppedSides === 0) {
         await this.replyControlBestEffort(message.messageId, "当前没有正在运行的任务或临时会话，队列为空。");
       }
@@ -6081,24 +6083,27 @@ export class ConversationManager {
         await this.markMessagesCompletedBestEffort([message.messageId]);
         return;
       }
-      await this.cancelSideTurn(state, side);
+      await this.cancelSideTurn(state, side, { cancelledByOpenId: message.senderOpenId });
       await this.markMessagesCompletedBestEffort([message.messageId]);
       return;
     }
-    const { cleared, interrupted } = await this.stopConversationState(state);
+    const { cleared, interrupted } = await this.stopConversationState(state, { cancelledByOpenId: message.senderOpenId });
     if (!interrupted && cleared === 0) {
       await this.replyControlBestEffort(message.messageId, "当前没有正在运行的任务，队列为空。");
     }
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
-  private async stopConversationState(state: ConversationState): Promise<{ cleared: number; interrupted: boolean }> {
+  private async stopConversationState(
+    state: ConversationState,
+    options: { cancelledByOpenId?: string } = {}
+  ): Promise<{ cleared: number; interrupted: boolean }> {
     state.queueNextMessage = false;
     const clearedMessages = await this.clearPendingMessagesBestEffort(state);
     await this.markPendingMessagesClearedBestEffort(clearedMessages);
     return {
       cleared: clearedMessages.length,
-      interrupted: await this.cancelActiveTurn(state)
+      interrupted: await this.cancelActiveTurn(state, { cancelledByOpenId: options.cancelledByOpenId })
     };
   }
 
@@ -6371,16 +6376,16 @@ export class ConversationManager {
       switch (command.action) {
         case "stop":
           if (active.kind === "side") {
-            await this.cancelSideTurn(state, active);
+            await this.cancelSideTurn(state, active, { cancelledByOpenId: action.operatorOpenId });
           } else {
-            await this.executeStopAction(state);
+            await this.executeStopAction(state, action.operatorOpenId);
           }
           break;
         case "next":
           if (active.kind === "side") {
-            await this.cancelSideTurn(state, active);
+            await this.cancelSideTurn(state, active, { cancelledByOpenId: action.operatorOpenId });
           } else {
-            await this.executeNextAction(state, active.context);
+            await this.executeNextAction(state, active.context, action.operatorOpenId);
           }
           break;
         case "queue":
@@ -6436,12 +6441,16 @@ export class ConversationManager {
     );
   }
 
-  private async executeStopAction(state: ConversationState): Promise<void> {
-    await this.stopConversationState(state);
+  private async executeStopAction(state: ConversationState, cancelledByOpenId?: string): Promise<void> {
+    await this.stopConversationState(state, { cancelledByOpenId });
   }
 
-  private async executeNextAction(state: ConversationState, context: MessageContext): Promise<void> {
-    const interrupted = await this.cancelActiveTurn(state, { waitForCompletion: true });
+  private async executeNextAction(
+    state: ConversationState,
+    context: MessageContext,
+    cancelledByOpenId?: string
+  ): Promise<void> {
+    const interrupted = await this.cancelActiveTurn(state, { waitForCompletion: true, cancelledByOpenId });
     if (!interrupted || !state.active) {
       await this.startPendingBatch(state, context);
     }
@@ -6727,7 +6736,10 @@ export class ConversationManager {
     message: IncomingLarkMessage
   ): Promise<void> {
     const queued = state.pendingBatch.length;
-    const interrupted = await this.cancelActiveTurn(state, { waitForCompletion: true });
+    const interrupted = await this.cancelActiveTurn(state, {
+      waitForCompletion: true,
+      cancelledByOpenId: message.senderOpenId
+    });
     if (!interrupted || !state.active) {
       await this.startPendingBatch(state, context);
     }
@@ -9861,7 +9873,7 @@ export class ConversationManager {
 
   private async cancelActiveTurn(
     state: ConversationState,
-    options: { waitForCompletion?: boolean } = {}
+    options: { waitForCompletion?: boolean; cancelledByOpenId?: string } = {}
   ): Promise<boolean> {
     const active = state.active;
     if (!active) {
@@ -9872,6 +9884,7 @@ export class ConversationManager {
       state.active = undefined;
     }
     active.cancelRequested = true;
+    active.cancelledByOpenId = nonEmptyString(options.cancelledByOpenId) ?? active.cancelledByOpenId;
     active.pendingSteers = [];
     active.pendingSideFollowups = [];
     if (active.sideId !== undefined) {
@@ -9902,11 +9915,16 @@ export class ConversationManager {
     return true;
   }
 
-  private async cancelSideTurn(state: ConversationState, active: ActiveTurn): Promise<boolean> {
+  private async cancelSideTurn(
+    state: ConversationState,
+    active: ActiveTurn,
+    options: { cancelledByOpenId?: string } = {}
+  ): Promise<boolean> {
     if (!isSideTurnCurrent(state, active) || active.cancelRequested) {
       return false;
     }
     active.cancelRequested = true;
+    active.cancelledByOpenId = nonEmptyString(options.cancelledByOpenId) ?? active.cancelledByOpenId;
     active.pendingSteers = [];
     await this.clearReactionBestEffort(active);
     await this.markMessagesInterruptedBestEffort([...active.processingMessageIds]);
@@ -9922,10 +9940,13 @@ export class ConversationManager {
     return true;
   }
 
-  private async cancelAllSideTurns(state: ConversationState): Promise<number> {
+  private async cancelAllSideTurns(
+    state: ConversationState,
+    options: { cancelledByOpenId?: string } = {}
+  ): Promise<number> {
     let stopped = 0;
     for (const active of [...state.sideTurns.values()]) {
-      if (await this.cancelSideTurn(state, active)) {
+      if (await this.cancelSideTurn(state, active, options)) {
         stopped += 1;
       }
     }
@@ -12199,6 +12220,7 @@ export class ConversationManager {
     session.messageTokenUsage = active.messageTokenUsage;
     session.generatedImagePaths = active.generatedImagePaths;
     session.mentionOpenIds = activeTurnMentionOpenIds(active);
+    session.cancelledByOpenId = active.cancelledByOpenId;
     if (output.allowInput !== undefined) {
       session.allowInput = output.allowInput;
     } else if (status === "failed") {
@@ -12420,6 +12442,7 @@ export class ConversationManager {
         status === "accepted_plan"
           ? activeTurnMentionOpenIds(active)
           : undefined,
+      cancelledByOpenId: active.cancelledByOpenId,
       summaryText,
       error,
       sideFollowupInput: this.sideFollowupInputForActive(state, active, status)
@@ -12453,6 +12476,7 @@ export class ConversationManager {
       hideQueueControls: true,
       finalElements: status === "finished" ? session.finalElements : undefined,
       mentionOpenIds: status === "finished" ? session.mentionOpenIds : undefined,
+      cancelledByOpenId: status === "interrupted" ? session.cancelledByOpenId : undefined,
       summaryText: status === "finished" ? session.summaryText : undefined,
       sideFollowupInput: session.allowInput
         ? {
