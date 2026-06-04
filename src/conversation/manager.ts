@@ -5667,12 +5667,17 @@ export class ConversationManager {
     }
 
     const conversation = await this.options.repository.updateConversationWorkspace(context.conversationKey, target.workspace);
+    const replyLines = [
+      `已设置 conversation workspace：${conversation.workspace}`,
+      `主会话 thread 已同步：${conversation.codexThreadId}`
+    ];
+    if (resolved.threadId !== conversation.codexThreadId) {
+      const currentThread = await this.options.repository.updateCodexThreadWorkspace(resolved.threadId, target.workspace);
+      replyLines.push(`当前 thread 已同步：${currentThread.codexThreadId}`);
+    }
     await this.replyControlBestEffort(
       message.messageId,
-      [
-        `已设置 conversation workspace：${conversation.workspace}`,
-        `主会话 thread 已同步：${conversation.codexThreadId}`
-      ].join("\n")
+      replyLines.join("\n")
     );
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
@@ -15951,7 +15956,7 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "可用指令：",
     "/help - 查看可用指令和使用说明",
     "/status - 查看当前会话、Codex thread 和 token 用量",
-    "/workspace [dir|num] - 查看或设置当前 conversation workspace；会同步主会话 thread",
+    "/workspace [dir|num] - 查看或设置当前 conversation workspace；会同步主会话和发命令的非主 thread",
     "/cd [dir|num] - 查看或设置当前非主 thread workspace",
     "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
     "/model <model> [low|medium|high|xhigh] - 设置当前 thread 后续 turn 的模型；effort 可省略",

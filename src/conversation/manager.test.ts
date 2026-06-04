@@ -697,6 +697,59 @@ describe("ConversationManager", () => {
     }
   });
 
+  it("sets both the conversation and current non-main thread workspace with /workspace", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-manager-thread-workspace-"));
+    try {
+      const targetWorkspace = path.join(tempDir, "target");
+      fs.mkdirSync(targetWorkspace);
+      const conversation = groupConversationRecord();
+      const { repository } = createRepository(conversation, {
+        codexThreads: [
+          codexThreadRecord({
+            id: 20,
+            codexThreadId: "thread_topic",
+            conversationKey: "group_oc_group",
+            larkThreadId: "topic_thread",
+            workspace: "/tmp/twinny/workspaces/group_oc_group/topic",
+            profile: "guest"
+          })
+        ]
+      });
+      const codex = createCodex();
+      const lark = createLarkResponder();
+      const manager = createManager({ repository, codex, lark });
+
+      manager.submitIncoming(groupMessage("m_topic_workspace_select", `/workspace ${targetWorkspace}`, {
+        chatType: "topic_group",
+        larkThreadId: "topic_thread",
+        larkRootMessageId: "topic_root"
+      }));
+
+      await waitForExpect(() =>
+        expect(lark.replyText).toHaveBeenCalledWith(
+          "m_topic_workspace_select",
+          [
+            `已设置 conversation workspace：${targetWorkspace}`,
+            "主会话 thread 已同步：thread_group",
+            "当前 thread 已同步：thread_topic"
+          ].join("\n")
+        )
+      );
+      expect(repository.findByConversationKey("group_oc_group")).toMatchObject({
+        workspace: targetWorkspace
+      });
+      expect(repository.getCodexThreadById("thread_group")).toMatchObject({
+        workspace: targetWorkspace
+      });
+      expect(repository.getCodexThreadById("thread_topic")).toMatchObject({
+        workspace: targetWorkspace
+      });
+      expect(codex.startTurn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects missing workspace directories", async () => {
     const missingWorkspace = path.join(os.tmpdir(), `twinny-missing-workspace-${Date.now()}`);
     fs.rmSync(missingWorkspace, { recursive: true, force: true });
@@ -5274,7 +5327,7 @@ describe("ConversationManager", () => {
     for (const usage of [
       "/help - 查看可用指令和使用说明",
       "/status - 查看当前会话、Codex thread 和 token 用量",
-      "/workspace [dir|num] - 查看或设置当前 conversation workspace；会同步主会话 thread",
+      "/workspace [dir|num] - 查看或设置当前 conversation workspace；会同步主会话和发命令的非主 thread",
       "/cd [dir|num] - 查看或设置当前非主 thread workspace",
       "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
       "/model <model> [low|medium|high|xhigh] - 设置当前 thread 后续 turn 的模型；effort 可省略",
