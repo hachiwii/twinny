@@ -11145,24 +11145,139 @@ describe("ConversationManager", () => {
     expect(serialized).not.toContain("img_generated");
   });
 
-  it("renders Codex Lark mention tags only from the final card output", async () => {
+  it("uploads workspace markdown image references in final card output", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-card-markdown-image-"));
+    const workspaceRoot = path.join(tempRoot, "workspaces");
+    const workspace = path.join(workspaceRoot, "p2p_ou_guest");
+    fs.mkdirSync(workspace, { recursive: true });
+    const imagePath = path.join(workspace, "auth.png");
+    fs.writeFileSync(imagePath, "png");
+    const finalText = `ready\n![授权二维码](${imagePath})\ndone`;
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
         await onTurnStarted?.("turn_1");
         await onAgentMessage?.({
           id: "agent_1",
-          text: "checking <mention_lark_user>ou_noise</mention_lark_user>",
-          phase: "commentary"
-        });
-        await onAgentMessage?.({
-          id: "agent_2",
-          text: "请看 <mention_lark_user>ou_target</mention_lark_user>",
+          text: finalText,
           phase: "final_answer"
         });
         return {
           threadId,
           turnId: "turn_1",
-          text: "checking <mention_lark_user>ou_noise</mention_lark_user>\n\n请看 <mention_lark_user>ou_target</mention_lark_user>",
+          text: finalText,
+          status: "completed" as const
+        };
+      })
+    });
+    const lark = createLarkResponder();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(),
+      uploadImage: vi.fn(async () => ({ imageKey: "img_auth" }))
+    };
+    const manager = createManager({ codex, lark, larkFiles, workspaceRoot, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() =>
+      expect(lark.replyCard).toHaveBeenNthCalledWith(
+        2,
+        "m1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+
+    expect(larkFiles.uploadImage).toHaveBeenCalledWith({
+      filePath: imagePath,
+      fileName: "auth.png",
+      contentType: "image/png"
+    });
+    const finalCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const serialized = JSON.stringify(finalCard);
+    expect(serialized).toContain("img_auth");
+    expect(serialized).not.toContain(`![授权二维码](${imagePath})`);
+    expect(serialized).not.toContain(imagePath);
+    expect(finalCard.config).toMatchObject({
+      summary: { content: expect.stringContaining("[图片: 授权二维码]") }
+    });
+  });
+
+  it("replaces invalid markdown image references in final card output with errors", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-card-markdown-image-error-"));
+    const workspaceRoot = path.join(tempRoot, "workspaces");
+    const workspace = path.join(workspaceRoot, "p2p_ou_guest");
+    fs.mkdirSync(workspace, { recursive: true });
+    const outsideImage = path.join(tempRoot, "outside.png");
+    fs.writeFileSync(outsideImage, "png");
+    const remoteImage = "https://example.com/auth.png";
+    const finalText = [`![outside](${outsideImage})`, `![remote](${remoteImage})`].join("\n");
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: finalText,
+          phase: "final_answer"
+        });
+        return {
+          threadId,
+          turnId: "turn_1",
+          text: finalText,
+          status: "completed" as const
+        };
+      })
+    });
+    const lark = createLarkResponder();
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(),
+      uploadImage: vi.fn(async () => ({ imageKey: "img_should_not_upload" }))
+    };
+    const manager = createManager({ codex, lark, larkFiles, workspaceRoot, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() =>
+      expect(lark.replyCard).toHaveBeenNthCalledWith(
+        2,
+        "m1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+
+    expect(larkFiles.uploadImage).not.toHaveBeenCalled();
+    const finalCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const serialized = JSON.stringify(finalCard);
+    expect(serialized).toContain(`文件 ${outsideImage} 不在工作区内，无法显示图片`);
+    expect(serialized).toContain(`无法显示远端图片: ${remoteImage}`);
+    expect(serialized).not.toContain(`![outside](${outsideImage})`);
+    expect(serialized).not.toContain(`![remote](${remoteImage})`);
+  });
+
+  it("renders Codex at tags only from the final card output", async () => {
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: 'checking <at openid="ou_noise">',
+          phase: "commentary"
+        });
+        await onAgentMessage?.({
+          id: "agent_2",
+          text: '请看 <at openid="ou_target">',
+          phase: "final_answer"
+        });
+        return {
+          threadId,
+          turnId: "turn_1",
+          text: 'checking <at openid="ou_noise">\n\n请看 <at openid="ou_target">',
           status: "completed" as const
         };
       })
@@ -11188,24 +11303,24 @@ describe("ConversationManager", () => {
     const serialized = JSON.stringify(finalCard);
     expect(serialized).toContain("<at id=ou_target></at>");
     expect(serialized).not.toContain("<at id=ou_noise></at>");
-    expect(serialized).not.toContain("<mention_lark_user>ou_target</mention_lark_user>");
+    expect(serialized).not.toContain('<at openid="ou_target">');
     expect(finalCard.config).toMatchObject({
       summary: { content: "请看 @ou_target" }
     });
   });
 
-  it("renders Codex Lark mention tags only from fallback plain final_answer messages", async () => {
+  it("renders Codex at tags only from fallback plain final_answer messages", async () => {
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
         await onTurnStarted?.("turn_1");
         await onAgentMessage?.({
           id: "agent_1",
-          text: "checking <mention_lark_user>ou_noise</mention_lark_user>",
+          text: 'checking <at openid="ou_noise">',
           phase: "commentary"
         });
         await onAgentMessage?.({
           id: "agent_2",
-          text: "hi <mention_lark_user>ou_target</mention_lark_user> please",
+          text: 'hi <at openid="ou_target"> please',
           phase: "final_answer"
         });
         return completed(threadId, "turn_1");
@@ -11220,7 +11335,7 @@ describe("ConversationManager", () => {
 
     expect(lark.replyMarkdown).toHaveBeenCalledWith(
       "m1",
-      "checking <mention_lark_user>ou_noise</mention_lark_user>"
+      'checking <at openid="ou_noise">'
     );
     expect(lark.replyPost).toHaveBeenCalledWith("m1", [
       [
@@ -11231,12 +11346,12 @@ describe("ConversationManager", () => {
     ]);
   });
 
-  it("does not render Codex Lark mention tags inside markdown code in final card output", async () => {
+  it("does not render Codex at tags inside markdown code in final card output", async () => {
     const finalText = [
-      "Ping <mention-lark-user>ou_target</mention-lark-user>",
-      "Use `<mention-lark-user>ou_inline</mention-lark-user>` as an example.",
+      'Ping <at openid="ou_target">',
+      'Use `<at openid="ou_inline">` as an example.',
       "```",
-      "<mention-lark-user>ou_block</mention-lark-user>",
+      '<at openid="ou_block">',
       "```"
     ].join("\n");
     const codex = createCodex({
@@ -11274,8 +11389,8 @@ describe("ConversationManager", () => {
 
     const finalCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
     const serialized = JSON.stringify(finalCard);
-    expect(serialized).toContain("<mention-lark-user>ou_inline</mention-lark-user>");
-    expect(serialized).toContain("<mention-lark-user>ou_block</mention-lark-user>");
+    expect(serialized).toContain('<at openid=\\"ou_inline\\">');
+    expect(serialized).toContain('<at openid=\\"ou_block\\">');
     expect(serialized).toContain("<at id=ou_target></at>");
     expect(serialized).not.toContain("<at id=ou_inline></at>");
     expect(serialized).not.toContain("<at id=ou_block></at>");
@@ -11328,12 +11443,12 @@ describe("ConversationManager", () => {
     });
   });
 
-  it("keeps Codex Lark mention tags inside markdown code in fallback plain final_answer messages", async () => {
+  it("keeps Codex at tags inside markdown code in fallback plain final_answer messages", async () => {
     const finalText = [
       "```",
-      "<mention-lark-user>ou_block</mention-lark-user>",
+      '<at openid="ou_block">',
       "```",
-      "`<mention-lark-user>ou_inline</mention-lark-user>`"
+      '`<at openid="ou_inline">`'
     ].join("\n");
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
@@ -12204,6 +12319,76 @@ describe("ConversationManager", () => {
     expect(lark.replyMarkdown).not.toHaveBeenCalledWith("m1", expect.stringContaining("SEND_TO_LARK"));
   });
 
+  it("uploads workspace markdown image references through fallback plain replies", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-markdown-image-"));
+    const workspaceRoot = path.join(tempRoot, "workspaces");
+    const workspace = path.join(workspaceRoot, "p2p_ou_guest");
+    fs.mkdirSync(workspace, { recursive: true });
+    const imagePath = path.join(workspace, "auth.png");
+    fs.writeFileSync(imagePath, "png");
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: `ready\n![授权二维码](${imagePath})\ndone`
+        });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(),
+      uploadImage: vi.fn(async () => ({ imageKey: "img_auth" }))
+    };
+    const manager = createManager({ codex, lark, larkFiles, workspaceRoot });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyPost).toHaveBeenCalledTimes(1));
+
+    expect(larkFiles.uploadImage).toHaveBeenCalledWith({
+      filePath: imagePath,
+      fileName: "auth.png",
+      contentType: "image/png"
+    });
+    expect(lark.replyPost).toHaveBeenCalledWith("m1", [
+      [{ tag: "md", text: "ready" }],
+      [{ tag: "img", image_key: "img_auth" }],
+      [{ tag: "md", text: "done" }]
+    ]);
+    expect(lark.replyMarkdown).not.toHaveBeenCalledWith("m1", expect.stringContaining("![授权二维码]"));
+  });
+
+  it("replaces remote markdown image references through fallback plain replies", async () => {
+    const remoteImage = "https://example.com/auth.png";
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: `ready ![授权二维码](${remoteImage}) done`
+        });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(),
+      uploadImage: vi.fn(async () => ({ imageKey: "img_should_not_upload" }))
+    };
+    const manager = createManager({ codex, lark, larkFiles });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyPost).toHaveBeenCalledTimes(1));
+
+    expect(larkFiles.uploadImage).not.toHaveBeenCalled();
+    expect(lark.replyPost).toHaveBeenCalledWith("m1", [
+      [{ tag: "md", text: `ready ❌ 无法显示远端图片: ${remoteImage} done` }]
+    ]);
+  });
+
   it("ignores SEND_TO_LARK directives inside markdown code in fallback plain replies", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-code-"));
     const workspaceRoot = path.join(tempRoot, "workspaces");
@@ -12219,6 +12404,46 @@ describe("ConversationManager", () => {
       "`inline",
       `SEND_TO_LARK: <img path="${imagePath}"></img>`,
       "`",
+      "done"
+    ].join("\n");
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: finalText
+        });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(),
+      uploadImage: vi.fn(async () => ({ imageKey: "img_uploaded" }))
+    };
+    const manager = createManager({ codex, lark, larkFiles, workspaceRoot });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyMarkdown).toHaveBeenCalledWith("m1", finalText));
+
+    expect(larkFiles.uploadImage).not.toHaveBeenCalled();
+    expect(lark.replyPost).not.toHaveBeenCalled();
+  });
+
+  it("ignores markdown image references inside markdown code in fallback plain replies", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "twinny-send-markdown-image-code-"));
+    const workspaceRoot = path.join(tempRoot, "workspaces");
+    const workspace = path.join(workspaceRoot, "p2p_ou_guest");
+    fs.mkdirSync(workspace, { recursive: true });
+    const imagePath = path.join(workspace, "auth.png");
+    fs.writeFileSync(imagePath, "png");
+    const finalText = [
+      "ready",
+      "```",
+      `![授权二维码](${imagePath})`,
+      "```",
+      "`![授权二维码](/tmp/example.png)`",
       "done"
     ].join("\n");
     const codex = createCodex({

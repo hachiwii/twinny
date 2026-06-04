@@ -8,8 +8,10 @@ import { TwinnyError, toErrorMessage } from "../errors.js";
 import {
   isPositionInTextRanges,
   markdownCodeRanges,
+  markdownImageReferences,
   markdownLines,
   renderLocalPathMarkdownLinksAsCode,
+  type MarkdownImageReference,
   type TextRange
 } from "../markdown.js";
 import {
@@ -180,7 +182,7 @@ Only use absolute paths to regular files inside the current conversation workspa
 
 ## Mentioning Lark Users
 
-When you need to mention a Feishu/Lark user in the final answer, use <mention_lark_user>OPEN_ID</mention_lark_user>. Put only the user's Feishu/Lark open_id inside the tag.
+When you need to at a Feishu/Lark user in your reply, use <at openid="{open_id}">.
 
 ## Fetching Lark Context
 
@@ -12530,11 +12532,11 @@ export class ConversationManager {
     }
     const markdown = renderLocalPathMarkdownLinksAsCode(text);
     try {
-      const parseCodexMentions = agentMessage.phase === "final_answer";
-      const outbound = await this.prepareAgentReplyForLark(markdown, active.workspace, { parseCodexMentions });
+      const parseCodexAtTags = agentMessage.phase === "final_answer";
+      const outbound = await this.prepareAgentReplyForLark(markdown, active.workspace, { parseCodexAtTags });
       if (outbound === undefined) {
-        if (parseCodexMentions && hasCodexMentionSyntax(markdown)) {
-          const result = await this.options.lark.replyPost(messageId, postContentForCodexMentionText(markdown));
+        if (parseCodexAtTags && hasCodexAtSyntax(markdown)) {
+          const result = await this.options.lark.replyPost(messageId, postContentForCodexAtText(markdown));
           if (result?.messageId) {
             active.lastAgentReplyMessageId = result.messageId;
           }
@@ -12583,13 +12585,13 @@ export class ConversationManager {
       return;
     }
     const markdown = renderLocalPathMarkdownLinksAsCode(text);
-    const parseCodexMentions = agentMessage.phase === "final_answer";
+    const parseCodexAtTags = agentMessage.phase === "final_answer";
     const uuid = createLarkUuid("twinny-agent-direct", active.threadId, agentMessage.id);
     try {
-      const outbound = await this.prepareAgentReplyForLark(markdown, active.workspace, { parseCodexMentions });
+      const outbound = await this.prepareAgentReplyForLark(markdown, active.workspace, { parseCodexAtTags });
       if (outbound === undefined) {
-        if (parseCodexMentions && hasCodexMentionSyntax(markdown)) {
-          await this.sendDirectAgentPost(delivery, postContentForCodexMentionText(markdown));
+        if (parseCodexAtTags && hasCodexAtSyntax(markdown)) {
+          await this.sendDirectAgentPost(delivery, postContentForCodexAtText(markdown));
           return;
         }
         const result = delivery.conversationType === "p2p"
@@ -12630,17 +12632,18 @@ export class ConversationManager {
     workspace: string,
     options: PrepareAgentReplyOptions = {}
   ): Promise<PreparedAgentLarkReply | undefined> {
-    if (!containsSendToLarkDirective(text)) {
+    const imageReferences = markdownImageReferences(text);
+    if (!containsSendToLarkDirective(text) && imageReferences.length === 0) {
       return undefined;
     }
 
-    const builder = new LarkPostContentBuilder({ parseCodexMentions: options.parseCodexMentions });
+    const builder = new LarkPostContentBuilder({ parseCodexAtTags: options.parseCodexAtTags });
     const files: PreparedLarkFileReply[] = [];
     const codeRanges = markdownCodeRanges(text);
     for (const line of markdownLines(text)) {
       const directive = parseSendToLarkDirective(line.text, line.start, codeRanges);
       if (directive.kind === "none") {
-        builder.addTextLine(line.text);
+        await this.addMarkdownLineToPostBuilder(builder, line.text, line.start, imageReferences, workspace);
         continue;
       }
       if (directive.kind === "invalid") {
@@ -12697,11 +12700,27 @@ export class ConversationManager {
     const larkMarkdown = renderLocalPathMarkdownLinksAsCode(text);
     const elements: LarkCardElement[] = [];
     const files: PreparedLarkFileReply[] = [];
-    const pendingText: string[] = [];
+    const imageReferences = markdownImageReferences(larkMarkdown);
+    let pendingText = "";
     const hasSendToLarkDirective = containsSendToLarkDirective(larkMarkdown);
+    const hasExplicitImageReference = imageReferences.length > 0;
+    const appendPendingText = (text: string): void => {
+      pendingText += text;
+    };
+    const addPendingTextLine = (line: string): void => {
+      pendingText += `${pendingText.length === 0 || pendingText.endsWith("\n") ? "" : "\n"}${line}`;
+    };
+    const startPendingTextLine = (): void => {
+      if (pendingText.length > 0 && !pendingText.endsWith("\n")) {
+        pendingText += "\n";
+      }
+    };
+    const endPendingTextLine = (): void => {
+      pendingText += "\n";
+    };
     const flushText = (): void => {
-      const markdown = renderCodexMentionTagsForCardMarkdown(pendingText.join("\n").trim());
-      pendingText.splice(0);
+      const markdown = renderCodexAtTagsForCardMarkdown(pendingText.trim());
+      pendingText = "";
       if (markdown.length > 0) {
         elements.push(markdownElement(markdown));
       }
@@ -12711,7 +12730,18 @@ export class ConversationManager {
     for (const line of markdownLines(larkMarkdown)) {
       const directive = parseSendToLarkDirective(line.text, line.start, codeRanges);
       if (directive.kind === "none") {
-        pendingText.push(line.text);
+        await this.appendMarkdownLineToCardOutput({
+          line: line.text,
+          lineStart: line.start,
+          imageReferences,
+          workspace,
+          appendText: appendPendingText,
+          addTextLine: addPendingTextLine,
+          startTextLine: startPendingTextLine,
+          endTextLine: endPendingTextLine,
+          flushText,
+          elements
+        });
         continue;
       }
       flushText();
@@ -12755,7 +12785,7 @@ export class ConversationManager {
       }
     }
     flushText();
-    if (!hasSendToLarkDirective) {
+    if (!hasSendToLarkDirective && !hasExplicitImageReference) {
       for (const imagePath of generatedImagePaths) {
         try {
           if (!this.options.larkFiles?.uploadImage) {
@@ -12776,8 +12806,104 @@ export class ConversationManager {
     return {
       elements: elements.length > 0 ? elements : [markdownElement("")],
       files,
-      summaryText: renderCodexMentionTagsAsPlainText(larkMarkdown)
+      summaryText: renderCodexAtTagsAsPlainText(renderMarkdownImagesAsPlainText(larkMarkdown))
     };
+  }
+
+  private async addMarkdownLineToPostBuilder(
+    builder: LarkPostContentBuilder,
+    line: string,
+    lineStart: number,
+    imageReferences: MarkdownImageReference[],
+    workspace: string
+  ): Promise<void> {
+    const lineImageReferences = markdownImageReferencesForLine(imageReferences, lineStart, line.length);
+    if (lineImageReferences.length === 0) {
+      builder.addTextLine(line);
+      return;
+    }
+
+    builder.startTextLine();
+    let cursor = 0;
+    for (const imageReference of lineImageReferences) {
+      const imageStart = imageReference.start - lineStart;
+      const imageEnd = imageReference.end - lineStart;
+      builder.appendText(line.slice(cursor, imageStart));
+      const prepared = await this.prepareMarkdownImageForLark(imageReference, workspace);
+      if (prepared.kind === "image") {
+        builder.addImage(prepared.imageKey);
+      } else {
+        builder.appendText(prepared.text);
+      }
+      cursor = imageEnd;
+    }
+    builder.appendText(line.slice(cursor));
+    builder.endTextLine();
+  }
+
+  private async appendMarkdownLineToCardOutput(params: {
+    line: string;
+    lineStart: number;
+    imageReferences: MarkdownImageReference[];
+    workspace: string;
+    appendText: (text: string) => void;
+    addTextLine: (line: string) => void;
+    startTextLine: () => void;
+    endTextLine: () => void;
+    flushText: () => void;
+    elements: LarkCardElement[];
+  }): Promise<void> {
+    const lineImageReferences = markdownImageReferencesForLine(params.imageReferences, params.lineStart, params.line.length);
+    if (lineImageReferences.length === 0) {
+      params.addTextLine(params.line);
+      return;
+    }
+
+    params.startTextLine();
+    let cursor = 0;
+    for (const imageReference of lineImageReferences) {
+      const imageStart = imageReference.start - params.lineStart;
+      const imageEnd = imageReference.end - params.lineStart;
+      params.appendText(params.line.slice(cursor, imageStart));
+      const prepared = await this.prepareMarkdownImageForLark(imageReference, params.workspace);
+      if (prepared.kind === "image") {
+        params.flushText();
+        params.elements.push(imageElement(prepared.imageKey));
+      } else {
+        params.appendText(prepared.text);
+      }
+      cursor = imageEnd;
+    }
+    params.appendText(params.line.slice(cursor));
+    params.endTextLine();
+  }
+
+  private async prepareMarkdownImageForLark(
+    imageReference: MarkdownImageReference,
+    workspace: string
+  ): Promise<{ kind: "image"; imageKey: string } | { kind: "text"; text: string }> {
+    const resolvedTarget = resolveMarkdownImageTargetPath(imageReference.target, workspace);
+    if (resolvedTarget.kind === "remote") {
+      return { kind: "text", text: formatMarkdownImageRemoteError(imageReference.target) };
+    }
+    if (resolvedTarget.kind === "invalid") {
+      return { kind: "text", text: formatMarkdownImageLocalError(imageReference.target, resolvedTarget.reason) };
+    }
+
+    try {
+      if (!this.options.larkFiles?.uploadImage) {
+        throw new Error("Lark image uploader is not configured");
+      }
+      const file = await resolveWorkspaceFileForLark(resolvedTarget.filePath, workspace);
+      const uploaded = await this.options.larkFiles.uploadImage({
+        filePath: file.filePath,
+        fileName: file.fileName,
+        contentType: contentTypeForFileName(file.fileName)
+      });
+      return { kind: "image", imageKey: uploaded.imageKey };
+    } catch (error) {
+      return { kind: "text", text: formatMarkdownImageLocalError(imageReference.target, toErrorMessage(error)) };
+    }
   }
 }
 
@@ -12806,7 +12932,7 @@ interface PreparedAgentCardReply {
 }
 
 interface PrepareAgentReplyOptions {
-  parseCodexMentions?: boolean;
+  parseCodexAtTags?: boolean;
 }
 
 type SendToLarkDirective =
@@ -12816,12 +12942,26 @@ type SendToLarkDirective =
 
 class LarkPostContentBuilder {
   private readonly content: LarkPostContent = [];
-  private pendingText: string[] = [];
+  private pendingText = "";
 
   constructor(private readonly options: PrepareAgentReplyOptions = {}) {}
 
   addTextLine(line: string): void {
-    this.pendingText.push(line);
+    this.pendingText += `${this.pendingText.length === 0 || this.pendingText.endsWith("\n") ? "" : "\n"}${line}`;
+  }
+
+  startTextLine(): void {
+    if (this.pendingText.length > 0 && !this.pendingText.endsWith("\n")) {
+      this.pendingText += "\n";
+    }
+  }
+
+  appendText(text: string): void {
+    this.pendingText += text;
+  }
+
+  endTextLine(): void {
+    this.pendingText += "\n";
   }
 
   addImage(imageKey: string): void {
@@ -12843,11 +12983,11 @@ class LarkPostContentBuilder {
     if (this.pendingText.length === 0) {
       return;
     }
-    const text = this.pendingText.join("\n").trim();
-    this.pendingText = [];
+    const text = this.pendingText.trim();
+    this.pendingText = "";
     if (text.length > 0) {
-      if (this.options.parseCodexMentions && hasCodexMentionSyntax(text)) {
-        this.content.push(...postContentForCodexMentionText(text));
+      if (this.options.parseCodexAtTags && hasCodexAtSyntax(text)) {
+        this.content.push(...postContentForCodexAtText(text));
         return;
       }
       this.content.push([{ tag: "md", text }]);
@@ -12855,15 +12995,15 @@ class LarkPostContentBuilder {
   }
 }
 
-type CodexMentionTextPart =
+type CodexAtTextPart =
   | { kind: "text"; text: string }
-  | { kind: "mention"; openId: string };
+  | { kind: "at"; openId: string };
 
-const CODEX_MENTION_TAG_PATTERN = /<mention[_-]lark[_-]user>([\s\S]*?)<\/mention[_-]lark[_-]user>/g;
+const CODEX_AT_TAG_PATTERN = /<at\s+openid="([^"]*)"\s*\/?>/g;
 
-function hasCodexMentionSyntax(text: string): boolean {
+function hasCodexAtSyntax(text: string): boolean {
   const codeRanges = markdownCodeRanges(text);
-  for (const match of text.matchAll(CODEX_MENTION_TAG_PATTERN)) {
+  for (const match of text.matchAll(CODEX_AT_TAG_PATTERN)) {
     if (!isPositionInTextRanges(match.index ?? 0, codeRanges)) {
       return true;
     }
@@ -12871,10 +13011,10 @@ function hasCodexMentionSyntax(text: string): boolean {
   return false;
 }
 
-function postContentForCodexMentionText(text: string): LarkPostContent {
+function postContentForCodexAtText(text: string): LarkPostContent {
   const paragraphs: LarkPostContent = [[]];
-  for (const part of splitCodexMentionText(text)) {
-    if (part.kind === "mention") {
+  for (const part of splitCodexAtText(text)) {
+    if (part.kind === "at") {
       currentPostParagraph(paragraphs).push({ tag: "at", user_id: part.openId });
       continue;
     }
@@ -12911,23 +13051,23 @@ function currentPostParagraph(paragraphs: LarkPostContent): LarkPostNode[] {
   return paragraph;
 }
 
-function renderCodexMentionTagsForCardMarkdown(text: string): string {
-  return splitCodexMentionText(text)
-    .map((part) => part.kind === "mention" ? `<at id=${part.openId}></at>` : part.text)
+function renderCodexAtTagsForCardMarkdown(text: string): string {
+  return splitCodexAtText(text)
+    .map((part) => part.kind === "at" ? `<at id=${part.openId}></at>` : part.text)
     .join("");
 }
 
-function renderCodexMentionTagsAsPlainText(text: string): string {
-  return splitCodexMentionText(text)
-    .map((part) => part.kind === "mention" ? `@${part.openId}` : part.text)
+function renderCodexAtTagsAsPlainText(text: string): string {
+  return splitCodexAtText(text)
+    .map((part) => part.kind === "at" ? `@${part.openId}` : part.text)
     .join("");
 }
 
-function splitCodexMentionText(text: string): CodexMentionTextPart[] {
-  const parts: CodexMentionTextPart[] = [];
+function splitCodexAtText(text: string): CodexAtTextPart[] {
+  const parts: CodexAtTextPart[] = [];
   const codeRanges = markdownCodeRanges(text);
   let cursor = 0;
-  for (const match of text.matchAll(CODEX_MENTION_TAG_PATTERN)) {
+  for (const match of text.matchAll(CODEX_AT_TAG_PATTERN)) {
     const index = match.index ?? 0;
     const raw = match[0]!;
     if (isPositionInTextRanges(index, codeRanges)) {
@@ -12937,7 +13077,7 @@ function splitCodexMentionText(text: string): CodexMentionTextPart[] {
       parts.push({ kind: "text", text: text.slice(cursor, index) });
     }
     const openId = match[1]?.trim() ?? "";
-    parts.push(isSafeLarkMentionOpenId(openId) ? { kind: "mention", openId } : { kind: "text", text: raw });
+    parts.push(isSafeLarkAtOpenId(openId) ? { kind: "at", openId } : { kind: "text", text: raw });
     cursor = index + raw.length;
   }
   if (cursor < text.length) {
@@ -12946,8 +13086,77 @@ function splitCodexMentionText(text: string): CodexMentionTextPart[] {
   return parts.length > 0 ? parts : [{ kind: "text", text }];
 }
 
-function isSafeLarkMentionOpenId(openId: string): boolean {
+function isSafeLarkAtOpenId(openId: string): boolean {
   return /^[A-Za-z0-9_:-]{1,128}$/.test(openId);
+}
+
+function markdownImageReferencesForLine(
+  references: MarkdownImageReference[],
+  lineStart: number,
+  lineLength: number
+): MarkdownImageReference[] {
+  const lineEnd = lineStart + lineLength;
+  return references.filter((reference) => reference.start >= lineStart && reference.end <= lineEnd);
+}
+
+type MarkdownImageTargetPath =
+  | { kind: "file"; filePath: string }
+  | { kind: "remote" }
+  | { kind: "invalid"; reason: string };
+
+function resolveMarkdownImageTargetPath(target: string, workspace: string): MarkdownImageTargetPath {
+  const trimmed = target.trim();
+  if (trimmed.length === 0) {
+    return { kind: "invalid", reason: "图片路径为空" };
+  }
+  if (isRemoteMarkdownImageTarget(trimmed)) {
+    return { kind: "remote" };
+  }
+  if (trimmed.startsWith("#")) {
+    return { kind: "invalid", reason: "图片路径不是本地文件" };
+  }
+
+  const workspacePath = path.resolve(workspace);
+  const filePath = path.isAbsolute(trimmed) ? path.resolve(trimmed) : path.resolve(workspacePath, trimmed);
+  if (!isPathInside(filePath, workspacePath)) {
+    return { kind: "invalid", reason: "文件不在 workspace 内" };
+  }
+  return { kind: "file", filePath };
+}
+
+function isRemoteMarkdownImageTarget(target: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target);
+}
+
+function formatMarkdownImageRemoteError(target: string): string {
+  return `❌ 无法显示远端图片: ${target}`;
+}
+
+function formatMarkdownImageLocalError(target: string, reason: string): string {
+  if (reason.includes("workspace") || reason.includes("工作区")) {
+    return `❌ 文件 ${target} 不在工作区内，无法显示图片`;
+  }
+  if (reason === "文件不存在") {
+    return `❌ 文件 ${target} 不存在，无法显示图片`;
+  }
+  return `❌ 图片 ${target} 无法显示：${reason}`;
+}
+
+function renderMarkdownImagesAsPlainText(text: string): string {
+  const references = markdownImageReferences(text);
+  if (references.length === 0) {
+    return text;
+  }
+
+  let rendered = "";
+  let cursor = 0;
+  for (const reference of references) {
+    rendered += text.slice(cursor, reference.start);
+    const altText = reference.altText.trim();
+    rendered += altText.length > 0 ? `[图片: ${altText}]` : "[图片]";
+    cursor = reference.end;
+  }
+  return rendered + text.slice(cursor);
 }
 
 function containsSendToLarkDirective(text: string): boolean {
@@ -14999,7 +15208,7 @@ function docCommentCardSender(
   senderName: string | undefined
 ): string {
   const senderOpenId = nonEmptyString(comment.senderOpenId) ?? nonEmptyString(snapshot.authorOpenId);
-  if (senderOpenId && isSafeLarkMentionOpenId(senderOpenId)) {
+  if (senderOpenId && isSafeLarkAtOpenId(senderOpenId)) {
     return `<at id=${senderOpenId}></at>`;
   }
   return escapeCardMarkdownText(senderName ?? snapshot.authorName ?? "未知用户");
@@ -15326,7 +15535,7 @@ function textForDocCommentCardContent(text: string, botOpenId: string | undefine
       parts.push(escapeCardMarkdownText(withoutBotMention.slice(cursor, index)));
     }
     const openId = match[1]!;
-    if (openId !== botOpenId && isSafeLarkMentionOpenId(openId)) {
+    if (openId !== botOpenId && isSafeLarkAtOpenId(openId)) {
       parts.push(`<at id=${openId}></at>`);
     }
     cursor = index + match[0]!.length;

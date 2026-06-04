@@ -101,7 +101,7 @@ Security boundary:
 - Keep responses focused on the guest user's request and avoid exposing local machine details.
 
 Lark output:
-- Use <mention_lark_user>OPEN_ID</mention_lark_user> in your final answer to mention a Feishu/Lark user. Put only the user's Feishu/Lark open_id inside the tag.
+- When you need to at a Feishu/Lark user in your reply, use <at openid="{open_id}">.
 `;
 }
 

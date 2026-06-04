@@ -9,6 +9,13 @@ export interface MarkdownLine {
   end: number;
 }
 
+export interface MarkdownImageReference {
+  altText: string;
+  target: string;
+  start: number;
+  end: number;
+}
+
 interface MarkdownFence {
   char: "`" | "~";
   length: number;
@@ -85,6 +92,38 @@ export function renderLocalPathMarkdownLinksAsCode(markdown: string): string {
     return markdown;
   }
   return rendered + markdown.slice(cursor);
+}
+
+export function markdownImageReferences(markdown: string): MarkdownImageReference[] {
+  if (!markdown.includes("![")) {
+    return [];
+  }
+
+  const references: MarkdownImageReference[] = [];
+  const codeRanges = markdownCodeRanges(markdown);
+  let index = 0;
+  while (index < markdown.length) {
+    if (markdown[index] !== "!" || markdown[index + 1] !== "[" || isPositionInTextRanges(index, codeRanges)) {
+      index += 1;
+      continue;
+    }
+
+    const link = parseInlineMarkdownLinkAt(markdown, index + 1);
+    if (!link) {
+      index += 1;
+      continue;
+    }
+
+    references.push({
+      altText: link.label,
+      target: link.target,
+      start: index,
+      end: link.end
+    });
+    index = link.end;
+  }
+
+  return references;
 }
 
 function markdownCodeBlockRanges(markdown: string): TextRange[] {
@@ -206,6 +245,12 @@ function countBackticks(markdown: string, start: number): number {
 }
 
 interface InlineMarkdownLink {
+  label: string;
+  target: string;
+  end: number;
+}
+
+interface InlineMarkdownLinkDestination {
   target: string;
   end: number;
 }
@@ -217,7 +262,7 @@ function parseInlineMarkdownLinkAt(markdown: string, start: number): InlineMarkd
   }
 
   const destination = parseMarkdownLinkDestination(markdown, labelEnd + 1);
-  return destination ? { target: destination.target, end: destination.end } : undefined;
+  return destination ? { label: markdown.slice(start + 1, labelEnd), target: destination.target, end: destination.end } : undefined;
 }
 
 function findClosingMarkdownLinkLabel(markdown: string, start: number): number {
@@ -242,7 +287,7 @@ function findClosingMarkdownLinkLabel(markdown: string, start: number): number {
   return -1;
 }
 
-function parseMarkdownLinkDestination(markdown: string, openParenIndex: number): InlineMarkdownLink | undefined {
+function parseMarkdownLinkDestination(markdown: string, openParenIndex: number): InlineMarkdownLinkDestination | undefined {
   let depth = 0;
   let index = openParenIndex + 1;
   while (index < markdown.length) {
