@@ -6322,11 +6322,11 @@ export class ConversationManager {
 
     if (session.status === "processing" && session.active && isSideTurnCurrent(state, session.active)) {
       await this.steerProcessingSideSession(state, session, input);
-      return cardActionInfoToast("已收到，处理中");
+      return cardActionAccepted();
     }
     if (session.status === "finished" || session.status === "interrupted") {
       await this.continueSideSession(state, session, input);
-      return cardActionInfoToast("已收到，处理中");
+      return cardActionAccepted();
     }
     return cardActionErrorToast("会话已被清理，不可继续发送消息");
   }
@@ -14532,6 +14532,10 @@ function cardActionInfoToast(content: string): LarkCardActionCallbackResponse {
       content
     }
   };
+}
+
+function cardActionAccepted(): LarkCardActionCallbackResponse {
+  return {};
 }
 
 function cardActionErrorToast(content: string): LarkCardActionCallbackResponse {

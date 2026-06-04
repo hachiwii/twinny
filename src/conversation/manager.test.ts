@@ -8412,7 +8412,7 @@ describe("ConversationManager", () => {
       expect(patchesAfterTimer.length).toBeGreaterThan(patchCountBeforeTimer);
       expect(patchesAfterTimer.at(-1)).toContain("工作中...");
       expect(patchesAfterTimer.at(-1)).toContain("[收到追问] second question");
-      expect(response).toEqual({ toast: { type: "info", content: "已收到，处理中" } });
+      expect(response).toEqual({});
       expect(staleFinishedAfterCallbackIndex).toBe(-1);
     } finally {
       vi.useRealTimers();
