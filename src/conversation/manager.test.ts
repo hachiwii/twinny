@@ -8466,14 +8466,17 @@ describe("ConversationManager", () => {
         serialized.includes("工作中...") && serialized.includes("[收到追问] second question")
       )).toBe(true);
       expect(sidePatchJson().some((serialized) => serialized.includes("已完成"))).toBe(false);
+      const patchCountBeforeTimer = sidePatchJson().length;
 
       await vi.advanceTimersByTimeAsync(10_000);
       await vi.advanceTimersByTimeAsync(0);
 
       const patchesAfterTimer = sidePatchJson();
+      expect(patchesAfterTimer.length).toBeGreaterThan(patchCountBeforeTimer);
       expect(patchesAfterTimer.some((serialized) =>
         serialized.includes("工作中...") && serialized.includes("[收到追问] second question")
       )).toBe(true);
+      expect(patchesAfterTimer.at(-1)).toContain("工作中...");
       expect(patchesAfterTimer.some((serialized) => serialized.includes("已完成"))).toBe(false);
 
       turns[1]!.resolve({ ...completed("thread_1_side", "turn_2"), text: "second final" });

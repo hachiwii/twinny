@@ -1131,11 +1131,16 @@ interface ActiveTurnCardState {
   activeRunId?: number;
   startedAt: number;
   messages: TwinnyAgentCardMessage[];
-  timer?: NodeJS.Timeout;
+  timer?: ActiveTurnCardTimer;
   completedPatchRetryTimer?: NodeJS.Timeout;
   consecutiveRateLimitedPatches?: number;
   fallbackPlain: boolean;
   lastRenderedJson?: string;
+}
+
+interface ActiveTurnCardTimer {
+  ownerRunId: number;
+  handle: NodeJS.Timeout;
 }
 
 type SideSessionStatus = "processing" | "finished" | "interrupted" | "failed";
@@ -12040,7 +12045,7 @@ export class ConversationManager {
     error?: string
   ): Promise<boolean> {
     const card = active.card;
-    if (!card?.messageId || card.fallbackPlain) {
+    if (!card?.messageId || card.fallbackPlain || !isAgentCardOwnedByActive(active, card)) {
       return false;
     }
     const effectiveStatus =
@@ -12098,7 +12103,7 @@ export class ConversationManager {
     status: "waiting_input" | "waiting_plan"
   ): Promise<void> {
     const card = active.card;
-    if (!card || card.fallbackPlain) {
+    if (!card || card.fallbackPlain || !isAgentCardOwnedByActive(active, card)) {
       return;
     }
 
@@ -12155,7 +12160,7 @@ export class ConversationManager {
   private async completeAgentCardBestEffort(state: ConversationState, active: ActiveTurn): Promise<void> {
     const card = active.card;
     this.stopAgentCardTimer(active);
-    if (!card?.messageId || card.fallbackPlain) {
+    if (!card?.messageId || card.fallbackPlain || !isAgentCardOwnedByActive(active, card)) {
       return;
     }
     try {
@@ -12230,8 +12235,14 @@ export class ConversationManager {
     messageId: string,
     rendered: LarkCardJson
   ): Promise<void> {
+    if (!isAgentCardMessageCurrent(active, card, messageId)) {
+      return;
+    }
     try {
       await this.options.lark.patchCard(messageId, rendered);
+      if (!isAgentCardMessageCurrent(active, card, messageId)) {
+        return;
+      }
       active.lastAgentReplyMessageId = messageId;
       card.lastRenderedJson = JSON.stringify(rendered);
     } catch (error) {
@@ -12251,7 +12262,7 @@ export class ConversationManager {
     rendered: LarkCardJson,
     attempt: number
   ): void {
-    if (!isCompletedAgentCardRetryCurrent(active, card, messageId)) {
+    if (!isAgentCardMessageCurrent(active, card, messageId)) {
       return;
     }
     const delayMs = COMPLETED_AGENT_CARD_PATCH_RETRY_DELAYS_MS[attempt];
@@ -12281,11 +12292,14 @@ export class ConversationManager {
     rendered: LarkCardJson,
     attempt: number
   ): Promise<void> {
-    if (!isCompletedAgentCardRetryCurrent(active, card, messageId)) {
+    if (!isAgentCardMessageCurrent(active, card, messageId)) {
       return;
     }
     try {
       await this.options.lark.patchCard(messageId, rendered);
+      if (!isAgentCardMessageCurrent(active, card, messageId)) {
+        return;
+      }
       active.lastAgentReplyMessageId = messageId;
       card.lastRenderedJson = JSON.stringify(rendered);
     } catch (error) {
@@ -12389,7 +12403,11 @@ export class ConversationManager {
   }
 
   private async failAgentCardBestEffort(state: ConversationState, active: ActiveTurn, error: string): Promise<void> {
+    const card = active.card;
     this.stopAgentCardTimer(active);
+    if (card && !isAgentCardOwnedByActive(active, card)) {
+      return;
+    }
     if (active.kind === "side") {
       this.rememberSideSessionTerminalOutput(state, active, "failed", activeCardMessagesForRender(active, "failed"), {
         allowInput: false
@@ -12463,7 +12481,11 @@ export class ConversationManager {
   }
 
   private async interruptAgentCardBestEffort(state: ConversationState, active: ActiveTurn): Promise<void> {
+    const card = active.card;
     this.stopAgentCardTimer(active);
+    if (card && !isAgentCardOwnedByActive(active, card)) {
+      return;
+    }
     try {
       const status =
         active.waiting?.kind === "request_user_input"
@@ -12481,7 +12503,11 @@ export class ConversationManager {
   }
 
   private async pauseAgentCardForShutdownBestEffort(state: ConversationState, active: ActiveTurn): Promise<void> {
+    const card = active.card;
     this.stopAgentCardTimer(active);
+    if (card && !isAgentCardOwnedByActive(active, card)) {
+      return;
+    }
     try {
       await this.patchAgentCardBestEffort(state, active, "paused");
     } catch (error) {
@@ -12491,13 +12517,27 @@ export class ConversationManager {
 
   private startAgentCardTimer(state: ConversationState, active: ActiveTurn): void {
     const card = active.card;
-    if (!card || card.timer || card.fallbackPlain || !card.messageId) {
+    if (!card || card.fallbackPlain || !card.messageId || !isAgentCardOwnedByActive(active, card)) {
       return;
     }
-    card.timer = setInterval(() => {
+    if (card.timer) {
+      if (card.timer.ownerRunId === active.runId) {
+        return;
+      }
+      clearInterval(card.timer.handle);
+      card.timer = undefined;
+    }
+    const ownerRunId = active.runId;
+    const handle = setInterval(() => {
       void state.controlQueue
         .enqueue(async () => {
-          if (!isActiveTurnCurrent(state, active) || active.cancelRequested) {
+          if (
+            !isActiveTurnCurrent(state, active) ||
+            active.cancelRequested ||
+            active.completedStatus !== undefined ||
+            !isAgentCardOwnedByActive(active, card) ||
+            card.timer?.ownerRunId !== ownerRunId
+          ) {
             return;
           }
           await this.patchAgentCardBestEffort(state, active, "working");
@@ -12506,14 +12546,19 @@ export class ConversationManager {
           this.log.warn({ error, messageId: card.messageId }, "failed to update agent card elapsed time");
         });
     }, AGENT_CARD_TIMER_INTERVAL_MS);
-    card.timer.unref?.();
+    card.timer = { ownerRunId, handle };
+    handle.unref?.();
   }
 
   private stopAgentCardTimer(active: ActiveTurn): void {
-    const timer = active.card?.timer;
-    if (timer) {
-      clearInterval(timer);
-      active.card!.timer = undefined;
+    const card = active.card;
+    const timer = card?.timer;
+    if (!timer || timer.ownerRunId !== active.runId) {
+      return;
+    }
+    clearInterval(timer.handle);
+    if (card!.timer === timer) {
+      card!.timer = undefined;
     }
   }
 
@@ -14164,12 +14209,16 @@ function bindAgentCardToActive(active: ActiveTurn): void {
   }
 }
 
-function isCompletedAgentCardRetryCurrent(
+function isAgentCardOwnedByActive(active: ActiveTurn, card: ActiveTurnCardState): boolean {
+  return card.activeRunId === undefined || card.activeRunId === active.runId;
+}
+
+function isAgentCardMessageCurrent(
   active: ActiveTurn,
   card: ActiveTurnCardState,
   messageId: string
 ): boolean {
-  return !card.fallbackPlain && card.messageId === messageId && card.activeRunId === active.runId;
+  return !card.fallbackPlain && card.messageId === messageId && isAgentCardOwnedByActive(active, card);
 }
 
 function activeRuntimeThreadId(active: ActiveTurn): string {
