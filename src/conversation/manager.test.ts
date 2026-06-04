@@ -8389,6 +8389,12 @@ describe("ConversationManager", () => {
         await vi.advanceTimersByTimeAsync(0);
       }
       expect(codex.startTurn).toHaveBeenCalledTimes(2);
+      expect(turns).toHaveLength(2);
+      expect(turns[1]!.params.threadId).toBe("thread_1_side");
+      expect(turns[1]!.params.input).toContain("<side_card_followup");
+      expect(turns[1]!.params.input).toContain('kind="question"');
+      expect(turns[1]!.params.input).toContain('event_id="event_side_question"');
+      expect(turns[1]!.params.input).toContain("second question");
 
       const patchesAfterSubmit = sidePatchJson();
       const continuedWorkingIndex = patchesAfterSubmit.findIndex((serialized) =>
@@ -8408,10 +8414,24 @@ describe("ConversationManager", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       await vi.advanceTimersByTimeAsync(0);
 
-      const patchesAfterTimer = sidePatchJson();
-      expect(patchesAfterTimer.length).toBeGreaterThan(patchCountBeforeTimer);
-      expect(patchesAfterTimer.at(-1)).toContain("工作中...");
-      expect(patchesAfterTimer.at(-1)).toContain("[收到追问] second question");
+      const patchesAfterFirstTimer = sidePatchJson();
+      expect(patchesAfterFirstTimer).toHaveLength(patchCountBeforeTimer + 1);
+      expect(patchesAfterFirstTimer.at(-1)).toContain("工作中...");
+      expect(patchesAfterFirstTimer.at(-1)).toContain("[收到追问] second question");
+      expect(patchesAfterFirstTimer.at(-1)).toContain("已工作 10s");
+      expect(patchesAfterFirstTimer.at(-1)).not.toContain("follow-up output");
+      expect(patchesAfterFirstTimer.at(-1)).not.toContain("second final");
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const patchesAfterSecondTimer = sidePatchJson();
+      expect(patchesAfterSecondTimer).toHaveLength(patchesAfterFirstTimer.length + 1);
+      expect(patchesAfterSecondTimer.at(-1)).toContain("工作中...");
+      expect(patchesAfterSecondTimer.at(-1)).toContain("[收到追问] second question");
+      expect(patchesAfterSecondTimer.at(-1)).toContain("已工作 20s");
+      expect(patchesAfterSecondTimer.at(-1)).not.toContain("follow-up output");
+      expect(patchesAfterSecondTimer.at(-1)).not.toContain("second final");
       expect(response).toEqual({});
       expect(staleFinishedAfterCallbackIndex).toBe(-1);
     } finally {
