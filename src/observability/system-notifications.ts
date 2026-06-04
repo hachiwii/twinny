@@ -47,6 +47,16 @@ export class TwinnySystemNotifier {
     await this.sendCard("lark_configuration_missing", renderMissingLarkConfigurationCard(missing));
   }
 
+  async notifyUpgradeAvailable(options: {
+    currentVersion: string;
+    targetVersion: string;
+    channel: string;
+    publishTime?: string;
+    changelogUrl?: string;
+  }): Promise<void> {
+    await this.sendCard("upgrade_available", renderUpgradeAvailableCard(options));
+  }
+
   private async sendCard(kind: string, card: LarkCardJson): Promise<void> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -58,6 +68,51 @@ export class TwinnySystemNotifier {
       clearTimeout(timeout);
     }
   }
+}
+
+function renderUpgradeAvailableCard(options: {
+  currentVersion: string;
+  targetVersion: string;
+  channel: string;
+  publishTime?: string;
+  changelogUrl?: string;
+}): LarkCardJson {
+  const lines = [
+    `发现 Twinny 新版本 **${escapeMarkdown(options.targetVersion)}**。`,
+    `当前版本：${escapeMarkdown(options.currentVersion)}`,
+    `通道：${escapeMarkdown(options.channel)}`,
+    `发布时间：${escapeMarkdown(options.publishTime ?? "未知")}`,
+    "",
+    `使用 \`/upgrade ${escapeMarkdown(options.channel)}\` 升级。`,
+    options.changelogUrl ? `CHANGELOG: ${escapeMarkdown(options.changelogUrl)}` : undefined
+  ].filter((line): line is string => line !== undefined);
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      summary: {
+        content: `Twinny 新版本 ${options.targetVersion}`
+      }
+    },
+    header: {
+      title: {
+        tag: "plain_text",
+        content: "Twinny 发现新版本"
+      },
+      template: "blue"
+    },
+    body: {
+      direction: "vertical",
+      horizontal_spacing: "8px",
+      vertical_spacing: "8px",
+      horizontal_align: "left",
+      vertical_align: "top",
+      padding: "12px 12px 12px 12px",
+      elements: [
+        markdownElement(lines.join("\n"))
+      ]
+    }
+  };
 }
 
 function renderMissingLarkConfigurationCard(items: readonly string[]): LarkCardJson {
@@ -88,4 +143,8 @@ function renderMissingLarkConfigurationCard(items: readonly string[]): LarkCardJ
       ]
     }
   };
+}
+
+function escapeMarkdown(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("`", "\\`");
 }

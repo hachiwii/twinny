@@ -25,6 +25,8 @@ export type CodexThreadStatus = "idle" | "working" | "waiting";
 
 export type GreetingMode = "none" | "text" | "codex_turn";
 
+export type UpgradeChannel = "stable" | "beta";
+
 export type CodexThreadCategory = "main" | "thread" | "previous_main";
 export type CodexThreadCreateMethod = "init_main" | "new_main" | "fresh" | "fork" | "resume";
 
@@ -168,6 +170,13 @@ export interface TelemetryConfig {
   posthogHost: string;
 }
 
+export interface UpgradeConfig {
+  channel: UpgradeChannel;
+  checkIntervalMs: number;
+  autoUpdate: boolean;
+  registry?: string;
+}
+
 export interface LarkCliProfileConfig {
   profileName: string;
 }
@@ -192,6 +201,7 @@ export interface TwinnyConfig {
   permissions: PermissionsConfig;
   greeting: GreetingConfig;
   service: ServiceConfig;
+  upgrade: UpgradeConfig;
   telemetry?: TelemetryConfig;
   larkCliProfile?: LarkCliProfileConfig;
   owner: OwnerConfig;
@@ -211,6 +221,7 @@ export interface RuntimePaths {
   larkAssetsFile: string;
   larkCliProfileFile: string;
   lockFile: string;
+  statusFile: string;
   logsDir: string;
 }
 

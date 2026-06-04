@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import { readConfigStatus } from "../config/index.js";
 import { createRuntime, type TwinnyRuntime } from "./wiring.js";
 
@@ -8,6 +9,10 @@ export async function runDaemonCommand(): Promise<void> {
   }
   if (!status.config) {
     throw new Error("Twinny config could not be loaded");
+  }
+  if (await fileExists(`${status.paths.runtimeDir}/upgrade-in-progress`)) {
+    console.error("Twinny upgrade is in progress; exiting so the update helper can finish.");
+    return;
   }
 
   const runtime = await createRuntime(status.config);
@@ -41,6 +46,18 @@ function installSignalHandlers(runtime: TwinnyRuntime): void {
   process.on("SIGTERM", () => {
     shutdown("SIGTERM");
   });
+}
+
+async function fileExists(file: string): Promise<boolean> {
+  try {
+    await fs.access(file);
+    return true;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
 }
 
 function exitCodeForSignal(signal: NodeJS.Signals): number {

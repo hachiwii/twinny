@@ -78,6 +78,11 @@ describe("Twinny config loading and bootstrap", () => {
       p2p: { mode: "none", message: "" },
       group: { mode: "none", message: "" }
     });
+    expect(loaded.upgrade).toEqual({
+      channel: "stable",
+      checkIntervalMs: 24 * 60 * 60 * 1000,
+      autoUpdate: true
+    });
     expect(loaded.profiles.host.codexHome).toBe(path.join(home, ".codex"));
     expect(loaded.profiles.guest.codexHome).toBe(path.join(home, ".codex"));
     expect(rawRandom.trim()).toBe(homeRandom);
@@ -89,6 +94,7 @@ describe("Twinny config loading and bootstrap", () => {
     });
     expect(rawConfig).not.toContain("[roles");
     expect(rawConfig).not.toContain("[telemetry]");
+    expect(rawConfig).not.toContain("[upgrade]");
     expect(rawConfig).not.toContain("app_id");
     expect(rawConfig).not.toContain("owner_open_id");
     expect(rawConfig).not.toContain("secret_ref");
@@ -122,6 +128,7 @@ describe("Twinny config loading and bootstrap", () => {
     expect(serialized).not.toContain("masquerade_as_codex_cli");
     expect(serialized).not.toContain("[service]");
     expect(serialized).not.toContain("[telemetry]");
+    expect(serialized).not.toContain("[upgrade]");
     expect(serialized).not.toContain("[owner]");
     expect(serialized).not.toContain("[roles");
     expect(serialized).not.toContain("secret_ref");
@@ -267,6 +274,70 @@ describe("Twinny config loading and bootstrap", () => {
       posthogProjectToken: "ph_test",
       posthogHost: "https://posthog.example"
     });
+  });
+
+  it("round-trips upgrade configuration", () => {
+    const config = createTwinnyConfig({
+      home: "/tmp/twinny",
+      homeRandom,
+      auth: { larkAppId: "cli_test", larkBrand: "feishu", ownerOpenId: "ou_owner", displayName: "Owner" },
+      upgrade: {
+        channel: "beta",
+        checkIntervalMs: 30 * 60 * 1000,
+        autoUpdate: false,
+        registry: "https://registry.npmjs.org"
+      },
+      profiles: {
+        host: {},
+        guest: {}
+      }
+    });
+
+    const serialized = serializeTwinnyConfig(config);
+    const parsed = parseTwinnyConfig(serialized, { home: "/tmp/twinny" });
+
+    expect(serialized).toContain("[upgrade]");
+    expect(serialized).toContain('channel = "beta"');
+    expect(serialized).toContain('check_interval = "30m"');
+    expect(serialized).toContain("auto_update = false");
+    expect(serialized).toContain('registry = "https://registry.npmjs.org"');
+    expect(parsed.upgrade).toEqual({
+      channel: "beta",
+      checkIntervalMs: 30 * 60 * 1000,
+      autoUpdate: false,
+      registry: "https://registry.npmjs.org"
+    });
+  });
+
+  it("rejects invalid upgrade intervals", () => {
+    expect(() =>
+      parseTwinnyConfig(
+        [
+          "[upgrade]",
+          'check_interval = "daily"',
+          "",
+          "[profiles.host]",
+          'codex_home = "~/.codex"',
+          "",
+          "[profiles.guest]"
+        ].join("\n"),
+        { home: "/tmp/twinny" }
+      )
+    ).toThrow();
+    expect(() =>
+      parseTwinnyConfig(
+        [
+          "[upgrade]",
+          'check_interval = "0d"',
+          "",
+          "[profiles.host]",
+          'codex_home = "~/.codex"',
+          "",
+          "[profiles.guest]"
+        ].join("\n"),
+        { home: "/tmp/twinny" }
+      )
+    ).toThrow();
   });
 
   it("loads optional lark-cli profile metadata from Twinny home", async () => {

@@ -84,6 +84,7 @@ import type {
   ProfileName,
   CodexThreadRecord,
   TwinnyConfig,
+  UpgradeChannel,
   UserIdentity,
   LarkChatMode,
   LarkGroupMessageType
@@ -111,6 +112,11 @@ import type {
 } from "../codex/thread.js";
 import type { LarkCardActionCallbackResponse, LarkSendMessageResult } from "../lark/types.js";
 import type { TelemetryClient } from "../telemetry/index.js";
+import type {
+  TwinnyServiceRestartScheduleResult,
+  TwinnyUpgradeCheckResult,
+  TwinnyUpgradeScheduleResult
+} from "../upgrade/updater.js";
 import { TWINNY_VERSION } from "../version.js";
 import { SerialQueue } from "./queue.js";
 import {
@@ -125,6 +131,7 @@ import {
 const COMPACT_PROGRESS_TEXT = "正在压缩上下文";
 const COMPACT_COMPLETED_TEXT = "完成上下文压缩";
 const REWIND_USAGE_TEXT = "用法：/rewind <n> 或 /rollback <n>，n 为正整数。";
+const UPGRADE_USAGE_TEXT = "用法：/upgrade [check] [stable|beta] 或 /upgrade [stable|beta]";
 const MODEL_EFFORT_USAGE_TEXT = "effort 可选值：low medium high xhigh";
 const MODEL_EFFORT_VALUES = new Set(["low", "medium", "high", "xhigh"]);
 const SIDE_SHUTDOWN_ERROR = "Twinny 服务退出";
@@ -835,7 +842,10 @@ export interface ConversationQueueOptions {
 }
 
 export interface RuntimeControlBridge {
-  reloadProfile(profile?: ProfileName, options?: ConversationQueueOptions): Promise<void>;
+  reloadProfile?: (profile?: ProfileName, options?: ConversationQueueOptions) => Promise<void>;
+  restartService?: () => Promise<TwinnyServiceRestartScheduleResult>;
+  checkUpgrade?: (channel?: UpgradeChannel) => Promise<TwinnyUpgradeCheckResult>;
+  scheduleUpgrade?: (channel?: UpgradeChannel) => Promise<TwinnyUpgradeScheduleResult>;
 }
 
 export interface ConversationManagerOptions {
@@ -1254,6 +1264,8 @@ type ParsedCommand =
   | { kind: "activate"; text: string }
   | { kind: "pair"; text: string }
   | { kind: "reload"; text: string }
+  | { kind: "restart" }
+  | { kind: "upgrade"; text: string }
   | { kind: "deactivate" }
   | { kind: "help" };
 
@@ -2622,6 +2634,14 @@ export class ConversationManager {
       await this.handleReloadCommand(state, context, message, parsed.text);
       return;
     }
+    if (parsed.kind === "restart" && initialProgram.steps.length === 1) {
+      await this.handleRestartCommand(state, context, message);
+      return;
+    }
+    if (parsed.kind === "upgrade" && initialProgram.steps.length === 1) {
+      await this.handleUpgradeCommand(state, context, message, parsed.text);
+      return;
+    }
 
     if (await this.rejectUnauthorizedP2pBestEffort(context, message)) {
       return;
@@ -2976,6 +2996,14 @@ export class ConversationManager {
     }
     if (parsed.kind === "reload") {
       await this.handleReloadCommand(state, context, message, parsed.text, { recordIncoming: false });
+      return;
+    }
+    if (parsed.kind === "restart") {
+      await this.handleRestartCommand(state, context, message, { recordIncoming: false });
+      return;
+    }
+    if (parsed.kind === "upgrade") {
+      await this.handleUpgradeCommand(state, context, message, parsed.text, { recordIncoming: false });
       return;
     }
     if (parsed.kind === "help") {
@@ -3949,6 +3977,84 @@ export class ConversationManager {
       return;
     }
     await this.replyControlBestEffort(message.messageId, profile ? `已 reload profile=${profile}。` : "已 reload 全部 profiles。");
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async handleRestartCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    options: { recordIncoming?: boolean } = {}
+  ): Promise<void> {
+    if (options.recordIncoming !== false) {
+      await this.recordIncomingMessage(state, context, message, { kind: "restart" });
+    }
+    if (profileForSender(this.options.config, message.senderOpenId) !== "host") {
+      await this.replyControlBestEffort(message.messageId, "只有 owner 可以执行 /restart。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (!this.options.runtime?.restartService) {
+      await this.replyControlBestEffort(message.messageId, "当前运行环境不支持 /restart。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    try {
+      const result = await this.options.runtime.restartService();
+      await this.replyControlBestEffort(message.messageId, `已调度 Twinny 重启。日志：${result.helperLogFile}`);
+    } catch (error) {
+      await this.replyControlBestEffort(message.messageId, toErrorMessage(error));
+    }
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
+  private async handleUpgradeCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string,
+    options: { recordIncoming?: boolean } = {}
+  ): Promise<void> {
+    if (options.recordIncoming !== false) {
+      await this.recordIncomingMessage(state, context, message, { kind: "upgrade", text });
+    }
+    if (profileForSender(this.options.config, message.senderOpenId) !== "host") {
+      await this.replyControlBestEffort(message.messageId, "只有 owner 可以执行 /upgrade。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    const parsed = parseUpgradeCommand(text);
+    if (parsed.kind === "invalid") {
+      await this.replyControlBestEffort(message.messageId, parsed.message);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (parsed.mode === "check") {
+      if (!this.options.runtime?.checkUpgrade) {
+        await this.replyControlBestEffort(message.messageId, "当前运行环境不支持 /upgrade check。");
+        await this.markMessagesCompletedBestEffort([message.messageId]);
+        return;
+      }
+      try {
+        const check = await this.options.runtime.checkUpgrade(parsed.channel);
+        await this.replyControlBestEffort(message.messageId, formatUpgradeCheckMessage(check));
+      } catch (error) {
+        await this.replyControlBestEffort(message.messageId, toErrorMessage(error));
+      }
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (!this.options.runtime?.scheduleUpgrade) {
+      await this.replyControlBestEffort(message.messageId, "当前运行环境不支持 /upgrade。");
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    try {
+      const result = await this.options.runtime.scheduleUpgrade(parsed.channel);
+      await this.replyControlBestEffort(message.messageId, formatUpgradeScheduleMessage(result));
+    } catch (error) {
+      await this.replyControlBestEffort(message.messageId, toErrorMessage(error));
+    }
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
@@ -13388,7 +13494,7 @@ function parseCommandProgramSteps(
     }
 
     if (name === "help" || name === "status" || name === "new" || name === "next" || name === "exit" ||
-      name === "compact" || name === "logo" || name === "banner" || name === "deactivate") {
+      name === "compact" || name === "logo" || name === "banner" || name === "restart" || name === "deactivate") {
       steps.push(noArgParsedCommand(name));
       cursor = skipCommandWhitespace(text, afterCommand);
       continue;
@@ -13411,7 +13517,7 @@ function parseCronProgramCommand(text: string): Extract<ParsedCommand, { kind: "
 }
 
 function noArgParsedCommand(
-  name: "help" | "status" | "new" | "next" | "exit" | "compact" | "logo" | "banner" | "deactivate"
+  name: "help" | "status" | "new" | "next" | "exit" | "compact" | "logo" | "banner" | "restart" | "deactivate"
 ): ParsedCommand {
   if (name === "help") {
     return { kind: "help" };
@@ -13436,6 +13542,9 @@ function noArgParsedCommand(
   }
   if (name === "banner") {
     return { kind: "banner" };
+  }
+  if (name === "restart") {
+    return { kind: "restart" };
   }
   return { kind: "deactivate" };
 }
@@ -13474,6 +13583,23 @@ function parseFixedArgCommand(
     return {
       command: name === "workspace" ? { kind: "workspace", text: commandText } : name === "cd" ? { kind: "cd", text: commandText } : { kind: "reload", text: commandText },
       cursor: result.cursor
+    };
+  }
+  if (name === "upgrade") {
+    const tokens: CommandToken[] = [];
+    let nextCursor = cursor;
+    while (true) {
+      const result = readOptionalNonCommandToken(text, nextCursor);
+      if (!result.token) {
+        nextCursor = result.cursor;
+        break;
+      }
+      tokens.push(result.token);
+      nextCursor = result.cursor;
+    }
+    return {
+      command: { kind: "upgrade", text: commandTextFromTokens(tokens) },
+      cursor: nextCursor
     };
   }
   if (name === "resume") {
@@ -13648,6 +13774,8 @@ function isKnownSlashCommand(command: string): boolean {
     command === "activate" ||
     command === "pair" ||
     command === "reload" ||
+    command === "restart" ||
+    command === "upgrade" ||
     command === "deactivate" ||
     command === "queue" ||
     command === "side" ||
@@ -13677,6 +13805,87 @@ function parseRewindCommand(text: string): { kind: "valid"; numTurns: number } |
     return { kind: "invalid", message: REWIND_USAGE_TEXT };
   }
   return { kind: "valid", numTurns };
+}
+
+function parseUpgradeCommand(
+  text: string
+): { kind: "valid"; mode: "check" | "apply"; channel: UpgradeChannel } | { kind: "invalid"; message: string } {
+  const parts = text.trim().split(/\s+/).filter(Boolean).map((part) => part.toLowerCase());
+  if (parts.length > 2) {
+    return { kind: "invalid", message: UPGRADE_USAGE_TEXT };
+  }
+  let mode: "check" | "apply" = "apply";
+  let channel: UpgradeChannel = "stable";
+  let sawChannel = false;
+  for (const part of parts) {
+    if (part === "check") {
+      if (mode === "check") {
+        return { kind: "invalid", message: UPGRADE_USAGE_TEXT };
+      }
+      mode = "check";
+      continue;
+    }
+    if (part === "stable" || part === "beta") {
+      if (sawChannel) {
+        return { kind: "invalid", message: UPGRADE_USAGE_TEXT };
+      }
+      sawChannel = true;
+      channel = part;
+      continue;
+    }
+    return { kind: "invalid", message: UPGRADE_USAGE_TEXT };
+  }
+  return { kind: "valid", mode, channel };
+}
+
+function formatUpgradeCheckMessage(check: TwinnyUpgradeCheckResult): string {
+  const candidate = check.candidateVersion
+    ? `候选版本：${check.candidateVersion}（发布时间：${check.candidatePublishTime ?? "未知"}）`
+    : `候选版本：未找到 ${check.tag} dist-tag`;
+  const changelog = check.changelogUrl ? `CHANGELOG: ${check.changelogUrl}` : undefined;
+  if (check.disabledReason === "invalid-current-version") {
+    return [
+      `当前 Twinny 版本 ${check.currentVersion} 不符合 a.b.c[-时间字符串]，已禁用自动更新，无法判断是否可升级。`,
+      candidate,
+      changelog
+    ].filter((line): line is string => Boolean(line)).join("\n");
+  }
+  if (check.disabledReason === "invalid-candidate-version") {
+    return [
+      `npm ${check.tag} 指向的版本号 ${check.candidateVersion ?? "未知"} 不符合 a.b.c[-时间字符串]，已跳过。`,
+      `当前版本：${check.currentVersion}`,
+      changelog
+    ].filter((line): line is string => Boolean(line)).join("\n");
+  }
+  if (check.disabledReason === "missing-dist-tag") {
+    return `npm 上没有找到 ${check.packageName} 的 ${check.tag} dist-tag。`;
+  }
+  if (check.updateAvailable && check.candidateVersion) {
+    return [
+      `发现 Twinny 新版本 ${check.candidateVersion}（发布时间：${check.candidatePublishTime ?? "未知"}）。`,
+      `当前版本：${check.currentVersion}`,
+      `通道：${check.channel}`,
+      `使用 /upgrade ${check.channel} 升级。`,
+      changelog
+    ].filter((line): line is string => Boolean(line)).join("\n");
+  }
+  return [
+    `当前已是 ${check.channel} 最新版本：${check.currentVersion}。`,
+    candidate,
+    changelog
+  ].filter((line): line is string => Boolean(line)).join("\n");
+}
+
+function formatUpgradeScheduleMessage(result: TwinnyUpgradeScheduleResult): string {
+  if (result.kind === "disabled" || result.kind === "no_update") {
+    return formatUpgradeCheckMessage(result.check);
+  }
+  return [
+    `已下载 Twinny ${result.targetVersion}，升级 helper 已调度。`,
+    "服务会在当前回复发送后重启。",
+    `日志：${result.helperLogFile}`,
+    result.check.changelogUrl ? `CHANGELOG: ${result.check.changelogUrl}` : undefined
+  ].filter((line): line is string => Boolean(line)).join("\n");
 }
 
 function parseModelCommand(text: string): { kind: "valid"; model: string; effort?: string } | { kind: "invalid"; message: string } {
@@ -14351,6 +14560,7 @@ function parsedCommandTitleText(command: ParsedCommand): string | undefined {
     command.kind === "activate" ||
     command.kind === "pair" ||
     command.kind === "reload" ||
+    command.kind === "upgrade" ||
     command.kind === "thread" ||
     command.kind === "fork" ||
     command.kind === "resume" ||
@@ -16018,7 +16228,9 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
   ];
   if (isOwner) {
     lines.push(
-      "/resume [thread_id|num] [session|local] - 查看或恢复本机 Codex thread"
+      "/resume [thread_id|num] [session|local] - 查看或恢复本机 Codex thread",
+      "/restart - 调度 Twinny 托管服务重启",
+      "/upgrade [check] [stable|beta] - 检查或升级 Twinny；默认 stable"
     );
   }
   if (isGroupConversationType(context.type) && isOwner) {
@@ -16069,7 +16281,7 @@ function controlMessageTypeForParsedCommand(parsed: ParsedCommand): ControlMessa
 }
 
 function isOwnerOnlyParsedCommand(parsed: ParsedCommand): boolean {
-  return parsed.kind === "resume";
+  return parsed.kind === "resume" || parsed.kind === "restart" || parsed.kind === "upgrade";
 }
 
 function classifyInitialRoute(
@@ -16192,6 +16404,8 @@ function classifyInitialRoute(
     parsed.kind === "activate" ||
     parsed.kind === "pair" ||
     parsed.kind === "reload" ||
+    parsed.kind === "restart" ||
+    parsed.kind === "upgrade" ||
     parsed.kind === "deactivate" ||
     parsed.kind === "queue" ||
     parsed.kind === "logo" ||

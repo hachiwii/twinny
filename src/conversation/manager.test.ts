@@ -69,6 +69,7 @@ const config: TwinnyConfig = {
     group: { mode: "none", message: "" }
   },
   service: { launchd: { mode: "gui" } },
+  upgrade: { channel: "stable", checkIntervalMs: 24 * 60 * 60 * 1000, autoUpdate: true },
   owner: { openId: "ou_owner", displayName: "Owner" },
   profiles: {
     host: { codexHome: "/tmp/twinny/profiles/host/codex", defaultModel: "gpt-5.5", defaultEffort: "medium" },
@@ -5456,6 +5457,8 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(lark.replyText).toHaveBeenCalledTimes(1));
     const helpText = vi.mocked(lark.replyText).mock.calls[0]?.[1] ?? "";
     expect(helpText).toContain("/resume [thread_id|num] [session|local] - 查看或恢复本机 Codex thread");
+    expect(helpText).toContain("/restart - 调度 Twinny 托管服务重启");
+    expect(helpText).toContain("/upgrade [check] [stable|beta] - 检查或升级 Twinny；默认 stable");
   });
 
   it("runs /reload without waiting on its own control queue", async () => {
@@ -5506,6 +5509,93 @@ describe("ConversationManager", () => {
       "已设置当前 thread 后续 turn 模型：gpt-5.4 / high"
     );
     expect(lark.replyText).toHaveBeenCalledWith("m_chain_reload", "已 reload profile=host。");
+  });
+
+  it("schedules /restart for the owner", async () => {
+    const { repository } = createRepository(ownerConversationRecord());
+    const lark = createLarkResponder();
+    const restartService = vi.fn(async () => ({
+      kind: "scheduled" as const,
+      helperScriptFile: "/tmp/twinny/restart.mjs",
+      helperLogFile: "/tmp/twinny/restart.log"
+    }));
+    const runtime: ConstructorParameters<typeof ConversationManager>[0]["runtime"] = {
+      restartService
+    };
+    const manager = createManager({ repository, lark, runtime });
+
+    manager.submitIncoming(ownerMessage("m_restart", "/restart"));
+
+    await waitForExpect(() => expect(restartService).toHaveBeenCalledTimes(1));
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "m_restart",
+      "已调度 Twinny 重启。日志：/tmp/twinny/restart.log"
+    );
+    expect(repository.markLarkMessagesCompleted).toHaveBeenCalledWith(["m_restart"]);
+  });
+
+  it("checks /upgrade for the requested channel", async () => {
+    const lark = createLarkResponder();
+    const checkUpgrade = vi.fn(async () => ({
+      currentVersion: "1.1.0",
+      currentVersionValid: true,
+      channel: "beta" as const,
+      tag: "beta" as const,
+      packageName: "twinny",
+      candidateVersion: "1.2.0-20260605010101",
+      candidateVersionValid: true,
+      candidatePublishTime: "2026-06-05T01:02:03.000Z",
+      changelogUrl: "https://github.com/hachiwii/twinny/blob/v1.2.0-20260605010101/CHANGELOG.md",
+      updateAvailable: true,
+      comparison: 1
+    }));
+    const runtime: ConstructorParameters<typeof ConversationManager>[0]["runtime"] = {
+      checkUpgrade
+    };
+    const manager = createManager({ lark, runtime });
+
+    manager.submitIncoming(ownerMessage("m_upgrade_check", "/upgrade check beta"));
+
+    await waitForExpect(() => expect(checkUpgrade).toHaveBeenCalledWith("beta"));
+    const reply = vi.mocked(lark.replyText).mock.calls.find((call) => call[0] === "m_upgrade_check")?.[1] ?? "";
+    expect(reply).toContain("发现 Twinny 新版本 1.2.0-20260605010101");
+    expect(reply).toContain("使用 /upgrade beta 升级。");
+    expect(reply).toContain("CHANGELOG:");
+  });
+
+  it("schedules /upgrade only through the runtime bridge", async () => {
+    const lark = createLarkResponder();
+    const scheduleUpgrade = vi.fn(async () => ({
+      kind: "scheduled" as const,
+      targetVersion: "1.2.0",
+      preparedRunnerDir: "/tmp/twinny/runner",
+      helperScriptFile: "/tmp/twinny/apply.mjs",
+      helperLogFile: "/tmp/twinny/apply.log",
+      check: {
+        currentVersion: "1.1.0",
+        currentVersionValid: true,
+        channel: "stable" as const,
+        tag: "latest" as const,
+        packageName: "twinny",
+        candidateVersion: "1.2.0",
+        candidateVersionValid: true,
+        candidatePublishTime: "2026-06-05T01:02:03.000Z",
+        changelogUrl: "https://github.com/hachiwii/twinny/blob/v1.2.0/CHANGELOG.md",
+        updateAvailable: true,
+        comparison: 1
+      }
+    }));
+    const runtime: ConstructorParameters<typeof ConversationManager>[0]["runtime"] = {
+      scheduleUpgrade
+    };
+    const manager = createManager({ lark, runtime });
+
+    manager.submitIncoming(ownerMessage("m_upgrade", "/upgrade stable"));
+
+    await waitForExpect(() => expect(scheduleUpgrade).toHaveBeenCalledWith("stable"));
+    const reply = vi.mocked(lark.replyText).mock.calls.find((call) => call[0] === "m_upgrade")?.[1] ?? "";
+    expect(reply).toContain("已下载 Twinny 1.2.0，升级 helper 已调度。");
+    expect(reply).toContain("日志：/tmp/twinny/apply.log");
   });
 
   it("replies to /logo with the uploaded logo image key", async () => {

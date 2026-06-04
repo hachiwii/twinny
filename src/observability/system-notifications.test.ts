@@ -83,6 +83,33 @@ describe("TwinnySystemNotifier", () => {
     expect(card).toContain("im.message.receive_v1");
     expect(card).not.toContain("card.action.trigger");
   });
+
+  it("sends upgrade availability cards to the owner", async () => {
+    const sender = createSender();
+    const notifier = new TwinnySystemNotifier({
+      ownerOpenId: "ou_owner",
+      sender
+    });
+
+    await notifier.notifyUpgradeAvailable({
+      currentVersion: "1.1.0",
+      targetVersion: "1.2.0",
+      channel: "stable",
+      publishTime: "2026-06-05T01:02:03.000Z",
+      changelogUrl: "https://github.com/hachiwii/twinny/blob/v1.2.0/CHANGELOG.md"
+    });
+
+    expect(sender.sendInteractiveCardToOpenId).toHaveBeenCalledWith(
+      "ou_owner",
+      expect.objectContaining({ schema: "2.0" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+    const card = JSON.stringify(sender.sendInteractiveCardToOpenId.mock.calls[0]![1]);
+    expect(card).toContain("Twinny 发现新版本");
+    expect(card).toContain("1.2.0");
+    expect(card).toContain("/upgrade stable");
+    expect(card).toContain("CHANGELOG");
+  });
 });
 
 function createSender(): SystemNotificationSender & { sendInteractiveCardToOpenId: ReturnType<typeof vi.fn> } {

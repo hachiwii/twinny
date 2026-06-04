@@ -157,6 +157,9 @@ card.action.trigger
 | `/deactivate` | 停用当前群聊并清空待处理任务。 |
 | `/pair {guest_ou_id} <profile>` | 授权非 owner 的 P2P 用户，并绑定到某个 profile。 |
 | `/reload [profile]` | 修改配置后重载所有 Codex profiles，或只重载指定 profile。 |
+| `/restart` | 调度 Twinny 托管服务重启。 |
+| `/upgrade [stable\|beta]` | 检查并升级 Twinny。默认 `stable`，只会升级到更高版本。 |
+| `/upgrade check [stable\|beta]` | 只检查指定通道是否有新版本。 |
 
 响应模式：
 
@@ -229,6 +232,10 @@ Twinny 从 `TWINNY_HOME` 读取 `config.toml`。
 | `[greeting.group].message` | 群聊 greeting 文案或 Codex turn 输入。`mode` 不是 `none` 时必须配置非空字符串。 |
 | `[service.launchd].mode` | macOS launchd 安装位置。`gui` 使用当前 `gui/<uid>` LaunchAgent（默认）；`daemon` 使用系统 LaunchDaemon。通常由 `twinny install --system-daemon` 写入。 |
 | `[service.launchd].user_name` | `mode = "daemon"` 时写入 plist 的 `UserName`。通常由 `twinny install --system-daemon` 自动写入当前用户。 |
+| `[upgrade].channel` | 自动更新通道，`stable` 使用 npm `latest` dist-tag，`beta` 使用 npm `beta` dist-tag。默认是 `stable`。 |
+| `[upgrade].check_interval` | 自动更新检查间隔，支持 `ms`、`s`、`m`、`h`、`d` 后缀。默认是 `1d`。 |
+| `[upgrade].auto_update` | 检测到新版本后是否自动更新。默认是 `true`。设置为 `false` 时只向 owner 发送提示消息。 |
+| `[upgrade].registry` | 可选 npm registry URL。配置后手动和自动更新的 npm 查询、下载都会带上该 registry。 |
 | `[profiles.<name>].codex_home` | 该 profile 使用的 `CODEX_HOME`。绝对路径会直接使用；相对路径会以 `TWINNY_HOME` 为基准解析。`host` 默认是 `~/.codex`；其他 profile 未设置时继承 `host`。 |
 | `[profiles.<name>].default_model` | 该 profile 新 thread 的默认模型。`host` 默认是 `gpt-5.5`；其他 profile 未设置时继承 `host`。 |
 | `[profiles.<name>].default_effort` | 该 profile 新 thread 的默认推理强度。常见取值是 `minimal`、`low`、`medium`、`high` 和 `xhigh`；`host` 默认是 `medium`；其他 profile 未设置时继承 `host`。 |
@@ -266,6 +273,11 @@ message = ""
 mode = "none"
 message = ""
 
+[upgrade]
+channel = "stable"
+check_interval = "1d"
+auto_update = true
+
 [profiles.host]
 codex_home = "~/.codex"
 default_model = "gpt-5.5"
@@ -280,6 +292,16 @@ default_effort = "medium"
 相对路径形式的 `codex_home` 会以 `TWINNY_HOME` 为基准解析。每个 profile 会启动独立的 Codex app-server 进程，并把 `CODEX_HOME` 设置为该 profile 的 `codex_home`。
 
 修改 profile 配置后，可以在 Lark 中发送 `/reload [profile]`，或者重启 daemon。
+
+### 自动更新
+
+Twinny 只在当前运行版本符合 `a.b.c` 或 `a.b.c-数字时间字符串` 时启用自动更新；本地开发版 `dev` 等其他格式会禁用自动更新，手动 `/upgrade` 也不会执行升级，因为无法可靠判断“只升级到更新版本”。
+
+版本比较先看 `major.minor.patch`；同一个基础版本下，无后缀版本高于有后缀版本；两个版本都有数字时间后缀时，后缀数值更大的版本更高。
+
+自动更新会先查询 npm dist-tag，再把目标版本下载到 `runtime/upgrade` 临时目录。真正替换由 detached Node helper 完成：停止当前 daemon、备份整个 sqlite 目录、备份并替换 runner、启动新 runner，并在 2 分钟内等待新版本写入运行状态。超时或失败时 helper 会恢复 sqlite 目录和旧 runner，再启动旧版本。sqlite 备份会包含 `-wal` 和 `-shm` 文件；daemon 已停机后 WAL 里仍可能有尚未 checkpoint 的已提交事务，复制整个 sqlite 目录是最稳妥的做法。
+
+macOS LaunchAgent、macOS LaunchDaemon、systemd user service 和 Windows Task Scheduler 都通过 detached helper 调度。LaunchDaemon 场景下 helper 会用哨兵文件和当前进程信号配合 launchd 的 KeepAlive，避免依赖交互式 `sudo`。前台 `twinny run` 没有托管 supervisor，不支持自动替换重启。
 
 ## 通过 `TWINNY_HOME` 多实例部署
 

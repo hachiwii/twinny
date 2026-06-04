@@ -29,7 +29,9 @@ import {
   type TelemetryConfig,
   type TwinnyAuthFile,
   type TwinnyConfig,
-  type TwinnyHomeIdentity
+  type TwinnyHomeIdentity,
+  type UpgradeChannel,
+  type UpgradeConfig
 } from "../types.js";
 import { createRuntimePaths, expandHomePath, resolveTwinnyHome, type ResolveHomeOptions } from "./paths.js";
 import { larkAppSecretAccountForHomeRandom } from "./secrets.js";
@@ -38,9 +40,17 @@ export const DEFAULT_PROFILE_MODEL = "gpt-5.5";
 export const DEFAULT_PROFILE_EFFORT = "medium";
 export const DEFAULT_POSTHOG_PROJECT_TOKEN = "phc_yXXd2mi9J33Awy7vs8VY8UbEoYdtXPnKs87YWxnRAnN8";
 export const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com";
+export const DEFAULT_UPGRADE_CHANNEL: UpgradeChannel = "stable";
+export const DEFAULT_UPGRADE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_UPGRADE_AUTO_UPDATE = true;
 
 const redactionSchema = z.enum(["mask", "whitespace", "none"]);
 const greetingModeSchema = z.enum(["none", "text", "codex_turn"]);
+const upgradeChannelSchema = z.enum(["stable", "beta"]);
+const upgradeIntervalSchema = z.union([
+  z.number().positive(),
+  z.string().regex(/^\s*[1-9]\d*(?:ms|s|m|h|d)?\s*$/i)
+]);
 
 const rawProfileSchema = z
   .object({
@@ -119,6 +129,15 @@ const rawConfigSchema = z
       })
       .strict()
       .optional(),
+    upgrade: z
+      .object({
+        channel: upgradeChannelSchema.optional(),
+        check_interval: upgradeIntervalSchema.optional(),
+        auto_update: z.boolean().optional(),
+        registry: z.string().optional()
+      })
+      .strict()
+      .optional(),
     telemetry: z
       .object({
         enabled: z.boolean().optional(),
@@ -172,6 +191,7 @@ export interface CreateTwinnyConfigInput {
   service?: {
     launchd?: Partial<LaunchdServiceConfig>;
   };
+  upgrade?: Partial<UpgradeConfig>;
   telemetry?: Partial<TelemetryConfig>;
   larkCliProfile?: LarkCliProfileConfig;
   profiles?: Record<ProfileName, Partial<ProfileConfig>>;
@@ -219,6 +239,7 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
     },
     greeting: normalizeGreetingConfig(input.greeting),
     service: normalizeServiceConfig(input.service),
+    upgrade: normalizeUpgradeConfig(input.upgrade),
     telemetry: normalizeTelemetryConfig(input.telemetry),
     larkCliProfile: normalizeLarkCliProfileConfig(input.larkCliProfile),
     owner: {
@@ -456,6 +477,7 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   issues.push(...validateWorkspaceTemplate(config.permissions.groupDefaultWorkspace, "permissions.group_default_workspace"));
   issues.push(...validateGreetingTargetConfig(config.greeting.p2p, "greeting.p2p"));
   issues.push(...validateGreetingTargetConfig(config.greeting.group, "greeting.group"));
+  issues.push(...validateUpgradeConfig(config.upgrade));
   return issues;
 }
 
@@ -510,6 +532,12 @@ function createRuntimeConfig(
         mode: parsed.service?.launchd?.mode,
         userName: parsed.service?.launchd?.user_name
       }
+    }),
+    upgrade: normalizeUpgradeConfig({
+      channel: parsed.upgrade?.channel,
+      checkIntervalMs: parseUpgradeInterval(parsed.upgrade?.check_interval),
+      autoUpdate: parsed.upgrade?.auto_update,
+      registry: parsed.upgrade?.registry
     }),
     telemetry: normalizeTelemetryConfig({
       enabled: parsed.telemetry?.enabled,
@@ -645,6 +673,20 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
     if (hasCustomPostHogHost) {
       (document.telemetry as TomlTable).posthog_host = telemetry.posthogHost;
     }
+  }
+  const upgrade = config.upgrade;
+  const hasCustomUpgrade =
+    upgrade.channel !== DEFAULT_UPGRADE_CHANNEL ||
+    upgrade.checkIntervalMs !== DEFAULT_UPGRADE_CHECK_INTERVAL_MS ||
+    upgrade.autoUpdate !== DEFAULT_UPGRADE_AUTO_UPDATE ||
+    !!upgrade.registry;
+  if (hasCustomUpgrade) {
+    document.upgrade = {
+      channel: upgrade.channel,
+      check_interval: formatUpgradeInterval(upgrade.checkIntervalMs),
+      auto_update: upgrade.autoUpdate,
+      ...(upgrade.registry ? { registry: upgrade.registry } : {})
+    };
   }
   return document;
 }
@@ -792,6 +834,79 @@ function normalizeTelemetryConfig(input: Partial<TelemetryConfig> | undefined): 
     posthogProjectToken,
     posthogHost
   };
+}
+
+function normalizeUpgradeConfig(input: Partial<UpgradeConfig> | undefined): UpgradeConfig {
+  const registry = normalizeOptionalString(input?.registry);
+  return {
+    channel: input?.channel === "beta" ? "beta" : DEFAULT_UPGRADE_CHANNEL,
+    checkIntervalMs: normalizeUpgradeInterval(input?.checkIntervalMs),
+    autoUpdate: input?.autoUpdate ?? DEFAULT_UPGRADE_AUTO_UPDATE,
+    ...(registry ? { registry } : {})
+  };
+}
+
+function normalizeUpgradeInterval(value: number | undefined): number {
+  return value !== undefined && Number.isFinite(value) && value > 0
+    ? Math.trunc(value)
+    : DEFAULT_UPGRADE_CHECK_INTERVAL_MS;
+}
+
+function parseUpgradeInterval(value: string | number | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value === "number") {
+    return value;
+  }
+  const trimmed = value.trim().toLowerCase();
+  const match = /^(\d+)(ms|s|m|h|d)?$/.exec(trimmed);
+  if (!match) {
+    return Number.NaN;
+  }
+  const amount = Number(match[1]);
+  const unit = match[2] ?? "ms";
+  const multiplier =
+    unit === "d" ? 24 * 60 * 60 * 1000 :
+    unit === "h" ? 60 * 60 * 1000 :
+    unit === "m" ? 60 * 1000 :
+    unit === "s" ? 1000 :
+    1;
+  return amount * multiplier;
+}
+
+function formatUpgradeInterval(value: number): string {
+  if (value % (24 * 60 * 60 * 1000) === 0) {
+    return `${value / (24 * 60 * 60 * 1000)}d`;
+  }
+  if (value % (60 * 60 * 1000) === 0) {
+    return `${value / (60 * 60 * 1000)}h`;
+  }
+  if (value % (60 * 1000) === 0) {
+    return `${value / (60 * 1000)}m`;
+  }
+  if (value % 1000 === 0) {
+    return `${value / 1000}s`;
+  }
+  return `${value}ms`;
+}
+
+function validateUpgradeConfig(config: UpgradeConfig): string[] {
+  const issues: string[] = [];
+  if (config.channel !== "stable" && config.channel !== "beta") {
+    issues.push("upgrade.channel must be stable or beta");
+  }
+  if (!Number.isFinite(config.checkIntervalMs) || config.checkIntervalMs <= 0) {
+    issues.push("upgrade.check_interval must be a positive duration");
+  }
+  if (config.registry) {
+    try {
+      new URL(config.registry);
+    } catch {
+      issues.push("upgrade.registry must be a valid URL");
+    }
+  }
+  return issues;
 }
 
 function normalizeLarkCliProfileConfig(input: LarkCliProfileConfig | undefined): LarkCliProfileConfig | undefined {

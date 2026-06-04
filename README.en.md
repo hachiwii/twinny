@@ -159,6 +159,9 @@ Only the configured owner can run these commands:
 | `/deactivate`                   | Disable Twinny in the current group and clear pending work.            |
 | `/pair {guest_ou_id} <profile>` | Authorize a non-owner P2P user and bind that user to a profile.        |
 | `/reload [profile]`             | Reload all Codex profiles, or one named profile, after editing config. |
+| `/restart`                      | Schedule a managed Twinny service restart.                             |
+| `/upgrade [stable\|beta]`       | Check and upgrade Twinny. Defaults to `stable` and only upgrades to a higher version. |
+| `/upgrade check [stable\|beta]` | Check whether the selected channel has a newer version.                |
 
 
 Response modes:
@@ -233,6 +236,10 @@ Recognized fields:
 | `[greeting.group].message`              | Group greeting text or Codex turn input. Required as a non-empty string when `mode` is not `none`.                                                                                                                                                                                                                                                                                       |
 | `[service.launchd].mode`                | macOS launchd placement. `gui` uses the current `gui/<uid>` LaunchAgent by default; `daemon` uses a system LaunchDaemon. Usually written by `twinny install --system-daemon`.                                                                                                                                                                                                              |
 | `[service.launchd].user_name`           | The plist `UserName` when `mode = "daemon"`. Usually written automatically by `twinny install --system-daemon` from the current user.                                                                                                                                                                                                                                                      |
+| `[upgrade].channel`                     | Auto-upgrade channel. `stable` maps to the npm `latest` dist-tag; `beta` maps to the npm `beta` dist-tag. Defaults to `stable`.                                                                                                                                                                                                                                                             |
+| `[upgrade].check_interval`              | Auto-upgrade check interval. Supports `ms`, `s`, `m`, `h`, and `d` suffixes. Defaults to `1d`.                                                                                                                                                                                                                                                                                             |
+| `[upgrade].auto_update`                 | Whether Twinny should automatically apply a detected newer version. Defaults to `true`. When `false`, Twinny only notifies the owner.                                                                                                                                                                                                                                                        |
+| `[upgrade].registry`                    | Optional npm registry URL. When set, manual and automatic upgrade checks and downloads use that registry.                                                                                                                                                                                                                                                                                   |
 | `[profiles.<name>].codex_home`          | `CODEX_HOME` for that profile. Absolute paths are used as-is; relative paths are resolved under `TWINNY_HOME`. `host` defaults to `~/.codex`; other profiles inherit `host` unless set.                                                                                                                                                                                                  |
 | `[profiles.<name>].default_model`       | Default model for new threads in that profile. `host` defaults to `gpt-5.5`; other profiles inherit `host` unless set.                                                                                                                                                                                                                                                                   |
 | `[profiles.<name>].default_effort`      | Default reasoning effort for new threads in that profile. Common values are `minimal`, `low`, `medium`, `high`, and `xhigh`; `host` defaults to `medium`; other profiles inherit `host` unless set.                                                                                                                                                                                      |
@@ -271,6 +278,11 @@ message = ""
 mode = "none"
 message = ""
 
+[upgrade]
+channel = "stable"
+check_interval = "1d"
+auto_update = true
+
 [profiles.host]
 codex_home = "~/.codex"
 default_model = "gpt-5.5"
@@ -285,6 +297,16 @@ default_effort = "medium"
 Relative `codex_home` paths are resolved under `TWINNY_HOME`. Each profile starts its own Codex app-server process with `CODEX_HOME` set to that profile's `codex_home`.
 
 After editing profile config, run `/reload [profile]` from Lark or restart the daemon.
+
+### Auto Upgrade
+
+Twinny enables auto-upgrade only when the running version matches `a.b.c` or `a.b.c-numericTimestamp`. Local development builds such as `dev` disable auto-upgrade. Manual `/upgrade` also refuses to apply an upgrade in that state because Twinny cannot reliably enforce "only upgrade to a newer version."
+
+Version ordering compares `major.minor.patch` first. For the same base version, a version without a suffix is newer than one with a suffix. If both versions have numeric timestamp suffixes, the larger suffix is newer.
+
+Auto-upgrade first checks the npm dist-tag, then downloads the target package into a temporary `runtime/upgrade` runner directory. A detached Node helper performs the replacement: stop the current daemon, back up the whole sqlite directory, back up and replace the runner, start the new runner, and wait up to 2 minutes for the new version to write runtime status. If startup times out or fails, the helper restores the sqlite directory and old runner, then starts the old version again. The sqlite backup includes `-wal` and `-shm` files; even after the daemon stops, WAL may contain committed transactions that have not been checkpointed, so copying the whole sqlite directory is the safest backup.
+
+macOS LaunchAgent, macOS LaunchDaemon, systemd user service, and Windows Task Scheduler are supported through the detached helper. For LaunchDaemon installs, the helper uses a sentinel file plus the current runtime pid and launchd KeepAlive instead of depending on interactive `sudo`. Foreground `twinny run` has no managed supervisor and is not supported for automatic replacement restarts.
 
 ## Multiple Instances With `TWINNY_HOME`
 

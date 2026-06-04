@@ -102,6 +102,39 @@ describe("update command", () => {
     expect(output.raw()).toContain("Skipped restart");
   });
 
+  it("uses the configured npm registry when updating the runner", async () => {
+    const home = await configuredHome({ registry: "https://registry.example.test" });
+    const runCommand = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+    await expect(runUpdateCommand({
+      home,
+      platform: "darwin",
+      restart: false,
+      packageSpec: "twinny@latest",
+      runCommand: runCommand as unknown as UpdateCommandRunner,
+      stdout: createOutput().writer,
+      launchAgentPlistPath: path.join(home, "missing.plist")
+    })).resolves.toMatchObject({
+      packageSpec: "twinny@latest"
+    });
+
+    expect(runCommand).toHaveBeenCalledWith(
+      "npm",
+      [
+        "install",
+        "--prefix",
+        twinnyRunnerDir(home),
+        "--omit=dev",
+        "--no-audit",
+        "--no-fund",
+        "twinny@latest",
+        "--registry",
+        "https://registry.example.test"
+      ],
+      expect.objectContaining({ stdio: "pipe" })
+    );
+  });
+
   it("skips automatic restart when LaunchAgent does not use the runner", async () => {
     const home = await configuredHome();
     const plistPath = await writeLaunchAgentPlist(home, { entrypoint: "/usr/local/bin/twinny" });
@@ -155,7 +188,7 @@ describe("update command", () => {
   });
 });
 
-async function configuredHome(): Promise<string> {
+async function configuredHome(options: { registry?: string } = {}): Promise<string> {
   const home = await tempHome();
   const homeRandom = "0123456789abcdef0123456789abcdef";
   await bootstrapTwinnyHome(createTwinnyConfig({
@@ -168,6 +201,7 @@ async function configuredHome(): Promise<string> {
       ownerOpenId: "ou_owner",
       displayName: "Owner"
     },
+    ...(options.registry ? { upgrade: { registry: options.registry } } : {}),
     profiles: {
       host: {},
       guest: {}

@@ -1,4 +1,5 @@
 import type { Logger } from "pino";
+import fs from "node:fs/promises";
 import path from "node:path";
 import {
   createRuntimePaths,
@@ -53,6 +54,16 @@ import type {
   ProfileName,
   TwinnyConfig
 } from "../types.js";
+import {
+  checkForTwinnyUpgrade,
+  prepareAndScheduleTwinnyUpgrade,
+  scheduleTwinnyServiceRestart,
+  type TwinnyServiceRestartScheduleResult,
+  type TwinnyUpgradeCheckResult,
+  type TwinnyUpgradeScheduleResult
+} from "../upgrade/updater.js";
+import { isExpectedTwinnyVersion } from "../upgrade/version.js";
+import { TWINNY_VERSION } from "../version.js";
 import type {
   CodexDynamicToolCallResponse,
   CodexRequestUserInputResponder,
@@ -97,6 +108,9 @@ export class TwinnyRuntime {
   private readonly codexIntentionalStopByProfile = new Set<ProfileName>();
   private readonly telemetry: TelemetryClient;
   private heartbeatTimer?: NodeJS.Timeout;
+  private autoUpgradeTimer?: NodeJS.Timeout;
+  private lastLarkUserEventAt = 0;
+  private readonly notifiedUpgradeVersions = new Set<string>();
   private runtimeStartedAt = 0;
   private stopped = false;
   private stopPromise: Promise<void>;
@@ -133,6 +147,7 @@ export class TwinnyRuntime {
     try {
       this.lock = await acquireTwinnyLock(this.paths, { stale: 30_000, update: 10_000 });
       lockAcquired = true;
+      await this.writeRuntimeStatus(false);
       this.idleSleepPreventer = this.options.idleSleepPreventer ?? new MacIdleSleepPreventer({ logger: this.log });
       this.idleSleepPreventer.start();
       this.db = openRuntimeDatabase(this.paths);
@@ -217,7 +232,12 @@ export class TwinnyRuntime {
         botOpenId,
         assetImageKeys,
         profiles: { codexHomeFor: (profile) => getProfileCodexHome(this.config, profile) },
-        runtime: { reloadProfile: (profile, options) => this.reloadProfile(profile, options) },
+        runtime: {
+          reloadProfile: (profile, options) => this.reloadProfile(profile, options),
+          restartService: () => this.restartService(),
+          checkUpgrade: (channel) => this.checkUpgrade(channel),
+          scheduleUpgrade: (channel) => this.scheduleUpgrade(channel)
+        },
         telemetry: this.telemetry,
         logger: this.log
       });
@@ -236,12 +256,14 @@ export class TwinnyRuntime {
         sdkLogger: this.larkSdkLogger,
         maxMessageAgeMs: this.config.lark.maxMessageAgeSeconds * 1000,
         onMessage: (message) => {
+          this.markLarkUserEvent();
           conversation.submitIncoming(message);
         },
         onMessageRecall: (recall) => {
           conversation.submitMessageRecall(recall);
         },
         onDocCommentAdd: (comment) => {
+          this.markLarkUserEvent();
           conversation.submitDocCommentAdd(comment);
         },
         onP2pChatCreate: (event) => {
@@ -251,9 +273,13 @@ export class TwinnyRuntime {
           conversation.submitBotAddedToChat(event);
         },
         onBotMenu: (action) => {
+          this.markLarkUserEvent();
           conversation.submitBotMenuAction(action);
         },
-        onCardAction: (action) => conversation.submitCardAction(action),
+        onCardAction: (action) => {
+          this.markLarkUserEvent();
+          conversation.submitCardAction(action);
+        },
         onConnectionError: (error) => {
           this.telemetry.captureError(error, {
             errorType: "lark_event",
@@ -267,6 +293,7 @@ export class TwinnyRuntime {
       await this.larkConsumer.start();
       larkConsumerStarted = true;
       await this.systemNotifier.notifyInitialized({ bannerImageKey: assetImageKeys.bannerImageKey });
+      await this.writeRuntimeStatus(true);
       this.telemetry.capture(
         "twinny_launch",
         {
@@ -286,6 +313,7 @@ export class TwinnyRuntime {
         }
       );
       this.startHeartbeat();
+      this.startAutoUpgradeScheduler();
       this.log.info({ home: this.config.home }, "twinny daemon started");
     } catch (error) {
       const startupErrorTelemetry = await recordStartupErrorTelemetryAttempt(this.paths, error, {
@@ -350,6 +378,7 @@ export class TwinnyRuntime {
     this.log.info({ signal }, "stopping twinny daemon");
     try {
       this.stopHeartbeat();
+      this.stopAutoUpgradeScheduler();
       await this.shutdownConversation();
       await this.stopLarkConsumer();
       await this.stopCodexPool(signal);
@@ -489,6 +518,30 @@ export class TwinnyRuntime {
     replaceTwinnyConfigContents(this.config, nextConfig);
   }
 
+  async restartService(): Promise<TwinnyServiceRestartScheduleResult> {
+    return scheduleTwinnyServiceRestart({
+      config: this.config,
+      expectedVersion: TWINNY_VERSION
+    });
+  }
+
+  async checkUpgrade(channel = this.config.upgrade.channel): Promise<TwinnyUpgradeCheckResult> {
+    return checkForTwinnyUpgrade({
+      currentVersion: TWINNY_VERSION,
+      channel,
+      registry: this.config.upgrade.registry
+    });
+  }
+
+  async scheduleUpgrade(channel = this.config.upgrade.channel): Promise<TwinnyUpgradeScheduleResult> {
+    return prepareAndScheduleTwinnyUpgrade({
+      config: this.config,
+      currentVersion: TWINNY_VERSION,
+      channel,
+      registry: this.config.upgrade.registry
+    });
+  }
+
   private async stopCodexAppServerForReload(pool: ProfileCodexAppServerPool, profile: ProfileName): Promise<void> {
     this.codexIntentionalStopByProfile.add(profile);
     try {
@@ -565,6 +618,7 @@ export class TwinnyRuntime {
     const lock = this.lock;
     this.lock = undefined;
     try {
+      await fs.rm(this.paths.statusFile, { force: true });
       await lock.release();
     } catch (error) {
       this.log.warn({ error }, "failed to release runtime lock cleanly");
@@ -601,6 +655,108 @@ export class TwinnyRuntime {
     const intervalMs = this.options.heartbeatIntervalMs ?? 60 * 60 * 1000;
     this.heartbeatTimer = setInterval(() => this.captureHeartbeat(intervalMs), intervalMs);
     this.heartbeatTimer.unref?.();
+  }
+
+  private markLarkUserEvent(): void {
+    this.lastLarkUserEventAt = Date.now();
+  }
+
+  private startAutoUpgradeScheduler(): void {
+    if (!isExpectedTwinnyVersion(TWINNY_VERSION)) {
+      this.log.warn(
+        { currentVersion: TWINNY_VERSION },
+        "disabled Twinny auto upgrade because the current version does not match a.b.c[-timestamp]"
+      );
+      return;
+    }
+    this.scheduleAutoUpgradeCheck(this.config.upgrade.checkIntervalMs);
+  }
+
+  private stopAutoUpgradeScheduler(): void {
+    if (!this.autoUpgradeTimer) {
+      return;
+    }
+    clearTimeout(this.autoUpgradeTimer);
+    this.autoUpgradeTimer = undefined;
+  }
+
+  private scheduleAutoUpgradeCheck(delayMs: number): void {
+    this.stopAutoUpgradeScheduler();
+    this.autoUpgradeTimer = setTimeout(() => {
+      void this.runAutoUpgradeCheck().catch((error) => {
+        this.log.warn({ error }, "Twinny auto upgrade check failed");
+        if (!this.stopped) {
+          this.scheduleAutoUpgradeCheck(this.config.upgrade.checkIntervalMs);
+        }
+      });
+    }, delayMs);
+    this.autoUpgradeTimer.unref?.();
+  }
+
+  private async runAutoUpgradeCheck(): Promise<void> {
+    if (this.stopped) {
+      return;
+    }
+    if (!isExpectedTwinnyVersion(TWINNY_VERSION)) {
+      this.log.warn(
+        { currentVersion: TWINNY_VERSION },
+        "disabled Twinny auto upgrade because the current version does not match a.b.c[-timestamp]"
+      );
+      return;
+    }
+    const check = await this.checkUpgrade(this.config.upgrade.channel);
+    if (check.disabledReason || !check.updateAvailable || !check.candidateVersion) {
+      this.scheduleAutoUpgradeCheck(this.config.upgrade.checkIntervalMs);
+      return;
+    }
+    if (!this.config.upgrade.autoUpdate) {
+      await this.notifyUpgradeAvailableOnce(check);
+      this.scheduleAutoUpgradeCheck(this.config.upgrade.checkIntervalMs);
+      return;
+    }
+    if (!this.canRunAutoUpgradeNow()) {
+      this.scheduleAutoUpgradeCheck(10 * 60 * 1000);
+      return;
+    }
+    const result = await this.scheduleUpgrade(this.config.upgrade.channel);
+    if (result.kind !== "scheduled") {
+      this.scheduleAutoUpgradeCheck(this.config.upgrade.checkIntervalMs);
+      return;
+    }
+    this.log.info(
+      { targetVersion: result.targetVersion, helperLogFile: result.helperLogFile },
+      "scheduled Twinny auto upgrade"
+    );
+  }
+
+  private canRunAutoUpgradeNow(): boolean {
+    const stats = this.conversation?.getRuntimeStats() ?? {
+      activeTurnCount: 0,
+      sideTurnCount: 0,
+      queuedMessageCount: 0,
+      suspendedTurnCount: 0
+    };
+    const idle =
+      stats.activeTurnCount === 0 &&
+      stats.sideTurnCount === 0 &&
+      stats.queuedMessageCount === 0 &&
+      stats.suspendedTurnCount === 0;
+    const hasRecentLarkEvent = this.lastLarkUserEventAt > 0 && Date.now() - this.lastLarkUserEventAt < 10 * 60 * 1000;
+    return idle && !hasRecentLarkEvent;
+  }
+
+  private async notifyUpgradeAvailableOnce(check: TwinnyUpgradeCheckResult): Promise<void> {
+    if (!check.candidateVersion || this.notifiedUpgradeVersions.has(check.candidateVersion)) {
+      return;
+    }
+    this.notifiedUpgradeVersions.add(check.candidateVersion);
+    await this.systemNotifier?.notifyUpgradeAvailable({
+      currentVersion: check.currentVersion,
+      targetVersion: check.candidateVersion,
+      channel: check.channel,
+      publishTime: check.candidatePublishTime,
+      changelogUrl: check.changelogUrl
+    });
   }
 
   private stopHeartbeat(): void {
@@ -642,6 +798,21 @@ export class TwinnyRuntime {
   private readRuntimeCodexVersion(): string | null {
     const profile = this.codexPool?.listProfiles()[0];
     return profile ? this.codexPool?.get(profile).readCodexVersion() ?? null : null;
+  }
+
+  private async writeRuntimeStatus(ready: boolean): Promise<void> {
+    try {
+      await fs.mkdir(path.dirname(this.paths.statusFile), { recursive: true });
+      await fs.writeFile(this.paths.statusFile, JSON.stringify({
+        pid: process.pid,
+        version: TWINNY_VERSION,
+        startedAt: this.runtimeStartedAt,
+        ready,
+        updatedAt: Date.now()
+      }, null, 2), "utf8");
+    } catch (error) {
+      this.log.warn({ error }, "failed to write Twinny runtime status");
+    }
   }
 
   private async shutdownTelemetry(): Promise<void> {

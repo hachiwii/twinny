@@ -27,6 +27,7 @@ export interface RunUpdateCommandOptions {
   home?: string;
   restart?: boolean;
   packageSpec?: string;
+  registry?: string;
   runCommand?: CommandRunner;
   restartLaunchAgent?: RestartLaunchAgentFn;
   restartManagedService?: RestartManagedServiceFn;
@@ -58,7 +59,8 @@ export async function runUpdateCommand(options: RunUpdateCommandOptions = {}): P
   const platform = options.platform ?? process.platform;
   const runnerBinary = twinnyRunnerBinaryPath(home, platform);
   const packageSpec = options.packageSpec ?? await defaultUpdatePackageSpec();
-  await installRunnerPackage(runnerDir, packageSpec, options.runCommand ?? execa);
+  const registry = options.registry ?? status.config.upgrade.registry;
+  await installRunnerPackage(runnerDir, packageSpec, options.runCommand ?? execa, registry);
   output.write(`Updated Twinny runner: ${runnerBinary}\n`);
 
   const serviceKind = await resolveManagedServiceKind({ platform });
@@ -98,9 +100,18 @@ export async function runUpdateCommand(options: RunUpdateCommandOptions = {}): P
   return { home, runnerDir, runnerBinary, packageSpec, managedServiceUsesRunner, launchAgentUsesRunner, restarted: true };
 }
 
-async function installRunnerPackage(runnerDir: string, packageSpec: string, runCommand: CommandRunner): Promise<void> {
+async function installRunnerPackage(
+  runnerDir: string,
+  packageSpec: string,
+  runCommand: CommandRunner,
+  registry?: string
+): Promise<void> {
+  const args = ["install", "--prefix", runnerDir, "--omit=dev", "--no-audit", "--no-fund", packageSpec];
+  if (registry) {
+    args.push("--registry", registry);
+  }
   try {
-    await runCommand("npm", ["install", "--prefix", runnerDir, "--omit=dev", "--no-audit", "--no-fund", packageSpec], {
+    await runCommand("npm", args, {
       stdio: "pipe"
     });
   } catch (error) {

@@ -33,6 +33,7 @@ const config: TwinnyConfig = {
     group: { mode: "none", message: "" }
   },
   service: { launchd: { mode: "gui" } },
+  upgrade: { channel: "stable", checkIntervalMs: 24 * 60 * 60 * 1000, autoUpdate: true },
   telemetry: { enabled: true, posthogProjectToken: "ph_test", posthogHost: "https://posthog.example" },
   owner: { openId: "ou_owner", displayName: "Owner" },
   profiles: {
