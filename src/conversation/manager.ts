@@ -1128,6 +1128,7 @@ interface ActiveTurnCardState {
   anchorMessageId: string;
   delivery?: ActiveTurnCardDelivery;
   messageId?: string;
+  activeRunId?: number;
   startedAt: number;
   messages: TwinnyAgentCardMessage[];
   timer?: NodeJS.Timeout;
@@ -5434,6 +5435,7 @@ export class ConversationManager {
       steeredMessageIds: new Set(),
       cancelRequested: false
     };
+    bindAgentCardToActive(active);
     state.sideTurns.set(params.sideId, active);
     const inputSeq = 1;
     state.sideSessions.set(sideSessionId, {
@@ -6403,6 +6405,7 @@ export class ConversationManager {
       steeredMessageIds: new Set(),
       cancelRequested: false
     };
+    bindAgentCardToActive(active);
 
     session.status = "processing";
     session.active = active;
@@ -7560,6 +7563,7 @@ export class ConversationManager {
       steeredMessageIds: new Set(),
       cancelRequested: false
     };
+    bindAgentCardToActive(active);
     state.active = active;
     await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
 
@@ -7924,6 +7928,7 @@ export class ConversationManager {
       steeredMessageIds: new Set(),
       cancelRequested: false
     };
+    bindAgentCardToActive(active);
     state.active = active;
     await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
 
@@ -8223,6 +8228,7 @@ export class ConversationManager {
       steeredMessageIds: new Set(),
       cancelRequested: false
     };
+    bindAgentCardToActive(active);
     state.active = active;
     await this.addDocWorkingReactionsBestEffort(params.messages);
     await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "working");
@@ -10078,6 +10084,9 @@ export class ConversationManager {
     await this.clearReactionBestEffort(active);
     await this.markMessagesInterruptedBestEffort([...active.processingMessageIds]);
     await this.interruptAgentCardBestEffort(state, active);
+    if (active.sideId !== undefined) {
+      state.sideTurns.delete(active.sideId);
+    }
     if (activeHasGoal(active)) {
       await this.clearActiveGoalBestEffort(active);
     }
@@ -12176,7 +12185,7 @@ export class ConversationManager {
         state.pendingBatch.length > 0 ||
         (await this.shouldUpdateCompletedAgentCardInPlace(active, previousMessageId));
       if (shouldUpdateInPlace) {
-        await this.updateCompletedAgentCardInPlace(active, card, previousMessageId, rendered);
+        await this.updateCompletedAgentCardInPlace(state, active, card, previousMessageId, rendered);
         await this.replyAgentCardFilesBestEffort(this.agentCardFollowupAnchorMessageId(active), output.files);
         return;
       }
@@ -12215,6 +12224,7 @@ export class ConversationManager {
   }
 
   private async updateCompletedAgentCardInPlace(
+    state: ConversationState,
     active: ActiveTurn,
     card: ActiveTurnCardState,
     messageId: string,
@@ -12229,18 +12239,19 @@ export class ConversationManager {
         throw error;
       }
       this.log.warn({ error, messageId }, "Lark rate limited completed agent card update; retrying");
-      this.scheduleCompletedAgentCardPatchRetry(active, card, messageId, rendered, 0);
+      this.scheduleCompletedAgentCardPatchRetry(state, active, card, messageId, rendered, 0);
     }
   }
 
   private scheduleCompletedAgentCardPatchRetry(
+    state: ConversationState,
     active: ActiveTurn,
     card: ActiveTurnCardState,
     messageId: string,
     rendered: LarkCardJson,
     attempt: number
   ): void {
-    if (card.fallbackPlain || card.messageId !== messageId) {
+    if (!isCompletedAgentCardRetryCurrent(active, card, messageId)) {
       return;
     }
     const delayMs = COMPLETED_AGENT_CARD_PATCH_RETRY_DELAYS_MS[attempt];
@@ -12253,19 +12264,24 @@ export class ConversationManager {
     }
     card.completedPatchRetryTimer = setTimeout(() => {
       card.completedPatchRetryTimer = undefined;
-      void this.retryCompletedAgentCardPatch(active, card, messageId, rendered, attempt);
+      void state.controlQueue.enqueue(() =>
+        this.retryCompletedAgentCardPatch(state, active, card, messageId, rendered, attempt)
+      ).catch((error) => {
+        this.log.warn({ error, messageId }, "failed to enqueue completed agent card update retry");
+      });
     }, delayMs);
     card.completedPatchRetryTimer.unref?.();
   }
 
   private async retryCompletedAgentCardPatch(
+    state: ConversationState,
     active: ActiveTurn,
     card: ActiveTurnCardState,
     messageId: string,
     rendered: LarkCardJson,
     attempt: number
   ): Promise<void> {
-    if (card.fallbackPlain || card.messageId !== messageId) {
+    if (!isCompletedAgentCardRetryCurrent(active, card, messageId)) {
       return;
     }
     try {
@@ -12275,7 +12291,7 @@ export class ConversationManager {
     } catch (error) {
       if (isLarkSingleMessageUpdateFrequencyLimit(error)) {
         this.log.warn({ error, messageId, attempt: attempt + 1 }, "Lark still rate limited completed agent card update");
-        this.scheduleCompletedAgentCardPatchRetry(active, card, messageId, rendered, attempt + 1);
+        this.scheduleCompletedAgentCardPatchRetry(state, active, card, messageId, rendered, attempt + 1);
         return;
       }
       this.log.warn({ error, messageId }, "failed to retry completed agent card update");
@@ -14140,6 +14156,20 @@ function docCommentTerminalText(active: ActiveTurn): string {
 
 function isSideTurnCurrent(state: ConversationState, active: ActiveTurn): boolean {
   return active.kind === "side" && active.sideId !== undefined && state.sideTurns.get(active.sideId) === active;
+}
+
+function bindAgentCardToActive(active: ActiveTurn): void {
+  if (active.card) {
+    active.card.activeRunId = active.runId;
+  }
+}
+
+function isCompletedAgentCardRetryCurrent(
+  active: ActiveTurn,
+  card: ActiveTurnCardState,
+  messageId: string
+): boolean {
+  return !card.fallbackPlain && card.messageId === messageId && card.activeRunId === active.runId;
 }
 
 function activeRuntimeThreadId(active: ActiveTurn): string {

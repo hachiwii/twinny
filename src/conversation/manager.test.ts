@@ -8348,6 +8348,78 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_1_side", "turn_2"));
   });
 
+  it("does not let a stale completed side card retry overwrite a continued side session", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    vi.mocked(codex.forkThread).mockResolvedValue({ threadId: "thread_1_side" });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m_side", "/side inspect"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+
+    let rateLimitFirstCompletionPatch = true;
+    vi.mocked(lark.patchCard).mockImplementation(async (messageId) => {
+      if (messageId === "card_m_side_1" && rateLimitFirstCompletionPatch) {
+        rateLimitFirstCompletionPatch = false;
+        throw larkSingleMessageUpdateRateLimitError();
+      }
+      return { messageId };
+    });
+
+    vi.useFakeTimers();
+    try {
+      turns[0]!.resolve({ ...completed("thread_1_side", "turn_1"), text: "first final" });
+      for (let index = 0; index < 10 && rateLimitFirstCompletionPatch; index += 1) {
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(rateLimitFirstCompletionPatch).toBe(false);
+
+      await manager.submitCardAction({
+        eventId: "event_side_question",
+        operatorOpenId: "ou_guest",
+        openMessageId: "card_m_side_1",
+        openChatId: "oc_ignored",
+        actionTag: "input",
+        actionValue: {
+          twinny: true,
+          action: "side_input_submit",
+          stateKey: "p2p_ou_guest",
+          sideSessionId: "1",
+          inputId: "1:1"
+        },
+        inputValue: "second question",
+        raw: { event_id: "event_side_question" }
+      });
+      for (let index = 0; index < 10 && vi.mocked(codex.startTurn).mock.calls.length < 2; index += 1) {
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      }
+
+      expect(codex.startTurn).toHaveBeenCalledTimes(2);
+      expect(codex.startTurn).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        threadId: "thread_1_side",
+        input: expect.stringContaining("second question")
+      }));
+      const completionPatchCallsBeforeRetry = completedSidePatchCount(lark, "card_m_side_1", "first final");
+      const continuedPatchBeforeRetry = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1];
+      expect(JSON.stringify(continuedPatchBeforeRetry)).toContain("工作中...");
+      expect(JSON.stringify(continuedPatchBeforeRetry)).toContain("[收到追问] second question");
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(completedSidePatchCount(lark, "card_m_side_1", "first final")).toBe(completionPatchCallsBeforeRetry);
+      const latestPatch = vi.mocked(lark.patchCard).mock.calls.at(-1)?.[1];
+      expect(JSON.stringify(latestPatch)).toContain("工作中...");
+      expect(JSON.stringify(latestPatch)).toContain("[收到追问] second question");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("returns an error toast when a side session has been cleaned from memory", async () => {
     const manager = createManager();
 
@@ -8492,6 +8564,52 @@ describe("ConversationManager", () => {
 
     turns[1]!.resolve(completed("thread_1_side", "turn_2", "interrupted"));
     turns[0]!.resolve(completed("thread_1", "turn_1"));
+  });
+
+  it("releases a side id after card cancel when Codex reports no active turn", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [codexThreadRecord()]
+    });
+    const { codex } = createDeferredCodex();
+    let forkCount = 0;
+    vi.mocked(codex.forkThread).mockImplementation(async ({ threadId }) => ({
+      threadId: `${threadId}_side_${++forkCount}`
+    }));
+    vi.mocked(codex.interruptTurn).mockRejectedValueOnce(
+      new TwinnyError("no active turn to interrupt", "CODEX_REQUEST_FAILED", {
+        code: -32600,
+        message: "no active turn to interrupt"
+      })
+    );
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m_side_1", "/side inspect"));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    const firstCard = vi.mocked(lark.replyCard).mock.calls[0]![1];
+    const nextActionValue = findTwinnyCardActionValue(firstCard, "next");
+
+    await manager.submitCardAction({
+      eventId: "event_side_next",
+      operatorOpenId: "ou_cancel",
+      openMessageId: "card_m_side_1_1",
+      openChatId: "oc_ignored",
+      actionTag: "button",
+      actionValue: nextActionValue,
+      raw: { event_id: "event_side_next" }
+    });
+    await waitForExpect(() => expect(codex.interruptTurn).toHaveBeenCalledTimes(1));
+
+    manager.submitIncoming(message("m_side_2", "/side second"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(lark.replyCard).toHaveBeenCalledWith(
+      "m_side_2",
+      expect.objectContaining({
+        header: expect.objectContaining({
+          subtitle: { tag: "plain_text", content: "临时会话 [1]" }
+        })
+      })
+    );
   });
 
   it("stops every running side turn on /stop all", async () => {
@@ -14166,6 +14284,13 @@ function larkSingleMessageUpdateRateLimitError(): LarkOpenApiError {
     responseBody: { code: 230020 },
     retryable: false
   });
+}
+
+function completedSidePatchCount(lark: LarkResponder, messageId: string, finalText: string): number {
+  return vi.mocked(lark.patchCard).mock.calls.filter(([patchedMessageId, card]) => {
+    const serialized = JSON.stringify(card);
+    return patchedMessageId === messageId && serialized.includes("已完成") && serialized.includes(finalText);
+  }).length;
 }
 
 function createRepository(initial?: ConversationRecord, options: {
