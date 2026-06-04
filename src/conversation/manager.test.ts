@@ -8348,6 +8348,77 @@ describe("ConversationManager", () => {
     turns[1]!.resolve(completed("thread_1_side", "turn_2"));
   });
 
+  it("keeps a side follow-up card working after the Lark input callback settles", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    vi.mocked(codex.forkThread).mockResolvedValue({ threadId: "thread_1_side" });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m_side", "/side inspect"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    turns[0]!.resolve({ ...completed("thread_1_side", "turn_1"), text: "first final" });
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith("card_m_side_1", expect.objectContaining({
+        header: expect.objectContaining({ template: "green" })
+      }))
+    );
+    const finishedCard = vi.mocked(lark.patchCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const actionValue = findTwinnyCardActionValue(finishedCard, "side_input_submit");
+    vi.mocked(lark.patchCard).mockClear();
+
+    const sidePatchJson = () => vi.mocked(lark.patchCard).mock.calls
+      .filter(([messageId]) => messageId === "card_m_side_1")
+      .map(([, card]) => JSON.stringify(card));
+
+    vi.useFakeTimers();
+    try {
+      const response = await manager.submitCardAction({
+        eventId: "event_side_question",
+        operatorOpenId: "ou_guest",
+        openMessageId: "card_m_side_1",
+        openChatId: "oc_ignored",
+        actionTag: "input",
+        actionValue,
+        inputValue: "second question",
+        raw: { event_id: "event_side_question" }
+      });
+      for (let index = 0; index < 10 && vi.mocked(codex.startTurn).mock.calls.length < 2; index += 1) {
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(codex.startTurn).toHaveBeenCalledTimes(2);
+
+      const patchesAfterSubmit = sidePatchJson();
+      const continuedWorkingIndex = patchesAfterSubmit.findIndex((serialized) =>
+        serialized.includes("工作中...") && serialized.includes("[收到追问] second question")
+      );
+      expect(continuedWorkingIndex).toBeGreaterThanOrEqual(0);
+
+      if (!response) {
+        await lark.patchCard("card_m_side_1", finishedCard);
+      }
+      const patchesAfterCallback = sidePatchJson();
+      const staleFinishedAfterCallbackIndex = patchesAfterCallback.findIndex((serialized, index) =>
+        index > continuedWorkingIndex && serialized.includes("已完成") && serialized.includes("first final")
+      );
+      const patchCountBeforeTimer = patchesAfterCallback.length;
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const patchesAfterTimer = sidePatchJson();
+      expect(patchesAfterTimer.length).toBeGreaterThan(patchCountBeforeTimer);
+      expect(patchesAfterTimer.at(-1)).toContain("工作中...");
+      expect(patchesAfterTimer.at(-1)).toContain("[收到追问] second question");
+      expect(response).toEqual({ toast: { type: "info", content: "已收到，处理中" } });
+      expect(staleFinishedAfterCallbackIndex).toBe(-1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not let a stale completed side card retry overwrite a continued side session", async () => {
     const { repository } = createRepository(conversationRecord());
     const { codex, turns } = createDeferredCodex();
