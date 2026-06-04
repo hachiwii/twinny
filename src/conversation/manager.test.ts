@@ -8420,6 +8420,75 @@ describe("ConversationManager", () => {
     }
   });
 
+  it("does not render a continued side session as finished before the follow-up turn completes", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    vi.mocked(codex.forkThread).mockResolvedValue({ threadId: "thread_1_side" });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m_side", "/side inspect"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    await waitForExpect(() => expect(lark.replyCard).toHaveBeenCalledTimes(1));
+    turns[0]!.resolve({ ...completed("thread_1_side", "turn_1"), text: "first final" });
+    await waitForExpect(() =>
+      expect(lark.patchCard).toHaveBeenCalledWith("card_m_side_1", expect.objectContaining({
+        header: expect.objectContaining({ template: "green" })
+      }))
+    );
+    const finishedCard = vi.mocked(lark.patchCard).mock.calls.at(-1)![1];
+    const actionValue = findTwinnyCardActionValue(finishedCard, "side_input_submit");
+    vi.mocked(lark.patchCard).mockClear();
+
+    vi.useFakeTimers();
+    try {
+      await manager.submitCardAction({
+        eventId: "event_side_question",
+        operatorOpenId: "ou_guest",
+        openMessageId: "card_m_side_1",
+        openChatId: "oc_ignored",
+        actionTag: "input",
+        actionValue,
+        inputValue: "second question",
+        raw: { event_id: "event_side_question" }
+      });
+      for (let index = 0; index < 10 && vi.mocked(codex.startTurn).mock.calls.length < 2; index += 1) {
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(codex.startTurn).toHaveBeenCalledTimes(2);
+
+      const sidePatchJson = () => vi.mocked(lark.patchCard).mock.calls
+        .filter(([messageId]) => messageId === "card_m_side_1")
+        .map(([, card]) => JSON.stringify(card));
+
+      expect(sidePatchJson().some((serialized) =>
+        serialized.includes("工作中...") && serialized.includes("[收到追问] second question")
+      )).toBe(true);
+      expect(sidePatchJson().some((serialized) => serialized.includes("已完成"))).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const patchesAfterTimer = sidePatchJson();
+      expect(patchesAfterTimer.some((serialized) =>
+        serialized.includes("工作中...") && serialized.includes("[收到追问] second question")
+      )).toBe(true);
+      expect(patchesAfterTimer.some((serialized) => serialized.includes("已完成"))).toBe(false);
+
+      turns[1]!.resolve({ ...completed("thread_1_side", "turn_2"), text: "second final" });
+      for (let index = 0; index < 10 && !sidePatchJson().some((serialized) => serialized.includes("second final")); index += 1) {
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(sidePatchJson().some((serialized) =>
+        serialized.includes("已完成") && serialized.includes("second final")
+      )).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("returns an error toast when a side session has been cleaned from memory", async () => {
     const manager = createManager();
 
