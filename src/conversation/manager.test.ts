@@ -8570,14 +8570,42 @@ describe("ConversationManager", () => {
       expect(patchesAfterTimer.at(-1)).toContain("工作中...");
       expect(patchesAfterTimer.some((serialized) => serialized.includes("已完成"))).toBe(false);
 
-      turns[1]!.resolve({ ...completed("thread_1_side", "turn_2"), text: "second final" });
-      for (let index = 0; index < 10 && !sidePatchJson().some((serialized) => serialized.includes("second final")); index += 1) {
+      const patchCountBeforeCommentary = sidePatchJson().length;
+      await turns[1]!.params.onAgentMessage?.({
+        id: "agent_followup_working",
+        text: "follow-up working output",
+        phase: "commentary"
+      });
+      const patchesAfterCommentary = sidePatchJson();
+      expect(patchesAfterCommentary).toHaveLength(patchCountBeforeCommentary + 1);
+      expect(patchesAfterCommentary.at(-1)).toContain("工作中...");
+      expect(patchesAfterCommentary.at(-1)).toContain("[收到追问] second question");
+      expect(patchesAfterCommentary.at(-1)).toContain("follow-up working output");
+      expect(patchesAfterCommentary.at(-1)).not.toContain("已完成");
+
+      const patchCountBeforeFinalAnswer = sidePatchJson().length;
+      await turns[1]!.params.onAgentMessage?.({
+        id: "agent_followup_final",
+        text: "second final answer",
+        phase: "final_answer"
+      });
+      expect(sidePatchJson()).toHaveLength(patchCountBeforeFinalAnswer);
+      expect(sidePatchJson().some((serialized) => serialized.includes("second final answer"))).toBe(false);
+
+      turns[1]!.resolve({ ...completed("thread_1_side", "turn_2"), text: "fallback final" });
+      for (let index = 0; index < 10 && !sidePatchJson().some((serialized) => serialized.includes("second final answer")); index += 1) {
         await Promise.resolve();
         await vi.advanceTimersByTimeAsync(0);
       }
       expect(sidePatchJson().some((serialized) =>
-        serialized.includes("已完成") && serialized.includes("second final")
+        serialized.includes("已完成") && serialized.includes("second final answer")
       )).toBe(true);
+      expect(sidePatchJson().some((serialized) =>
+        serialized.includes("已完成") && serialized.includes("follow-up working output")
+      )).toBe(true);
+      expect(sidePatchJson().some((serialized) =>
+        serialized.includes("已完成") && serialized.includes("fallback final")
+      )).toBe(false);
     } finally {
       vi.useRealTimers();
     }
