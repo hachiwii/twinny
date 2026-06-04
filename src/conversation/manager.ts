@@ -1681,7 +1681,14 @@ export class ConversationManager {
     });
     const willProcessImmediately = this.willProcessPendingMessageImmediately(state, pending);
     const active = state.active;
-    const isReplySteer = willProcessImmediately && active !== undefined && this.canSteerDocCommentIntoActiveTurn(active, pending);
+    const isActiveReplySteer = willProcessImmediately && active !== undefined && this.canSteerDocCommentIntoActiveTurn(active, pending);
+    const isQueuedReplySteer =
+      !isActiveReplySteer &&
+      this.queuedDocCommentBatchInsertionIndex(state, pending) !== undefined;
+    if (isQueuedReplySteer) {
+      pending.queueBoundary = false;
+    }
+    const isReplySteer = isActiveReplySteer || isQueuedReplySteer;
     pending.docComment!.cardMessage = isReplySteer
       ? docCommentReplySteerCardMessage(comment, snapshot, senderName, this.options.botOpenId)
       : docCommentReceivedCardMessage(comment, watcher, snapshot, senderName, this.options.botOpenId);
@@ -7151,8 +7158,33 @@ export class ConversationManager {
 
   private async enqueuePendingMessage(state: ConversationState, context: MessageContext, message: PendingMessage): Promise<void> {
     await this.addQueuedReactionBestEffort(message);
-    state.pendingBatch.push(message);
+    const docCommentInsertionIndex = this.queuedDocCommentBatchInsertionIndex(state, message);
+    if (docCommentInsertionIndex === undefined) {
+      state.pendingBatch.push(message);
+    } else {
+      message.queueBoundary = false;
+      state.pendingBatch.splice(docCommentInsertionIndex, 0, message);
+    }
     await this.tryStartRunnableQueueHead(state, context);
+  }
+
+  private queuedDocCommentBatchInsertionIndex(state: ConversationState, message: PendingMessage): number | undefined {
+    const doc = message.docComment;
+    if (!doc) {
+      return undefined;
+    }
+    for (let index = 0; index < state.pendingBatch.length; index += 1) {
+      const pending = state.pendingBatch[index]!;
+      if (!isSameDocCommentBlock(pending.docComment, doc)) {
+        continue;
+      }
+      let insertionIndex = index + 1;
+      while (insertionIndex < state.pendingBatch.length && !state.pendingBatch[insertionIndex]!.queueBoundary) {
+        insertionIndex += 1;
+      }
+      return insertionIndex;
+    }
+    return undefined;
   }
 
   private async tryStartRunnableQueueHead(state: ConversationState, context: MessageContext): Promise<boolean> {
@@ -11356,12 +11388,7 @@ export class ConversationManager {
     }
     for (const activeMessage of active.messagesById.values()) {
       const activeDoc = activeMessage.docComment;
-      if (
-        activeDoc &&
-        activeDoc.fileType === doc.fileType &&
-        activeDoc.fileToken === doc.fileToken &&
-        activeDoc.commentId === doc.commentId
-      ) {
+      if (isSameDocCommentBlock(activeDoc, doc)) {
         return true;
       }
     }
@@ -13876,6 +13903,17 @@ function hasClearableTerminalGoal(active: ActiveTurn): boolean {
 
 function isDocCommentRouteKind(routeKind: LarkMessageRouteKind): boolean {
   return routeKind === "doc_comment" || routeKind === "doc_comment_reply_steer";
+}
+
+function isSameDocCommentBlock(
+  left: PendingDocCommentContext | undefined,
+  right: PendingDocCommentContext | undefined
+): boolean {
+  return !!left &&
+    !!right &&
+    left.fileType === right.fileType &&
+    left.fileToken === right.fileToken &&
+    left.commentId === right.commentId;
 }
 
 function needsPlainFailureFallback(active: ActiveTurn): boolean {

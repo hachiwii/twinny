@@ -4457,6 +4457,96 @@ describe("ConversationManager", () => {
     turns[0]!.resolve(completed("thread_1", "turn_1"));
   });
 
+  it("batches watched doc comment replies with their queued comment block", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [codexThreadRecord({ codexThreadId: "thread_1" })]
+    });
+    repository.upsertLarkDocWatcher({
+      fileType: "docx",
+      fileToken: "doc_token",
+      threadId: "thread_1",
+      watchMode: "owner_at",
+      watchUrl: "https://example.feishu.cn/docx/doc_token"
+    });
+    const { codex, turns } = createDeferredCodex();
+    const lark = createLarkResponder();
+    const larkDocComments = createLarkDocCommentClient();
+    vi.mocked(larkDocComments.getCommentSnapshot).mockImplementation(async ({ commentId, replyId }) => {
+      if (commentId === "comment_1" && replyId === "reply_1") {
+        return larkDocCommentSnapshot({
+          commentId: "comment_1",
+          replyId: "reply_1",
+          text: "Root queued doc request"
+        });
+      }
+      if (commentId === "comment_1" && replyId === "reply_2") {
+        return larkDocCommentSnapshot({
+          commentId: "comment_1",
+          replyId: "reply_2",
+          text: "Follow-up same queued block"
+        });
+      }
+      return larkDocCommentSnapshot({
+        commentId: "comment_2",
+        replyId: "reply_other",
+        text: "Other queued doc request"
+      });
+    });
+    const manager = createManager({ repository, codex, lark, larkDocComments });
+
+    manager.submitIncoming(message("m_active", "active"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment_1",
+      commentId: "comment_1",
+      replyId: "reply_1"
+    }));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(1));
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment_other",
+      commentId: "comment_2",
+      replyId: "reply_other",
+      createTime: 1235
+    }));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(2));
+
+    manager.submitDocCommentAdd(docCommentAdd({
+      eventId: "event_doc_comment_2",
+      commentId: "comment_1",
+      replyId: "reply_2",
+      isMentioned: false,
+      createTime: 1236
+    }));
+    await waitForExpect(() => expect(manager.queueDepth("p2p_ou_guest")).toBe(3));
+
+    expect(repository.insertLarkMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        larkMessageId: "doc_comment:event_doc_comment_2:comment_1:reply_2",
+        routeKind: "doc_comment_reply_steer",
+        status: "queued",
+        codexThreadId: "thread_1"
+      })
+    );
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    const queuedDocInput = vi.mocked(codex.startTurn).mock.calls[1]![0].input;
+    expect(queuedDocInput).toEqual(expect.stringContaining("Root queued doc request"));
+    expect(queuedDocInput).toEqual(expect.stringContaining("Follow-up same queued block"));
+    expect(queuedDocInput).not.toEqual(expect.stringContaining("Other queued doc request"));
+    expect(manager.queueDepth("p2p_ou_guest")).toBe(1);
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(codex.startTurn).mock.calls[2]![0].input).toEqual(
+      expect.stringContaining("Other queued doc request")
+    );
+
+    turns[2]!.resolve(completed("thread_1", "turn_3"));
+  });
+
   it("processes all-mode watched doc comments without a bot mention from non-owner senders", async () => {
     const { repository } = createRepository(conversationRecord());
     repository.upsertLarkDocWatcher({
