@@ -12999,12 +12999,20 @@ type CodexAtTextPart =
   | { kind: "text"; text: string }
   | { kind: "at"; openId: string };
 
+interface CodexAtTagMatch {
+  index: number;
+  raw: string;
+  openId: string;
+}
+
 const CODEX_AT_TAG_PATTERN = /<at\s+openid="([^"]*)"\s*\/?>/g;
+// 兼容历史 Codex 会话：旧 prompt 曾要求模型输出这个 tag。
+const LEGACY_CODEX_LARK_MENTION_TAG_PATTERN = /<mention[_-]lark[_-]user>([\s\S]*?)<\/mention[_-]lark[_-]user>/g;
 
 function hasCodexAtSyntax(text: string): boolean {
   const codeRanges = markdownCodeRanges(text);
-  for (const match of text.matchAll(CODEX_AT_TAG_PATTERN)) {
-    if (!isPositionInTextRanges(match.index ?? 0, codeRanges)) {
+  for (const match of codexAtTagMatches(text)) {
+    if (!isPositionInTextRanges(match.index, codeRanges)) {
       return true;
     }
   }
@@ -13067,16 +13075,15 @@ function splitCodexAtText(text: string): CodexAtTextPart[] {
   const parts: CodexAtTextPart[] = [];
   const codeRanges = markdownCodeRanges(text);
   let cursor = 0;
-  for (const match of text.matchAll(CODEX_AT_TAG_PATTERN)) {
-    const index = match.index ?? 0;
-    const raw = match[0]!;
+  for (const match of codexAtTagMatches(text)) {
+    const { index, raw } = match;
     if (isPositionInTextRanges(index, codeRanges)) {
       continue;
     }
     if (index > cursor) {
       parts.push({ kind: "text", text: text.slice(cursor, index) });
     }
-    const openId = match[1]?.trim() ?? "";
+    const openId = match.openId.trim();
     parts.push(isSafeLarkAtOpenId(openId) ? { kind: "at", openId } : { kind: "text", text: raw });
     cursor = index + raw.length;
   }
@@ -13084,6 +13091,27 @@ function splitCodexAtText(text: string): CodexAtTextPart[] {
     parts.push({ kind: "text", text: text.slice(cursor) });
   }
   return parts.length > 0 ? parts : [{ kind: "text", text }];
+}
+
+function codexAtTagMatches(text: string): CodexAtTagMatch[] {
+  const matches: CodexAtTagMatch[] = [];
+  for (const match of text.matchAll(CODEX_AT_TAG_PATTERN)) {
+    const raw = match[0]!;
+    matches.push({
+      index: match.index ?? 0,
+      raw,
+      openId: match[1] ?? ""
+    });
+  }
+  for (const match of text.matchAll(LEGACY_CODEX_LARK_MENTION_TAG_PATTERN)) {
+    const raw = match[0]!;
+    matches.push({
+      index: match.index ?? 0,
+      raw,
+      openId: match[1] ?? ""
+    });
+  }
+  return matches.sort((left, right) => left.index - right.index || left.raw.length - right.raw.length);
 }
 
 function isSafeLarkAtOpenId(openId: string): boolean {
