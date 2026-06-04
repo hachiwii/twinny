@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderLocalPathMarkdownLinksAsCode } from "./markdown.js";
+import { markdownImageReferences, renderLocalPathMarkdownLinksAsCode } from "./markdown.js";
 
 describe("renderLocalPathMarkdownLinksAsCode", () => {
   it("replaces local path markdown links with inline code spans", () => {
@@ -40,5 +40,45 @@ describe("renderLocalPathMarkdownLinksAsCode", () => {
       "![preview](/repo/preview.png)",
       "`/repo/real.ts`"
     ].join("\n"));
+  });
+});
+
+describe("markdownImageReferences", () => {
+  it("uses markdown parser image nodes with source offsets", () => {
+    const markdown = "before ![授权[二维码]](/repo/auth.png) after ![remote](https://example.com/a.png)";
+
+    expect(markdownImageReferences(markdown)).toEqual([
+      {
+        altText: "授权[二维码]",
+        target: "/repo/auth.png",
+        start: "before ".length,
+        end: "before ![授权[二维码]](/repo/auth.png)".length
+      },
+      {
+        altText: "remote",
+        target: "https://example.com/a.png",
+        start: "before ![授权[二维码]](/repo/auth.png) after ".length,
+        end: markdown.length
+      }
+    ]);
+  });
+
+  it("does not return image syntax inside markdown code", () => {
+    const markdown = [
+      "`![inline](/repo/inline.png)`",
+      "```",
+      "![block](/repo/block.png)",
+      "```",
+      "![real](/repo/real.png)"
+    ].join("\n");
+
+    expect(markdownImageReferences(markdown)).toEqual([
+      {
+        altText: "real",
+        target: "/repo/real.png",
+        start: markdown.indexOf("![real]"),
+        end: markdown.length
+      }
+    ]);
   });
 });

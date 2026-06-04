@@ -1,3 +1,5 @@
+import { fromMarkdown } from "mdast-util-from-markdown";
+
 export interface TextRange {
   start: number;
   end: number;
@@ -20,6 +22,17 @@ interface MarkdownFence {
   char: "`" | "~";
   length: number;
   start: number;
+}
+
+interface MarkdownAstNode {
+  type?: string;
+  url?: unknown;
+  alt?: unknown;
+  position?: {
+    start?: { offset?: number };
+    end?: { offset?: number };
+  };
+  children?: unknown[];
 }
 
 export function markdownLines(markdown: string): MarkdownLine[] {
@@ -100,30 +113,38 @@ export function markdownImageReferences(markdown: string): MarkdownImageReferenc
   }
 
   const references: MarkdownImageReference[] = [];
-  const codeRanges = markdownCodeRanges(markdown);
-  let index = 0;
-  while (index < markdown.length) {
-    if (markdown[index] !== "!" || markdown[index + 1] !== "[" || isPositionInTextRanges(index, codeRanges)) {
-      index += 1;
-      continue;
+  visitMarkdownAst(fromMarkdown(markdown), (node) => {
+    if (node.type !== "image" || typeof node.url !== "string") {
+      return;
     }
-
-    const link = parseInlineMarkdownLinkAt(markdown, index + 1);
-    if (!link) {
-      index += 1;
-      continue;
+    const start = node.position?.start?.offset;
+    const end = node.position?.end?.offset;
+    if (typeof start !== "number" || typeof end !== "number" || end <= start) {
+      return;
     }
-
     references.push({
-      altText: link.label,
-      target: link.target,
-      start: index,
-      end: link.end
+      altText: typeof node.alt === "string" ? node.alt : "",
+      target: node.url,
+      start,
+      end
     });
-    index = link.end;
-  }
+  });
 
-  return references;
+  return references.sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
+function visitMarkdownAst(node: unknown, visitor: (node: MarkdownAstNode) => void): void {
+  if (!isMarkdownAstNode(node)) {
+    return;
+  }
+  visitor(node);
+  for (const child of node.children ?? []) {
+    visitMarkdownAst(child, visitor);
+  }
+}
+
+function isMarkdownAstNode(value: unknown): value is MarkdownAstNode {
+  return typeof value === "object" && value !== null;
 }
 
 function markdownCodeBlockRanges(markdown: string): TextRange[] {
