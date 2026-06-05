@@ -8,6 +8,17 @@ describe("Lark message redactor", () => {
     );
   });
 
+  it("keeps matching valid dot-atom email addresses", () => {
+    expect(redactSensitiveText("contact first.last+tag@example.co.uk")).toBe(
+      "contact f************g@example.co.uk"
+    );
+  });
+
+  it("does not redact non-email at-sign tokens", () => {
+    const text = "deps pino@9.14.0 vite@7.3.3 @types/node x@y.z alice..smith@example.com alice.@example.com";
+    expect(redactSensitiveText(text)).toBe(text);
+  });
+
   it("can whitespace email and Chinese phone numbers", () => {
     expect(
       redactSensitiveText("contact alice.smith@example.com or 13812345678", {

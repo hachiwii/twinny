@@ -9,7 +9,7 @@ export const DEFAULT_LARK_MESSAGE_REDACTION: LarkMessageRedactionConfig = {
   chinesePhoneNumber: DEFAULT_LARK_MESSAGE_REDACTION_STRATEGY
 };
 
-const EMAIL_PATTERN = /(^|[^\w.!#$%&'*+/=?^`{|}~-])([A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+)@([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+)(?![\w-])/g;
+const EMAIL_PATTERN = /(^|[^A-Za-z0-9.!#$%&'*+/=?^_`{|}~-])([A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*)@((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63})(?![A-Za-z0-9_-])/g;
 const CHINESE_PHONE_PATTERN = /(^|[^\dA-Za-z])(1[3-9]\d)(\d{4})(\d{4})(?=$|[^\dA-Za-z])/g;
 
 export function normalizeLarkMessageRedactionConfig(
