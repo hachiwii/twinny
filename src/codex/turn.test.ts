@@ -7,6 +7,7 @@ import {
   buildTurnSteerParams,
   DANGER_FULL_ACCESS_SANDBOX_POLICY,
   dynamicToolTextResponse,
+  FINAL_ANSWER_COMPLETION_FALLBACK_MS,
   handleTurnServerRequest,
   startCodexTurn,
   TurnOutputAccumulator
@@ -1544,6 +1545,64 @@ describe("startCodexTurn", () => {
       expect.any(Object),
       { timeoutMs: 5 }
     );
+  });
+
+  it("finishes when Codex emits a final answer item but omits turn/completed", async () => {
+    vi.useFakeTimers();
+    const protocol = new FakeProtocol();
+    const agentMessages = vi.fn();
+
+    protocol.requestMock.mockImplementationOnce(async () => {
+      setTimeout(() => {
+        protocol.emit("notification", {
+          method: "item/completed",
+          params: {
+            threadId: "thread_123",
+            turnId: "turn_1",
+            item: { type: "agentMessage", id: "msg_final", text: "final from codex", phase: "final_answer" }
+          }
+        });
+      }, 10);
+      return { turn: { id: "turn_1" } };
+    });
+
+    const result = startCodexTurn(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "side follow-up",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onAgentMessage: agentMessages
+      }
+    );
+
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(FINAL_ANSWER_COMPLETION_FALLBACK_MS - 1);
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(result).resolves.toMatchObject({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      text: "final from codex",
+      status: "completed"
+    });
+    expect(agentMessages).toHaveBeenCalledWith({
+      id: "msg_final",
+      text: "final from codex",
+      phase: "final_answer"
+    });
   });
 
   it("ignores stale notifications received before turn/start returns the active turn id", async () => {
