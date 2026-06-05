@@ -1545,6 +1545,18 @@ export class ConversationManager {
     const state = this.states.get(command.stateKey);
     if (!state) {
       if (isSideFollowupCardAction(command)) {
+        this.log.warn(
+          {
+            eventId: action.eventId,
+            operatorOpenId: action.operatorOpenId,
+            openMessageId: action.openMessageId,
+            stateKey: command.stateKey,
+            conversationKey: conversationKeyFromStateKey(command.stateKey),
+            sideSessionId: command.sideSessionId,
+            inputId: command.inputId ?? null
+          },
+          "conversation side follow-up card action rejected because state is missing"
+        );
         return cardActionErrorToast("会话已被清理，不可继续发送消息");
       }
       void this.recordCardActionBestEffort(action, command, "completed").catch((error) => {
@@ -1554,6 +1566,20 @@ export class ConversationManager {
     }
 
     if (isSideFollowupCardAction(command)) {
+      this.log.info(
+        {
+          eventId: action.eventId,
+          operatorOpenId: action.operatorOpenId,
+          openMessageId: action.openMessageId,
+          openChatId: action.openChatId,
+          actionTag: action.actionTag,
+          stateKey: command.stateKey,
+          conversationKey: conversationKeyFromStateKey(command.stateKey),
+          sideSessionId: command.sideSessionId,
+          inputId: command.inputId ?? null
+        },
+        "conversation side follow-up card action received"
+      );
       return state.controlQueue.enqueue(() => this.processSideFollowupCardAction(state, action, command)).catch((error) => {
         this.options.telemetry?.captureError(error, {
           errorType: "conversation",
@@ -5485,6 +5511,22 @@ export class ConversationManager {
     const runTurn = async (): Promise<void> => {
       try {
         this.markThreadRuntimeHasUserMessage(activeRuntimeThreadId(active));
+        this.log.info(
+          {
+            messageId: active.replyMessageId,
+            conversationKey: active.conversationKey,
+            profile: active.profile,
+            codexThreadId: activeRuntimeThreadId(active),
+            sourceThreadId: active.threadId,
+            sideId: active.sideId,
+            sideSessionId: active.sideSessionId,
+            runId: active.runId,
+            cardMessageId: active.card?.messageId,
+            initialProcessMessageCount: active.processMessages.length,
+            pendingSideFollowupCount: active.pendingSideFollowups?.length ?? 0
+          },
+          "conversation side turn start requested"
+        );
         const result = await this.options.codex.startTurn({
           profile: active.profile,
           threadId: activeRuntimeThreadId(active),
@@ -6285,26 +6327,82 @@ export class ConversationManager {
     command: ParsedSideFollowupCardActionCommand
   ): Promise<LarkCardActionCallbackResponse | void> {
     if (state.processedSideCardActionEventIds.has(action.eventId)) {
+      this.log.info(
+        {
+          eventId: action.eventId,
+          sideSessionId: command.sideSessionId,
+          inputId: command.inputId ?? null,
+          openMessageId: action.openMessageId
+        },
+        "conversation side follow-up card action ignored because event was already processed"
+      );
       return;
     }
     const session = state.sideSessions.get(command.sideSessionId);
     if (!session?.allowInput) {
+      this.log.warn(
+        {
+          eventId: action.eventId,
+          sideSessionId: command.sideSessionId,
+          inputId: command.inputId ?? null,
+          openMessageId: action.openMessageId
+        },
+        "conversation side follow-up card action rejected because session is unavailable"
+      );
       return cardActionErrorToast("会话已被清理，不可继续发送消息");
     }
     if (action.openMessageId && session.card.messageId && action.openMessageId !== session.card.messageId) {
+      this.log.warn(
+        {
+          eventId: action.eventId,
+          sideSessionId: session.id,
+          inputId: command.inputId ?? null,
+          openMessageId: action.openMessageId,
+          cardMessageId: session.card.messageId
+        },
+        "conversation side follow-up card action rejected because card message id is stale"
+      );
       return cardActionErrorToast("会话已被清理，不可继续发送消息");
     }
 
     const inputId = command.inputId ?? action.eventId;
     if (session.processedInputIds.has(inputId)) {
+      this.log.info(
+        {
+          eventId: action.eventId,
+          sideSessionId: session.id,
+          inputId,
+          openMessageId: action.openMessageId
+        },
+        "conversation side follow-up card action ignored because input was already processed"
+      );
       return cardActionInfoToast("已收到，处理中");
     }
     if (command.inputId && command.inputId !== session.inputId) {
+      this.log.warn(
+        {
+          eventId: action.eventId,
+          sideSessionId: session.id,
+          submittedInputId: command.inputId,
+          currentInputId: session.inputId,
+          openMessageId: action.openMessageId
+        },
+        "conversation side follow-up card action rejected because input id is stale"
+      );
       return cardActionErrorToast("输入框已更新，请在最新卡片重新提交");
     }
 
     const text = extractSideFollowupText(action);
     if (!text) {
+      this.log.warn(
+        {
+          eventId: action.eventId,
+          sideSessionId: session.id,
+          inputId,
+          openMessageId: action.openMessageId
+        },
+        "conversation side follow-up card action rejected because input text is empty"
+      );
       return cardActionErrorToast("请输入内容");
     }
 
@@ -6319,6 +6417,25 @@ export class ConversationManager {
       ...(action.openChatId ? { openChatId: action.openChatId } : {}),
       text
     };
+
+    this.log.info(
+      {
+        eventId: action.eventId,
+        inputId,
+        operatorOpenId: action.operatorOpenId,
+        openMessageId: action.openMessageId,
+        sideSessionId: session.id,
+        sessionStatus: session.status,
+        runId: session.runId,
+        sideId: session.active?.sideId ?? null,
+        codexThreadId: session.sourceThreadId,
+        runtimeThreadId: session.runtimeThreadId,
+        activeTurnId: session.active?.turnId ?? null,
+        cardMessageId: session.card.messageId,
+        textLength: text.length
+      },
+      "conversation side follow-up accepted"
+    );
 
     if (session.status === "processing" && session.active && isSideTurnCurrent(state, session.active)) {
       await this.steerProcessingSideSession(state, session, input);
@@ -6343,6 +6460,21 @@ export class ConversationManager {
     const message = sideFollowupCardMessage(input, "supplement");
     active.card?.messages.push(message);
     active.processMessages.push(message.text);
+    this.log.info(
+      {
+        eventId: input.eventId,
+        inputId: input.inputId,
+        sideSessionId: session.id,
+        sideId: active.sideId,
+        runId: active.runId,
+        codexThreadId: active.threadId,
+        runtimeThreadId: activeRuntimeThreadId(active),
+        turnId: active.turnId ?? null,
+        cardMessageId: active.card?.messageId,
+        textLength: input.text.length
+      },
+      "conversation side follow-up routed to active side turn"
+    );
     const patched = await this.patchAgentCardBestEffort(state, active, "working");
     if (!patched) {
       this.scheduleSideFollowupCardPatchRetry(state, active);
@@ -6350,6 +6482,19 @@ export class ConversationManager {
     if (!active.turnId) {
       active.pendingSideFollowups ??= [];
       active.pendingSideFollowups.push(input);
+      this.log.info(
+        {
+          eventId: input.eventId,
+          inputId: input.inputId,
+          sideSessionId: session.id,
+          sideId: active.sideId,
+          runId: active.runId,
+          codexThreadId: active.threadId,
+          runtimeThreadId: activeRuntimeThreadId(active),
+          pendingSideFollowupCount: active.pendingSideFollowups.length
+        },
+        "conversation side follow-up queued until side turn id is known"
+      );
       return;
     }
     void this.steerSideFollowupBestEffort(state, active, input, "supplement");
@@ -6362,6 +6507,7 @@ export class ConversationManager {
   ): Promise<void> {
     const startedAt = Date.now();
     const sideId = allocateSideId(state);
+    const previousStatus = session.status;
     const receivedMessage = sideFollowupCardMessage(input, "question");
     const messages = [...session.historyMessages, receivedMessage];
     session.card.startedAt = startedAt;
@@ -6420,6 +6566,21 @@ export class ConversationManager {
     session.summaryText = undefined;
     session.turnTokenUsage = emptyThreadTokenUsageSnapshot();
     state.sideTurns.set(sideId, active);
+    this.log.info(
+      {
+        eventId: input.eventId,
+        inputId: input.inputId,
+        sideSessionId: session.id,
+        sideId,
+        runId: active.runId,
+        codexThreadId: active.threadId,
+        runtimeThreadId: activeRuntimeThreadId(active),
+        cardMessageId: active.card?.messageId,
+        previousStatus,
+        textLength: input.text.length
+      },
+      "conversation side follow-up starting next side turn"
+    );
     const patched = await this.patchAgentCardBestEffort(state, active, "working");
     if (!patched) {
       this.scheduleSideFollowupCardPatchRetry(state, active);
@@ -6469,6 +6630,21 @@ export class ConversationManager {
         approvalPolicy: "never"
       });
       active.steerMessageCount += 1;
+      this.log.info(
+        {
+          eventId: input.eventId,
+          inputId: input.inputId,
+          sideSessionId: active.sideSessionId,
+          sideId: active.sideId,
+          runId: active.runId,
+          codexThreadId: active.threadId,
+          runtimeThreadId: activeRuntimeThreadId(active),
+          turnId: active.turnId,
+          kind,
+          steerMessageCount: active.steerMessageCount
+        },
+        "conversation side follow-up steered to codex turn"
+      );
     } catch (error) {
       this.log.warn(
         {
@@ -8410,6 +8586,20 @@ export class ConversationManager {
   private async handleSideTurnStarted(state: ConversationState, active: ActiveTurn, turnId: string): Promise<void> {
     await state.controlQueue.enqueue(async () => {
       active.turnId = turnId;
+      this.log.info(
+        {
+          messageId: active.replyMessageId,
+          conversationKey: active.conversationKey,
+          codexThreadId: active.threadId,
+          runtimeThreadId: activeRuntimeThreadId(active),
+          turnId,
+          sideId: active.sideId,
+          sideSessionId: active.sideSessionId,
+          runId: active.runId,
+          pendingSideFollowupCount: active.pendingSideFollowups?.length ?? 0
+        },
+        "conversation side turn started"
+      );
       if (active.cancelRequested) {
         await this.interruptActiveTurnBestEffort(active);
         return;
@@ -8525,6 +8715,20 @@ export class ConversationManager {
           approvalPolicy: "never"
         });
         active.steerMessageCount += 1;
+        this.log.info(
+          {
+            eventId: input.eventId,
+            inputId: input.inputId,
+            sideSessionId: active.sideSessionId,
+            sideId: active.sideId,
+            runId: active.runId,
+            codexThreadId: active.threadId,
+            runtimeThreadId: activeRuntimeThreadId(active),
+            turnId: active.turnId,
+            steerMessageCount: active.steerMessageCount
+          },
+          "conversation pending side follow-up flushed to codex turn"
+        );
       } catch (error) {
         this.log.warn(
           { error, threadId: activeRuntimeThreadId(active), turnId: active.turnId, eventId: input.eventId },

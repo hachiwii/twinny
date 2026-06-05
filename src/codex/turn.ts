@@ -112,8 +112,6 @@ interface ItemCompletedParams {
 
 export type CompletedAgentMessage = CodexAgentMessage;
 
-export const FINAL_ANSWER_COMPLETION_FALLBACK_MS = 2_000;
-
 export interface CodexRequestUserInputResponder {
   respond(response: CodexRequestUserInputResponse): void;
   reject(error: Error | string): void;
@@ -476,7 +474,6 @@ export class TurnOutputAccumulator {
   private emittedTurnStartedId: string | undefined;
   private completed: TurnCompletedParams | undefined;
   private completionError: Error | undefined;
-  private finalAnswerCompletionFallback: NodeJS.Timeout | undefined;
   private resolveWait: ((result: CodexTurnResult) => void) | undefined;
   private rejectWait: ((error: Error) => void) | undefined;
 
@@ -639,7 +636,7 @@ export class TurnOutputAccumulator {
       }
       this.emitAgentMessage(item);
       if (item.phase === "final_answer") {
-        this.scheduleFinalAnswerCompletionFallback(params.turnId);
+        this.completeFromFinalAnswerItem(params.turnId);
       }
       return;
     }
@@ -665,8 +662,6 @@ export class TurnOutputAccumulator {
     if (!this.matchesCurrentTurn(completedTurnId)) {
       return;
     }
-    this.clearFinalAnswerCompletionFallback();
-
     for (const item of params.turn.items ?? []) {
       const message = extractAgentMessage(item);
       if (message) {
@@ -695,7 +690,6 @@ export class TurnOutputAccumulator {
     if (isRetryableTurnError(params)) {
       return;
     }
-    this.clearFinalAnswerCompletionFallback();
     this.completionError = new TwinnyError(error.message, "CODEX_TURN_FAILED", params);
     this.rejectWait?.(this.completionError);
   }
@@ -831,34 +825,21 @@ export class TurnOutputAccumulator {
     this.resolveWait?.(this.toResult());
   }
 
-  private scheduleFinalAnswerCompletionFallback(turnId: string | undefined): void {
-    this.clearFinalAnswerCompletionFallback();
-    const fallbackTurnId = turnId ?? this.turnId;
-    this.finalAnswerCompletionFallback = setTimeout(() => {
-      this.finalAnswerCompletionFallback = undefined;
-      if (this.completed || this.completionError || !this.matchesCurrentTurn(fallbackTurnId)) {
-        return;
-      }
-      this.completed = {
-        threadId: this.threadId,
-        turn: {
-          ...(fallbackTurnId ? { id: fallbackTurnId } : {}),
-          status: "completed",
-          durationMs: Date.now() - this.startedAt,
-          items: []
-        }
-      };
-      void this.resolveCompleted();
-    }, FINAL_ANSWER_COMPLETION_FALLBACK_MS);
-    this.finalAnswerCompletionFallback.unref?.();
-  }
-
-  private clearFinalAnswerCompletionFallback(): void {
-    if (!this.finalAnswerCompletionFallback) {
+  private completeFromFinalAnswerItem(turnId: string | undefined): void {
+    const completedTurnId = turnId ?? this.turnId;
+    if (this.completed || this.completionError || !this.matchesCurrentTurn(completedTurnId)) {
       return;
     }
-    clearTimeout(this.finalAnswerCompletionFallback);
-    this.finalAnswerCompletionFallback = undefined;
+    this.completed = {
+      threadId: this.threadId,
+      turn: {
+        ...(completedTurnId ? { id: completedTurnId } : {}),
+        status: "completed",
+        durationMs: Date.now() - this.startedAt,
+        items: []
+      }
+    };
+    void this.resolveCompleted();
   }
 
   private async waitForPendingAgentMessageCallbacks(): Promise<void> {

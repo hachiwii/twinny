@@ -7,7 +7,6 @@ import {
   buildTurnSteerParams,
   DANGER_FULL_ACCESS_SANDBOX_POLICY,
   dynamicToolTextResponse,
-  FINAL_ANSWER_COMPLETION_FALLBACK_MS,
   handleTurnServerRequest,
   startCodexTurn,
   TurnOutputAccumulator
@@ -1576,21 +1575,7 @@ describe("startCodexTurn", () => {
       }
     );
 
-    let settled = false;
-    void result.then(
-      () => {
-        settled = true;
-      },
-      () => {
-        settled = true;
-      }
-    );
-
     await vi.advanceTimersByTimeAsync(10);
-    await vi.advanceTimersByTimeAsync(FINAL_ANSWER_COMPLETION_FALLBACK_MS - 1);
-    expect(settled).toBe(false);
-
-    await vi.advanceTimersByTimeAsync(1);
 
     await expect(result).resolves.toMatchObject({
       threadId: "thread_123",
