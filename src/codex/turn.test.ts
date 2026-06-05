@@ -7,6 +7,7 @@ import {
   buildTurnSteerParams,
   DANGER_FULL_ACCESS_SANDBOX_POLICY,
   dynamicToolTextResponse,
+  FINAL_ANSWER_COMPLETION_FALLBACK_MS,
   handleTurnServerRequest,
   startCodexTurn,
   TurnOutputAccumulator
@@ -1546,10 +1547,11 @@ describe("startCodexTurn", () => {
     );
   });
 
-  it("finishes when Codex emits a final answer item but omits turn/completed", async () => {
+  it("waits for token usage after a final answer item before using the completion fallback", async () => {
     vi.useFakeTimers();
     const protocol = new FakeProtocol();
     const agentMessages = vi.fn();
+    const tokenUsage = vi.fn();
 
     protocol.requestMock.mockImplementationOnce(async () => {
       setTimeout(() => {
@@ -1562,6 +1564,20 @@ describe("startCodexTurn", () => {
           }
         });
       }, 10);
+      setTimeout(() => {
+        protocol.emit("notification", {
+          method: "thread/tokenUsage/updated",
+          params: {
+            threadId: "thread_123",
+            turnId: "turn_1",
+            usage: {
+              total: {
+                totalTokens: 42
+              }
+            }
+          }
+        });
+      }, 20);
       return { turn: { id: "turn_1" } };
     });
 
@@ -1571,11 +1587,37 @@ describe("startCodexTurn", () => {
         threadId: "thread_123",
         text: "side follow-up",
         cwd: "/tmp/twinny/workspaces/p2p_ou_1",
-        onAgentMessage: agentMessages
+        onAgentMessage: agentMessages,
+        onTokenUsage: tokenUsage
       }
     );
+    let settled = false;
+    void result.finally(() => {
+      settled = true;
+    });
 
     await vi.advanceTimersByTimeAsync(10);
+
+    expect(settled).toBe(false);
+    expect(agentMessages).toHaveBeenCalledWith({
+      id: "msg_final",
+      text: "final from codex",
+      phase: "final_answer"
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(settled).toBe(false);
+    expect(tokenUsage).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      totalTokens: 42
+    }));
+
+    await vi.advanceTimersByTimeAsync(FINAL_ANSWER_COMPLETION_FALLBACK_MS - 11);
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
 
     await expect(result).resolves.toMatchObject({
       threadId: "thread_123",
@@ -1583,11 +1625,97 @@ describe("startCodexTurn", () => {
       text: "final from codex",
       status: "completed"
     });
+  });
+
+  it("uses turn/completed when it arrives after a final answer item", async () => {
+    vi.useFakeTimers();
+    const protocol = new FakeProtocol();
+    const agentMessages = vi.fn();
+    const tokenUsage = vi.fn();
+
+    protocol.requestMock.mockImplementationOnce(async () => {
+      setTimeout(() => {
+        protocol.emit("notification", {
+          method: "item/completed",
+          params: {
+            threadId: "thread_123",
+            turnId: "turn_1",
+            item: { type: "agentMessage", id: "msg_final", text: "final from codex", phase: "final_answer" }
+          }
+        });
+      }, 10);
+      setTimeout(() => {
+        protocol.emit("notification", {
+          method: "thread/tokenUsage/updated",
+          params: {
+            threadId: "thread_123",
+            turnId: "turn_1",
+            usage: {
+              total: {
+                totalTokens: 84
+              }
+            }
+          }
+        });
+      }, 20);
+      setTimeout(() => {
+        protocol.emit("notification", {
+          method: "turn/completed",
+          params: {
+            threadId: "thread_123",
+            turn: {
+              id: "turn_1",
+              status: "completed",
+              durationMs: 123,
+              items: []
+            }
+          }
+        });
+      }, 30);
+      return { turn: { id: "turn_1" } };
+    });
+
+    const result = startCodexTurn(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "side follow-up",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1",
+        onAgentMessage: agentMessages,
+        onTokenUsage: tokenUsage
+      }
+    );
+    let settled = false;
+    void result.finally(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(29);
+
+    expect(settled).toBe(false);
     expect(agentMessages).toHaveBeenCalledWith({
       id: "msg_final",
       text: "final from codex",
       phase: "final_answer"
     });
+    expect(tokenUsage).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      totalTokens: 84
+    }));
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(result).resolves.toMatchObject({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      text: "final from codex",
+      status: "completed",
+      durationMs: 123
+    });
+
+    await vi.advanceTimersByTimeAsync(FINAL_ANSWER_COMPLETION_FALLBACK_MS);
+    expect(tokenUsage).toHaveBeenCalledTimes(1);
   });
 
   it("ignores stale notifications received before turn/start returns the active turn id", async () => {

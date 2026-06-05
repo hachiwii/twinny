@@ -8511,7 +8511,7 @@ describe("ConversationManager", () => {
     }
   });
 
-  it("does not render a continued side session as finished before the follow-up turn completes", async () => {
+  it("renders a continued side session as finished from final_answer while the follow-up turn stays open", async () => {
     const { repository } = createRepository(conversationRecord());
     const { codex, turns } = createDeferredCodex();
     vi.mocked(codex.forkThread).mockResolvedValue({ threadId: "thread_1_side" });
@@ -8589,8 +8589,54 @@ describe("ConversationManager", () => {
         text: "second final answer",
         phase: "final_answer"
       });
-      expect(sidePatchJson()).toHaveLength(patchCountBeforeFinalAnswer);
-      expect(sidePatchJson().some((serialized) => serialized.includes("second final answer"))).toBe(false);
+      const patchesAfterFinalAnswer = sidePatchJson();
+      expect(patchesAfterFinalAnswer).toHaveLength(patchCountBeforeFinalAnswer + 1);
+      expect(patchesAfterFinalAnswer.at(-1)).toContain("已完成");
+      expect(patchesAfterFinalAnswer.at(-1)).toContain("second final answer");
+      expect(patchesAfterFinalAnswer.at(-1)).toContain("follow-up working output");
+      expect(patchesAfterFinalAnswer.at(-1)).toContain("[收到追问] second question");
+      expect(patchesAfterFinalAnswer.at(-1)).not.toContain("fallback final");
+
+      const rawUsage = {
+        threadId: "thread_1_side",
+        turnId: "turn_2",
+        tokenUsage: {
+          total: {
+            totalTokens: 35,
+            inputTokens: 28,
+            cachedInputTokens: 4,
+            outputTokens: 7,
+            reasoningOutputTokens: 2
+          }
+        }
+      };
+      await turns[1]!.params.onTokenUsage?.({
+        threadId: "thread_1_side",
+        turnId: "turn_2",
+        totalTokens: 35,
+        raw: rawUsage
+      });
+      await waitForExpect(() =>
+        expect(repository.updateLarkMessageTokenUsage).toHaveBeenCalledWith({
+          larkMessageId: "m_side",
+          inputTokens: 28,
+          outputTokens: 7,
+          cachedInputTokens: 4,
+          reasoningOutputTokens: 2,
+          tokenUsageJson: JSON.stringify(rawUsage)
+        })
+      );
+      await waitForExpect(() => {
+        const latestPatch = sidePatchJson().at(-1) ?? "";
+        expect(latestPatch).toContain("已完成");
+        expect(latestPatch).toContain("second final answer");
+        expect(latestPatch).not.toContain("工作中...");
+      });
+
+      const patchCountBeforePostFinalTimer = sidePatchJson().length;
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sidePatchJson()).toHaveLength(patchCountBeforePostFinalTimer);
 
       turns[1]!.resolve({ ...completed("thread_1_side", "turn_2"), text: "fallback final" });
       for (let index = 0; index < 10 && !sidePatchJson().some((serialized) => serialized.includes("second final answer")); index += 1) {

@@ -1107,6 +1107,8 @@ interface ActiveTurn {
   finalAgentMessageText?: string;
   processMessages: string[];
   sawAgentMessagePhase?: boolean;
+  agentCardFinishedEarly?: boolean;
+  agentCardFilesReplied?: boolean;
   goal?: ActiveGoalState;
   card?: ActiveTurnCardState;
   waiting?: ActiveTurnWaiting;
@@ -11133,6 +11135,10 @@ export class ConversationManager {
         if (!isActiveTurnCurrent(state, active) || active.cancelRequested || active.completedStatus !== undefined) {
           return;
         }
+        if (active.agentCardFinishedEarly) {
+          await this.completeAgentCardBestEffort(state, active, { replyFiles: false });
+          return;
+        }
         await this.patchAgentCardBestEffort(state, active, "working");
       })
       .catch((error) => {
@@ -12160,6 +12166,8 @@ export class ConversationManager {
       const card = active.card;
       if (!card || card.fallbackPlain) {
         await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
+      } else if (active.kind === "side") {
+        await this.finishSideAgentCardFromFinalAnswerBestEffort(state, active);
       }
       return;
     }
@@ -12188,6 +12196,31 @@ export class ConversationManager {
       this.stopAgentCardTimer(active);
       await this.replyAgentMessageBestEffort(active, active.replyMessageId, agentMessage);
     }
+  }
+
+  private async finishSideAgentCardFromFinalAnswerBestEffort(
+    state: ConversationState,
+    active: ActiveTurn
+  ): Promise<void> {
+    if (active.agentCardFinishedEarly || active.kind !== "side" || active.cancelRequested || !isSideTurnCurrent(state, active)) {
+      return;
+    }
+    active.agentCardFinishedEarly = true;
+    this.log.info(
+      {
+        messageId: active.replyMessageId,
+        cardMessageId: active.card?.messageId,
+        conversationKey: active.conversationKey,
+        codexThreadId: active.threadId,
+        runtimeThreadId: activeRuntimeThreadId(active),
+        turnId: active.turnId,
+        sideId: active.sideId,
+        sideSessionId: active.sideSessionId,
+        runId: active.runId
+      },
+      "conversation side card finished from final answer item"
+    );
+    await this.completeAgentCardBestEffort(state, active, { replyFiles: false });
   }
 
   private async createAgentCardBestEffort(state: ConversationState, active: ActiveTurn): Promise<boolean> {
@@ -12361,7 +12394,11 @@ export class ConversationManager {
     }
   }
 
-  private async completeAgentCardBestEffort(state: ConversationState, active: ActiveTurn): Promise<void> {
+  private async completeAgentCardBestEffort(
+    state: ConversationState,
+    active: ActiveTurn,
+    options: { replyFiles?: boolean } = {}
+  ): Promise<void> {
     const card = active.card;
     this.stopAgentCardTimer(active);
     if (!card?.messageId || card.fallbackPlain || !isAgentCardOwnedByActive(active, card)) {
@@ -12395,20 +12432,32 @@ export class ConversationManager {
         (await this.shouldUpdateCompletedAgentCardInPlace(active, previousMessageId));
       if (shouldUpdateInPlace) {
         await this.updateCompletedAgentCardInPlace(state, active, card, previousMessageId, rendered);
-        await this.replyAgentCardFilesBestEffort(this.agentCardFollowupAnchorMessageId(active), output.files);
+        await this.replyAgentCardFilesOnceBestEffort(active, output.files, options);
         return;
       }
       await this.resendCompletedAgentCard(active, card, previousMessageId, rendered);
-      await this.replyAgentCardFilesBestEffort(this.agentCardFollowupAnchorMessageId(active), output.files);
+      await this.replyAgentCardFilesOnceBestEffort(active, output.files, options);
     } catch (error) {
       this.log.warn({ error, messageId: active.replyMessageId }, "failed to finalize agent card; falling back to plain");
       card.fallbackPlain = true;
       await this.replyAgentMessageBestEffort(active, active.replyMessageId, {
         id: "final",
-        text: active.resultText ?? "",
+        text: active.resultText ?? active.finalAgentMessageText ?? "",
         phase: "final_answer"
       });
     }
+  }
+
+  private async replyAgentCardFilesOnceBestEffort(
+    active: ActiveTurn,
+    files: PreparedLarkFileReply[],
+    options: { replyFiles?: boolean } = {}
+  ): Promise<void> {
+    if ((options.replyFiles ?? true) === false || active.agentCardFilesReplied) {
+      return;
+    }
+    active.agentCardFilesReplied = true;
+    await this.replyAgentCardFilesBestEffort(this.agentCardFollowupAnchorMessageId(active), files);
   }
 
   private async shouldUpdateCompletedAgentCardInPlace(active: ActiveTurn, currentCardMessageId: string): Promise<boolean> {
