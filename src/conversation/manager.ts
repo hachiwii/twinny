@@ -10163,18 +10163,26 @@ export class ConversationManager {
     }
     this.rememberThreadWaitSnapshot(active);
     this.captureTurnEnd(state, active);
-    await this.clearReactionBestEffort(active);
+    if (!active.agentCardFinishedEarly) {
+      await this.clearReactionBestEffort(active);
+    }
     if (!active.cancelRequested && active.completedStatus === "completed") {
       await this.markMessagesCompletedBestEffort([...active.processingMessageIds]);
-      await this.completeAgentCardBestEffort(state, active);
+      if (!active.agentCardFinishedEarly) {
+        await this.completeAgentCardBestEffort(state, active);
+      }
     } else if (!active.cancelRequested) {
       await this.markMessagesFailedBestEffort([...active.processingMessageIds]);
-      await this.failAgentCardBestEffort(state, active, active.resultError ?? "Codex side turn failed");
+      if (!active.agentCardFinishedEarly) {
+        await this.failAgentCardBestEffort(state, active, active.resultError ?? "Codex side turn failed");
+      }
     }
     if (!active.cancelRequested && hasClearableTerminalGoal(active)) {
       await this.clearActiveGoalBestEffort(active);
     }
-    await this.updateThreadSummaryCardBestEffort(active.threadId);
+    if (!active.agentCardFinishedEarly) {
+      await this.updateThreadSummaryCardBestEffort(active.threadId);
+    }
     this.stopAgentCardTimer(active);
     await this.unsubscribeSideThreadBestEffort(active);
   }
@@ -12220,7 +12228,8 @@ export class ConversationManager {
       },
       "conversation side card finished from final answer item"
     );
-    await this.completeAgentCardBestEffort(state, active, { replyFiles: false });
+    await this.completeAgentCardBestEffort(state, active);
+    await this.clearReactionBestEffort(active);
   }
 
   private async createAgentCardBestEffort(state: ConversationState, active: ActiveTurn): Promise<boolean> {

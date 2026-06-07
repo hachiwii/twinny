@@ -8512,11 +8512,19 @@ describe("ConversationManager", () => {
   });
 
   it("renders a continued side session as finished from final_answer while the follow-up turn stays open", async () => {
+    const workspace = "/tmp/twinny/workspaces/p2p_ou_guest";
+    fs.mkdirSync(workspace, { recursive: true });
+    const filePath = path.join(workspace, "side-report.txt");
+    fs.writeFileSync(filePath, "side report");
     const { repository } = createRepository(conversationRecord());
     const { codex, turns } = createDeferredCodex();
     vi.mocked(codex.forkThread).mockResolvedValue({ threadId: "thread_1_side" });
     const lark = createLarkResponder();
-    const manager = createManager({ repository, codex, lark, config: cardModeConfig() });
+    const larkFiles: LarkFileDownloader = {
+      downloadMessageResource: vi.fn(),
+      uploadFile: vi.fn(async () => ({ fileKey: "file_side_report" }))
+    };
+    const manager = createManager({ repository, codex, lark, larkFiles, config: cardModeConfig() });
 
     manager.submitIncoming(message("m_side", "/side inspect"));
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
@@ -8586,7 +8594,7 @@ describe("ConversationManager", () => {
       const patchCountBeforeFinalAnswer = sidePatchJson().length;
       await turns[1]!.params.onAgentMessage?.({
         id: "agent_followup_final",
-        text: "second final answer",
+        text: `second final answer\nSEND_TO_LARK: <file path="${filePath}"></file>`,
         phase: "final_answer"
       });
       const patchesAfterFinalAnswer = sidePatchJson();
@@ -8596,6 +8604,13 @@ describe("ConversationManager", () => {
       expect(patchesAfterFinalAnswer.at(-1)).toContain("follow-up working output");
       expect(patchesAfterFinalAnswer.at(-1)).toContain("[收到追问] second question");
       expect(patchesAfterFinalAnswer.at(-1)).not.toContain("fallback final");
+      expect(larkFiles.uploadFile).toHaveBeenCalledWith({
+        filePath,
+        fileName: "side-report.txt",
+        fileType: "stream",
+        contentType: "text/plain"
+      });
+      expect(lark.replyFile).toHaveBeenCalledWith("m_side", "file_side_report");
 
       const rawUsage = {
         threadId: "thread_1_side",
@@ -8638,11 +8653,14 @@ describe("ConversationManager", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(sidePatchJson()).toHaveLength(patchCountBeforePostFinalTimer);
 
+      const patchCountBeforeTurnCompleted = sidePatchJson().length;
       turns[1]!.resolve({ ...completed("thread_1_side", "turn_2"), text: "fallback final" });
       for (let index = 0; index < 10 && !sidePatchJson().some((serialized) => serialized.includes("second final answer")); index += 1) {
         await Promise.resolve();
         await vi.advanceTimersByTimeAsync(0);
       }
+      expect(sidePatchJson()).toHaveLength(patchCountBeforeTurnCompleted);
+      expect(lark.replyFile).toHaveBeenCalledTimes(1);
       expect(sidePatchJson().some((serialized) =>
         serialized.includes("已完成") && serialized.includes("second final answer")
       )).toBe(true);
