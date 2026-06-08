@@ -354,16 +354,7 @@ function extractMarkdownLinkTarget(rawDestination: string): string | undefined {
 
 function isLocalPathMarkdownLinkTarget(target: string): boolean {
   const trimmed = target.trim();
-  if (trimmed.length === 0 || trimmed.startsWith("#")) {
-    return false;
-  }
-  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)) {
-    return false;
-  }
-  if (/^(?:mailto|tel|sms|news|urn):/i.test(trimmed)) {
-    return false;
-  }
-  return true;
+  return trimmed.startsWith("/");
 }
 
 function markdownCodeSpan(value: string): string {

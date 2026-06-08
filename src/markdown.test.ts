@@ -22,6 +22,16 @@ describe("renderLocalPathMarkdownLinksAsCode", () => {
     expect(renderLocalPathMarkdownLinksAsCode(markdown)).toBe(markdown);
   });
 
+  it("keeps bare domain and relative markdown links unchanged", () => {
+    const markdown = [
+      "[h.api.ei](code.byted.org/ehi/api)",
+      "[relative](docs/readme.md)",
+      "[parent](../readme.md)"
+    ].join(" ");
+
+    expect(renderLocalPathMarkdownLinksAsCode(markdown)).toBe(markdown);
+  });
+
   it("does not rewrite markdown links inside code spans, code fences, or images", () => {
     const markdown = [
       "Inline `[file](/repo/file.ts)` stays.",
