@@ -11,6 +11,7 @@ import type {
   ConversationRecord,
   ConversationType,
   CronJobRecord,
+  HarnessKind,
   LarkDocWatcherRecord,
   LarkDocWatchMode,
   LarkMessageRecord,
@@ -59,6 +60,7 @@ interface CodexThreadRow {
   name: string;
   lark_thread_id: string | null;
   profile: ProfileName;
+  harness: string | null;
   model: string | null;
   effort: string | null;
   mode: CodexThreadMode;
@@ -172,6 +174,7 @@ export interface UpsertCodexThreadInput {
   workspace?: string;
   profile: ProfileName;
   name?: string;
+  harness?: HarnessKind;
   model?: string;
   effort?: string;
   larkThreadId?: string;
@@ -281,6 +284,13 @@ export interface UpdateCodexThreadModelSettingsInput {
   effort: string;
 }
 
+export interface UpdateCodexThreadHarnessSettingsInput {
+  codexThreadId: string;
+  harness: HarnessKind;
+  model: string;
+  effort: string;
+}
+
 export interface UpdateConversationThreadBinding {
   codexThreadId: string;
   profile?: ProfileName;
@@ -346,6 +356,7 @@ export class ConversationRepository {
   private readonly updateCodexThreadUsageStatement: TwinnyStatement<[Record<string, unknown>]>;
   private readonly updateCodexThreadCardStatement: TwinnyStatement<[Record<string, unknown>]>;
   private readonly updateCodexThreadModelSettingsStatement: TwinnyStatement<[string, string, number, string]>;
+  private readonly updateCodexThreadHarnessSettingsStatement: TwinnyStatement<[string, string, string, number, string]>;
   private readonly updateCodexThreadWorkspaceStatement: TwinnyStatement<[string, number, string]>;
   private readonly updateCodexThreadNameStatement: TwinnyStatement<[string, number, string]>;
   private readonly updateCodexThreadModeStatement: TwinnyStatement<[CodexThreadMode, number, string, string]>;
@@ -486,6 +497,7 @@ export class ConversationRepository {
         name,
         lark_thread_id,
         profile,
+        harness,
         model,
         effort,
         parent_thread,
@@ -504,6 +516,7 @@ export class ConversationRepository {
         COALESCE(@name, '新会话'),
         @larkThreadId,
         @profile,
+        COALESCE(@harness, 'codex'),
         @model,
         @effort,
         @parentCodexThreadId,
@@ -522,6 +535,7 @@ export class ConversationRepository {
         name = COALESCE(@name, threads.name),
         lark_thread_id = COALESCE(excluded.lark_thread_id, threads.lark_thread_id),
         profile = excluded.profile,
+        harness = COALESCE(@harness, threads.harness),
         model = COALESCE(excluded.model, threads.model),
         effort = COALESCE(excluded.effort, threads.effort),
         parent_thread = COALESCE(excluded.parent_thread, threads.parent_thread),
@@ -614,6 +628,7 @@ export class ConversationRepository {
       UPDATE threads
       SET thread_id = @codexThreadId,
           profile = @profile,
+          harness = COALESCE(@harness, 'codex'),
           model = @model,
           effort = @effort,
           workspace = COALESCE(@workspace, workspace),
@@ -741,6 +756,14 @@ export class ConversationRepository {
     this.updateCodexThreadModelSettingsStatement = this.db.prepare(`
       UPDATE threads
       SET model = ?,
+          effort = ?,
+          updated_at = ?
+      WHERE thread_id = ?
+    `);
+    this.updateCodexThreadHarnessSettingsStatement = this.db.prepare(`
+      UPDATE threads
+      SET harness = ?,
+          model = ?,
           effort = ?,
           updated_at = ?
       WHERE thread_id = ?
@@ -1373,6 +1396,7 @@ export class ConversationRepository {
       name: input.name ?? null,
       larkThreadId: input.larkThreadId ?? null,
       profile,
+      harness: input.harness ?? null,
       model: input.model ?? null,
       effort: input.effort ?? null,
       parentCodexThreadId: input.parentCodexThreadId ?? null,
@@ -1485,6 +1509,7 @@ export class ConversationRepository {
       codexThreadId: string;
       profile: ProfileName;
       workspace?: string;
+      harness?: HarnessKind;
       model?: string;
       effort?: string;
       codexThreadHasRollout?: boolean;
@@ -1496,6 +1521,7 @@ export class ConversationRepository {
       codexThreadId: update.codexThreadId,
       workspace: update.workspace,
       profile: update.profile,
+      harness: update.harness ?? null,
       model: update.model,
       effort: update.effort,
       codexThreadHasRollout: update.codexThreadHasRollout
@@ -1519,6 +1545,7 @@ export class ConversationRepository {
           name: null,
           larkThreadId: input.larkThreadId,
           profile,
+          harness: input.harness,
           model: input.model ?? null,
           effort: input.effort ?? null,
           parentCodexThreadId: null,
@@ -1631,6 +1658,24 @@ export class ConversationRepository {
     assertNonEmpty(input.model, "model");
     assertNonEmpty(input.effort, "effort");
     const result = this.updateCodexThreadModelSettingsStatement.run(
+      input.model,
+      input.effort,
+      this.now(),
+      input.codexThreadId
+    );
+    if (result.changes === 0) {
+      throw new TwinnyError(`Codex thread ${input.codexThreadId} was not found`, "CODEX_THREAD_NOT_FOUND");
+    }
+    return this.requireCodexThreadById(input.codexThreadId);
+  }
+
+  updateCodexThreadHarnessSettings(input: UpdateCodexThreadHarnessSettingsInput): CodexThreadRecord {
+    assertNonEmpty(input.codexThreadId, "codexThreadId");
+    assertNonEmpty(input.harness, "harness");
+    assertNonEmpty(input.model, "model");
+    assertNonEmpty(input.effort, "effort");
+    const result = this.updateCodexThreadHarnessSettingsStatement.run(
+      input.harness,
       input.model,
       input.effort,
       this.now(),
@@ -2183,6 +2228,7 @@ function mapCodexThreadRow(row: CodexThreadRow | undefined): CodexThreadRecord |
     name: row.name,
     larkThreadId: row.lark_thread_id ?? undefined,
     profile: row.profile,
+    harness: row.harness === "claude" ? "claude" : "codex",
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
     category: row.lark_thread_id ? "thread" : "previous_main",

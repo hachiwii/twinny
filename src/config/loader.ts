@@ -15,6 +15,8 @@ import {
   type GreetingConfig,
   type GreetingMode,
   type GreetingTargetConfig,
+  type HarnessConfig,
+  type HarnessKind,
   type LarkMessageRedactionConfig,
   type LarkMessageRedactionStrategy,
   type LarkCliProfileConfig,
@@ -38,11 +40,17 @@ import { larkAppSecretAccountForHomeRandom } from "./secrets.js";
 
 export const DEFAULT_PROFILE_MODEL = "gpt-5.5";
 export const DEFAULT_PROFILE_EFFORT = "medium";
+export const DEFAULT_HARNESS: HarnessKind = "codex";
+export const DEFAULT_CLAUDE_BINARY = "claude";
+export const DEFAULT_CLAUDE_MODEL = "sonnet";
+export const DEFAULT_CLAUDE_EFFORT = "high";
 export const DEFAULT_POSTHOG_PROJECT_TOKEN = "phc_yXXd2mi9J33Awy7vs8VY8UbEoYdtXPnKs87YWxnRAnN8";
 export const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com";
 export const DEFAULT_UPGRADE_CHANNEL: UpgradeChannel = "stable";
 export const DEFAULT_UPGRADE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_UPGRADE_AUTO_UPDATE = true;
+
+const HARNESS_EFFORT_VALUES = new Set(["low", "medium", "high", "xhigh"]);
 
 const redactionSchema = z.enum(["mask", "whitespace", "none"]);
 const greetingModeSchema = z.enum(["none", "text", "codex_turn"]);
@@ -56,7 +64,31 @@ const rawProfileSchema = z
   .object({
     codex_home: z.string().optional(),
     default_model: z.string().optional(),
-    default_effort: z.string().optional()
+    default_effort: z.string().optional(),
+    claude_config_dir: z.string().optional()
+  })
+  .strict();
+
+const harnessKindSchema = z.enum(["codex", "claude"]);
+
+const rawHarnessSchema = z
+  .object({
+    default: harnessKindSchema.optional(),
+    codex: z
+      .object({
+        default_model: z.string().optional(),
+        default_effort: z.string().optional()
+      })
+      .strict()
+      .optional(),
+    claude: z
+      .object({
+        binary: z.string().optional(),
+        default_model: z.string().optional(),
+        default_effort: z.string().optional()
+      })
+      .strict()
+      .optional()
   })
   .strict();
 
@@ -69,6 +101,7 @@ const rawConfigSchema = z
       })
       .strict()
       .optional(),
+    harness: rawHarnessSchema.optional(),
     lark: z
       .object({
         reaction: z
@@ -176,6 +209,18 @@ export interface CreateTwinnyConfigInput {
     binary?: string;
     masqueradeAsCodexCli?: boolean;
   };
+  harness?: {
+    default?: HarnessKind;
+    codex?: {
+      defaultModel?: string;
+      defaultEffort?: string;
+    };
+    claude?: {
+      binary?: string;
+      defaultModel?: string;
+      defaultEffort?: string;
+    };
+  };
   lark?: {
     workingReaction?: string;
     completedReaction?: string;
@@ -221,6 +266,7 @@ export function createTwinnyConfig(input: CreateTwinnyConfigInput): TwinnyConfig
       binary: normalizeOptionalString(input.codex?.binary) ?? "codex",
       masqueradeAsCodexCli: input.codex?.masqueradeAsCodexCli ?? false
     },
+    harness: normalizeHarnessConfig(input.harness),
     lark: {
       workingReaction: normalizeOptionalString(input.lark?.workingReaction) ?? DEFAULT_LARK_WORKING_REACTION,
       completedReaction: normalizeOptionalString(input.lark?.completedReaction) ?? DEFAULT_LARK_COMPLETED_REACTION,
@@ -423,6 +469,13 @@ export function validateTwinnyConfig(config: TwinnyConfig): string[] {
   const issues: string[] = [];
   if (!config.home) issues.push("home is required");
   if (!config.codex.binary) issues.push("codex.binary is required");
+  if (!config.harness.claude.binary) issues.push("harness.claude.binary is required after defaults");
+  if (config.harness.codex.defaultEffort && !HARNESS_EFFORT_VALUES.has(config.harness.codex.defaultEffort)) {
+    issues.push("harness.codex.default_effort must be low, medium, high, or xhigh");
+  }
+  if (!HARNESS_EFFORT_VALUES.has(config.harness.claude.defaultEffort)) {
+    issues.push("harness.claude.default_effort must be low, medium, high, or xhigh");
+  }
   if (!config.auth.larkAppId) issues.push("auth.json lark_app_id is required");
   if (!config.auth.ownerOpenId) issues.push("auth.json owner_open_id is required");
   if (!config.auth.displayName) issues.push("auth.json displayName is required");
@@ -498,6 +551,18 @@ function createRuntimeConfig(
       binary: normalizeOptionalString(parsed.codex?.binary) ?? "codex",
       masqueradeAsCodexCli: parsed.codex?.masquerade_as_codex_cli ?? false
     },
+    harness: normalizeHarnessConfig({
+      default: parsed.harness?.default,
+      codex: {
+        defaultModel: parsed.harness?.codex?.default_model,
+        defaultEffort: parsed.harness?.codex?.default_effort
+      },
+      claude: {
+        binary: parsed.harness?.claude?.binary,
+        defaultModel: parsed.harness?.claude?.default_model,
+        defaultEffort: parsed.harness?.claude?.default_effort
+      }
+    }),
     lark: {
       workingReaction: normalizeOptionalString(parsed.lark?.reaction?.working) ?? DEFAULT_LARK_WORKING_REACTION,
       completedReaction: DEFAULT_LARK_COMPLETED_REACTION,
@@ -564,10 +629,36 @@ function rawProfilesToCamel(
     result[name] = {
       codexHome: profile.codex_home,
       defaultModel: profile.default_model,
-      defaultEffort: profile.default_effort
+      defaultEffort: profile.default_effort,
+      claudeConfigDir: profile.claude_config_dir
     };
   }
   return result;
+}
+
+function normalizeHarnessConfig(
+  input:
+    | {
+        default?: HarnessKind;
+        codex?: { defaultModel?: string; defaultEffort?: string };
+        claude?: { binary?: string; defaultModel?: string; defaultEffort?: string };
+      }
+    | undefined
+): HarnessConfig {
+  const codexModel = normalizeOptionalString(input?.codex?.defaultModel);
+  const codexEffort = normalizeOptionalString(input?.codex?.defaultEffort);
+  return {
+    default: input?.default === "claude" ? "claude" : DEFAULT_HARNESS,
+    codex: {
+      ...(codexModel ? { defaultModel: codexModel } : {}),
+      ...(codexEffort ? { defaultEffort: codexEffort } : {})
+    },
+    claude: {
+      binary: normalizeOptionalString(input?.claude?.binary) ?? DEFAULT_CLAUDE_BINARY,
+      defaultModel: normalizeOptionalString(input?.claude?.defaultModel) ?? DEFAULT_CLAUDE_MODEL,
+      defaultEffort: normalizeOptionalString(input?.claude?.defaultEffort) ?? DEFAULT_CLAUDE_EFFORT
+    }
+  };
 }
 
 function resolveProfiles(
@@ -575,10 +666,12 @@ function resolveProfiles(
   home: string
 ): Record<ProfileName, ProfileConfig> {
   const hostInput = input?.[HOST_PROFILE_NAME] ?? {};
+  const hostClaudeConfigDir = normalizeOptionalString(hostInput.claudeConfigDir);
   const host: ProfileConfig = {
     codexHome: resolveConfigPath(hostInput.codexHome ?? "~/.codex", home),
     defaultModel: normalizeOptionalString(hostInput.defaultModel) ?? DEFAULT_PROFILE_MODEL,
-    defaultEffort: normalizeOptionalString(hostInput.defaultEffort) ?? DEFAULT_PROFILE_EFFORT
+    defaultEffort: normalizeOptionalString(hostInput.defaultEffort) ?? DEFAULT_PROFILE_EFFORT,
+    ...(hostClaudeConfigDir ? { claudeConfigDir: resolveConfigPath(hostClaudeConfigDir, home) } : {})
   };
   const result: Record<ProfileName, ProfileConfig> = {
     [HOST_PROFILE_NAME]: host
@@ -589,10 +682,12 @@ function resolveProfiles(
       continue;
     }
     const profileInput = input?.[name] ?? {};
+    const claudeConfigDir = normalizeOptionalString(profileInput.claudeConfigDir);
     result[name] = {
       codexHome: resolveConfigPath(profileInput.codexHome ?? host.codexHome, home),
       defaultModel: normalizeOptionalString(profileInput.defaultModel) ?? host.defaultModel,
-      defaultEffort: normalizeOptionalString(profileInput.defaultEffort) ?? host.defaultEffort
+      defaultEffort: normalizeOptionalString(profileInput.defaultEffort) ?? host.defaultEffort,
+      ...(claudeConfigDir ? { claudeConfigDir: resolveConfigPath(claudeConfigDir, home) } : {})
     };
   }
   return result;
@@ -614,6 +709,9 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
     if (name === HOST_PROFILE_NAME || profile.defaultEffort !== config.profiles[HOST_PROFILE_NAME]?.defaultEffort) {
       table.default_effort = profile.defaultEffort ?? "";
     }
+    if (profile.claudeConfigDir) {
+      table.claude_config_dir = profile.claudeConfigDir;
+    }
     profiles[name] = table;
   }
   profiles[GUEST_PROFILE_NAME] ??= {};
@@ -623,6 +721,7 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
       binary: config.codex.binary,
       ...(config.codex.masqueradeAsCodexCli ? { masquerade_as_codex_cli: true } : {})
     },
+    ...harnessTomlSection(config.harness),
     lark: {
       reaction: {
         working: config.lark.workingReaction,
@@ -689,6 +788,37 @@ function toTomlDocument(config: TwinnyConfig): TomlTable {
     };
   }
   return document;
+}
+
+function harnessTomlSection(harness: HarnessConfig): { harness?: TomlTable } {
+  const section: TomlTable = {};
+  if (harness.default !== DEFAULT_HARNESS) {
+    section.default = harness.default;
+  }
+  const codex: TomlTable = {};
+  if (harness.codex.defaultModel) {
+    codex.default_model = harness.codex.defaultModel;
+  }
+  if (harness.codex.defaultEffort) {
+    codex.default_effort = harness.codex.defaultEffort;
+  }
+  if (Object.keys(codex).length > 0) {
+    section.codex = codex;
+  }
+  const claude: TomlTable = {};
+  if (harness.claude.binary !== DEFAULT_CLAUDE_BINARY) {
+    claude.binary = harness.claude.binary;
+  }
+  if (harness.claude.defaultModel !== DEFAULT_CLAUDE_MODEL) {
+    claude.default_model = harness.claude.defaultModel;
+  }
+  if (harness.claude.defaultEffort !== DEFAULT_CLAUDE_EFFORT) {
+    claude.default_effort = harness.claude.defaultEffort;
+  }
+  if (Object.keys(claude).length > 0) {
+    section.claude = claude;
+  }
+  return Object.keys(section).length > 0 ? { harness: section } : {};
 }
 
 function normalizeAuthFile(input: TwinnyAuthFileInput): TwinnyAuthFile {

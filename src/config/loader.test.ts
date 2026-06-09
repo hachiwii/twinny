@@ -14,6 +14,7 @@ import {
   resolveLarkAppSecret,
   resolveTwinnyHome,
   serializeTwinnyConfig,
+  validateTwinnyConfig,
   writeLarkCliProfileConfig
 } from "./index.js";
 
@@ -504,6 +505,96 @@ describe("secrets", () => {
     await store.delete(account);
 
     await expect(store.get(account)).resolves.toBeNull();
+  });
+});
+
+describe("harness configuration", () => {
+  it("defaults to the codex harness with built-in claude defaults when [harness] is absent", () => {
+    const config = parseTwinnyConfig(["[profiles.host]", 'codex_home = "~/.codex"'].join("\n"), {
+      home: "/tmp/twinny"
+    });
+    expect(config.harness).toEqual({
+      default: "codex",
+      codex: {},
+      claude: { binary: "claude", defaultModel: "sonnet", defaultEffort: "high" }
+    });
+    expect(validateTwinnyConfig(config)).not.toContain("harness.claude.default_effort must be low, medium, high, or xhigh");
+  });
+
+  it("parses a full [harness] section with per-harness defaults", () => {
+    const config = parseTwinnyConfig(
+      [
+        "[harness]",
+        'default = "claude"',
+        "",
+        "[harness.codex]",
+        'default_model = "gpt-5.6"',
+        'default_effort = "xhigh"',
+        "",
+        "[harness.claude]",
+        'binary = "/opt/bin/claude"',
+        'default_model = "opus"',
+        'default_effort = "medium"',
+        "",
+        "[profiles.host]",
+        'codex_home = "~/.codex"',
+        'claude_config_dir = "/opt/claude-homes/twinny"'
+      ].join("\n"),
+      { home: "/tmp/twinny" }
+    );
+    expect(config.harness).toEqual({
+      default: "claude",
+      codex: { defaultModel: "gpt-5.6", defaultEffort: "xhigh" },
+      claude: { binary: "/opt/bin/claude", defaultModel: "opus", defaultEffort: "medium" }
+    });
+    expect(config.profiles.host?.claudeConfigDir).toBe(path.resolve("/opt/claude-homes/twinny"));
+  });
+
+  it("rejects unknown harness values and keys", () => {
+    expect(() =>
+      parseTwinnyConfig(["[harness]", 'default = "gemini"'].join("\n"), { home: "/tmp/twinny" })
+    ).toThrow();
+    expect(() =>
+      parseTwinnyConfig(["[harness.claude]", 'unknown_key = "x"'].join("\n"), { home: "/tmp/twinny" })
+    ).toThrow();
+  });
+
+  it("flags invalid harness efforts in validation", () => {
+    const config = parseTwinnyConfig(
+      ["[harness.claude]", 'default_effort = "max"'].join("\n"),
+      { home: "/tmp/twinny" }
+    );
+    expect(validateTwinnyConfig(config)).toContain("harness.claude.default_effort must be low, medium, high, or xhigh");
+  });
+
+  it("omits the harness section from serialized config when everything is default", () => {
+    const config = createTwinnyConfig({
+      home: "/tmp/twinny",
+      homeRandom,
+      auth: { larkAppId: "cli_x", ownerOpenId: "ou_owner", displayName: "Owner" }
+    });
+    expect(serializeTwinnyConfig(config)).not.toContain("[harness");
+  });
+
+  it("round-trips a customized harness section", () => {
+    const config = createTwinnyConfig({
+      home: "/tmp/twinny",
+      homeRandom,
+      auth: { larkAppId: "cli_x", ownerOpenId: "ou_owner", displayName: "Owner" },
+      harness: {
+        default: "claude",
+        codex: { defaultModel: "gpt-5.6" },
+        claude: { defaultModel: "opus", defaultEffort: "medium" }
+      }
+    });
+    const serialized = serializeTwinnyConfig(config);
+    expect(serialized).toContain("[harness]");
+    const reparsed = parseTwinnyConfig(serialized, { home: "/tmp/twinny" });
+    expect(reparsed.harness).toEqual({
+      default: "claude",
+      codex: { defaultModel: "gpt-5.6" },
+      claude: { binary: "claude", defaultModel: "opus", defaultEffort: "medium" }
+    });
   });
 });
 

@@ -134,6 +134,7 @@ card.action.trigger
 | `/cd [dir\|num]` | 仅 owner 可用。查看或设置当前非主 thread workspace。可传绝对路径、`~/...`，或最近 workspace 列表中的序号。 |
 | `/resume [thread_id\|num] [session\|local]` | 仅 owner 可用。列出本机可恢复 Codex thread，或把指定 thread 恢复为 Twinny 话题；默认使用原会话 cwd，`local` 使用当前会话 cwd。 |
 | `/model <model> <effort>` | 设置当前 thread 后续 turn 使用的模型和推理强度。 |
+| `/harness <codex\|claude>` | 切换当前会话/话题的 agent 后端（Codex 或 Claude Code）。会新开 thread，model 与 effort 重置为目标 harness 默认值；详见 `docs/harness.md`。 |
 | `/cron <cron exp> <message>`、`/cron`、`/cron rm <id>` | 管理当前 conversation 的定时任务；触发时 `message` 可继续解析指令。 |
 | `/logo` | 发送 Twinny logo 图片。 |
 | `/twinny` 或 `/banner` | 发送 Twinny banner 卡片。 |

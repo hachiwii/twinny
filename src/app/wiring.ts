@@ -12,6 +12,8 @@ import {
 } from "../config/index.js";
 import { ProfileCodexAppServerPool, type CodexAppServer } from "../codex/index.js";
 import { ConversationManager, type CodexBridge, type ConversationQueueOptions } from "../conversation/manager.js";
+import { ClaudeCodeHarness } from "../harness/claude.js";
+import { createHarnessRouter } from "../harness/router.js";
 import {
   LarkEventConsumer,
   LarkFileDownloader,
@@ -211,11 +213,35 @@ export class TwinnyRuntime {
       );
       const repository = createConversationRepository(this.db);
       const workspaceManager = WorkspaceManager.fromRuntimePaths(this.paths, this.config.permissions);
+      const claudeHarness = new ClaudeCodeHarness({
+        binary: this.config.harness.claude.binary,
+        logger: this.log,
+        claudeConfigDirFor: (profile) => this.config.profiles[profile]?.claudeConfigDir,
+        readThreadTokenSeed: (threadId) => {
+          const record = repository.getCodexThreadById(threadId);
+          if (!record) {
+            return undefined;
+          }
+          return {
+            inputTokens: Math.max(record.inputTokens - record.cachedInputTokens, 0),
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: record.cachedInputTokens,
+            outputTokens: record.outputTokens
+          };
+        }
+      });
+      const harnessBridge = createHarnessRouter({
+        codex: adaptCodexPool(this.codexPool) as CodexBridge,
+        claude: claudeHarness,
+        defaultHarness: this.config.harness.default,
+        resolveThreadHarness: (threadId) => repository.getCodexThreadById(threadId)?.harness,
+        logger: this.log
+      });
       const conversation = new ConversationManager({
         config: this.config,
         repository: adaptConversationRepository(repository),
         workspaces: workspaceManager,
-        codex: adaptCodexPool(this.codexPool),
+        codex: harnessBridge,
         lark: adaptLarkSender(
           larkSender,
           this.config.lark.workingReaction,

@@ -1,3 +1,12 @@
+# Unreleased
+
+## 新增功能
+
+- 新增 harness 兼容层：在 Codex 之外支持以 Claude Code CLI 作为 agent 后端运行 thread，现有 Codex 功能与默认行为完全不变（详见 `docs/harness.md`）。
+  - 新增 `[harness]` 配置段：`default` 设置新 thread 的默认 harness，`[harness.codex]` / `[harness.claude]` 分别设置各 harness 的默认 model 与 effort；`[profiles.<name>]` 新增可选 `claude_config_dir` 用于按 profile 隔离 Claude 配置目录。旧配置文件无需修改即可继续使用。
+  - 新增 `/harness <codex|claude>` 指令：切换当前会话/话题的 harness（会新开 thread，model 与 effort 重置为目标 harness 的默认值）；`/thread`、`/fork`、`/side`、`/new` 创建的 thread 继承来源 harness。
+  - Claude harness 支持普通对话、steer 追加、打断、`/side` 临时会话与卡片追问、`/plan`、`/compact`、`/model`、`/effort`、token 统计等；`/goal`、`/rewind`、`/resume` 浏览、Twinny 动态工具等 Codex 专有协议能力在 claude thread 上会返回明确的不支持提示，理由见 `docs/harness.md`。
+
 # 1.5.0
 
 发布时间：2026/06/03

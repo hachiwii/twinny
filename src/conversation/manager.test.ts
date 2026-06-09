@@ -13,6 +13,7 @@ import type {
   CodexTurnResult,
   ConversationRecord,
   CronJobRecord,
+  HarnessKind,
   IncomingLarkBotMenuAction,
   IncomingLarkDocCommentAdd,
   IncomingLarkMessage,
@@ -39,6 +40,11 @@ import {
 const config: TwinnyConfig = {
   home: "/tmp/twinny",
   codex: { binary: "codex", masqueradeAsCodexCli: false },
+  harness: {
+    default: "codex",
+    codex: {},
+    claude: { binary: "claude", defaultModel: "sonnet", defaultEffort: "high" }
+  },
   lark: {
     workingReaction: "JubilantRabbit",
     completedReaction: "DONE",
@@ -517,6 +523,129 @@ describe("ConversationManager", () => {
     await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
     expect(turns[0]!.params).toMatchObject({
       model: "gpt-5.4",
+      effort: "high"
+    });
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForDelay();
+  });
+
+  it("shows the current harness and usage for a bare /harness", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [codexThreadRecord({ codexThreadId: "thread_1", conversationKey: "p2p_ou_guest" })]
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, lark });
+
+    manager.submitIncoming(message("m_harness_show", "/harness"));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith(
+        "m_harness_show",
+        expect.stringContaining("当前 harness：codex（Codex）")
+      )
+    );
+    expect(vi.mocked(lark.replyText).mock.calls.at(-1)?.[1]).toContain("/harness <codex|claude>");
+  });
+
+  it("rejects unknown harness values", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, lark });
+
+    manager.submitIncoming(message("m_harness_bad", "/harness gemini"));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith(
+        "m_harness_bad",
+        expect.stringContaining("用法：/harness <codex|claude>")
+      )
+    );
+  });
+
+  it("switches to the claude harness with a fresh thread and claude default model settings", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [
+        codexThreadRecord({
+          codexThreadId: "thread_1",
+          conversationKey: "p2p_ou_guest",
+          model: "gpt-5.4",
+          effort: "high"
+        })
+      ]
+    });
+    const codex = createCodex({ startThread: vi.fn(async () => ({ threadId: "claude_thread_1" })) });
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m_harness_claude", "/harness claude"));
+
+    await waitForExpect(() =>
+      expect(codex.startThread).toHaveBeenCalledWith(expect.objectContaining({ harness: "claude" }))
+    );
+    await waitForExpect(() =>
+      expect(repository.upsertCodexThread).toHaveBeenCalledWith(
+        expect.objectContaining({
+          codexThreadId: "claude_thread_1",
+          harness: "claude",
+          model: "sonnet",
+          effort: "high"
+        })
+      )
+    );
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith(
+        "m_harness_claude",
+        [
+          "已切换 harness：claude（Claude Code），并新开 thread：claude_thread_1",
+          "模型与 effort 已重置为该 harness 默认值：sonnet / high",
+          "注意：不同 harness 之间无法继承会话历史。"
+        ].join("\n")
+      )
+    );
+    expect(repository.getCodexThreadById("claude_thread_1")).toMatchObject({
+      harness: "claude",
+      model: "sonnet",
+      effort: "high"
+    });
+  });
+
+  it("reports when the current thread already uses the requested harness", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [
+        codexThreadRecord({ codexThreadId: "thread_1", conversationKey: "p2p_ou_guest", harness: "claude" })
+      ]
+    });
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m_harness_same", "/harness claude"));
+
+    await waitForExpect(() =>
+      expect(lark.replyText).toHaveBeenCalledWith(
+        "m_harness_same",
+        "当前 thread 已经使用 claude（Claude Code） harness。"
+      )
+    );
+    expect(codex.startThread).not.toHaveBeenCalled();
+  });
+
+  it("uses claude harness default model settings when starting turns on claude threads", async () => {
+    const { repository } = createRepository(conversationRecord(), {
+      codexThreads: [
+        codexThreadRecord({ codexThreadId: "thread_1", conversationKey: "p2p_ou_guest", harness: "claude" })
+      ]
+    });
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m_claude_defaults", "hello"));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(turns[0]!.params).toMatchObject({
+      threadId: "thread_1",
+      model: "sonnet",
       effort: "high"
     });
 
@@ -14588,6 +14717,7 @@ function createRepository(initial?: ConversationRecord, options: {
     conversationKey: string;
     workspace?: string;
     profile: ProfileName;
+    harness?: HarnessKind;
     model?: string;
     effort?: string;
     category?: CodexThreadRecord["category"];
@@ -14610,6 +14740,7 @@ function createRepository(initial?: ConversationRecord, options: {
       category: input.category ?? existing?.category ?? (input.larkThreadId ? "thread" : "previous_main"),
       larkThreadId: input.larkThreadId ?? existing?.larkThreadId,
       profile: input.profile,
+      harness: input.harness ?? existing?.harness ?? "codex",
       model: input.model ?? existing?.model,
       effort: input.effort ?? existing?.effort,
       parentCodexThreadId: input.parentCodexThreadId ?? existing?.parentCodexThreadId,
@@ -14630,6 +14761,7 @@ function createRepository(initial?: ConversationRecord, options: {
       codexThreadId: string;
       profile: ProfileName;
       workspace?: string;
+      harness?: HarnessKind;
       model?: string;
       effort?: string;
       codexThreadHasRollout?: boolean;
@@ -14648,6 +14780,7 @@ function createRepository(initial?: ConversationRecord, options: {
       category: "thread",
       larkThreadId,
       profile: update.profile,
+      harness: update.harness ?? "codex",
       model: update.model ?? existing?.model,
       effort: update.effort ?? existing?.effort,
       parentCodexThreadId: existing?.parentCodexThreadId,
@@ -15377,6 +15510,7 @@ function codexThreadRecord(overrides: Partial<CodexThreadRecord> = {}): CodexThr
     workspace: `/tmp/twinny/workspaces/${conversationKey}`,
     name: "新会话",
     profile: "guest",
+    harness: "codex",
     category: "previous_main",
     mode: "default",
     status: "idle",

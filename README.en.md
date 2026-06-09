@@ -134,6 +134,7 @@ Send normal messages to the bot to start or continue a Codex turn. In groups, th
 | `/fork [message]`                     | Fork the current Codex thread into a new Lark topic. If `message` is present, proxy it into that topic and parse commands there. |
 | `/watch <lark_doc_url> [owner\|all]` or `/watch rm <id\|url>` | Watch @bot comments on a Feishu/Lark document and route them to the current thread. Without arguments, list watcher ids for the current thread. `owner` responds only to the owner, `all` responds to everyone, and `rm` deletes a watcher from the current thread. |
 | `/model <model> <effort>`             | Set the model and reasoning effort for future turns in the current thread.                                   |
+| `/harness <codex\|claude>`            | Switch the agent backend (Codex or Claude Code) for the current conversation/topic. Opens a fresh thread and resets model/effort to the target harness defaults; see `docs/harness.md`. |
 | `/cron <cron exp> <message>`, `/cron`, `/cron rm <id>` | Manage cron jobs for the current conversation; `message` may be parsed as commands when the job triggers.    |
 | `/logo`                               | Send the Twinny logo image.                                                                                  |
 | `/twinny` or `/banner`                | Send the Twinny banner card.                                                                                 |

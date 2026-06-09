@@ -75,6 +75,7 @@ import type {
   IncomingLarkMessageRecall,
   IncomingLarkP2pChatCreate,
   LarkDocWatcherRecord,
+  HarnessKind,
   LarkDocWatchMode,
   LarkMessageRecord,
   LarkMessageRouteKind,
@@ -134,6 +135,7 @@ const REWIND_USAGE_TEXT = "用法：/rewind <n> 或 /rollback <n>，n 为正整�
 const UPGRADE_USAGE_TEXT = "用法：/upgrade [check] [stable|beta] 或 /upgrade [stable|beta]";
 const MODEL_EFFORT_USAGE_TEXT = "effort 可选值：low medium high xhigh";
 const MODEL_EFFORT_VALUES = new Set(["low", "medium", "high", "xhigh"]);
+const HARNESS_USAGE_TEXT = "用法：/harness <codex|claude>（切换会新开 thread，模型与 effort 重置为目标 harness 默认值）";
 const SIDE_SHUTDOWN_ERROR = "Twinny 服务退出";
 const UNRECOVERABLE_CONTROL_MESSAGE_RECOVERY_TEXT = "上一条控制命令在 Twinny daemon 重启前中断，已终止；请重新执行。";
 const MAIN_THREAD_NAME = "主会话";
@@ -293,6 +295,7 @@ export interface ConversationRepository {
     conversationKey: string;
     workspace?: string;
     profile: ProfileName;
+    harness?: HarnessKind;
     model?: string;
     effort?: string;
     larkThreadId?: string;
@@ -310,6 +313,7 @@ export interface ConversationRepository {
       codexThreadId: string;
       profile: ProfileName;
       workspace?: string;
+      harness?: HarnessKind;
       model?: string;
       effort?: string;
       codexThreadHasRollout?: boolean;
@@ -638,10 +642,14 @@ export interface CodexBridge {
     profile: ProfileName;
     cwd: string;
     approvalPolicy: "never";
+    /** Target harness for the new thread; defaults to the configured default harness. */
+    harness?: HarnessKind;
     developerInstructions?: string;
     model?: string;
     effort?: string;
   }): Promise<{ threadId: string }>;
+  /** Returns the harness that owns a thread, when the bridge tracks one. */
+  threadHarness?(threadId: string): HarnessKind | undefined;
   resumeThread(params: {
     profile: ProfileName;
     threadId: string;
@@ -916,6 +924,7 @@ interface NewSessionTopicRequest {
   codexThread?: NewSessionTopicCodexThread;
   name?: string;
   workspace?: string;
+  harness?: HarnessKind;
   model?: string;
   effort?: string;
   parentCodexThreadId?: string;
@@ -926,6 +935,7 @@ interface NewSessionTopicRequest {
 interface NewSessionTopicCodexThread {
   threadId: string;
   workspace?: string;
+  harness?: HarnessKind;
   model?: string;
   effort?: string;
   codexThreadHasRollout: boolean;
@@ -1263,6 +1273,7 @@ type ParsedCommand =
   | { kind: "cd"; text: string }
   | { kind: "model"; text: string }
   | { kind: "effort"; text: string }
+  | { kind: "harness"; text: string }
   | { kind: "new" }
   | { kind: "thread"; text: string; program?: ParsedCommandProgram }
   | { kind: "fork"; text: string; program?: ParsedCommandProgram }
@@ -3064,6 +3075,10 @@ export class ConversationManager {
       await this.handleEffortCommand(state, context, message, parsed.text);
       return;
     }
+    if (parsed.kind === "harness") {
+      await this.handleHarnessCommand(state, context, message, parsed.text);
+      return;
+    }
     if (parsed.kind === "stop") {
       await this.handleStopCommand(state, message, parsed.text);
       return;
@@ -4188,6 +4203,7 @@ export class ConversationManager {
       anchorMessage: message,
       name: initialThreadNameForCommand(text, message, "新会话"),
       workspace: sourceThread.workspace,
+      harness: sourceThread.record?.harness,
       model: sourceThread.model,
       effort: sourceThread.effort,
       parentCodexThreadId: sourceThread.threadId,
@@ -5071,7 +5087,11 @@ export class ConversationManager {
 
     const profile = conversation.profile;
     const workspace = request.codexThread?.workspace ?? request.workspace ?? conversation.workspace;
-    const modelSettings = this.profileDefaultModelSettings(profile);
+    const requestedHarness = request.codexThread?.harness ?? request.harness;
+    const modelSettings = this.harnessDefaultModelSettings(
+      requestedHarness ?? this.options.config.harness.default,
+      profile
+    );
     const threadModel = request.codexThread?.model ?? request.model ?? modelSettings.model;
     const threadEffort = request.codexThread?.effort ?? request.effort ?? modelSettings.effort;
     const thread = request.codexThread
@@ -5082,16 +5102,19 @@ export class ConversationManager {
           profile,
           cwd: workspace,
           approvalPolicy: "never",
+          ...(requestedHarness ? { harness: requestedHarness } : {}),
           developerInstructions: twinnyThreadDeveloperInstructions(this.options.config, context),
           model: threadModel,
           effort: threadEffort
         });
     const threadName = this.consumePendingThreadName(thread.threadId) ?? request.name;
+    const threadHarness = requestedHarness ?? this.options.codex.threadHarness?.(thread.threadId);
     await this.options.repository.upsertCodexThread({
       conversationKey: context.conversationKey,
       codexThreadId: thread.threadId,
       workspace,
       profile,
+      ...(threadHarness ? { harness: threadHarness } : {}),
       model: threadModel,
       effort: threadEffort,
       ...(threadName ? { name: threadName } : {}),
@@ -6042,6 +6065,67 @@ export class ConversationManager {
     await this.markMessagesCompletedBestEffort([message.messageId]);
   }
 
+  private async handleHarnessCommand(
+    state: ConversationState,
+    context: MessageContext,
+    message: IncomingLarkMessage,
+    text: string
+  ): Promise<void> {
+    const target = await this.resolveCurrentThreadForModelCommand(state, context, message);
+    let currentThread: CodexThreadRecord | undefined;
+    if (target) {
+      try {
+        currentThread = await this.options.repository.getCodexThreadById(target.threadId);
+      } catch (error) {
+        this.log.warn({ error, threadId: target.threadId }, "failed to read current thread for harness command");
+      }
+    }
+    const currentHarness: HarnessKind = currentThread?.harness ?? this.options.config.harness.default;
+
+    const trimmed = text.trim();
+    if (!trimmed) {
+      await this.replyControlBestEffort(
+        message.messageId,
+        [
+          `当前 harness：${harnessDisplayName(currentHarness)}`,
+          HARNESS_USAGE_TEXT
+        ].join("\n")
+      );
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const parsedHarness = parseHarnessValue(trimmed);
+    if (!parsedHarness) {
+      await this.replyControlBestEffort(message.messageId, HARNESS_USAGE_TEXT);
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+    if (parsedHarness === currentHarness) {
+      await this.replyControlBestEffort(
+        message.messageId,
+        `当前 thread 已经使用 ${harnessDisplayName(parsedHarness)} harness。`
+      );
+      await this.markMessagesCompletedBestEffort([message.messageId]);
+      return;
+    }
+
+    const profile = target?.profile
+      ?? currentThread?.profile
+      ?? profileForSender(this.options.config, message.senderOpenId);
+    const defaults = this.harnessDefaultModelSettings(parsedHarness, profile);
+    const threadId = await this.openNewThreadForMessage(state, context, message, { harness: parsedHarness });
+    await this.replyControlBestEffort(
+      message.messageId,
+      [
+        `已切换 harness：${harnessDisplayName(parsedHarness)}，并新开 thread：${threadId}`,
+        `模型与 effort 已重置为该 harness 默认值：${defaults.model} / ${defaults.effort}`,
+        "注意：不同 harness 之间无法继承会话历史。"
+      ].join("\n")
+    );
+    await this.markMessagesCompletedBestEffort([message.messageId]);
+  }
+
   private async resolveCurrentThreadForModelCommand(
     state: ConversationState,
     context: MessageContext,
@@ -6113,7 +6197,7 @@ export class ConversationManager {
         name: thread?.name,
         workspace: threadWorkspace,
         mode: thread?.mode ?? "default",
-        model: formatModelAndEffort(topicModelSettings.model, topicModelSettings.effort),
+        model: `${formatModelAndEffort(topicModelSettings.model, topicModelSettings.effort)}${(thread?.harness ?? "codex") === "claude" ? "（claude harness）" : ""}`,
         contextTokens: threadTokens.contextTokens,
         contextWindow: threadTokens.contextWindow,
         userMessageCount: threadStats.userMessageCount,
@@ -7101,7 +7185,8 @@ export class ConversationManager {
   private async openNewThreadForMessage(
     state: ConversationState,
     context: MessageContext,
-    message: IncomingLarkMessage
+    message: IncomingLarkMessage,
+    options: { harness?: HarnessKind } = {}
   ): Promise<string> {
     state.queueNextMessage = false;
     await this.markPendingMessagesClearedBestEffort(await this.clearPendingMessagesBestEffort(state));
@@ -7109,11 +7194,13 @@ export class ConversationManager {
     const existing = await this.options.repository.findByConversationKey(context.conversationKey);
     const profile = existing?.profile ?? profileForSender(this.options.config, message.senderOpenId);
     const workspace = existing?.workspace ?? await this.options.workspaces.ensureWorkspace(context.conversationKey);
+    const harness = options.harness ?? await this.currentContextHarnessBestEffort(context);
     let mainConversationName = existing ? conversationNameForRecord(existing) : undefined;
     const thread = await this.options.codex.startThread({
       profile,
       cwd: workspace,
       approvalPolicy: "never",
+      ...(harness ? { harness } : {}),
       developerInstructions: developerInstructionsForContext(this.options.config, context)
     });
 
@@ -7123,6 +7210,7 @@ export class ConversationManager {
         codexThreadId: thread.threadId,
         profile,
         workspace,
+        ...(harness ? { harness } : {}),
         larkThreadId: context.larkThreadId,
         codexThreadHasRollout: false,
         replaceExistingLarkThread: true
@@ -7155,6 +7243,7 @@ export class ConversationManager {
         codexThreadId: thread.threadId,
         profile,
         workspace,
+        ...(harness ? { harness } : {}),
         name: MAIN_THREAD_NAME,
         codexThreadHasRollout: false,
         createMethod: "new_main"
@@ -7166,6 +7255,29 @@ export class ConversationManager {
       );
     }
     return thread.threadId;
+  }
+
+  private async currentContextHarnessBestEffort(context: MessageContext): Promise<HarnessKind | undefined> {
+    try {
+      if (context.larkThreadId) {
+        const topicThread = await this.options.repository.getCodexThreadByConversationAndLarkThread(
+          context.conversationKey,
+          context.larkThreadId
+        );
+        if (topicThread) {
+          return topicThread.harness;
+        }
+      }
+      const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
+      if (!conversation) {
+        return undefined;
+      }
+      const mainThread = await this.options.repository.getCodexThreadById(conversation.codexThreadId);
+      return mainThread?.harness;
+    } catch (error) {
+      this.log.warn({ error, conversationKey: context.conversationKey }, "failed to resolve current context harness");
+      return undefined;
+    }
   }
 
   private async steerOrDefer(
@@ -10589,6 +10701,7 @@ export class ConversationManager {
     codexThreadId: string;
     profile: ProfileName;
     workspace?: string;
+    harness?: HarnessKind;
     model?: string;
     effort?: string;
     name?: string;
@@ -10608,9 +10721,11 @@ export class ConversationManager {
       } catch (error) {
         this.log.warn({ error, codexThreadId: params.codexThreadId }, "failed to read existing codex thread");
       }
-      const defaults = this.profileDefaultModelSettings(params.profile);
+      const harness = params.harness ?? this.options.codex.threadHarness?.(params.codexThreadId);
+      const defaults = this.harnessDefaultModelSettings(harness ?? existing?.harness ?? "codex", params.profile);
       await this.options.repository.upsertCodexThread({
         ...params,
+        harness,
         model: params.model ?? (existing ? undefined : defaults.model),
         effort: params.effort ?? (existing ? undefined : defaults.effort)
       });
@@ -10694,6 +10809,7 @@ export class ConversationManager {
     codexThreadId: string;
     profile: ProfileName;
     workspace?: string;
+    harness?: HarnessKind;
     model?: string;
     effort?: string;
     larkThreadId: string;
@@ -10701,7 +10817,8 @@ export class ConversationManager {
     replaceExistingLarkThread?: boolean;
   }): Promise<void> {
     try {
-      const defaults = this.profileDefaultModelSettings(params.profile);
+      const harness = params.harness ?? this.options.codex.threadHarness?.(params.codexThreadId);
+      const defaults = this.harnessDefaultModelSettings(harness ?? "codex", params.profile);
       let existing: CodexThreadRecord | undefined;
       if (!params.replaceExistingLarkThread) {
         try {
@@ -10717,13 +10834,14 @@ export class ConversationManager {
           codexThreadId: params.codexThreadId,
           profile: params.profile,
           workspace: params.workspace,
+          harness,
           model,
           effort,
           codexThreadHasRollout: params.codexThreadHasRollout
         });
         return;
       }
-      await this.options.repository.upsertCodexThread({ ...params, model, effort });
+      await this.options.repository.upsertCodexThread({ ...params, harness, model, effort });
     } catch (error) {
       this.log.warn(
         { error, codexThreadId: params.codexThreadId, larkThreadId: params.larkThreadId },
@@ -10884,8 +11002,21 @@ export class ConversationManager {
     };
   }
 
+  private harnessDefaultModelSettings(harness: HarnessKind, profile: ProfileName): CodexTurnModelSettings {
+    if (harness === "claude") {
+      const claude = this.options.config.harness.claude;
+      return { model: claude.defaultModel, effort: claude.defaultEffort };
+    }
+    const overrides = this.options.config.harness.codex;
+    const profileDefaults = this.profileDefaultModelSettings(profile);
+    return {
+      model: nonEmptyString(overrides.defaultModel) ?? profileDefaults.model,
+      effort: nonEmptyString(overrides.defaultEffort) ?? profileDefaults.effort
+    };
+  }
+
   private threadModelSettings(thread: CodexThreadRecord | undefined, profile: ProfileName): CodexTurnModelSettings {
-    const defaults = this.profileDefaultModelSettings(profile);
+    const defaults = this.harnessDefaultModelSettings(thread?.harness ?? "codex", profile);
     return {
       model: nonEmptyString(thread?.model) ?? defaults.model,
       effort: nonEmptyString(thread?.effort) ?? defaults.effort
@@ -13900,6 +14031,10 @@ function parseFixedArgCommand(
     const result = readOptionalNonCommandToken(text, cursor);
     return { command: { kind: "effort", text: result.token?.value ?? "" }, cursor: result.cursor };
   }
+  if (name === "harness") {
+    const result = readOptionalNonCommandToken(text, cursor);
+    return { command: { kind: "harness", text: result.token?.value ?? "" }, cursor: result.cursor };
+  }
   if (name === "workspace" || name === "cd" || name === "reload") {
     const result = readOptionalNonCommandToken(text, cursor);
     const commandText = result.token?.value ?? "";
@@ -14087,6 +14222,7 @@ function isKnownSlashCommand(command: string): boolean {
     command === "cd" ||
     command === "model" ||
     command === "effort" ||
+    command === "harness" ||
     command === "new" ||
     command === "thread" ||
     command === "fork" ||
@@ -14221,6 +14357,21 @@ function parseModelCommand(text: string): { kind: "valid"; model: string; effort
     return { kind: "invalid", message: MODEL_EFFORT_USAGE_TEXT };
   }
   return { kind: "valid", model, ...(effort ? { effort } : {}) };
+}
+
+function parseHarnessValue(value: string): HarnessKind | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "codex") {
+    return "codex";
+  }
+  if (normalized === "claude" || normalized === "claude-code" || normalized === "claude_code" || normalized === "claudecode" || normalized === "cc") {
+    return "claude";
+  }
+  return undefined;
+}
+
+function harnessDisplayName(harness: HarnessKind): string {
+  return harness === "claude" ? "claude（Claude Code）" : "codex（Codex）";
 }
 
 function parseEffortCommand(text: string): { kind: "valid"; effort: string } | { kind: "invalid"; message: string } {
@@ -16554,6 +16705,7 @@ function helpTextFor(message: IncomingLarkMessage, context: MessageContext, conf
     "/new - 新开 Codex thread；会停止当前任务并清空待处理消息",
     "/model <model> [low|medium|high|xhigh] - 设置当前 thread 后续 turn 的模型；effort 可省略",
     "/effort <low|medium|high|xhigh> - 设置当前 thread 后续 turn 的 effort",
+    "/harness <codex|claude> - 切换 harness（会新开 thread，模型与 effort 重置为该 harness 默认值）",
     "/stop [all|<side_id>] - 停止当前任务并清空待处理消息；可停止全部或指定临时会话",
     "/next - 打断当前任务，并执行队列中的下一条消息",
     "/steer <message> - 将 message 注入当前正在运行的任务；message 可继续解析指令",
@@ -16737,6 +16889,7 @@ function classifyInitialRoute(
     parsed.kind === "cd" ||
     parsed.kind === "model" ||
     parsed.kind === "effort" ||
+    parsed.kind === "harness" ||
     parsed.kind === "stop" ||
     parsed.kind === "next" ||
     parsed.kind === "steer" ||

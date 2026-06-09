@@ -140,10 +140,30 @@ export interface CodexConfig {
   masqueradeAsCodexCli: boolean;
 }
 
+export type HarnessKind = "codex" | "claude";
+
+export interface HarnessCodexConfig {
+  defaultModel?: string;
+  defaultEffort?: string;
+}
+
+export interface HarnessClaudeConfig {
+  binary: string;
+  defaultModel: string;
+  defaultEffort: string;
+}
+
+export interface HarnessConfig {
+  default: HarnessKind;
+  codex: HarnessCodexConfig;
+  claude: HarnessClaudeConfig;
+}
+
 export interface ProfileConfig {
   codexHome: string;
   defaultModel?: string;
   defaultEffort?: string;
+  claudeConfigDir?: string;
 }
 
 export interface PermissionsConfig {
@@ -195,6 +215,7 @@ export interface ServiceConfig {
 export interface TwinnyConfig {
   home: string;
   codex: CodexConfig;
+  harness: HarnessConfig;
   lark: LarkConfig;
   auth: TwinnyAuthFile;
   homeIdentity: TwinnyHomeIdentity;
@@ -260,6 +281,7 @@ export interface CodexThreadRecord {
   name: string;
   larkThreadId?: string;
   profile: ProfileName;
+  harness: HarnessKind;
   model?: string;
   effort?: string;
   category: CodexThreadCategory;

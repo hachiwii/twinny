@@ -18,8 +18,8 @@ describe("store migrations", () => {
   it("loads the bundled store migrations", () => {
     const migrations = loadStoreMigrations();
 
-    expect(currentStoreSchemaVersion).toBe(9);
-    expect(migrations).toHaveLength(9);
+    expect(currentStoreSchemaVersion).toBe(10);
+    expect(migrations).toHaveLength(10);
     expect(migrations[0]).toMatchObject({
       version: 1,
       name: "0001_initial"
@@ -55,6 +55,10 @@ describe("store migrations", () => {
     expect(migrations[8]).toMatchObject({
       version: 9,
       name: "0009_lark_doc_watcher_four_modes"
+    });
+    expect(migrations[9]).toMatchObject({
+      version: 10,
+      name: "0010_thread_harness"
     });
   });
 
@@ -143,7 +147,8 @@ describe("store migrations", () => {
         { name: "status", type: "TEXT", notnull: 1, pk: 0 },
         { name: "goal_status", type: "TEXT", notnull: 1, pk: 0 },
         { name: "goal_updated_at", type: "INTEGER", notnull: 0, pk: 0 },
-        { name: "fork_base_token_usage_json", type: "TEXT", notnull: 1, pk: 0 }
+        { name: "fork_base_token_usage_json", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "harness", type: "TEXT", notnull: 1, pk: 0 }
       ]);
 
       const threadIndexes = db
