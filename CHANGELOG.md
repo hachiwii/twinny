@@ -1,3 +1,25 @@
+# 1.5.1
+
+发布时间：2026/06/10
+
+## 新增功能
+
+- 新增 owner-only `/restart` 和 `/upgrade [check] [stable|beta]` 指令，支持在飞书里检查新版本、调度托管服务重启或升级。
+- 新增 Twinny 自动升级检查和 runner 替换 helper，支持下载目标版本、重启健康检查和失败回滚。
+- `/watch` 文档监听模式扩展为 `owner_at`、`owner`、`all_at`、`all`，可分别控制是否只处理 owner、是否要求评论 @ bot。
+- 工作过程卡片在被打断时会展示取消人，方便确认是谁停止了任务。
+- `/workspace` 和 `/cd` 的帮助与同步行为调整，设置 conversation workspace 时会同步当前非主 thread。
+
+## Bug 修复
+
+- 修复工作过程和最终回复里的 Lark at 语法：prompt 改为 `<at id="{open_id}"></at>`，同时保留旧 `<at openid="...">` 和 `<mention_lark_user>` 兼容解析。
+- 修复 Markdown 图片解析和发送：支持 final answer 与 side final 中的本地图片附件，远端或非法图片路径会降级为可读提示。
+- 修复本地 Markdown 链接识别过宽的问题，只把绝对本地路径链接改写为代码，避免普通链接在飞书里消失。
+- 修复 final answer 后 turn 可能不完成、final card 等待状态卡住、fallback completion 状态不一致的问题。
+- 修复 side follow-up 卡片回调、重复输入、过期卡片和 stale card patch 可能导致工作过程卡片状态错误的问题。
+- 修复文档评论监听队列里同一评论的连续回复批处理和 workspace command thread 同步问题。
+- 收紧邮件地址脱敏匹配，减少误匹配。
+
 # 1.5.0
 
 发布时间：2026/06/03
