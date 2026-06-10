@@ -11915,6 +11915,49 @@ describe("ConversationManager", () => {
     });
   });
 
+  it("renders Lark card at tags from the final card output", async () => {
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: '请看 <at id="ou_target"></at>',
+          phase: "final_answer"
+        });
+        return {
+          threadId,
+          turnId: "turn_1",
+          text: '请看 <at id="ou_target"></at>',
+          status: "completed" as const
+        };
+      })
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() =>
+      expect(lark.replyCard).toHaveBeenNthCalledWith(
+        2,
+        "m1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+
+    const finalCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const serialized = JSON.stringify(finalCard);
+    expect(serialized).toContain("<at id=ou_target></at>");
+    expect(serialized).not.toContain('<at id="ou_target"></at>');
+    expect(finalCard.config).toMatchObject({
+      summary: { content: "请看 @ou_target" }
+    });
+  });
+
   it("renders legacy Codex Lark mention tags for historical final card output", async () => {
     const codex = createCodex({
       startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
@@ -11986,6 +12029,34 @@ describe("ConversationManager", () => {
       "m1",
       'checking <at openid="ou_noise">'
     );
+    expect(lark.replyPost).toHaveBeenCalledWith("m1", [
+      [
+        { tag: "md", text: "hi " },
+        { tag: "at", user_id: "ou_target" },
+        { tag: "md", text: " please" }
+      ]
+    ]);
+  });
+
+  it("renders Lark card at tags from fallback plain final_answer messages", async () => {
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: 'hi <at id="ou_target"></at> please',
+          phase: "final_answer"
+        });
+        return completed(threadId, "turn_1");
+      })
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.replyCard).mockRejectedValue(new Error("card unavailable"));
+    const manager = createManager({ codex, lark });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(lark.replyPost).toHaveBeenCalledTimes(1));
+
     expect(lark.replyPost).toHaveBeenCalledWith("m1", [
       [
         { tag: "md", text: "hi " },

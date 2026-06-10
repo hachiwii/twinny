@@ -44,8 +44,8 @@ describe("profile helpers", () => {
     expect(agents).toContain("Owner display name: Owner");
     expect(agents).toContain("Owner Feishu open_id: ou_owner");
     expect(agents).toContain("approval_policy = \"never\"");
-    expect(agents).toContain('<at openid="{open_id}">');
-    expect(agents).toContain("When you need to at a Feishu/Lark user in your reply");
+    expect(agents).toContain('<at id="{open_id}"></at>');
+    expect(agents).toContain("When you need to mention a Feishu/Lark user in your reply");
     expect(agents).not.toContain("Lark @ mention");
     expect(agents).not.toContain("commentary or intermediate progress messages");
   });

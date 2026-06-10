@@ -189,7 +189,7 @@ Only use absolute paths to regular files inside the current conversation workspa
 
 ## Mentioning Lark Users
 
-When you need to at a Feishu/Lark user in your reply, use <at openid="{open_id}">.
+When you need to mention a Feishu/Lark user in your reply, use <at id="{open_id}"></at>.
 
 ## Fetching Lark Context
 
@@ -13466,7 +13466,8 @@ interface CodexAtTagMatch {
   openId: string;
 }
 
-const CODEX_AT_TAG_PATTERN = /<at\s+openid="([^"]*)"\s*\/?>/g;
+const CODEX_AT_OPENID_TAG_PATTERN = /<at\s+openid="([^"]*)"\s*\/?>/g;
+const CODEX_AT_ID_TAG_PATTERN = /<at\s+id=(?:"([^"]*)"|([^">\s]*))\s*(?:\/>|>\s*<\/at>)/g;
 // 兼容历史 Codex 会话：旧 prompt 曾要求模型输出这个 tag。
 const LEGACY_CODEX_LARK_MENTION_TAG_PATTERN = /<mention[_-]lark[_-]user>([\s\S]*?)<\/mention[_-]lark[_-]user>/g;
 
@@ -13556,12 +13557,20 @@ function splitCodexAtText(text: string): CodexAtTextPart[] {
 
 function codexAtTagMatches(text: string): CodexAtTagMatch[] {
   const matches: CodexAtTagMatch[] = [];
-  for (const match of text.matchAll(CODEX_AT_TAG_PATTERN)) {
+  for (const match of text.matchAll(CODEX_AT_OPENID_TAG_PATTERN)) {
     const raw = match[0]!;
     matches.push({
       index: match.index ?? 0,
       raw,
       openId: match[1] ?? ""
+    });
+  }
+  for (const match of text.matchAll(CODEX_AT_ID_TAG_PATTERN)) {
+    const raw = match[0]!;
+    matches.push({
+      index: match.index ?? 0,
+      raw,
+      openId: match[1] ?? match[2] ?? ""
     });
   }
   for (const match of text.matchAll(LEGACY_CODEX_LARK_MENTION_TAG_PATTERN)) {
