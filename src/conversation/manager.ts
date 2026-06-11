@@ -13169,7 +13169,7 @@ export class ConversationManager {
       pendingText += text;
     };
     const addPendingTextLine = (line: string): void => {
-      pendingText += `${pendingText.length === 0 || pendingText.endsWith("\n") ? "" : "\n"}${line}`;
+      pendingText = appendMarkdownLine(pendingText, line);
     };
     const startPendingTextLine = (): void => {
       if (pendingText.length > 0 && !pendingText.endsWith("\n")) {
@@ -13191,6 +13191,9 @@ export class ConversationManager {
     for (const line of markdownLines(larkMarkdown)) {
       const directive = parseSendToLarkDirective(line.text, line.start, codeRanges);
       if (directive.kind === "none") {
+        if (shouldStartNewCardMarkdownElement(line, codeRanges, pendingText)) {
+          flushText();
+        }
         await this.appendMarkdownLineToCardOutput({
           line: line.text,
           lineStart: line.start,
@@ -13408,7 +13411,7 @@ class LarkPostContentBuilder {
   constructor(private readonly options: PrepareAgentReplyOptions = {}) {}
 
   addTextLine(line: string): void {
-    this.pendingText += `${this.pendingText.length === 0 || this.pendingText.endsWith("\n") ? "" : "\n"}${line}`;
+    this.pendingText = appendMarkdownLine(this.pendingText, line);
   }
 
   startTextLine(): void {
@@ -13531,6 +13534,43 @@ function renderCodexAtTagsAsPlainText(text: string): string {
   return splitCodexAtText(text)
     .map((part) => part.kind === "at" ? `@${part.openId}` : part.text)
     .join("");
+}
+
+function appendMarkdownLine(text: string, line: string): string {
+  if (line.length === 0) {
+    return text.length === 0
+      ? "\n"
+      : text.endsWith("\n")
+        ? `${text}\n`
+        : `${text}\n\n`;
+  }
+  return `${text}${text.length === 0 || text.endsWith("\n") ? "" : "\n"}${line}`;
+}
+
+function shouldStartNewCardMarkdownElement(line: { text: string; start: number }, codeRanges: TextRange[], pendingText: string): boolean {
+  if (pendingText.trim().length === 0) {
+    return false;
+  }
+  const firstNonWhitespace = line.text.search(/\S/);
+  if (firstNonWhitespace === -1 || isPositionInTextRanges(line.start + firstNonWhitespace, codeRanges)) {
+    return false;
+  }
+  return isStandaloneMarkdownSectionHeading(line.text);
+}
+
+function isStandaloneMarkdownSectionHeading(line: string): boolean {
+  const trimmed = line.trim();
+  return /^#{1,6}\s+\S/.test(trimmed) ||
+    isWrappedStandaloneMarkdownHeading(trimmed, "**") ||
+    isWrappedStandaloneMarkdownHeading(trimmed, "__");
+}
+
+function isWrappedStandaloneMarkdownHeading(text: string, marker: "**" | "__"): boolean {
+  if (!text.startsWith(marker) || !text.endsWith(marker) || text.length <= marker.length * 2) {
+    return false;
+  }
+  const inner = text.slice(marker.length, -marker.length).trim();
+  return inner.length > 0 && !inner.includes(marker);
 }
 
 function splitCodexAtText(text: string): CodexAtTextPart[] {

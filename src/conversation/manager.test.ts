@@ -11632,6 +11632,67 @@ describe("ConversationManager", () => {
     expect(lark.replyMarkdown).not.toHaveBeenCalled();
   });
 
+  it("splits final card markdown before standalone section headings", async () => {
+    const finalText = [
+      "扫完了：",
+      "",
+      "```text",
+      "**not a heading**",
+      "```",
+      "",
+      "**最占空间的目录**",
+      "- `~/.twinny`：3.02GB",
+      "",
+      "**比较大的单文件**",
+      "- `~/large.raw`：10GB"
+    ].join("\n");
+    const codex = createCodex({
+      startTurn: vi.fn(async ({ threadId, onTurnStarted, onAgentMessage }) => {
+        await onTurnStarted?.("turn_1");
+        await onAgentMessage?.({
+          id: "agent_1",
+          text: finalText,
+          phase: "final_answer"
+        });
+        return {
+          threadId,
+          turnId: "turn_1",
+          text: finalText,
+          status: "completed" as const
+        };
+      })
+    });
+    const lark = createLarkResponder();
+    const manager = createManager({ codex, lark, config: cardModeConfig() });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() =>
+      expect(lark.replyCard).toHaveBeenNthCalledWith(
+        2,
+        "m1",
+        expect.objectContaining({
+          header: expect.objectContaining({
+            template: "green",
+            title: { tag: "plain_text", content: "已完成" }
+          })
+        })
+      )
+    );
+
+    const finalCard = vi.mocked(lark.replyCard).mock.calls.at(-1)![1] as Record<string, unknown>;
+    const bodyElements = (finalCard.body as { elements: Array<Record<string, unknown>> }).elements;
+    const markdownContents = bodyElements
+      .filter((element) => element.tag === "markdown" && typeof element.content === "string")
+      .map((element) => element.content as string)
+      .filter((content) => !content.startsWith("<at ") && !content.includes("With [Twinny]"));
+
+    expect(markdownContents).toEqual([
+      "扫完了：\n\n```text\n**not a heading**\n```",
+      "**最占空间的目录**\n- `~/.twinny`：3.02GB",
+      "**比较大的单文件**\n- `~/large.raw`：10GB"
+    ]);
+  });
+
   it("shows imageGeneration placeholders and appends generated images to final cards", async () => {
     const generatedPath = path.join(os.tmpdir(), "twinny-generated-image.png");
     const generatedImage = {
