@@ -1784,16 +1784,16 @@ function escapeListItemMarkdown(value: string): string {
 
 function renderProcessItems(messages: TwinnyAgentCardMessage[]): string[] {
   return messages
-    .map((message) => sanitizeProcessText(message.text))
-    .filter((message) => message.length > 0);
+    .map((message) => message.text)
+    .filter((message) => message.trim().length > 0);
 }
 
-function sanitizeProcessText(text: string): string {
+function compactSummaryText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
 function cardSummaryContent(text: string): string {
-  return Array.from(sanitizeProcessText(text)).slice(0, 100).join("");
+  return Array.from(compactSummaryText(text)).slice(0, 100).join("");
 }
 
 function formatElapsed(elapsedMs: number): string {

@@ -629,6 +629,27 @@ describe("renderTwinnyAgentCard", () => {
     expect(serialized).toContain("code.png");
     expect(serialized).toContain("real.png");
   });
+
+  it("preserves process message line breaks and spacing", () => {
+    const processText = [
+      "第一行",
+      "",
+      "  缩进内容",
+      "```ts",
+      "  const value = 1;",
+      "```"
+    ].join("\n");
+    const card = renderTwinnyAgentCard(createOptions({
+      status: "finished",
+      messages: [{ id: "m1", text: processText }],
+      finalElements: []
+    }));
+    const processPanel = findElementByTag(card, "collapsible_panel") as
+      | { elements?: Array<{ content?: string }> }
+      | undefined;
+
+    expect(processPanel?.elements?.[0]?.content).toBe(`- ${processText}`);
+  });
 });
 
 describe("renderTwinnyThreadSummaryCard", () => {
