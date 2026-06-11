@@ -610,7 +610,7 @@ describe("renderTwinnyAgentCard", () => {
     expect(serialized).not.toContain("暂无进度");
   });
 
-  it("keeps SEND_TO_LARK examples inside markdown code in the process panel", () => {
+  it("does not parse SEND_TO_LARK directives in the process panel", () => {
     const card = renderTwinnyAgentCard(createOptions({
       status: "finished",
       messages: [{
@@ -627,7 +627,7 @@ describe("renderTwinnyAgentCard", () => {
     const serialized = JSON.stringify(card);
 
     expect(serialized).toContain("code.png");
-    expect(serialized).not.toContain("real.png");
+    expect(serialized).toContain("real.png");
   });
 });
 

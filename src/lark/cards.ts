@@ -6,8 +6,6 @@ import type {
   ProfileName,
   UserIdentity
 } from "../types.js";
-import { isPositionInTextRanges, markdownCodeRanges, markdownLines } from "../markdown.js";
-
 export type LarkCardJson = Record<string, unknown>;
 export type LarkCardElement = Record<string, unknown>;
 
@@ -1791,18 +1789,7 @@ function renderProcessItems(messages: TwinnyAgentCardMessage[]): string[] {
 }
 
 function sanitizeProcessText(text: string): string {
-  const codeRanges = markdownCodeRanges(text);
-  return markdownLines(text)
-    .filter((line) => {
-      const firstNonWhitespace = line.text.search(/\S/);
-      return firstNonWhitespace === -1 ||
-        !line.text.slice(firstNonWhitespace).startsWith("SEND_TO_LARK:") ||
-        isPositionInTextRanges(line.start + firstNonWhitespace, codeRanges);
-    })
-    .map((line) => line.text)
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function cardSummaryContent(text: string): string {
