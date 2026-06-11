@@ -11632,7 +11632,7 @@ describe("ConversationManager", () => {
     expect(lark.replyMarkdown).not.toHaveBeenCalled();
   });
 
-  it("splits final card markdown before standalone section headings", async () => {
+  it("preserves blank lines in final card markdown", async () => {
     const finalText = [
       "扫完了：",
       "",
@@ -11687,9 +11687,19 @@ describe("ConversationManager", () => {
       .filter((content) => !content.startsWith("<at ") && !content.includes("With [Twinny]"));
 
     expect(markdownContents).toEqual([
-      "扫完了：\n\n```text\n**not a heading**\n```",
-      "**最占空间的目录**\n- `~/.twinny`：3.02GB",
-      "**比较大的单文件**\n- `~/large.raw`：10GB"
+      [
+        "扫完了：",
+        "",
+        "```text",
+        "**not a heading**",
+        "```",
+        "",
+        "**最占空间的目录**",
+        "- `~/.twinny`：3.02GB",
+        "",
+        "**比较大的单文件**",
+        "- `~/large.raw`：10GB"
+      ].join("\n")
     ]);
   });
 

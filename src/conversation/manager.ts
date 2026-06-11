@@ -13191,9 +13191,6 @@ export class ConversationManager {
     for (const line of markdownLines(larkMarkdown)) {
       const directive = parseSendToLarkDirective(line.text, line.start, codeRanges);
       if (directive.kind === "none") {
-        if (shouldStartNewCardMarkdownElement(line, codeRanges, pendingText)) {
-          flushText();
-        }
         await this.appendMarkdownLineToCardOutput({
           line: line.text,
           lineStart: line.start,
@@ -13545,32 +13542,6 @@ function appendMarkdownLine(text: string, line: string): string {
         : `${text}\n\n`;
   }
   return `${text}${text.length === 0 || text.endsWith("\n") ? "" : "\n"}${line}`;
-}
-
-function shouldStartNewCardMarkdownElement(line: { text: string; start: number }, codeRanges: TextRange[], pendingText: string): boolean {
-  if (pendingText.trim().length === 0) {
-    return false;
-  }
-  const firstNonWhitespace = line.text.search(/\S/);
-  if (firstNonWhitespace === -1 || isPositionInTextRanges(line.start + firstNonWhitespace, codeRanges)) {
-    return false;
-  }
-  return isStandaloneMarkdownSectionHeading(line.text);
-}
-
-function isStandaloneMarkdownSectionHeading(line: string): boolean {
-  const trimmed = line.trim();
-  return /^#{1,6}\s+\S/.test(trimmed) ||
-    isWrappedStandaloneMarkdownHeading(trimmed, "**") ||
-    isWrappedStandaloneMarkdownHeading(trimmed, "__");
-}
-
-function isWrappedStandaloneMarkdownHeading(text: string, marker: "**" | "__"): boolean {
-  if (!text.startsWith(marker) || !text.endsWith(marker) || text.length <= marker.length * 2) {
-    return false;
-  }
-  const inner = text.slice(marker.length, -marker.length).trim();
-  return inner.length > 0 && !inner.includes(marker);
 }
 
 function splitCodexAtText(text: string): CodexAtTextPart[] {
