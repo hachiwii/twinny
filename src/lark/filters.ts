@@ -118,7 +118,7 @@ export function normalizeIncomingLarkMessageWithReason(
   }
 
   const senderType = stringValue(sender.sender_type)?.toLowerCase();
-  if (senderType === "app" || senderType === "bot" || senderOpenId === options.botOpenId) {
+  if (senderOpenId === options.botOpenId) {
     return ignored("bot_self_message", raw);
   }
   const senderName = firstStringValue(
@@ -164,6 +164,7 @@ export function normalizeIncomingLarkMessageWithReason(
       messageType,
       senderOpenId,
       senderName,
+      senderType,
       larkGroupId: chatType === "p2p" ? undefined : chatId,
       larkThreadId: larkThreadIdForMessage(message, messageId, chatType),
       larkRootMessageId: firstStringValue(message.root_id),

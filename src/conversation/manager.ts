@@ -3288,6 +3288,9 @@ export class ConversationManager {
     | { kind: "unauthorized" }
   > {
     const hasBotMention = messageMentionsBot(message, this.options.botOpenId);
+    if (isGroupConversationType(context.type) && messageSenderIsBot(message) && !hasBotMention) {
+      return { kind: "ignored" };
+    }
     const text = isGroupConversationType(context.type) && hasBotMention
       ? stripLeadingLarkMentions(message.text, message)
       : message.text;
@@ -16519,6 +16522,11 @@ function messageMentionsBot(message: IncomingLarkMessage, botOpenId: string | un
     return false;
   }
   return (message.mentions ?? []).some((mention) => mention.openId === botOpenId);
+}
+
+function messageSenderIsBot(message: IncomingLarkMessage): boolean {
+  const senderType = message.senderType?.toLowerCase();
+  return senderType === "app" || senderType === "bot";
 }
 
 function messageHasMentions(message: IncomingLarkMessage): boolean {

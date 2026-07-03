@@ -30,6 +30,7 @@ describe("normalizeIncomingLarkMessage", () => {
       messageType: "text",
       senderOpenId: "ou_user",
       senderName: "User Name",
+      senderType: "user",
       text: "hello",
       createTime: 1234
     });
@@ -424,14 +425,21 @@ describe("normalizeIncomingLarkMessage", () => {
     });
   });
 
+  it("keeps non-self app and bot sender messages for downstream routing", () => {
+    expect(normalizeIncomingLarkMessage(receiveEvent({ sender: { sender_type: "app" } }))).toMatchObject({
+      senderOpenId: "ou_user",
+      senderType: "app"
+    });
+    expect(normalizeIncomingLarkMessage(receiveEvent({ sender: { sender_type: "bot" } }))).toMatchObject({
+      senderOpenId: "ou_user",
+      senderType: "bot"
+    });
+  });
+
   it("ignores unsupported chat and bot-self messages", () => {
     expect(normalizeIncomingLarkMessageWithReason(receiveEvent({ message: { chat_type: "meeting" } }))).toMatchObject({
       kind: "ignored",
       reason: "unsupported_chat_type"
-    });
-    expect(normalizeIncomingLarkMessageWithReason(receiveEvent({ sender: { sender_type: "app" } }))).toMatchObject({
-      kind: "ignored",
-      reason: "bot_self_message"
     });
     expect(normalizeIncomingLarkMessageWithReason(receiveEvent(), { botOpenId: "ou_user" })).toMatchObject({
       kind: "ignored",

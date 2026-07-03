@@ -9777,6 +9777,28 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("requires bot and app sender group messages to mention Twinny regardless of group response mode", async () => {
+    const row = groupConversationRecord({ responseMode: "all", profile: "host", codexThreadId: "thread_group" });
+    const { repository } = createRepository(row);
+    const codex = createCodex();
+    const manager = createManager({ repository, codex, botOpenId: "ou_bot" });
+
+    manager.submitIncoming(groupMessage("g_bot_no_mention", "bot broadcast", { senderType: "bot" }));
+    manager.submitIncoming(groupMessage("g_app_no_mention", "app broadcast", { senderType: "app" }));
+    await waitForDelay();
+    expect(repository.insertLarkMessage).not.toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+
+    manager.submitIncoming(
+      groupMessage("g_bot_mention", "@Twinny bot request", {
+        senderType: "bot",
+        mentions: [botMention()]
+      })
+    );
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({ input: wrappedMessage("bot request", "g_bot_mention") }));
+  });
+
   it("ignores non-bot mentions in all and owner group modes", async () => {
     const aliceMention = { key: "@_alice", openId: "ou_alice", name: "Alice" };
     const allModeRow = groupConversationRecord({ responseMode: "all", profile: "host", codexThreadId: "thread_group" });

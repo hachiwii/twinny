@@ -358,6 +358,7 @@ export interface IncomingLarkMessage {
   messageType: string;
   senderOpenId: string;
   senderName?: string;
+  senderType?: string;
   chatName?: string;
   larkGroupId?: string;
   larkThreadId?: string;
