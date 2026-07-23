@@ -467,6 +467,35 @@ describe("CodexAppServer", () => {
       await server.stop();
     }
   });
+
+  it("marks a live app-server unhealthy when its stdout protocol stream closes", async () => {
+    const tempDir = makeTempDir();
+    const captureFile = path.join(tempDir, "requests.ndjson");
+    const fakeBinary = createDisconnectedCodexBinary(tempDir, captureFile);
+    const codexHome = path.join(tempDir, "codex-home");
+    const server = new CodexAppServer({
+      profile: "guest",
+      binary: fakeBinary,
+      codexHome,
+      requestTimeoutMs: 2_000,
+      clientVersion: "test",
+      env: {
+        PATH: process.env.PATH,
+        HOME: tempDir
+      }
+    });
+    const unhealthy = onceUnhealthy(server);
+
+    try {
+      await expect(server.start()).resolves.toMatchObject({ userAgent: "fake-codex" });
+      await expect(unhealthy).resolves.toMatchObject({
+        code: "CODEX_APP_SERVER_UNHEALTHY"
+      });
+      expect(server.initialized).toBeUndefined();
+    } finally {
+      await server.stop();
+    }
+  });
 });
 
 describe("ProfileCodexAppServerPool", () => {
@@ -761,9 +790,56 @@ rl.on("line", (line) => {
   return binary;
 }
 
+function createDisconnectedCodexBinary(tempDir: string, captureFile: string): string {
+  const binary = path.join(tempDir, "fake-codex-disconnected.mjs");
+  fs.writeFileSync(
+    binary,
+    `#!/usr/bin/env node
+import fs from "node:fs";
+import readline from "node:readline";
+
+const captureFile = ${JSON.stringify(captureFile)};
+if (process.argv.includes("--version")) {
+  process.stdout.write("fake-codex 1.2.3\\n");
+  process.exit(0);
+}
+
+const rl = readline.createInterface({ input: process.stdin });
+const keepAlive = setInterval(() => undefined, 1_000);
+
+rl.on("line", (line) => {
+  fs.appendFileSync(captureFile, line + "\\n");
+  const message = JSON.parse(line);
+  if (message.method !== "initialize") {
+    return;
+  }
+  process.stdout.write(JSON.stringify({
+    id: message.id,
+    result: {
+      userAgent: "fake-codex",
+      codexHome: process.env.CODEX_HOME,
+      platformFamily: "unix",
+      platformOs: "macos"
+    }
+  }) + "\\n", () => fs.closeSync(1));
+});
+
+rl.on("close", () => clearInterval(keepAlive));
+`,
+    { mode: 0o755 }
+  );
+  return binary;
+}
+
 function onceExit(server: CodexAppServer): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   return new Promise((resolve) => {
     server.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+}
+
+function onceUnhealthy(server: CodexAppServer): Promise<Error> {
+  return new Promise((resolve) => {
+    server.once("unhealthy", resolve);
   });
 }
 

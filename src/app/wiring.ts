@@ -448,6 +448,22 @@ export class TwinnyRuntime {
     server.on("threadNameUpdated", (update) => {
       this.conversation?.submitCodexThreadNameUpdated(update);
     });
+    server.on("unhealthy", (error) => {
+      if (this.stopped) {
+        return;
+      }
+      this.log.error({ profile, error }, "codex app-server became unhealthy");
+      this.telemetry.captureError(error, {
+        errorType: "codex_app_server",
+        errorSite: "runtime.codexAppServer.unhealthy",
+        operation: "codex_app_server_unhealthy",
+        fatal: false,
+        properties: { profile }
+      });
+      void this.handleCodexAppServerExit(profile).catch((recoveryError) => {
+        this.log.error({ error: recoveryError, profile }, "failed to recover unhealthy codex app-server");
+      });
+    });
     server.on("exit", (code, signal) => {
       if (this.codexIntentionalStopByProfile.delete(profile) || this.stopped) {
         this.log.info({ profile, code, signal }, "codex app-server stopped intentionally");

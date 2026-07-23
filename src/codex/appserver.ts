@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
+import { TwinnyError } from "../errors.js";
 import { ensureGuestWorkspaceTrust, ensureProjectTrust } from "../profiles/index.js";
 import { commandForPlatform } from "../platform/commands.js";
 import { GUEST_PROFILE_NAME, HOST_PROFILE_NAME, type CodexThreadNameUpdate, type ProfileName } from "../types.js";
@@ -87,6 +88,7 @@ export interface CodexAppServerEvents {
   versionProbeFailed: [failure: CodexVersionProbeFailure];
   notification: [message: CodexNotificationMessage];
   threadNameUpdated: [update: CodexThreadNameUpdate];
+  unhealthy: [error: Error];
   exit: [code: number | null, signal: NodeJS.Signals | null];
 }
 
@@ -182,6 +184,7 @@ export class CodexAppServer extends EventEmitter {
     this.child = child;
     this.protocolClient = protocol;
     this.initializeResponse = undefined;
+    this.attachProtocolHealth(protocol, child);
     child.on("exit", (code, signal) => {
       if (this.child === child) {
         this.child = undefined;
@@ -218,6 +221,36 @@ export class CodexAppServer extends EventEmitter {
         this.emit("threadNameUpdated", update);
       }
     });
+  }
+
+  private attachProtocolHealth(
+    protocol: CodexProtocolClient,
+    child: ChildProcessWithoutNullStreams
+  ): void {
+    let unhealthy = false;
+    const markUnhealthy = (error: Error): void => {
+      if (
+        unhealthy ||
+        this.child !== child ||
+        this.protocolClient !== protocol ||
+        hasExited(child)
+      ) {
+        return;
+      }
+      unhealthy = true;
+      this.initializeResponse = undefined;
+      protocol.close();
+      this.emit("unhealthy", error);
+    };
+    const closedError = (stream: "protocol" | "stdin"): TwinnyError =>
+      new TwinnyError(`Codex app-server ${stream} stream closed unexpectedly`, "CODEX_APP_SERVER_UNHEALTHY");
+
+    protocol.on("error", markUnhealthy);
+    protocol.once("close", () => markUnhealthy(closedError("protocol")));
+    child.once("error", markUnhealthy);
+    child.stdin.once("error", markUnhealthy);
+    child.stdin.once("close", () => markUnhealthy(closedError("stdin")));
+    child.stdout.once("error", markUnhealthy);
   }
 
   async startThread(

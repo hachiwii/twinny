@@ -85,6 +85,33 @@ describe("TwinnyRuntime Codex app-server exit telemetry", () => {
     );
   });
 
+  it("reports and recovers unhealthy Codex app-servers", async () => {
+    const telemetry = createTelemetry();
+    const logger = createLogger();
+    const { runtime, server } = createRuntimeWithServer({ telemetry, logger });
+    const restart = vi.fn(async () => ({}));
+    (runtime as unknown as RuntimeInternals).codexPool = {
+      restart
+    } as unknown as ProfileCodexAppServerPool;
+    const error = new Error("protocol stream closed");
+
+    server.emit("unhealthy", error);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(logger.error).toHaveBeenCalledWith(
+      { profile: "guest", error },
+      "codex app-server became unhealthy"
+    );
+    expect(telemetry.captureError).toHaveBeenCalledWith(error, {
+      errorType: "codex_app_server",
+      errorSite: "runtime.codexAppServer.unhealthy",
+      operation: "codex_app_server_unhealthy",
+      fatal: false,
+      properties: { profile: "guest" }
+    });
+    expect(restart).toHaveBeenCalledWith("guest");
+  });
+
   it("only checks auto activation event subscriptions for enabled greeting targets", () => {
     expect(autoActivationEvents(createConfig({
       permissions: { p2pDefaultProfile: "guest" },
