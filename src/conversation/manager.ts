@@ -7205,6 +7205,7 @@ export class ConversationManager {
       return;
     }
 
+    const steerRunId = active.runId;
     try {
       await this.options.codex.steerTurn({
         profile: active.profile,
@@ -7240,7 +7241,27 @@ export class ConversationManager {
       await this.addQueuedReactionBestEffort(message);
       state.pendingBatch.push(message);
       await this.markPendingMessagesQueuedBestEffort([message]);
+      if (isNoActiveTurnToSteerError(error)) {
+        await this.recoverStaleActiveAfterNoActiveSteer(state, active, steerRunId);
+      }
       await this.replyControlBestEffort(message.messageId, "当前任务已不可打断注入，已加入下一轮队列。");
+    }
+  }
+
+  private async recoverStaleActiveAfterNoActiveSteer(
+    state: ConversationState,
+    active: ActiveTurn,
+    steerRunId: number
+  ): Promise<void> {
+    if (state.active !== active || active.runId !== steerRunId) {
+      return;
+    }
+    state.active = undefined;
+    this.stopAgentCardTimer(active);
+    await this.clearReactionBestEffort(active);
+    await this.startWaitingInterruptBatch(state);
+    if (!state.active) {
+      await this.startPendingBatch(state, active.context);
     }
   }
 
@@ -18463,6 +18484,10 @@ function isMissingThreadError(error: unknown): boolean {
 
 function isNoActiveTurnToInterruptError(error: unknown): boolean {
   return errorMessageIncludes(error, "no active turn to interrupt");
+}
+
+function isNoActiveTurnToSteerError(error: unknown): boolean {
+  return errorMessageIncludes(error, "no active turn to steer");
 }
 
 function errorMessageIncludes(error: unknown, fragment: string): boolean {

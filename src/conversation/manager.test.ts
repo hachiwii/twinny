@@ -299,6 +299,98 @@ describe("ConversationManager", () => {
     );
   });
 
+  it("clears a stale active turn and immediately starts the failed steer message when Codex reports no active turn", async () => {
+    const { codex, turns } = createDeferredCodex();
+    vi.mocked(codex.steerTurn).mockRejectedValue(codexRequestFailure("no active turn to steer"));
+    const manager = createManager({ codex });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "second"));
+
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    expect(codex.startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ input: wrappedMessage("second", "m2") })
+    );
+    expect(manager.getRuntimeStats()).toMatchObject({ activeTurnCount: 1, queuedMessageCount: 0 });
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForDelay();
+    expect(codex.startTurn).toHaveBeenCalledTimes(2);
+    expect(manager.getRuntimeStats()).toMatchObject({ activeTurnCount: 1, queuedMessageCount: 0 });
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("stays safely idle when the failed steer message is unavailable while draining the queue", async () => {
+    const { repository } = createRepository();
+    const { codex } = createDeferredCodex();
+    vi.mocked(codex.steerTurn).mockRejectedValue(codexRequestFailure("no active turn to steer"));
+    const larkMessages = createLarkMessageReader({
+      m2: new LarkMessageUnavailableError("m2")
+    });
+    const manager = createManager({ repository, codex, larkMessages });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "second"));
+
+    await waitForExpect(() => expect(repository.markLarkMessageRecalled).toHaveBeenCalledWith("m2"));
+    expect(codex.startTurn).toHaveBeenCalledTimes(1);
+    expect(manager.getRuntimeStats()).toMatchObject({ activeTurnCount: 0, queuedMessageCount: 0 });
+  });
+
+  it.each([
+    ["turn id mismatch", "expected active turn id turn_1 but found turn_0"],
+    ["other steer failure", "temporary steer failure"]
+  ])("does not calibrate stale active state for %s", async (_label, errorMessage) => {
+    const { codex, turns } = createDeferredCodex();
+    vi.mocked(codex.steerTurn).mockRejectedValue(codexRequestFailure(errorMessage));
+    const manager = createManager({ codex });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "second"));
+
+    await waitForExpect(() => expect(manager.getRuntimeStats().queuedMessageCount).toBe(1));
+    expect(codex.startTurn).toHaveBeenCalledTimes(1);
+    expect(manager.getRuntimeStats().activeTurnCount).toBe(1);
+
+    turns[0]!.resolve(completed("thread_1", "turn_1"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("does not clear a replacement active turn when an older steer later reports no active turn", async () => {
+    const steer = deferred<void>();
+    const { codex, turns } = createDeferredCodex();
+    vi.mocked(codex.steerTurn).mockImplementation(() => steer.promise);
+    const manager = createManager({ codex });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    manager.submitIncoming(message("m2", "second"));
+    await waitForExpect(() => expect(codex.steerTurn).toHaveBeenCalledTimes(1));
+
+    await expect(
+      manager.suspendActiveTurnsForCodexAppServerExit("guest", { inlineStateKey: "p2p_ou_guest" })
+    ).resolves.toBe(1);
+    await expect(
+      manager.recoverSuspendedActiveTurnsForCodexAppServerExit("guest", { inlineStateKey: "p2p_ou_guest" })
+    ).resolves.toBe(1);
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    steer.reject(codexRequestFailure("no active turn to steer"));
+    await waitForExpect(() => expect(manager.getRuntimeStats().queuedMessageCount).toBe(1));
+    expect(codex.startTurn).toHaveBeenCalledTimes(2);
+    expect(manager.getRuntimeStats().activeTurnCount).toBe(1);
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    turns[2]!.resolve(completed("thread_1", "turn_3"));
+  });
+
   it("records ordinary message lifecycle and token usage in runtime history", async () => {
     const { repository } = createRepository();
     const codex = createCodex({
@@ -15835,6 +15927,10 @@ function completed(
     text: "",
     status
   };
+}
+
+function codexRequestFailure(message: string): TwinnyError {
+  return new TwinnyError(message, "CODEX_REQUEST_FAILED", { code: -32600, message });
 }
 
 function dynamicToolPayload(response: unknown): any {
