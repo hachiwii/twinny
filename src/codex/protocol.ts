@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
 import type { Readable, Writable } from "node:stream";
+import type { Logger } from "pino";
 import { TwinnyError, toErrorMessage } from "../errors.js";
+import { logger as defaultLogger } from "../observability/logs.js";
 import { TWINNY_VERSION } from "../version.js";
 
 export type CodexRequestId = string | number;
@@ -62,6 +64,7 @@ export interface PendingRequest {
 export interface CodexProtocolClientOptions {
   requestTimeoutMs?: number;
   requestIdPrefix?: string;
+  logger?: Pick<Logger, "warn">;
 }
 
 export interface CodexProtocolClientEvents {
@@ -96,6 +99,7 @@ export class CodexProtocolClient extends EventEmitter {
   private readonly pending = new Map<CodexRequestId, PendingRequest>();
   private readonly requestTimeoutMs: number;
   private readonly requestIdPrefix: string;
+  private readonly log: Pick<Logger, "warn">;
   private nextRequestId = 1;
   private readLoopDone: Promise<void> | undefined;
   private closed = false;
@@ -108,6 +112,7 @@ export class CodexProtocolClient extends EventEmitter {
     super();
     this.requestTimeoutMs = options.requestTimeoutMs ?? 120_000;
     this.requestIdPrefix = options.requestIdPrefix ?? "twinny";
+    this.log = options.logger ?? defaultLogger;
   }
 
   start(): void {
@@ -267,9 +272,15 @@ export class CodexProtocolClient extends EventEmitter {
   }
 
   private handleResponse(message: CodexResponseMessage): void {
-    this.emit("response", message);
     const pending = this.pending.get(message.id);
     if (!pending) {
+      if (this.wasIssuedRequestId(message.id)) {
+        this.log.warn(
+          { requestId: message.id, responseHasError: message.error !== undefined },
+          "discarded late Codex response for a request that is no longer pending"
+        );
+        return;
+      }
       this.emit(
         "error",
         new TwinnyError(`Received response for unknown Codex request id ${String(message.id)}`, "CODEX_UNKNOWN_RESPONSE")
@@ -277,6 +288,7 @@ export class CodexProtocolClient extends EventEmitter {
       return;
     }
 
+    this.emit("response", message);
     if (pending.timeout) {
       clearTimeout(pending.timeout);
     }
@@ -287,6 +299,22 @@ export class CodexProtocolClient extends EventEmitter {
       return;
     }
     pending.resolve(message.result);
+  }
+
+  private wasIssuedRequestId(id: CodexRequestId): boolean {
+    if (typeof id !== "string") {
+      return false;
+    }
+    const prefix = `${this.requestIdPrefix}-`;
+    if (!id.startsWith(prefix)) {
+      return false;
+    }
+    const ordinalText = id.slice(prefix.length);
+    if (!/^[1-9]\d*$/.test(ordinalText)) {
+      return false;
+    }
+    const ordinal = Number(ordinalText);
+    return Number.isSafeInteger(ordinal) && ordinal < this.nextRequestId;
   }
 
   private writeJson(message: unknown): void {
