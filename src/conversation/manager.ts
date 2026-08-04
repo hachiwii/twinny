@@ -1955,7 +1955,14 @@ export class ConversationManager {
         if (!active) {
           return 0;
         }
-        return (await this.recoverSuspendedActiveTurnForCodexAppServerExit(state, active)) ? 1 : 0;
+        try {
+          return (await this.recoverSuspendedActiveTurnForCodexAppServerExit(state, active)) ? 1 : 0;
+        } catch (error) {
+          if (!state.active && !state.suspendedActiveTurns.includes(active)) {
+            state.suspendedActiveTurns.unshift(active);
+          }
+          throw error;
+        }
       };
       recoverPromises.push(
         this.runStateControlTask(stateKey, state, options, recover)
@@ -10480,6 +10487,9 @@ export class ConversationManager {
       await this.setThreadStatusBestEffort(active.conversationKey, active.threadId, "idle");
       return false;
     }
+    if (active.kind === "normal" || active.kind === "compact") {
+      await this.resumeSuspendedActiveThread(active);
+    }
     if (active.kind === "compact") {
       await this.beginCompactTurn(state, active.context, {
         message: recoveredMessages.messages[recoveredMessages.messages.length - 1]!,
@@ -10518,6 +10528,29 @@ export class ConversationManager {
       usageCarryover: active.messageTokenUsage
     });
     return true;
+  }
+
+  private async resumeSuspendedActiveThread(active: ActiveTurn): Promise<void> {
+    try {
+      const resumed = await this.options.codex.resumeThread({
+        profile: active.profile,
+        threadId: active.threadId,
+        cwd: active.workspace,
+        approvalPolicy: "never"
+      });
+      if (resumed.threadId !== active.threadId) {
+        throw new Error(`Codex resumed unexpected thread ${resumed.threadId} instead of ${active.threadId}`);
+      }
+    } catch (error) {
+      if (isMissingRolloutError(error)) {
+        this.log.warn(
+          { error, conversationKey: active.conversationKey, codexThreadId: active.threadId },
+          "suspended codex thread rollout missing; preserving existing recovery fallback"
+        );
+        return;
+      }
+      throw error;
+    }
   }
 
   private async suspendActiveTurnForShutdown(state: ConversationState): Promise<boolean> {

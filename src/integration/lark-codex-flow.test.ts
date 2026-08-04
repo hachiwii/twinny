@@ -193,6 +193,69 @@ describe("Lark to Codex integration flow", () => {
     ]);
   });
 
+  it("resumes the same thread before replaying an active turn after app-server restart", async () => {
+    const harness = await IntegrationHarness.create(jsonl(
+      {
+        profile: "guest",
+        after: { method: "turn/start", nth: 1 },
+        notify: {
+          method: "turn/started",
+          params: { threadId: "guest_thread_1", turn: { id: "turn_1" } }
+        }
+      },
+      {
+        profile: "guest",
+        after: { method: "turn/start", nth: 1 },
+        delayMs: 200,
+        notify: {
+          method: "turn/completed",
+          params: {
+            threadId: "guest_thread_1",
+            turn: {
+              id: "turn_1",
+              status: "completed",
+              durationMs: 200,
+              items: [{
+                type: "agentMessage",
+                id: "recovered_final",
+                text: "continued in the original context",
+                phase: "final_answer"
+              }]
+            }
+          }
+        }
+      }
+    ));
+
+    await harness.dispatchLarkJsonl(jsonl({
+      event: "im.message.receive_v1",
+      data: receiveMessageEvent({ eventId: "e_restart_resume", messageId: "m_restart_resume", text: "keep this context" })
+    }));
+    await harness.waitForTrace((trace) => codexOut(trace, "turn/start").length === 1, "turn active before restart");
+
+    await harness.recoverCodexAppServer("guest");
+    await harness.waitForTrace(
+      (trace) => codexOut(trace, "thread/resume").length === 1 && codexOut(trace, "turn/start").length === 2,
+      "thread resumed before recovered turn"
+    );
+    await harness.waitForTrace(
+      (trace) => larkOut(trace).some((entry) => entry.method === "PATCH" && traceText(entry).includes("continued in the original context")),
+      "recovered turn completed"
+    );
+
+    const trace = harness.readTrace();
+    expect(codexOut(trace, "thread/start")).toHaveLength(1);
+    expect(codexOut(trace, "thread/resume")[0]?.message.params).toMatchObject({ threadId: "guest_thread_1" });
+    expect(codexOut(trace, "turn/start")[1]?.message.params).toMatchObject({ threadId: "guest_thread_1" });
+    expect(traceText(codexOut(trace, "turn/start")[1])).toContain(
+      "Twinny daemon has beed reloaded, continue with the unfinished work."
+    );
+    expectOrder(trace, [
+      ["resume original thread", (entry) => isCodexMethod(entry, "thread/resume")],
+      ["start recovered turn", (entry) => isCodexMethod(entry, "turn/start")]
+    ]);
+  });
+
   it("keeps queued Lark messages out of Codex when they are recalled before the current turn finishes", async () => {
     const harness = await IntegrationHarness.create(`
 {"profile":"guest","after":{"method":"turn/start","nth":1},"notify":{"method":"turn/started","params":{"threadId":"guest_thread_1","turn":{"id":"turn_1"}}}}

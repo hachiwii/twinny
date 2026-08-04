@@ -14310,6 +14310,85 @@ describe("ConversationManager", () => {
     expect(repository.markLarkMessagesCleared).not.toHaveBeenCalled();
   });
 
+  it("resumes the original thread before replaying an active turn after app-server restart", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    vi.mocked(codex.resumeThread).mockClear();
+    vi.mocked(codex.startThread).mockClear();
+
+    await expect(manager.suspendActiveTurnsForCodexAppServerExit("guest")).resolves.toBe(1);
+    await expect(manager.recoverSuspendedActiveTurnsForCodexAppServerExit("guest")).resolves.toBe(1);
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+
+    expect(codex.resumeThread).toHaveBeenCalledOnce();
+    expect(codex.resumeThread).toHaveBeenCalledWith({
+      profile: "guest",
+      threadId: "thread_1",
+      cwd: "/tmp/twinny/workspaces/p2p_ou_guest",
+      approvalPolicy: "never"
+    });
+    expect(vi.mocked(codex.resumeThread).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(codex.startTurn).mock.invocationCallOrder[1]!
+    );
+    expect(codex.startThread).not.toHaveBeenCalled();
+    expect(repository.findByConversationKey("p2p_ou_guest")).toMatchObject({ codexThreadId: "thread_1" });
+
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("keeps a suspended turn recoverable when resuming its thread fails transiently", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    vi.mocked(codex.resumeThread).mockClear();
+    vi.mocked(codex.resumeThread).mockRejectedValueOnce(new Error("resume temporarily unavailable"));
+
+    await expect(manager.suspendActiveTurnsForCodexAppServerExit("guest")).resolves.toBe(1);
+    await expect(manager.recoverSuspendedActiveTurnsForCodexAppServerExit("guest")).rejects.toThrow(
+      "resume temporarily unavailable"
+    );
+    expect(codex.startTurn).toHaveBeenCalledTimes(1);
+    expect(codex.startThread).not.toHaveBeenCalled();
+
+    vi.mocked(codex.resumeThread).mockResolvedValueOnce({ threadId: "thread_1" });
+    await expect(manager.recoverSuspendedActiveTurnsForCodexAppServerExit("guest")).resolves.toBe(1);
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(2));
+    turns[1]!.resolve(completed("thread_1", "turn_2"));
+  });
+
+  it("preserves missing-rollout replacement fallback after restart resume fails", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const { codex, turns } = createDeferredCodex();
+    const manager = createManager({ repository, codex });
+
+    manager.submitIncoming(message("m1", "first"));
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    vi.mocked(codex.resumeThread).mockClear();
+    vi.mocked(codex.resumeThread).mockRejectedValueOnce(new Error("no rollout found for thread thread_1"));
+    vi.mocked(codex.startThread).mockClear();
+    vi.mocked(codex.startThread).mockResolvedValueOnce({ threadId: "thread_replacement" });
+    vi.mocked(codex.startTurn).mockImplementationOnce(async () => {
+      throw new Error("thread not found: thread_1");
+    });
+
+    await manager.suspendActiveTurnsForCodexAppServerExit("guest");
+    await expect(manager.recoverSuspendedActiveTurnsForCodexAppServerExit("guest")).resolves.toBe(1);
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(3));
+    expect(codex.resumeThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread_1" }));
+    expect(codex.startThread).toHaveBeenCalledOnce();
+    expect(repository.findByConversationKey("p2p_ou_guest")).toMatchObject({
+      codexThreadId: "thread_replacement"
+    });
+    turns[1]!.resolve(completed("thread_replacement", "turn_3"));
+  });
+
   it("leaves turns recoverable when Codex protocol closes during an active turn", async () => {
     const { codex, turns } = createDeferredCodex();
     const lark = createLarkResponder();
