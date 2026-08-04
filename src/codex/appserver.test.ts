@@ -89,6 +89,47 @@ describe("Codex app-server process tree", () => {
     await expect(terminateCodexAppServerProcessTree(target, "SIGKILL", { killProcess })).resolves.toBe(true);
   });
 
+  it("rejects EPERM when the isolated POSIX process group was never reached", async () => {
+    const permissionDenied = Object.assign(new Error("permission denied"), { code: "EPERM" });
+    const killProcess = vi.fn((): true => {
+      throw permissionDenied;
+    });
+    const target = createCodexAppServerProcessTreeTarget({ pid: 43215, kill: vi.fn() }, "darwin", true);
+
+    await expect(terminateCodexAppServerProcessTree(target, "SIGKILL", { killProcess })).rejects.toBe(permissionDenied);
+  });
+
+  it("accepts Darwin's partial-success EPERM when escalating a previously reached group", async () => {
+    const permissionDenied = Object.assign(new Error("permission denied"), { code: "EPERM" });
+    const killProcess = vi.fn((_pid: number, signal: NodeJS.Signals): true => {
+      if (signal === "SIGKILL") {
+        throw permissionDenied;
+      }
+      return true;
+    });
+    const target = createCodexAppServerProcessTreeTarget({ pid: 43216, kill: vi.fn() }, "darwin", true);
+
+    await expect(terminateCodexAppServerProcessTree(target, "SIGTERM", { killProcess })).resolves.toBe(true);
+    await expect(terminateCodexAppServerProcessTree(target, "SIGKILL", { killProcess })).resolves.toBe(true);
+
+    expect(killProcess).toHaveBeenNthCalledWith(1, -43216, "SIGTERM");
+    expect(killProcess).toHaveBeenNthCalledWith(2, -43216, "SIGKILL");
+  });
+
+  it("does not apply Darwin's process-group EPERM semantics on Linux", async () => {
+    const permissionDenied = Object.assign(new Error("permission denied"), { code: "EPERM" });
+    const killProcess = vi.fn((_pid: number, signal: NodeJS.Signals): true => {
+      if (signal === "SIGKILL") {
+        throw permissionDenied;
+      }
+      return true;
+    });
+    const target = createCodexAppServerProcessTreeTarget({ pid: 43217, kill: vi.fn() }, "linux", true);
+
+    await expect(terminateCodexAppServerProcessTree(target, "SIGTERM", { killProcess })).resolves.toBe(true);
+    await expect(terminateCodexAppServerProcessTree(target, "SIGKILL", { killProcess })).rejects.toBe(permissionDenied);
+  });
+
   it("does not let stale cleanup kill a new process tree that reused the old PID", async () => {
     const killProcess = vi.fn((): true => true);
     const oldTarget = createCodexAppServerProcessTreeTarget({ pid: 43212, kill: vi.fn() }, "darwin", true);

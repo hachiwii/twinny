@@ -78,6 +78,7 @@ export interface CodexAppServerProcessTreeTarget {
   platform: NodeJS.Platform;
   isolatedProcessGroup: boolean;
   killChild(signal: NodeJS.Signals): boolean;
+  groupSignalDelivered: boolean;
   signalAttempts: Map<NodeJS.Signals, Promise<boolean>>;
 }
 
@@ -640,6 +641,7 @@ export function createCodexAppServerProcessTreeTarget(
     platform,
     isolatedProcessGroup,
     killChild: (signal) => child.kill(signal),
+    groupSignalDelivered: false,
     signalAttempts: new Map()
   };
 }
@@ -706,9 +708,23 @@ async function terminateCodexAppServerProcessTreeOnce(
 
   try {
     (dependencies.killProcess ?? process.kill)(-target.pid, signal);
+    target.groupSignalDelivered = true;
     return true;
   } catch (error) {
     if (isMissingProcessError(error)) {
+      return true;
+    }
+    // Darwin returns EPERM for a process-group kill when any group member is
+    // unsignalable, even though signalable members still receive the signal.
+    // Only accept that partial-success result for a SIGKILL escalation after
+    // this isolated group was previously reached successfully. An initial
+    // EPERM remains an error so an unrelated or polluted PGID is never trusted.
+    if (
+      target.platform === "darwin" &&
+      signal === "SIGKILL" &&
+      target.groupSignalDelivered &&
+      isPermissionError(error)
+    ) {
       return true;
     }
     throw error;
@@ -733,6 +749,10 @@ async function killWindowsProcessTree(pid: number, signal: NodeJS.Signals): Prom
 
 function isMissingProcessError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
+}
+
+function isPermissionError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EPERM";
 }
 
 function errorMessage(error: unknown): string {
