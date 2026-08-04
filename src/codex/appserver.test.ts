@@ -2,13 +2,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parse, type TomlTable } from "smol-toml";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CodexAppServer,
   ProfileCodexAppServerPool,
+  buildCodexAppServerSpawnOptions,
   buildCodexAppServerEnv,
+  createCodexAppServerProcessTreeTarget,
   parseCodexCliVersionOutput,
-  resolveCodexTuiClientInfoVersion
+  resolveCodexTuiClientInfoVersion,
+  terminateCodexAppServerProcessTree
 } from "./appserver.js";
 
 const tempDirs: string[] = [];
@@ -48,6 +51,85 @@ describe("buildCodexAppServerEnv", () => {
     const pathEntries = env.PATH?.split(path.delimiter) ?? [];
     expect(pathEntries[0]).toBe(path.dirname(process.execPath));
     expect(pathEntries).toContain("/usr/bin");
+  });
+});
+
+describe("Codex app-server process tree", () => {
+  it("spawns POSIX app-servers in an isolated process group without applying POSIX semantics on Windows", () => {
+    const base = { cwd: "/tmp/twinny", env: { PATH: "/usr/bin" } };
+
+    expect(buildCodexAppServerSpawnOptions(base, "darwin")).toMatchObject({
+      detached: true,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    expect(buildCodexAppServerSpawnOptions(base, "linux")).toMatchObject({ detached: true });
+    expect(buildCodexAppServerSpawnOptions(base, "win32")).toMatchObject({ detached: false });
+  });
+
+  it("signals a POSIX process group by negative PGID and deduplicates repeated cleanup", async () => {
+    const killProcess = vi.fn((): true => true);
+    const killChild = vi.fn(() => true);
+    const target = createCodexAppServerProcessTreeTarget({ pid: 43210, kill: killChild }, "darwin", true);
+
+    await expect(terminateCodexAppServerProcessTree(target, "SIGTERM", { killProcess })).resolves.toBe(true);
+    await expect(terminateCodexAppServerProcessTree(target, "SIGTERM", { killProcess })).resolves.toBe(true);
+
+    expect(killProcess).toHaveBeenCalledOnce();
+    expect(killProcess).toHaveBeenCalledWith(-43210, "SIGTERM");
+    expect(killChild).not.toHaveBeenCalled();
+  });
+
+  it("treats missing POSIX process groups as an idempotent successful cleanup", async () => {
+    const missing = Object.assign(new Error("missing process group"), { code: "ESRCH" });
+    const killProcess = vi.fn((): true => {
+      throw missing;
+    });
+    const target = createCodexAppServerProcessTreeTarget({ pid: 43211, kill: vi.fn() }, "linux", true);
+
+    await expect(terminateCodexAppServerProcessTree(target, "SIGKILL", { killProcess })).resolves.toBe(true);
+  });
+
+  it("does not let stale cleanup kill a new process tree that reused the old PID", async () => {
+    const killProcess = vi.fn((): true => true);
+    const oldTarget = createCodexAppServerProcessTreeTarget({ pid: 43212, kill: vi.fn() }, "darwin", true);
+    const currentTarget = createCodexAppServerProcessTreeTarget({ pid: 43212, kill: vi.fn() }, "darwin", true);
+
+    await expect(
+      terminateCodexAppServerProcessTree(oldTarget, "SIGKILL", { killProcess, currentTarget })
+    ).resolves.toBe(false);
+    expect(killProcess).not.toHaveBeenCalled();
+  });
+
+  it("refuses to target Twinny's own PID as a process group", async () => {
+    const killProcess = vi.fn((): true => true);
+    const killChild = vi.fn(() => true);
+    const target = createCodexAppServerProcessTreeTarget({ pid: process.pid, kill: killChild }, "darwin", true);
+
+    await expect(terminateCodexAppServerProcessTree(target, "SIGKILL", { killProcess })).resolves.toBe(false);
+    expect(killProcess).not.toHaveBeenCalled();
+    expect(killChild).not.toHaveBeenCalled();
+  });
+
+  it("uses the Windows tree terminator and falls back to the direct child on taskkill failure", async () => {
+    const killChild = vi.fn(() => true);
+    const treeKill = vi.fn(async () => undefined);
+    const target = createCodexAppServerProcessTreeTarget({ pid: 43213, kill: killChild }, "win32", false);
+
+    await expect(
+      terminateCodexAppServerProcessTree(target, "SIGTERM", { killWindowsTree: treeKill })
+    ).resolves.toBe(true);
+    expect(treeKill).toHaveBeenCalledWith(43213, "SIGTERM");
+    expect(killChild).not.toHaveBeenCalled();
+
+    const fallbackTarget = createCodexAppServerProcessTreeTarget({ pid: 43214, kill: killChild }, "win32", false);
+    await expect(
+      terminateCodexAppServerProcessTree(fallbackTarget, "SIGKILL", {
+        killWindowsTree: vi.fn(async () => {
+          throw new Error("taskkill unavailable");
+        })
+      })
+    ).resolves.toBe(true);
+    expect(killChild).toHaveBeenCalledWith("SIGKILL");
   });
 });
 
@@ -468,6 +550,108 @@ describe("CodexAppServer", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")("kills app-server descendants during a normal stop", async () => {
+    const tempDir = makeTempDir();
+    const processTree = createProcessTreeCodexBinary(tempDir, "running");
+    const server = new CodexAppServer({
+      profile: "guest",
+      binary: processTree.binary,
+      codexHome: path.join(tempDir, "codex-home"),
+      requestTimeoutMs: 500,
+      stopTimeoutMs: 200,
+      clientVersion: "test",
+      env: { PATH: process.env.PATH, HOME: tempDir }
+    });
+
+    let descendantPid = 0;
+    try {
+      await server.start();
+      descendantPid = await readPidFile(processTree.descendantPidFile);
+      expect(isProcessAlive(descendantPid)).toBe(true);
+
+      const exited = onceExit(server);
+      await server.stop();
+      await expect(exited).resolves.toMatchObject({ signal: "SIGTERM" });
+      await expectProcessToExit(descendantPid);
+    } finally {
+      await server.stop().catch(() => undefined);
+      killPidBestEffort(descendantPid);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("kills remaining descendants after an unexpected app-server exit", async () => {
+    const tempDir = makeTempDir();
+    const processTree = createProcessTreeCodexBinary(tempDir, "exit");
+    const server = new CodexAppServer({
+      profile: "guest",
+      binary: processTree.binary,
+      codexHome: path.join(tempDir, "codex-home"),
+      requestTimeoutMs: 500,
+      clientVersion: "test",
+      env: { PATH: process.env.PATH, HOME: tempDir }
+    });
+
+    let descendantPid = 0;
+    try {
+      const exited = onceExit(server);
+      await server.start();
+      descendantPid = await readPidFile(processTree.descendantPidFile);
+      await expect(exited).resolves.toMatchObject({ code: 42, signal: null });
+      await expectProcessToExit(descendantPid);
+    } finally {
+      await server.stop().catch(() => undefined);
+      killPidBestEffort(descendantPid);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("kills the process tree as soon as the app-server becomes unhealthy", async () => {
+    const tempDir = makeTempDir();
+    const processTree = createProcessTreeCodexBinary(tempDir, "disconnect");
+    const server = new CodexAppServer({
+      profile: "guest",
+      binary: processTree.binary,
+      codexHome: path.join(tempDir, "codex-home"),
+      requestTimeoutMs: 500,
+      clientVersion: "test",
+      env: { PATH: process.env.PATH, HOME: tempDir }
+    });
+
+    let descendantPid = 0;
+    try {
+      const unhealthy = onceUnhealthy(server);
+      await server.start();
+      descendantPid = await readPidFile(processTree.descendantPidFile);
+      await expect(unhealthy).resolves.toMatchObject({ code: "CODEX_APP_SERVER_UNHEALTHY" });
+      await expectProcessToExit(descendantPid);
+    } finally {
+      await server.stop().catch(() => undefined);
+      killPidBestEffort(descendantPid);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("cleans the process tree when app-server initialization fails", async () => {
+    const tempDir = makeTempDir();
+    const processTree = createProcessTreeCodexBinary(tempDir, "start-failure");
+    const server = new CodexAppServer({
+      profile: "guest",
+      binary: processTree.binary,
+      codexHome: path.join(tempDir, "codex-home"),
+      requestTimeoutMs: 200,
+      clientVersion: "test",
+      env: { PATH: process.env.PATH, HOME: tempDir }
+    });
+
+    let descendantPid = 0;
+    try {
+      await expect(server.start()).rejects.toBeDefined();
+      descendantPid = await readPidFile(processTree.descendantPidFile);
+      await expectProcessToExit(descendantPid);
+    } finally {
+      await server.stop().catch(() => undefined);
+      killPidBestEffort(descendantPid);
+    }
+  });
+
   it("marks a live app-server unhealthy when its stdout protocol stream closes", async () => {
     const tempDir = makeTempDir();
     const captureFile = path.join(tempDir, "requests.ndjson");
@@ -829,6 +1013,111 @@ rl.on("close", () => clearInterval(keepAlive));
     { mode: 0o755 }
   );
   return binary;
+}
+
+function createProcessTreeCodexBinary(
+  tempDir: string,
+  mode: "running" | "exit" | "disconnect" | "start-failure"
+): { binary: string; descendantPidFile: string } {
+  const binary = path.join(tempDir, `fake-codex-process-tree-${mode}.mjs`);
+  const descendantPidFile = path.join(tempDir, `descendant-${mode}.pid`);
+  fs.writeFileSync(
+    binary,
+    `#!/usr/bin/env node
+import fs from "node:fs";
+import { spawn } from "node:child_process";
+import readline from "node:readline";
+
+if (process.argv.includes("--version")) {
+  process.stdout.write("fake-codex 1.2.3\\n");
+  process.exit(0);
+}
+
+const descendant = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1000)"], {
+  stdio: "ignore"
+});
+fs.writeFileSync(${JSON.stringify(descendantPidFile)}, String(descendant.pid));
+const rl = readline.createInterface({ input: process.stdin });
+
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method !== "initialize") return;
+  if (${JSON.stringify(mode)} === "start-failure") {
+    process.stdout.end();
+    return;
+  }
+  process.stdout.write(JSON.stringify({
+    id: message.id,
+    result: {
+      userAgent: "fake-codex",
+      codexHome: process.env.CODEX_HOME,
+      platformFamily: "unix",
+      platformOs: "macos"
+    }
+  }) + "\\n", () => {
+    if (${JSON.stringify(mode)} === "disconnect") {
+      process.stdout.end();
+    } else if (${JSON.stringify(mode)} === "exit") {
+      setTimeout(() => process.exit(42), 20);
+    }
+  });
+});
+`,
+    { mode: 0o755 }
+  );
+  return { binary, descendantPidFile };
+}
+
+async function readPidFile(file: string, timeoutMs = 1_000): Promise<number> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (fs.existsSync(file)) {
+      const pid = Number(fs.readFileSync(file, "utf8"));
+      if (Number.isSafeInteger(pid) && pid > 1) {
+        return pid;
+      }
+    }
+    await waitForDelay(5);
+  }
+  throw new Error(`timed out waiting for pid file ${file}`);
+}
+
+async function expectProcessToExit(pid: number, timeoutMs = 1_000): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (!isProcessAlive(pid)) {
+      return;
+    }
+    await waitForDelay(5);
+  }
+  expect(isProcessAlive(pid), `process ${pid} should have exited`).toBe(false);
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 1) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH");
+  }
+}
+
+function killPidBestEffort(pid: number): void {
+  if (!isProcessAlive(pid)) {
+    return;
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Best-effort test cleanup only.
+  }
+}
+
+function waitForDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function onceExit(server: CodexAppServer): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {

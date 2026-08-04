@@ -1,4 +1,8 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  spawn,
+  type ChildProcessWithoutNullStreams,
+  type SpawnOptionsWithoutStdio
+} from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -69,6 +73,20 @@ export interface CodexAppServerOptions {
   stopTimeoutMs?: number;
 }
 
+export interface CodexAppServerProcessTreeTarget {
+  pid: number;
+  platform: NodeJS.Platform;
+  isolatedProcessGroup: boolean;
+  killChild(signal: NodeJS.Signals): boolean;
+  signalAttempts: Map<NodeJS.Signals, Promise<boolean>>;
+}
+
+export interface CodexAppServerProcessTreeDependencies {
+  killProcess?: typeof process.kill;
+  killWindowsTree?: (pid: number, signal: NodeJS.Signals) => Promise<void>;
+  currentTarget?: CodexAppServerProcessTreeTarget;
+}
+
 export interface ProfileCodexAppServerConfig {
   profile: ProfileName;
   codexHome: string;
@@ -117,6 +135,7 @@ export declare interface CodexAppServer {
 
 export class CodexAppServer extends EventEmitter {
   private child: ChildProcessWithoutNullStreams | undefined;
+  private processTree: CodexAppServerProcessTreeTarget | undefined;
   private protocolClient: CodexProtocolClient | undefined;
   private initializeResponse: InitializeResponse | undefined;
   private startPromise: Promise<InitializeResponse> | undefined;
@@ -167,11 +186,12 @@ export class CodexAppServer extends EventEmitter {
     }
 
     const invocation = commandForPlatform(this.options.binary, ["app-server", "--listen", "stdio://"]);
-    const child = spawn(invocation.command, invocation.args, {
+    const spawnOptions = buildCodexAppServerSpawnOptions({
       cwd: this.options.cwd ?? process.cwd(),
-      env: buildCodexAppServerEnv(this.options.codexHome, this.options.env ?? process.env),
-      stdio: ["pipe", "pipe", "pipe"]
-    });
+      env: buildCodexAppServerEnv(this.options.codexHome, this.options.env ?? process.env)
+    }, process.platform);
+    const child = spawn(invocation.command, invocation.args, spawnOptions);
+    const processTree = createCodexAppServerProcessTreeTarget(child, process.platform, spawnOptions.detached === true);
 
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => this.emit("stderr", chunk));
@@ -182,24 +202,49 @@ export class CodexAppServer extends EventEmitter {
     });
     this.attachProtocolNotifications(protocol);
     this.child = child;
+    this.processTree = processTree;
     this.protocolClient = protocol;
     this.initializeResponse = undefined;
-    this.attachProtocolHealth(protocol, child);
+    this.attachProtocolHealth(protocol, child, processTree);
     child.on("exit", (code, signal) => {
+      const isCurrent = this.child === child && this.processTree === processTree;
+      const cleanup = this.terminateProcessTreeBestEffort(processTree, "SIGKILL", "exit");
+      if (!isCurrent) {
+        void cleanup;
+        return;
+      }
+      this.child = undefined;
+      this.protocolClient = undefined;
+      this.initializeResponse = undefined;
+      void cleanup.then(() => {
+        if (this.processTree === processTree) {
+          this.processTree = undefined;
+        }
+        this.emit("exit", code, signal);
+      });
+    });
+    protocol.start();
+
+    try {
+      this.initializeResponse = await protocol.initialize(this.createInitializeParams(codexVersion));
+      this.codexVersion = codexVersion;
+      return this.initializeResponse;
+    } catch (error) {
+      protocol.close();
+      await this.terminateProcessTreeBestEffort(processTree, "SIGTERM", "start failure");
+      await this.terminateProcessTreeBestEffort(processTree, "SIGKILL", "start failure");
       if (this.child === child) {
         this.child = undefined;
+      }
+      if (this.processTree === processTree) {
+        this.processTree = undefined;
       }
       if (this.protocolClient === protocol) {
         this.protocolClient = undefined;
         this.initializeResponse = undefined;
       }
-      this.emit("exit", code, signal);
-    });
-    protocol.start();
-
-    this.initializeResponse = await protocol.initialize(this.createInitializeParams(codexVersion));
-    this.codexVersion = codexVersion;
-    return this.initializeResponse;
+      throw error;
+    }
   }
 
   private createInitializeParams(codexVersionOutput: string): InitializeParams {
@@ -225,7 +270,8 @@ export class CodexAppServer extends EventEmitter {
 
   private attachProtocolHealth(
     protocol: CodexProtocolClient,
-    child: ChildProcessWithoutNullStreams
+    child: ChildProcessWithoutNullStreams,
+    processTree: CodexAppServerProcessTreeTarget
   ): void {
     let unhealthy = false;
     const markUnhealthy = (error: Error): void => {
@@ -240,6 +286,7 @@ export class CodexAppServer extends EventEmitter {
       unhealthy = true;
       this.initializeResponse = undefined;
       protocol.close();
+      void this.terminateProcessTreeBestEffort(processTree, "SIGKILL", "unhealthy");
       this.emit("unhealthy", error);
     };
     const closedError = (stream: "protocol" | "stdin"): TwinnyError =>
@@ -372,26 +419,47 @@ export class CodexAppServer extends EventEmitter {
 
   async stop(signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
     const child = this.child;
+    const processTree = this.processTree;
     this.protocolClient?.close();
     this.protocolClient = undefined;
     this.initializeResponse = undefined;
 
-    if (!child) {
+    if (!child || !processTree) {
       return;
     }
 
     const gracefulExit = waitForChildExit(child, this.options.stopTimeoutMs ?? 3_000);
-    if (!hasExited(child) && !child.killed) {
-      child.kill(signal);
+    if (!hasExited(child) && !processTree.signalAttempts.has("SIGKILL")) {
+      await this.terminateProcessTree(processTree, signal);
     }
 
-    const stopped = await gracefulExit;
-    if (!stopped && !hasExited(child)) {
-      child.kill("SIGKILL");
-      await waitForChildExit(child, 2_000);
-    }
+    await gracefulExit;
+    await this.terminateProcessTree(processTree, "SIGKILL");
+    await waitForChildExit(child, 2_000);
     if (this.child === child) {
       this.child = undefined;
+    }
+    if (this.processTree === processTree) {
+      this.processTree = undefined;
+    }
+  }
+
+  private terminateProcessTree(
+    target: CodexAppServerProcessTreeTarget,
+    signal: NodeJS.Signals
+  ): Promise<boolean> {
+    return terminateCodexAppServerProcessTree(target, signal, { currentTarget: this.processTree });
+  }
+
+  private async terminateProcessTreeBestEffort(
+    target: CodexAppServerProcessTreeTarget,
+    signal: NodeJS.Signals,
+    reason: string
+  ): Promise<void> {
+    try {
+      await this.terminateProcessTree(target, signal);
+    } catch (error) {
+      this.emit("stderr", `failed to terminate Codex app-server process tree after ${reason}: ${errorMessage(error)}`);
     }
   }
 
@@ -549,6 +617,126 @@ function sanitizeUserAgentVersionToken(value: string | undefined): string | unde
     return undefined;
   }
   return /^[A-Za-z0-9][A-Za-z0-9._+~-]*$/.test(trimmed) ? trimmed : undefined;
+}
+
+export function buildCodexAppServerSpawnOptions(
+  options: Pick<SpawnOptionsWithoutStdio, "cwd" | "env">,
+  platform: NodeJS.Platform = process.platform
+): SpawnOptionsWithoutStdio {
+  return {
+    ...options,
+    detached: platform !== "win32",
+    stdio: ["pipe", "pipe", "pipe"]
+  };
+}
+
+export function createCodexAppServerProcessTreeTarget(
+  child: Pick<ChildProcessWithoutNullStreams, "pid" | "kill">,
+  platform: NodeJS.Platform = process.platform,
+  isolatedProcessGroup = platform !== "win32"
+): CodexAppServerProcessTreeTarget {
+  return {
+    pid: child.pid ?? 0,
+    platform,
+    isolatedProcessGroup,
+    killChild: (signal) => child.kill(signal),
+    signalAttempts: new Map()
+  };
+}
+
+export function terminateCodexAppServerProcessTree(
+  target: CodexAppServerProcessTreeTarget,
+  signal: NodeJS.Signals,
+  dependencies: CodexAppServerProcessTreeDependencies = {}
+): Promise<boolean> {
+  const existing = target.signalAttempts.get(signal);
+  if (existing) {
+    return existing;
+  }
+  const attempt = terminateCodexAppServerProcessTreeOnce(target, signal, dependencies).catch((error) => {
+    target.signalAttempts.delete(signal);
+    throw error;
+  });
+  target.signalAttempts.set(signal, attempt);
+  return attempt;
+}
+
+async function terminateCodexAppServerProcessTreeOnce(
+  target: CodexAppServerProcessTreeTarget,
+  signal: NodeJS.Signals,
+  dependencies: CodexAppServerProcessTreeDependencies
+): Promise<boolean> {
+  const current = dependencies.currentTarget;
+  if (current && current !== target && current.pid === target.pid) {
+    return false;
+  }
+  if (!Number.isSafeInteger(target.pid) || target.pid <= 1 || target.pid === process.pid) {
+    return false;
+  }
+
+  if (target.platform === "win32") {
+    try {
+      await (dependencies.killWindowsTree ?? killWindowsProcessTree)(target.pid, signal);
+      return true;
+    } catch (error) {
+      if (isMissingProcessError(error)) {
+        return true;
+      }
+      try {
+        return target.killChild(signal);
+      } catch (childError) {
+        if (isMissingProcessError(childError)) {
+          return true;
+        }
+        throw error;
+      }
+    }
+  }
+
+  if (!target.isolatedProcessGroup) {
+    try {
+      return target.killChild(signal);
+    } catch (error) {
+      if (isMissingProcessError(error)) {
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  try {
+    (dependencies.killProcess ?? process.kill)(-target.pid, signal);
+    return true;
+  } catch (error) {
+    if (isMissingProcessError(error)) {
+      return true;
+    }
+    throw error;
+  }
+}
+
+async function killWindowsProcessTree(pid: number, signal: NodeJS.Signals): Promise<void> {
+  const args = ["/PID", String(pid), "/T"];
+  if (signal === "SIGKILL") {
+    args.push("/F");
+  }
+  const result = await execa("taskkill", args, {
+    reject: false,
+    timeout: 5_000,
+    windowsHide: true
+  });
+  if (result.exitCode === 0 || result.exitCode === 128) {
+    return;
+  }
+  throw new Error(result.stderr.trim() || `taskkill exited with code ${result.exitCode ?? "unknown"}`);
+}
+
+function isMissingProcessError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function hasExited(child: ChildProcessWithoutNullStreams): boolean {
