@@ -7241,14 +7241,14 @@ export class ConversationManager {
       await this.addQueuedReactionBestEffort(message);
       state.pendingBatch.push(message);
       await this.markPendingMessagesQueuedBestEffort([message]);
-      if (isNoActiveTurnToSteerError(error)) {
-        await this.recoverStaleActiveAfterNoActiveSteer(state, active, steerRunId);
+      if (isNoActiveTurnToSteerError(error) || isActiveTurnIdMismatchError(error)) {
+        await this.recoverStaleActiveAfterSteerStateMismatch(state, active, steerRunId);
       }
       await this.replyControlBestEffort(message.messageId, "当前任务已不可打断注入，已加入下一轮队列。");
     }
   }
 
-  private async recoverStaleActiveAfterNoActiveSteer(
+  private async recoverStaleActiveAfterSteerStateMismatch(
     state: ConversationState,
     active: ActiveTurn,
     steerRunId: number
@@ -18488,6 +18488,10 @@ function isNoActiveTurnToInterruptError(error: unknown): boolean {
 
 function isNoActiveTurnToSteerError(error: unknown): boolean {
   return errorMessageIncludes(error, "no active turn to steer");
+}
+
+function isActiveTurnIdMismatchError(error: unknown): boolean {
+  return errorMessageIncludes(error, "expected active turn id") && errorMessageIncludes(error, "but found");
 }
 
 function errorMessageIncludes(error: unknown, fragment: string): boolean {

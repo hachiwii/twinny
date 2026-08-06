@@ -299,9 +299,12 @@ describe("ConversationManager", () => {
     );
   });
 
-  it("clears a stale active turn and immediately starts the failed steer message when Codex reports no active turn", async () => {
+  it.each([
+    ["no active turn", "no active turn to steer"],
+    ["turn id mismatch", "expected active turn id `turn_1` but found `turn_0`"]
+  ])("clears a stale active turn and immediately starts the failed steer message for %s", async (_label, errorMessage) => {
     const { codex, turns } = createDeferredCodex();
-    vi.mocked(codex.steerTurn).mockRejectedValue(codexRequestFailure("no active turn to steer"));
+    vi.mocked(codex.steerTurn).mockRejectedValue(codexRequestFailure(errorMessage));
     const manager = createManager({ codex });
 
     manager.submitIncoming(message("m1", "first"));
@@ -341,12 +344,9 @@ describe("ConversationManager", () => {
     expect(manager.getRuntimeStats()).toMatchObject({ activeTurnCount: 0, queuedMessageCount: 0 });
   });
 
-  it.each([
-    ["turn id mismatch", "expected active turn id turn_1 but found turn_0"],
-    ["other steer failure", "temporary steer failure"]
-  ])("does not calibrate stale active state for %s", async (_label, errorMessage) => {
+  it("does not calibrate stale active state for other steer failures", async () => {
     const { codex, turns } = createDeferredCodex();
-    vi.mocked(codex.steerTurn).mockRejectedValue(codexRequestFailure(errorMessage));
+    vi.mocked(codex.steerTurn).mockRejectedValue(codexRequestFailure("temporary steer failure"));
     const manager = createManager({ codex });
 
     manager.submitIncoming(message("m1", "first"));

@@ -51,7 +51,7 @@ export interface TurnStartParams {
 export type CodexSandboxPolicy = { type: "dangerFullAccess" };
 
 export const DANGER_FULL_ACCESS_SANDBOX_POLICY: CodexSandboxPolicy = { type: "dangerFullAccess" };
-export const FINAL_ANSWER_COMPLETION_FALLBACK_MS = 10_000;
+export const FINAL_ANSWER_COMPLETION_FALLBACK_MS = 30_000;
 
 export interface TurnStartOptions {
   threadId: string;
@@ -83,6 +83,11 @@ export interface TurnRequestOptions {
   requestTimeoutMs?: number;
   completionTimeoutMs?: number;
 }
+
+const activeTurnAccumulators = new WeakMap<
+  CodexProtocolClient,
+  Map<string, Set<TurnOutputAccumulator>>
+>();
 
 export interface TurnStartResponse {
   turn?: {
@@ -384,6 +389,7 @@ export async function startCodexTurn(
     handleTurnServerRequest(protocol, options, request);
   };
 
+  registerActiveTurnAccumulator(protocol, options.threadId, accumulator);
   protocol.on("notification", onNotification);
   protocol.on("serverRequest", onServerRequest);
   try {
@@ -406,6 +412,7 @@ export async function startCodexTurn(
       ? error
       : new TwinnyError(toErrorMessage(error), "CODEX_TURN_FAILED", error);
   } finally {
+    unregisterActiveTurnAccumulator(protocol, options.threadId, accumulator);
     protocol.off("notification", onNotification);
     protocol.off("serverRequest", onServerRequest);
   }
@@ -454,6 +461,9 @@ export async function compactCodexThread(
 
 export async function steerCodexTurn(protocol: CodexProtocolClient, options: TurnSteerOptions): Promise<void> {
   await protocol.request<Record<string, never>, TurnSteerParams>("turn/steer", buildTurnSteerParams(options));
+  for (const accumulator of activeTurnAccumulators.get(protocol)?.get(options.threadId) ?? []) {
+    accumulator.recordSuccessfulSteer(options.turnId);
+  }
 }
 
 export async function interruptCodexTurn(protocol: CodexProtocolClient, options: TurnInterruptOptions): Promise<void> {
@@ -598,6 +608,13 @@ export class TurnOutputAccumulator {
       .map((text) => text.trim())
       .filter((text) => text.length > 0)
       .join("\n\n");
+  }
+
+  recordSuccessfulSteer(turnId: string): void {
+    if (this.completed || this.completionError || !this.matchesCurrentTurn(turnId)) {
+      return;
+    }
+    this.clearFinalAnswerCompletionFallback();
   }
 
   private recordTurnStarted(params: unknown): void {
@@ -868,6 +885,43 @@ export class TurnOutputAccumulator {
 
   private matchesCurrentTurn(turnId: string | undefined): boolean {
     return !this.turnId || !turnId || turnId === this.turnId;
+  }
+}
+
+function registerActiveTurnAccumulator(
+  protocol: CodexProtocolClient,
+  threadId: string,
+  accumulator: TurnOutputAccumulator
+): void {
+  let byThread = activeTurnAccumulators.get(protocol);
+  if (!byThread) {
+    byThread = new Map();
+    activeTurnAccumulators.set(protocol, byThread);
+  }
+  let accumulators = byThread.get(threadId);
+  if (!accumulators) {
+    accumulators = new Set();
+    byThread.set(threadId, accumulators);
+  }
+  accumulators.add(accumulator);
+}
+
+function unregisterActiveTurnAccumulator(
+  protocol: CodexProtocolClient,
+  threadId: string,
+  accumulator: TurnOutputAccumulator
+): void {
+  const byThread = activeTurnAccumulators.get(protocol);
+  const accumulators = byThread?.get(threadId);
+  if (!byThread || !accumulators) {
+    return;
+  }
+  accumulators.delete(accumulator);
+  if (accumulators.size === 0) {
+    byThread.delete(threadId);
+  }
+  if (byThread.size === 0) {
+    activeTurnAccumulators.delete(protocol);
   }
 }
 

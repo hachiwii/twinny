@@ -10,6 +10,7 @@ import {
   FINAL_ANSWER_COMPLETION_FALLBACK_MS,
   handleTurnServerRequest,
   startCodexTurn,
+  steerCodexTurn,
   TurnOutputAccumulator
 } from "./turn.js";
 
@@ -1502,6 +1503,10 @@ describe("startCodexTurn", () => {
     vi.useRealTimers();
   });
 
+  it("uses a 30 second final answer completion fallback", () => {
+    expect(FINAL_ANSWER_COMPLETION_FALLBACK_MS).toBe(30_000);
+  });
+
   it("uses request timeout for turn/start without timing out normal long-running turns", async () => {
     vi.useFakeTimers();
     const protocol = new FakeProtocol();
@@ -1716,6 +1721,117 @@ describe("startCodexTurn", () => {
 
     await vi.advanceTimersByTimeAsync(FINAL_ANSWER_COMPLETION_FALLBACK_MS);
     expect(tokenUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels the final answer completion fallback after a successful steer", async () => {
+    vi.useFakeTimers();
+    const protocol = new FakeProtocol();
+    protocol.requestMock.mockImplementation(async (method: string) => {
+      if (method === "turn/start") {
+        setTimeout(() => {
+          protocol.emit("notification", {
+            method: "item/completed",
+            params: {
+              threadId: "thread_123",
+              turnId: "turn_1",
+              item: { type: "agentMessage", id: "msg_final", text: "first answer", phase: "final_answer" }
+            }
+          });
+        }, 10);
+        return { turn: { id: "turn_1" } };
+      }
+      return {};
+    });
+
+    const result = startCodexTurn(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "initial message",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1"
+      }
+    );
+    let settled = false;
+    void result.finally(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    await steerCodexTurn(protocol as unknown as CodexProtocolClient, {
+      threadId: "thread_123",
+      turnId: "turn_1",
+      text: "continue working"
+    });
+    await vi.advanceTimersByTimeAsync(FINAL_ANSWER_COMPLETION_FALLBACK_MS);
+
+    expect(settled).toBe(false);
+
+    protocol.emit("notification", {
+      method: "item/completed",
+      params: {
+        threadId: "thread_123",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "msg_done", text: "continued answer", phase: "final_answer" }
+      }
+    });
+
+    await vi.advanceTimersByTimeAsync(FINAL_ANSWER_COMPLETION_FALLBACK_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(result).resolves.toMatchObject({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      text: "continued answer",
+      status: "completed"
+    });
+  });
+
+  it("keeps the final answer completion fallback when steer fails", async () => {
+    vi.useFakeTimers();
+    const protocol = new FakeProtocol();
+    protocol.requestMock.mockImplementation(async (method: string) => {
+      if (method === "turn/start") {
+        setTimeout(() => {
+          protocol.emit("notification", {
+            method: "item/completed",
+            params: {
+              threadId: "thread_123",
+              turnId: "turn_1",
+              item: { type: "agentMessage", id: "msg_final", text: "final answer", phase: "final_answer" }
+            }
+          });
+        }, 10);
+        return { turn: { id: "turn_1" } };
+      }
+      throw new Error("steer failed");
+    });
+
+    const result = startCodexTurn(
+      protocol as unknown as CodexProtocolClient,
+      {
+        threadId: "thread_123",
+        text: "initial message",
+        cwd: "/tmp/twinny/workspaces/p2p_ou_1"
+      }
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(
+      steerCodexTurn(protocol as unknown as CodexProtocolClient, {
+        threadId: "thread_123",
+        turnId: "turn_1",
+        text: "continue working"
+      })
+    ).rejects.toThrow("steer failed");
+    await vi.advanceTimersByTimeAsync(FINAL_ANSWER_COMPLETION_FALLBACK_MS);
+
+    await expect(result).resolves.toMatchObject({
+      threadId: "thread_123",
+      turnId: "turn_1",
+      text: "final answer",
+      status: "completed"
+    });
   });
 
   it("ignores stale notifications received before turn/start returns the active turn id", async () => {
