@@ -562,6 +562,49 @@ describe("ConversationManager", () => {
     await waitForDelay();
   });
 
+  it("decodes normalized post markdown in /model command tokens", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const codex = createCodex();
+    const lark = createLarkResponder();
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(message("m_post_model", "/model gpt\\-5\\.6\\-sol high", {
+      messageType: "post",
+      plainText: "/model gpt-5.6-sol high",
+      commandTokenEncoding: "normalized_post_markdown"
+    }));
+
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadModelSettings).toHaveBeenCalledWith({
+        codexThreadId: "thread_1",
+        model: "gpt-5.6-sol",
+        effort: "high"
+      })
+    );
+    expect(lark.replyText).toHaveBeenCalledWith(
+      "m_post_model",
+      "已设置当前 thread 后续 turn 模型：gpt-5.6-sol / high"
+    );
+    expect(codex.startTurn).not.toHaveBeenCalled();
+  });
+
+  it("does not decode backslashes in plain text command tokens", async () => {
+    const { repository } = createRepository(conversationRecord());
+    const manager = createManager({ repository });
+
+    manager.submitIncoming(message("m_plain_model", "/model custom\\-model high", {
+      commandTokenEncoding: "plain"
+    }));
+
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadModelSettings).toHaveBeenCalledWith({
+        codexThreadId: "thread_1",
+        model: "custom\\-model",
+        effort: "high"
+      })
+    );
+  });
+
   it("keeps effort optional on /model and updates effort with /effort", async () => {
     const { repository } = createRepository(conversationRecord(), {
       codexThreads: [
@@ -6959,6 +7002,70 @@ describe("ConversationManager", () => {
         )
       })
     );
+  });
+
+  it("decodes nested /model tokens from post threads while preserving Codex markdown", async () => {
+    const row = groupConversationRecord({ profile: "host", responseMode: "all_at" });
+    const { repository } = createRepository(row);
+    const codex = createCodex({
+      startThread: vi.fn(async () => ({ threadId: "thread_post_model" }))
+    });
+    const lark = createLarkResponder();
+    vi.mocked(lark.sendCardToChatId).mockResolvedValueOnce({
+      messageId: "card_post_model",
+      raw: {}
+    });
+    vi.mocked(lark.replyText).mockResolvedValueOnce({
+      messageId: "reply_post_model_intro",
+      raw: { data: { thread_id: "topic_post_model" } }
+    });
+    vi.mocked(lark.replyPost).mockResolvedValueOnce({
+      messageId: "reply_post_model",
+      raw: { data: { thread_id: "topic_post_model" } }
+    });
+    const manager = createManager({ repository, codex, lark });
+
+    manager.submitIncoming(groupMessage(
+      "g_thread_post_model",
+      "/thread /model gpt\\-5\\.6\\-sol high\n\nasd 1\\. keep markdown",
+      {
+        messageType: "post",
+        plainText: "/thread /model gpt-5.6-sol high\n\nasd 1. keep markdown",
+        commandTokenEncoding: "normalized_post_markdown",
+        senderOpenId: "ou_guest",
+        senderName: "Guest User"
+      }
+    ));
+
+    await waitForExpect(() =>
+      expect(repository.updateCodexThreadModelSettings).toHaveBeenCalledWith({
+        codexThreadId: "thread_post_model",
+        model: "gpt-5.6-sol",
+        effort: "high"
+      })
+    );
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+    expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread_post_model",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      currentThreadName: expect.not.stringContaining("\\"),
+      input: wrappedMessage("asd 1\\. keep markdown", "reply_post_model", "ou_guest")
+    }));
+    const threadRecord = repository.getCodexThreadById("thread_post_model") as CodexThreadRecord | undefined;
+    expect(threadRecord).toMatchObject({
+      createRequestText: "/model gpt-5.6-sol high asd 1. keep markdown",
+      model: "gpt-5.6-sol",
+      effort: "high"
+    });
+    expect(threadRecord?.name).not.toContain("\\");
+
+    const proxyRecord = vi.mocked(repository.insertLarkMessage).mock.calls
+      .find(([input]) => input.larkMessageId === "reply_post_model")?.[0];
+    expect(JSON.parse(proxyRecord?.rawEventJson ?? "{}")).toMatchObject({
+      twinny: { command_token_encoding: "normalized_post_markdown" },
+      message: { message_type: "text" }
+    });
   });
 
   it("parses slash commands from /thread initial text before starting the topic turn", async () => {
@@ -14006,6 +14113,49 @@ describe("ConversationManager", () => {
         text: "Recovered final after steer"
       })
     );
+  });
+
+  it("recovers post command token encoding for queued synthetic thread replies", async () => {
+    const row = conversationRecord({ codexThreadId: "thread_recovered" });
+    const text = "/model gpt\\-5\\.6\\-sol high\n\nresume 1\\. markdown";
+    const record = larkMessageRecord({
+      larkMessageId: "m_post_model_recovery",
+      eventId: "thread_reply:e_post_model_recovery",
+      routeKind: "queued_message",
+      status: "queued",
+      text,
+      codexThreadId: "thread_recovered",
+      rawEventJson: JSON.stringify({
+        ...rawReceiveEvent("m_post_model_recovery", text),
+        twinny: { command_token_encoding: "normalized_post_markdown" }
+      })
+    });
+    const { repository } = createRepository(row, {
+      larkMessages: [record],
+      codexThreads: [codexThreadRecord({
+        codexThreadId: "thread_recovered",
+        conversationKey: "p2p_ou_guest",
+        model: "gpt-5.5",
+        effort: "medium"
+      })]
+    });
+    const codex = createCodex();
+    const manager = createManager({ repository, codex });
+
+    await manager.recoverUnfinishedMessages();
+    await waitForExpect(() => expect(codex.startTurn).toHaveBeenCalledTimes(1));
+
+    expect(repository.updateCodexThreadModelSettings).toHaveBeenCalledWith({
+      codexThreadId: "thread_recovered",
+      model: "gpt-5.6-sol",
+      effort: "high"
+    });
+    expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread_recovered",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      input: wrappedMessage("resume 1\\. markdown", "m_post_model_recovery")
+    }));
   });
 
   it("recovers queued /compact by rerunning the compact control path", async () => {

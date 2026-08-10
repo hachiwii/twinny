@@ -6,7 +6,8 @@ import type {
   IncomingLarkMessage,
   IncomingLarkMessageRecall,
   IncomingLarkMessageResource,
-  IncomingLarkP2pChatCreate
+  IncomingLarkP2pChatCreate,
+  LarkCommandTokenEncoding
 } from "../types.js";
 
 export interface RawLarkMessageReceiveEvent {
@@ -149,6 +150,7 @@ export function normalizeIncomingLarkMessageWithReason(
   const shouldUseRaw = content.text === null || (content.text.length === 0 && resources.length === 0);
   const text = shouldUseRaw ? stringifyRawLarkMessageForCodex(message) : (content.text ?? "");
   const rawForCodex = content.rawForCodex || shouldUseRaw;
+  const commandTokenEncoding = commandTokenEncodingForNormalizedMessage(event, messageType);
 
   return {
     kind: "message",
@@ -173,6 +175,8 @@ export function normalizeIncomingLarkMessageWithReason(
       resources: resources.length > 0 ? resources : undefined,
       rawForCodex: rawForCodex ? true : undefined,
       text,
+      plainText: content.plainText,
+      commandTokenEncoding,
       createTime: parseEpochMs(message.create_time ?? event.create_time),
       raw
     }
@@ -385,6 +389,7 @@ export function normalizeLarkBotAddedToChatWithReason(raw: unknown): NormalizeLa
 
 export interface NormalizedLarkMessageContent {
   text: string | null;
+  plainText?: string;
   resources: IncomingLarkMessageResource[];
   rawForCodex: boolean;
 }
@@ -450,6 +455,7 @@ function fallbackResourceText(resources: IncomingLarkMessageResource[]): string 
 
 interface NormalizedPostContent {
   text: string;
+  plainText?: string;
   resources: IncomingLarkMessageResource[];
 }
 
@@ -462,9 +468,11 @@ function normalizePostContent(content: unknown): NormalizedPostContent | null {
 
   const resources: IncomingLarkMessageResource[] = [];
   const parts: string[] = [];
+  const plainParts: string[] = [];
   const title = stringValue(post.title)?.trim();
   if (title) {
     parts.push(`# ${escapeMarkdownText(title)}`);
+    plainParts.push(title);
   }
 
   const paragraphs = Array.isArray(post.content) ? post.content : [];
@@ -472,14 +480,20 @@ function normalizePostContent(content: unknown): NormalizedPostContent | null {
     if (!Array.isArray(paragraph)) {
       continue;
     }
-    const rendered = renderPostParagraph(paragraph, resources).trim();
-    if (rendered) {
-      parts.push(rendered);
+    const rendered = renderPostParagraph(paragraph, resources);
+    const text = rendered.text.trim();
+    const plainText = rendered.plainText.trim();
+    if (text) {
+      parts.push(text);
+    }
+    if (plainText) {
+      plainParts.push(plainText);
     }
   }
 
   return {
     text: parts.join("\n\n"),
+    plainText: plainParts.join("\n\n"),
     resources
   };
 }
@@ -700,27 +714,40 @@ function isDiscardedCardElementTag(tag: string | undefined): boolean {
     tag === "table";
 }
 
-function renderPostParagraph(paragraph: unknown[], resources: IncomingLarkMessageResource[]): string {
-  return paragraph.map((node) => renderPostNode(node, resources)).join("");
+function renderPostParagraph(
+  paragraph: unknown[],
+  resources: IncomingLarkMessageResource[]
+): { text: string; plainText: string } {
+  const nodes = paragraph.map((node) => renderPostNode(node, resources));
+  return {
+    text: nodes.map((node) => node.text).join(""),
+    plainText: nodes.map((node) => node.plainText).join("")
+  };
 }
 
-function renderPostNode(node: unknown, resources: IncomingLarkMessageResource[]): string {
+function renderPostNode(
+  node: unknown,
+  resources: IncomingLarkMessageResource[]
+): { text: string; plainText: string } {
   if (!isRecord(node)) {
-    return "";
+    return { text: "", plainText: "" };
   }
 
   const tag = stringValue(node.tag);
   if (tag === "text") {
-    return renderStyledMarkdownText(stringValue(node.text) ?? "", node.style);
+    const plainText = stringValue(node.text) ?? "";
+    return { text: renderStyledMarkdownText(plainText, node.style), plainText };
   }
   if (tag === "a") {
-    const text = renderStyledMarkdownText(stringValue(node.text) ?? stringValue(node.href) ?? "", node.style);
+    const plainText = stringValue(node.text) ?? stringValue(node.href) ?? "";
+    const text = renderStyledMarkdownText(plainText, node.style);
     const href = stringValue(node.href);
-    return href ? `[${text}](${escapeMarkdownUrl(href)})` : text;
+    return { text: href ? `[${text}](${escapeMarkdownUrl(href)})` : text, plainText };
   }
   if (tag === "at") {
     const displayName = stringValue(node.user_name) ?? stringValue(node.user_id) ?? "unknown";
-    return renderStyledMarkdownText(`@${displayName}`, node.style);
+    const plainText = `@${displayName}`;
+    return { text: renderStyledMarkdownText(plainText, node.style), plainText };
   }
   if (tag === "img") {
     const imageKey = stringValue(node.image_key);
@@ -734,7 +761,7 @@ function renderPostNode(node: unknown, resources: IncomingLarkMessageResource[])
       codexTag: "img",
       textPlaceholder: placeholder
     });
-    return placeholder;
+    return { text: placeholder, plainText: placeholder };
   }
   if (tag === "media") {
     const fileKey = stringValue(node.file_key);
@@ -748,21 +775,25 @@ function renderPostNode(node: unknown, resources: IncomingLarkMessageResource[])
       codexTag: "video",
       textPlaceholder: placeholder
     });
-    return placeholder;
+    return { text: placeholder, plainText: placeholder };
   }
   if (tag === "emotion") {
     const emojiType = stringValue(node.emoji_type);
-    return emojiType ? `:${escapeMarkdownText(emojiType)}:` : "";
+    return emojiType
+      ? { text: `:${escapeMarkdownText(emojiType)}:`, plainText: `:${emojiType}:` }
+      : { text: "", plainText: "" };
   }
   if (tag === "hr") {
-    return "---";
+    return { text: "---", plainText: "---" };
   }
   if (tag === "code_block") {
     const language = (stringValue(node.language) ?? "").toLowerCase();
-    return `\`\`\`${language}\n${stringValue(node.text) ?? ""}\n\`\`\``;
+    const plainText = stringValue(node.text) ?? "";
+    return { text: `\`\`\`${language}\n${plainText}\n\`\`\``, plainText };
   }
   if (tag === "md") {
-    return stringValue(node.text) ?? "";
+    const text = stringValue(node.text) ?? "";
+    return { text, plainText: text };
   }
   return renderUnsupportedPostNode(node);
 }
@@ -788,11 +819,12 @@ function renderStyledMarkdownText(text: string, style: unknown): string {
   return rendered;
 }
 
-function renderUnsupportedPostNode(node: Record<string, unknown>): string {
+function renderUnsupportedPostNode(node: Record<string, unknown>): { text: string; plainText: string } {
   try {
-    return `\`${JSON.stringify(node).replaceAll("`", "\\`")}\``;
+    const plainText = JSON.stringify(node);
+    return { text: `\`${plainText.replaceAll("`", "\\`")}\``, plainText };
   } catch {
-    return "";
+    return { text: "", plainText: "" };
   }
 }
 
@@ -879,6 +911,18 @@ function unwrapReceiveEvent(raw: unknown): unknown {
     return raw.event;
   }
   return raw;
+}
+
+function commandTokenEncodingForNormalizedMessage(
+  event: Record<string, unknown>,
+  messageType: string
+): LarkCommandTokenEncoding {
+  const twinny = isRecord(event.twinny) ? event.twinny : {};
+  const syntheticEncoding = stringValue(twinny.command_token_encoding);
+  if (syntheticEncoding === "normalized_post_markdown") {
+    return syntheticEncoding;
+  }
+  return messageType.trim().toLowerCase() === "post" ? "normalized_post_markdown" : "plain";
 }
 
 function normalizeChatType(chatType: string | undefined): "p2p" | "group" | "topic_group" | undefined {

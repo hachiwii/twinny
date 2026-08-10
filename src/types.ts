@@ -350,6 +350,8 @@ export interface CodexRenderedLarkMessage {
   content: string;
 }
 
+export type LarkCommandTokenEncoding = "plain" | "normalized_post_markdown";
+
 export interface IncomingLarkMessage {
   eventId: string;
   messageId: string;
@@ -370,6 +372,8 @@ export interface IncomingLarkMessage {
   replyToMessageForCodex?: CodexRenderedLarkMessage;
   rawForCodex?: boolean;
   text: string;
+  plainText?: string;
+  commandTokenEncoding?: LarkCommandTokenEncoding;
   createTime?: number;
   raw: unknown;
 }

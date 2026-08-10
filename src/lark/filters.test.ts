@@ -106,10 +106,55 @@ describe("normalizeIncomingLarkMessage", () => {
         "{{TWINNY_LARK_RESOURCE_0}}\n\n" +
         "{{TWINNY_LARK_RESOURCE_1}}\n\n" +
         '```json\n{"ok":true}\n```',
+      plainText:
+        "Status\n\n" +
+        "Please inspect the docs@Tom\n\n" +
+        "{{TWINNY_LARK_RESOURCE_0}}\n\n" +
+        "{{TWINNY_LARK_RESOURCE_1}}\n\n" +
+        '{"ok":true}',
+      commandTokenEncoding: "normalized_post_markdown",
       resources: [
         { resourceType: "image", fileKey: "img_123", codexTag: "img", textPlaceholder: "{{TWINNY_LARK_RESOURCE_0}}" },
         { resourceType: "file", fileKey: "file_123", codexTag: "video", textPlaceholder: "{{TWINNY_LARK_RESOURCE_1}}" }
       ]
+    });
+  });
+
+  it("preserves post markdown while exposing plain command text", () => {
+    const normalized = normalizeIncomingLarkMessage(
+      receiveEvent({
+        message: {
+          message_type: "post",
+          content: JSON.stringify({
+            title: "",
+            content: [[{ tag: "text", text: "/model gpt-5.6-sol high", style: [] }]]
+          })
+        }
+      })
+    );
+
+    expect(normalized).toMatchObject({
+      text: "/model gpt\\-5\\.6\\-sol high",
+      plainText: "/model gpt-5.6-sol high",
+      commandTokenEncoding: "normalized_post_markdown"
+    });
+  });
+
+  it("restores command token encoding metadata from synthetic messages", () => {
+    const raw = {
+      ...receiveEvent({
+        message: {
+          message_type: "text",
+          content: JSON.stringify({ text: "/model gpt\\-5\\.6\\-sol high" })
+        }
+      }),
+      twinny: { command_token_encoding: "normalized_post_markdown" }
+    };
+
+    expect(normalizeIncomingLarkMessage(raw)).toMatchObject({
+      messageType: "text",
+      text: "/model gpt\\-5\\.6\\-sol high",
+      commandTokenEncoding: "normalized_post_markdown"
     });
   });
 

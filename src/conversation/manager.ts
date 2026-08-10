@@ -2148,11 +2148,13 @@ export class ConversationManager {
     }
     const syntheticEnvelope = await this.syntheticEnvelopeForRecoveredRecord(record, raw);
     const isSyntheticMessage = syntheticEnvelope !== undefined;
-    const parsed = parseQueuedAwareSlashCommand(isSyntheticMessage ? record.text : normalized.text);
+    const parseOptions = commandParseOptionsForMessage(normalized);
+    const parsed = parseQueuedAwareSlashCommand(isSyntheticMessage ? record.text : normalized.text, parseOptions);
     const rewind = parsed.kind === "rewind" ? parseRewindCommand(parsed.text) : undefined;
     const text = record.status === "queued" && (normalized.resources?.length ?? 0) > 0 ? normalized.text : record.text;
     const program = pendingProgramForRecoveredText(isSyntheticMessage ? record.text : normalized.text, {
-      allowSingleCommand: isSyntheticMessage
+      allowSingleCommand: isSyntheticMessage,
+      parseOptions
     });
     return toPendingMessage(normalized, text, {
       queueBoundary:
@@ -2237,11 +2239,13 @@ export class ConversationManager {
     }
     const syntheticEnvelope = await this.syntheticEnvelopeForRecoveredRecord(record, raw);
     const isSyntheticMessage = syntheticEnvelope !== undefined;
-    const parsed = parseQueuedAwareSlashCommand(isSyntheticMessage ? record.text : normalized.text);
+    const parseOptions = commandParseOptionsForMessage(normalized);
+    const parsed = parseQueuedAwareSlashCommand(isSyntheticMessage ? record.text : normalized.text, parseOptions);
     const rewind = parsed.kind === "rewind" ? parseRewindCommand(parsed.text) : undefined;
     const text = (record.status === "queued" && (normalized.resources?.length ?? 0) > 0) ? normalized.text : record.text;
     const program = pendingProgramForRecoveredText(isSyntheticMessage ? record.text : normalized.text, {
-      allowSingleCommand: isSyntheticMessage
+      allowSingleCommand: isSyntheticMessage,
+      parseOptions
     });
     return toPendingMessage(normalized, text, {
       queueBoundary:
@@ -2661,7 +2665,8 @@ export class ConversationManager {
     }
 
     message.text = routed.text;
-    const initialProgram = parseCommandProgram(message.text);
+    const parseOptions = commandParseOptionsForMessage(message);
+    const initialProgram = parseCommandProgram(message.text, parseOptions);
     const parsed = firstParsedCommand(initialProgram) ?? routed.parsed;
     if (parsed.kind === "activate" && initialProgram.steps.length === 1) {
       await this.handleActivateCommand(state, context, message, parsed.text);
@@ -2689,7 +2694,7 @@ export class ConversationManager {
     }
 
     await this.prepareIncomingMessageForCodex(context, message);
-    const program = parsed.kind === "message" ? parseCommandProgram(message.text) : initialProgram;
+    const program = parsed.kind === "message" ? parseCommandProgram(message.text, parseOptions) : initialProgram;
     const preparedParsed: ParsedCommand = firstParsedCommand(program) ?? { kind: "message", text: message.text };
     const queueDepthBefore = state.pendingBatch.length;
     const route = await this.recordIncomingMessage(state, context, message, preparedParsed);
@@ -3301,7 +3306,7 @@ export class ConversationManager {
     const text = isGroupConversationType(context.type) && hasBotMention
       ? stripLeadingLarkMentions(message.text, message)
       : message.text;
-    const parsed = parseSlashCommand(text);
+    const parsed = parseSlashCommand(text, commandParseOptionsForMessage(message));
     if (!isGroupConversationType(context.type)) {
       return { kind: "allow", text, parsed };
     }
@@ -4176,6 +4181,7 @@ export class ConversationManager {
     command: Extract<ParsedCommand, { kind: "thread" }>
   ): Promise<void> {
     const text = command.text;
+    const metadataText = plainThreadCommandText(message, "thread", text);
     if (!isThreadCommandMessageType(message.messageType)) {
       await this.replyControlBestEffort(message.messageId, "thread 只支持 text/post 消息。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -4190,13 +4196,13 @@ export class ConversationManager {
       return;
     }
     const sourceThread = await this.resolveThreadCreationSource(state, context);
-    const createRequestText = threadCreateRequestTextForCommand(text, message);
+    const createRequestText = threadCreateRequestTextForCommand(metadataText, message);
     let topic = await this.createNewSessionTopic(context, {
       chatId,
       operatorOpenId: message.senderOpenId,
       eventId: message.eventId,
       anchorMessage: message,
-      name: initialThreadNameForCommand(text, message, "新会话"),
+      name: initialThreadNameForCommand(metadataText, message, "新会话"),
       workspace: sourceThread.workspace,
       model: sourceThread.model,
       effort: sourceThread.effort,
@@ -4228,7 +4234,7 @@ export class ConversationManager {
     const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
     const proxyMessage = createThreadReplyMessage(context, message, proxy.messageId, topic.larkThreadId, proxy.text);
     const proxyState = this.getState(proxyContext.stateKey);
-    const proxyProgram = parseCommandProgram(proxyMessage.text, { nested: true });
+    const proxyProgram = parseCommandProgram(proxyMessage.text, commandParseOptionsForMessage(proxyMessage, { nested: true }));
     const proxyParsed = firstParsedCommand(proxyProgram) ?? { kind: "message", text: proxyMessage.text };
     await this.recordIncomingMessage(proxyState, proxyContext, proxyMessage, proxyParsed);
     await this.handleRecordedCommandProgram(proxyState, proxyContext, proxyMessage, proxyProgram);
@@ -4242,6 +4248,7 @@ export class ConversationManager {
     command: Extract<ParsedCommand, { kind: "fork" }>
   ): Promise<void> {
     const text = command.text;
+    const metadataText = plainThreadCommandText(message, "fork", text);
     if (!isThreadCommandMessageType(message.messageType)) {
       await this.replyControlBestEffort(message.messageId, "fork 只支持 text/post 消息。");
       await this.markMessagesCompletedBestEffort([message.messageId]);
@@ -4307,7 +4314,7 @@ export class ConversationManager {
       operatorOpenId: message.senderOpenId,
       eventId: message.eventId,
       anchorMessage: message,
-      name: initialThreadNameForCommand(text, message, "新分支会话"),
+      name: initialThreadNameForCommand(metadataText, message, "新分支会话"),
       codexThread: {
         threadId: forkedThreadId,
         workspace: sourceWorkspace,
@@ -4317,7 +4324,7 @@ export class ConversationManager {
         parentCodexThreadId: sourceThread.threadId,
         forkedAt,
         createMethod: "fork",
-        createRequestText: threadCreateRequestTextForCommand(text, message)
+        createRequestText: threadCreateRequestTextForCommand(metadataText, message)
       }
     });
     if (!topic) {
@@ -4347,7 +4354,7 @@ export class ConversationManager {
     const proxyContext = createThreadReplyContext(context, topic.larkThreadId);
     const proxyMessage = createThreadReplyMessage(context, message, proxy.messageId, topic.larkThreadId, proxy.text);
     const proxyState = this.getState(proxyContext.stateKey);
-    const proxyProgram = parseCommandProgram(proxyMessage.text, { nested: true });
+    const proxyProgram = parseCommandProgram(proxyMessage.text, commandParseOptionsForMessage(proxyMessage, { nested: true }));
     const proxyParsed = firstParsedCommand(proxyProgram) ?? { kind: "message", text: proxyMessage.text };
     await this.recordIncomingMessage(proxyState, proxyContext, proxyMessage, proxyParsed);
     await this.handleRecordedCommandProgram(proxyState, proxyContext, proxyMessage, proxyProgram);
@@ -5229,7 +5236,7 @@ export class ConversationManager {
     }
 
     state.queueNextMessage = false;
-    const program = command.program ?? parseCommandProgram(text, { nested: true });
+    const program = command.program ?? parseCommandProgram(text, commandParseOptionsForMessage(message, { nested: true }));
     const pending = toPendingMessage(message, text, {
       queueBoundary: true,
       program: programContainsCommand(program) ? program : undefined
@@ -7082,7 +7089,7 @@ export class ConversationManager {
       return;
     }
 
-    const program = command.program ?? parseCommandProgram(text, { nested: true });
+    const program = command.program ?? parseCommandProgram(text, commandParseOptionsForMessage(message, { nested: true }));
     if (!(program.steps.length === 1 && program.steps[0]?.kind === "message")) {
       await this.handleRecordedCommandProgram(state, context, message, program, { messageDelivery: "steer" });
       return;
@@ -7902,7 +7909,8 @@ export class ConversationManager {
         profileForSender(this.options.config, normalized.senderOpenId)
       );
       await this.prepareIncomingMessageForCodex(context, normalized);
-      const parsed = parseSlashCommand(normalized.text);
+      const parseOptions = commandParseOptionsForMessage(normalized);
+      const parsed = parseSlashCommand(normalized.text, parseOptions);
       const text = parsed.kind === "queue" && parsed.text.length > 0 ? parsed.text : normalized.text;
       pending.original = normalized;
       pending.text = (normalized.downloadedFiles?.length ?? 0) > 0 ? normalized.text : text;
@@ -7911,8 +7919,8 @@ export class ConversationManager {
       pending.program = parsed.kind === "message"
         ? undefined
         : parsed.kind === "queue" && parsed.text.length > 0
-          ? commandProgramIfContainsCommand(parsed.program ?? parseCommandProgram(parsed.text, { nested: true }))
-          : commandProgramIfContainsCommand(parseCommandProgram(normalized.text));
+          ? commandProgramIfContainsCommand(parsed.program ?? parseCommandProgram(parsed.text, { ...parseOptions, nested: true }))
+          : commandProgramIfContainsCommand(parseCommandProgram(normalized.text, parseOptions));
       await this.updateQueuedMessageBestEffort(pending.messageId, {
         text: pending.text,
         rawEventJson: safeJsonStringify(latestRaw)
@@ -9140,7 +9148,7 @@ export class ConversationManager {
         proxy.text
       );
       const proxyState = this.getState(proxyContext.stateKey);
-      const proxyParsed = parseSlashCommand(proxyMessage.text);
+      const proxyParsed = parseSlashCommand(proxyMessage.text, commandParseOptionsForMessage(proxyMessage));
       const route = await this.recordIncomingMessage(proxyState, proxyContext, proxyMessage, proxyParsed);
       initialMessageStatus = route.status;
       void this.handleRecordedParsedCommand(proxyState, proxyContext, proxyMessage, proxyParsed).catch(async (error) => {
@@ -13811,16 +13819,40 @@ function formatSendToLarkError(reason: string): string {
   return `❌ 发送图片/视频/附件失败：${reason}`;
 }
 
-function parseSlashCommand(text: string): ParsedCommand {
-  return firstParsedCommand(parseCommandProgram(text)) ?? { kind: "message", text };
+type CommandTokenDecoder = (value: string) => string;
+
+interface ParseCommandProgramOptions {
+  nested?: boolean;
+  decodeToken?: CommandTokenDecoder;
 }
 
-function parseQueuedAwareSlashCommand(text: string): ParsedCommand {
-  const parsed = parseSlashCommand(text);
+interface ParseCommandProgramContext {
+  nested: boolean;
+  decodeToken: CommandTokenDecoder;
+}
+
+const identityCommandTokenDecoder: CommandTokenDecoder = (value) => value;
+
+function commandParseOptionsForMessage(
+  message: IncomingLarkMessage,
+  options: ParseCommandProgramOptions = {}
+): ParseCommandProgramOptions {
+  if (message.commandTokenEncoding !== "normalized_post_markdown") {
+    return options;
+  }
+  return { ...options, decodeToken: unescapeNormalizedPostMarkdown };
+}
+
+function parseSlashCommand(text: string, options: ParseCommandProgramOptions = {}): ParsedCommand {
+  return firstParsedCommand(parseCommandProgram(text, options)) ?? { kind: "message", text };
+}
+
+function parseQueuedAwareSlashCommand(text: string, options: ParseCommandProgramOptions = {}): ParsedCommand {
+  const parsed = parseSlashCommand(text, options);
   if (parsed.kind !== "queue") {
     return parsed;
   }
-  const nested = firstParsedCommand(parsed.program ?? parseCommandProgram(parsed.text, { nested: true }));
+  const nested = firstParsedCommand(parsed.program ?? parseCommandProgram(parsed.text, { ...options, nested: true }));
   return nested && (nested.kind === "goal" || (nested.kind === "rewind" && parseRewindCommand(nested.text).kind === "valid"))
     ? nested
     : parsed;
@@ -13828,11 +13860,15 @@ function parseQueuedAwareSlashCommand(text: string): ParsedCommand {
 
 function parseCommandProgram(
   text: string,
-  options: { nested?: boolean } = {}
+  options: ParseCommandProgramOptions = {}
 ): ParsedCommandProgram {
+  const context: ParseCommandProgramContext = {
+    nested: options.nested === true,
+    decodeToken: options.decodeToken ?? identityCommandTokenDecoder
+  };
   return {
     text,
-    steps: parseCommandProgramSteps(text, { nested: options.nested === true })
+    steps: parseCommandProgramSteps(text, context)
   };
 }
 
@@ -13842,7 +13878,7 @@ function firstParsedCommand(program: ParsedCommandProgram): ParsedCommand | unde
 
 function parseCommandProgramSteps(
   text: string,
-  context: { nested: boolean }
+  context: ParseCommandProgramContext
 ): ParsedCommand[] {
   const steps: ParsedCommand[] = [];
   let cursor = skipCommandWhitespace(text, 0);
@@ -13869,21 +13905,21 @@ function parseCommandProgramSteps(
         }
         break;
       }
-      const program = tail.length > 0 ? parseCommandProgram(tail, { nested: true }) : undefined;
+      const program = tail.length > 0 ? parseCommandProgram(tail, { ...context, nested: true }) : undefined;
       steps.push(name === "queue" ? { kind: "queue", text: tail, program } : { kind: "steer", text: tail, program });
       break;
     }
 
     if (name === "thread" || name === "fork") {
       const tail = text.slice(afterCommand).trim();
-      const program = tail.length > 0 ? parseCommandProgram(tail, { nested: true }) : undefined;
+      const program = tail.length > 0 ? parseCommandProgram(tail, { ...context, nested: true }) : undefined;
       steps.push(name === "thread" ? { kind: "thread", text: tail, program } : { kind: "fork", text: tail, program });
       break;
     }
 
     if (name === "cron") {
       const tail = text.slice(afterCommand).trim();
-      steps.push(parseCronProgramCommand(tail));
+      steps.push(parseCronProgramCommand(tail, context));
       break;
     }
 
@@ -13900,19 +13936,22 @@ function parseCommandProgramSteps(
       continue;
     }
 
-    const fixed = parseFixedArgCommand(name, text, afterCommand);
+    const fixed = parseFixedArgCommand(name, text, afterCommand, context.decodeToken);
     steps.push(fixed.command);
     cursor = skipCommandWhitespace(text, fixed.cursor);
   }
   return steps;
 }
 
-function parseCronProgramCommand(text: string): Extract<ParsedCommand, { kind: "cron" }> {
+function parseCronProgramCommand(
+  text: string,
+  context: ParseCommandProgramContext
+): Extract<ParsedCommand, { kind: "cron" }> {
   const parsed = parseCronCommand(text, localTimezone());
   if (parsed.kind !== "create") {
     return { kind: "cron", text };
   }
-  const program = parseCommandProgram(parsed.messageText, { nested: true });
+  const program = parseCommandProgram(parsed.messageText, { ...context, nested: true });
   return { kind: "cron", text, program };
 }
 
@@ -13952,33 +13991,34 @@ function noArgParsedCommand(
 function parseFixedArgCommand(
   name: string,
   text: string,
-  cursor: number
+  cursor: number,
+  decodeToken: CommandTokenDecoder
 ): { command: ParsedCommand; cursor: number } {
   if (name === "stop") {
-    const result = readOptionalNonCommandToken(text, cursor);
+    const result = readOptionalNonCommandToken(text, cursor, decodeToken);
     return { command: { kind: "stop", text: result.token?.value ?? "" }, cursor: result.cursor };
   }
   if (name === "rewind") {
-    const result = readRequiredTokens(text, cursor, 1);
+    const result = readRequiredTokens(text, cursor, 1, decodeToken);
     return { command: { kind: "rewind", text: commandTextFromTokens(result.tokens) }, cursor: result.cursor };
   }
   if (name === "model") {
-    const first = readOptionalNonCommandToken(text, cursor);
+    const first = readOptionalNonCommandToken(text, cursor, decodeToken);
     if (!first.token) {
       return { command: { kind: "model", text: "" }, cursor: first.cursor };
     }
-    const second = readOptionalModelEffortToken(text, first.cursor);
+    const second = readOptionalModelEffortToken(text, first.cursor, decodeToken);
     return {
       command: { kind: "model", text: commandTextFromTokens(second.token ? [first.token, second.token] : [first.token]) },
       cursor: second.cursor
     };
   }
   if (name === "effort") {
-    const result = readOptionalNonCommandToken(text, cursor);
+    const result = readOptionalNonCommandToken(text, cursor, decodeToken);
     return { command: { kind: "effort", text: result.token?.value ?? "" }, cursor: result.cursor };
   }
   if (name === "workspace" || name === "cd" || name === "reload") {
-    const result = readOptionalNonCommandToken(text, cursor);
+    const result = readOptionalNonCommandToken(text, cursor, decodeToken);
     const commandText = result.token?.value ?? "";
     return {
       command: name === "workspace" ? { kind: "workspace", text: commandText } : name === "cd" ? { kind: "cd", text: commandText } : { kind: "reload", text: commandText },
@@ -13989,7 +14029,7 @@ function parseFixedArgCommand(
     const tokens: CommandToken[] = [];
     let nextCursor = cursor;
     while (true) {
-      const result = readOptionalNonCommandToken(text, nextCursor);
+      const result = readOptionalNonCommandToken(text, nextCursor, decodeToken);
       if (!result.token) {
         nextCursor = result.cursor;
         break;
@@ -14003,38 +14043,38 @@ function parseFixedArgCommand(
     };
   }
   if (name === "resume") {
-    const first = readOptionalNonCommandToken(text, cursor);
+    const first = readOptionalNonCommandToken(text, cursor, decodeToken);
     if (!first.token) {
       return { command: { kind: "resume", text: "" }, cursor };
     }
-    const second = readOptionalNonCommandToken(text, first.cursor);
+    const second = readOptionalNonCommandToken(text, first.cursor, decodeToken);
     return {
       command: { kind: "resume", text: commandTextFromTokens(second.token ? [first.token, second.token] : [first.token]) },
       cursor: second.cursor
     };
   }
   if (name === "watch") {
-    const first = readOptionalNonCommandToken(text, cursor);
+    const first = readOptionalNonCommandToken(text, cursor, decodeToken);
     if (!first.token) {
       return { command: { kind: "watch", text: "" }, cursor };
     }
-    const second = readOptionalNonCommandToken(text, first.cursor);
+    const second = readOptionalNonCommandToken(text, first.cursor, decodeToken);
     const third = first.token.value.toLowerCase() === "rm" && !second.token
       ? { token: undefined, cursor: second.cursor }
-      : readOptionalNonCommandToken(text, second.cursor);
+      : readOptionalNonCommandToken(text, second.cursor, decodeToken);
     const tokens = [first.token, second.token, third.token].filter((token): token is CommandToken => !!token);
     return { command: { kind: "watch", text: commandTextFromTokens(tokens) }, cursor: third.cursor };
   }
   if (name === "activate") {
-    const first = readRequiredTokens(text, cursor, 1);
-    const second = readOptionalNonCommandToken(text, first.cursor);
+    const first = readRequiredTokens(text, cursor, 1, decodeToken);
+    const second = readOptionalNonCommandToken(text, first.cursor, decodeToken);
     return {
       command: { kind: "activate", text: commandTextFromTokens(second.token ? [...first.tokens, second.token] : first.tokens) },
       cursor: second.cursor
     };
   }
   if (name === "pair") {
-    const result = readRequiredTokens(text, cursor, 2);
+    const result = readRequiredTokens(text, cursor, 2, decodeToken);
     return { command: { kind: "pair", text: commandTextFromTokens(result.tokens) }, cursor: result.cursor };
   }
   return { command: { kind: "message", text: text.slice(cursor).trim() }, cursor: text.length };
@@ -14046,11 +14086,16 @@ interface CommandToken {
   quoted: boolean;
 }
 
-function readRequiredTokens(text: string, cursor: number, count: number): { tokens: CommandToken[]; cursor: number } {
+function readRequiredTokens(
+  text: string,
+  cursor: number,
+  count: number,
+  decodeToken: CommandTokenDecoder
+): { tokens: CommandToken[]; cursor: number } {
   const tokens: CommandToken[] = [];
   let nextCursor = cursor;
   for (let index = 0; index < count; index += 1) {
-    const token = readCommandArgumentToken(text, nextCursor);
+    const token = readCommandArgumentToken(text, nextCursor, decodeToken);
     if (!token) {
       break;
     }
@@ -14060,16 +14105,24 @@ function readRequiredTokens(text: string, cursor: number, count: number): { toke
   return { tokens, cursor: nextCursor };
 }
 
-function readOptionalNonCommandToken(text: string, cursor: number): { token?: CommandToken; cursor: number } {
-  const token = readCommandArgumentToken(text, cursor);
+function readOptionalNonCommandToken(
+  text: string,
+  cursor: number,
+  decodeToken: CommandTokenDecoder
+): { token?: CommandToken; cursor: number } {
+  const token = readCommandArgumentToken(text, cursor, decodeToken);
   if (!token || (!token.quoted && isKnownSlashCommandToken(token.value))) {
     return { cursor };
   }
   return { token, cursor: token.cursor };
 }
 
-function readOptionalModelEffortToken(text: string, cursor: number): { token?: CommandToken; cursor: number } {
-  const token = readCommandArgumentToken(text, cursor);
+function readOptionalModelEffortToken(
+  text: string,
+  cursor: number,
+  decodeToken: CommandTokenDecoder
+): { token?: CommandToken; cursor: number } {
+  const token = readCommandArgumentToken(text, cursor, decodeToken);
   if (!token || (!token.quoted && isKnownSlashCommandToken(token.value))) {
     return { cursor };
   }
@@ -14091,7 +14144,11 @@ function readCommandToken(text: string, cursor: number): { name: string; end: nu
   return { name: match[1]!.toLowerCase(), end: cursor + match[0]!.length };
 }
 
-function readCommandArgumentToken(text: string, cursor: number): CommandToken | undefined {
+function readCommandArgumentToken(
+  text: string,
+  cursor: number,
+  decodeToken: CommandTokenDecoder
+): CommandToken | undefined {
   let nextCursor = skipCommandWhitespace(text, cursor);
   if (nextCursor >= text.length) {
     return undefined;
@@ -14110,19 +14167,19 @@ function readCommandArgumentToken(text: string, cursor: number): CommandToken | 
         }
       }
       if (char === "\"") {
-        return { value, cursor: nextCursor + 1, quoted: true };
+        return { value: decodeToken(value), cursor: nextCursor + 1, quoted: true };
       }
       value += char;
       nextCursor += 1;
     }
-    return { value, cursor: nextCursor, quoted: true };
+    return { value: decodeToken(value), cursor: nextCursor, quoted: true };
   }
 
   const start = nextCursor;
   while (nextCursor < text.length && !/\s/.test(text[nextCursor]!)) {
     nextCursor += 1;
   }
-  return { value: text.slice(start, nextCursor), cursor: nextCursor, quoted: false };
+  return { value: decodeToken(text.slice(start, nextCursor)), cursor: nextCursor, quoted: false };
 }
 
 function skipCommandWhitespace(text: string, cursor: number): number {
@@ -14959,6 +15016,23 @@ function goalWorkingTitle(content: string): string {
   return `实现目标中：${truncateGoalTitle(content)}`;
 }
 
+function plainThreadCommandText(
+  message: IncomingLarkMessage,
+  kind: "thread" | "fork",
+  fallback: string
+): string {
+  if (message.plainText !== undefined) {
+    const plainText = stripLeadingLarkMentions(message.plainText, message);
+    const parsed = parseSlashCommand(plainText);
+    if (parsed.kind === kind) {
+      return parsed.text;
+    }
+  }
+  return message.commandTokenEncoding === "normalized_post_markdown"
+    ? unescapeNormalizedPostMarkdown(fallback)
+    : fallback;
+}
+
 function initialThreadNameForCommand(text: string, message: IncomingLarkMessage, fallback: string): string {
   const content = threadCreateRequestTextForCommand(text, message);
   return content ? truncateGoalTitle(content) : fallback;
@@ -15777,9 +15851,15 @@ function createThreadReplyMessage(
     larkGroupId: chatType === "p2p" ? undefined : chatId,
     larkThreadId,
     text,
+    plainText: message.commandTokenEncoding === "normalized_post_markdown"
+      ? unescapeNormalizedPostMarkdown(text)
+      : text,
     createTime,
     raw: {
       event_id: `thread_reply:${message.eventId}`,
+      twinny: {
+        command_token_encoding: message.commandTokenEncoding ?? "plain"
+      },
       sender: {
         sender_id: { open_id: message.senderOpenId },
         sender_type: "user",
@@ -16876,16 +16956,19 @@ function canUpdateActiveGoal(active: ActiveTurn | undefined): active is ActiveTu
 
 function pendingProgramForRecoveredText(
   text: string,
-  options: { allowSingleCommand?: boolean } = {}
+  options: { allowSingleCommand?: boolean; parseOptions?: ParseCommandProgramOptions } = {}
 ): ParsedCommandProgram | undefined {
-  const parsed = parseSlashCommand(text);
+  const parseOptions = options.parseOptions ?? {};
+  const parsed = parseSlashCommand(text, parseOptions);
   if (parsed.kind === "message") {
     return undefined;
   }
   if (parsed.kind === "queue" && parsed.text.length > 0) {
-    return commandProgramIfContainsCommand(parsed.program ?? parseCommandProgram(parsed.text, { nested: true }));
+    return commandProgramIfContainsCommand(
+      parsed.program ?? parseCommandProgram(parsed.text, { ...parseOptions, nested: true })
+    );
   }
-  const program = parseCommandProgram(text);
+  const program = parseCommandProgram(text, parseOptions);
   return options.allowSingleCommand ? commandProgramIfContainsCommand(program) : commandProgramIfMultiStep(program);
 }
 
