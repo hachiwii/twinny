@@ -2530,14 +2530,12 @@ export class ConversationManager {
           return;
         }
         case "status": {
-          await this.sendDirectControlBestEffort(
-            action.operatorOpenId,
-            await this.formatStatusText(state, context, {
-              senderOpenId: action.operatorOpenId,
-              senderName: action.operatorName,
-              chatId: action.operatorOpenId
-            })
-          );
+          const card = await this.formatStatusCard(state, context, {
+            senderOpenId: action.operatorOpenId,
+            senderName: action.operatorName,
+            chatId: action.chatId ?? action.operatorOpenId
+          });
+          await this.sendDirectStatusCardBestEffort(action.operatorOpenId, card);
           return;
         }
         case "help": {
@@ -6162,67 +6160,6 @@ export class ConversationManager {
       refreshAction: statusCardActionValue(context, "status_refresh"),
       system
     });
-  }
-
-  private async formatStatusText(
-    state: ConversationState,
-    context: MessageContext,
-    actor: ConversationActor
-  ): Promise<string> {
-    const profile = profileForSender(this.options.config, actor.senderOpenId);
-    const conversation = await this.options.repository.findByConversationKey(context.conversationKey);
-    const topicThread = context.larkThreadId
-      ? await this.options.repository.getCodexThreadByConversationAndLarkThread(context.conversationKey, context.larkThreadId)
-      : undefined;
-    const active = state.active;
-    const threadId = active?.threadId ?? topicThread?.codexThreadId ?? conversation?.codexThreadId;
-    const thread = threadId ? await this.options.repository.getCodexThreadById(threadId) : undefined;
-    const threadWorkspace = active && active.threadId === threadId
-      ? active.workspace
-      : thread?.workspace ?? conversation?.workspace;
-    const lines = [
-      `OUID: ${actor.senderOpenId}`,
-      `Conversation Key: ${context.conversationKey}`
-    ];
-
-    if (isGroupConversationType(context.type)) {
-      lines.push(
-        `Chat Name: ${conversation?.name ?? actor.chatName ?? actor.chatId ?? context.conversationKey}`,
-        `Response Mode: ${conversation?.responseMode ?? "none"}`,
-        `Profile: ${conversation?.profile ?? "未创建"}`,
-        `Workspace: ${conversation?.workspace ?? "未创建"}`
-      );
-      if (context.larkThreadId) {
-        lines.push(`Lark Thread ID: ${context.larkThreadId}`);
-      }
-    }
-
-    lines.push(
-      `Codex Thread ID: ${threadId ?? "未创建"}`,
-      `Thread Workspace: ${threadWorkspace ?? "未创建"}`,
-      `Thread Status: ${thread?.status ?? "idle"}`,
-      `Mode: ${thread?.mode ?? "default"}`,
-      ...formatThreadTokenStatus(thread)
-    );
-
-    if (profile === "host") {
-      lines.push(...(await this.formatOwnerRateLimitStatus(profile)));
-    }
-
-    return lines.join("\n");
-  }
-
-  private async formatOwnerRateLimitStatus(profile: ProfileName): Promise<string[]> {
-    if (!this.options.codex.readAccountRateLimits) {
-      return ["Codex Account Usage: unavailable"];
-    }
-    try {
-      const usage = await this.options.codex.readAccountRateLimits({ profile });
-      return formatAccountRateLimitStatus(usage);
-    } catch (error) {
-      this.log.warn({ error, profile }, "failed to read codex account rate limits");
-      return ["Codex Account Usage: unavailable"];
-    }
   }
 
   private async formatOwnerRateLimitCardStatus(profile: ProfileName): Promise<{
@@ -11861,6 +11798,14 @@ export class ConversationManager {
       await this.options.lark.sendEphemeralCardToChatId(chatId, openId, card);
     } catch (error) {
       this.log.warn({ error, chatId, openId }, "failed to send ephemeral lark status card");
+    }
+  }
+
+  private async sendDirectStatusCardBestEffort(openId: string, card: LarkCardJson): Promise<void> {
+    try {
+      await this.options.lark.sendCardToOpenId(openId, card);
+    } catch (error) {
+      this.log.warn({ error, openId }, "failed to send direct lark status card");
     }
   }
 
@@ -17671,22 +17616,6 @@ interface RateLimitWindowStatus {
   resetsAt?: number;
 }
 
-function formatThreadTokenStatus(thread: CodexThreadRecord | undefined): string[] {
-  const breakdown = extractThreadTokenBreakdown(thread, { preferRecordFields: true });
-  const cacheHitRate = breakdown.inputTokens > 0 ? breakdown.cachedInputTokens / breakdown.inputTokens : 0;
-  const contextUsage = breakdown.contextWindow > 0 ? breakdown.contextTokens / breakdown.contextWindow : 0;
-  return [
-    "Thread Token Usage:",
-    `- total: ${formatInteger(breakdown.totalTokens)}`,
-    `- input: ${formatInteger(breakdown.inputTokens)}`,
-    `- output: ${formatInteger(breakdown.outputTokens)}`,
-    `- cached input: ${formatInteger(breakdown.cachedInputTokens)}`,
-    `- reasoning output: ${formatInteger(breakdown.reasoningOutputTokens)}`,
-    `- cache hit rate: ${formatPercent(cacheHitRate)}`,
-    `- context: ${formatInteger(breakdown.contextTokens)} / ${formatInteger(breakdown.contextWindow)} (${formatPercent(contextUsage)})`
-  ];
-}
-
 function extractThreadTokenBreakdown(
   thread: CodexThreadRecord | undefined,
   options: { preferRecordFields?: boolean } = {}
@@ -18039,17 +17968,6 @@ function emptyLarkMessageTokenUsageSnapshot(): LarkMessageTokenUsageSnapshot {
   };
 }
 
-function formatAccountRateLimitStatus(value: unknown): string[] {
-  const windows = collectRateLimitWindows(value);
-  const fiveHour = findRateLimitWindow(windows, 5 * 60);
-  const sevenDay = findRateLimitWindow(windows, 7 * 24 * 60);
-  return [
-    "Codex Account Usage:",
-    `- 5h: ${fiveHour ? formatRateLimitWindow(fiveHour) : "unavailable"}`,
-    `- 7d: ${sevenDay ? formatRateLimitWindow(sevenDay) : "unavailable"}`
-  ];
-}
-
 function collectRateLimitWindows(value: unknown): RateLimitWindowStatus[] {
   const snapshots = collectRateLimitSnapshots(value);
   const windows: RateLimitWindowStatus[] = [];
@@ -18113,14 +18031,6 @@ function rateLimitRemainingPercent(usedPercent: number): number {
   return Math.min(100, Math.max(0, 100 - usedPercent));
 }
 
-function formatRateLimitWindow(window: RateLimitWindowStatus): string {
-  const parts = [`${formatPercent(window.usedPercent / 100)} used`];
-  if (window.resetsAt !== undefined) {
-    parts.push(`resets ${formatUnixTimestamp(window.resetsAt)}`);
-  }
-  return parts.join(", ");
-}
-
 function formatLocalResetTime(value: number): string {
   const millis = value > 1_000_000_000_000 ? value : value * 1000;
   const date = new Date(millis);
@@ -18142,21 +18052,12 @@ function formatLocalResetTime(value: number): string {
   return `${date.getFullYear()}/${month}/${day} ${hours}:${minutes}`;
 }
 
-function formatUnixTimestamp(value: number): string {
-  const millis = value > 1_000_000_000_000 ? value : value * 1000;
-  return new Date(millis).toISOString();
-}
-
 function pad2(value: number): string {
   return String(value).padStart(2, "0");
 }
 
 function formatInteger(value: number): string {
   return Math.trunc(value).toLocaleString("en-US");
-}
-
-function formatPercent(value: number): string {
-  return `${(value * 100).toFixed(2)}%`;
 }
 
 function formatTrimmedPercent(value: number): string {
